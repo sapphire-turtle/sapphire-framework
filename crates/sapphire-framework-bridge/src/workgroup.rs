@@ -150,8 +150,17 @@ impl Workgroup {
     ///
     /// A `join`ed host did not found its workgroup, so its record may sort anywhere in the
     /// ledger; which record is ours is a question only this host's node id can answer.
+    ///
+    /// Until the ledger first replicates, a joined host's ledger holds only the record its
+    /// own join wrote — which carries the workgroup's id as its record id, and no node id.
+    /// A host that has joined but not yet synced is exactly the host this answers for, so
+    /// the workgroup's own id is accepted as a last resort.
     pub fn this_device(&self, node_id: &str) -> Result<Device> {
-        self.devices()?.by_node_id(node_id).cloned().ok_or_else(|| {
+        if let Some(device) = self.devices()?.by_node_id(node_id) {
+            return Ok(device.clone());
+        }
+        let fallback = self.devices()?.get(self.id).cloned();
+        fallback.ok_or_else(|| {
             Error::Config(format!(
                 "no device of this workgroup has the node id {node_id}"
             ))
@@ -189,12 +198,13 @@ impl Workgroup {
             node_id: node_id.clone(),
         };
         let response = pairing::join(stream, request).await?;
-        let (workgroup_id, workgroup_name) = match response {
+        let (workgroup_id, workgroup_name, own) = match response {
             JoinResponse::Admitted {
                 workgroup_id,
                 workgroup_name,
+                device,
                 ..
-            } => (workgroup_id, workgroup_name),
+            } => (workgroup_id, workgroup_name, device),
             JoinResponse::Rejected(why) => {
                 return Err(Error::Unauthorized(format!(
                     "the invite was refused: {why}"
@@ -202,7 +212,7 @@ impl Workgroup {
             }
         };
 
-        match Workgroup::materialize(dir, workgroup_id, &workgroup_name, device_name, &node_id) {
+        match Workgroup::materialize(dir, workgroup_id, &workgroup_name, &own) {
             Ok(workgroup) => Ok(workgroup),
             Err(err) => {
                 // Whatever half of it landed goes away again: a workgroup that was not
@@ -215,15 +225,11 @@ impl Workgroup {
 
     /// Write a workgroup directory with `id` and `name`, and this host's record in it.
     ///
-    /// The record keeps the inviter-assigned id, so it is the same record the inviter's
-    /// ledger holds — not a fresh one, which would make two hosts disagree about a device.
-    fn materialize(
-        dir: &BridgeDir,
-        id: GrainId,
-        name: &str,
-        device_name: &str,
-        node_id: &str,
-    ) -> Result<Workgroup> {
+    /// The record is the one the inviter's ledger holds, byte for byte: the ledger is
+    /// replicated, so a local lookalike that differed in anything — even the timestamp the
+    /// joiner would have to invent — makes the replication see two competing versions of
+    /// one device, and every device's ledger drowns in conflict copies.
+    fn materialize(dir: &BridgeDir, id: GrainId, name: &str, own: &Device) -> Result<Workgroup> {
         let wg_dir = dir.workgroup_dir(id);
         // `join` only gets here when `open` reports no workgroup, so anything already
         // sitting under this id is a leftover of a crashed attempt — possibly with a
@@ -247,15 +253,7 @@ impl Workgroup {
             dir: wg_dir,
             devices_dir: dir.devices_dir(id),
         };
-        let own = Device {
-            id,
-            name: device_name.to_owned(),
-            node_id: Some(node_id.to_owned()),
-            description: None,
-            created_at: chrono::Utc::now(),
-            retired_at: None,
-        };
-        Devices::write_record(&workgroup.devices_dir, &own)?;
+        Devices::write_record(&workgroup.devices_dir, own)?;
         Ok(workgroup)
     }
 

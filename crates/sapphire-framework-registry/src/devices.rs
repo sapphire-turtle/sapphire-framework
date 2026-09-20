@@ -33,7 +33,11 @@ const HEADER: &str = "\
 ";
 
 /// One device.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable because a whole record travels over the wire: the inviter hands the joiner
+/// its own record over pair/1 (§3.6), so both sides hold the identical file — the ledger is
+/// replicated, and two records for one device that disagree about anything would fork it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Device {
     /// Stable id, written into synced content as `Entry.author`. It is also the
     /// record's file name, and is not repeated inside the file.

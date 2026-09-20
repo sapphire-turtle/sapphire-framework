@@ -55,14 +55,17 @@ pub struct JoinRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum JoinResponse {
     /// The device is in. The joiner now knows which workgroup it belongs to, what it is
-    /// called there and which record is its own.
+    /// called there and which record is its own — the record itself, id included, so the
+    /// joiner holds byte-identical content to the record the inviter's ledger holds. The
+    /// ledger is replicated, so a record that differed in anything (even a timestamp) would
+    /// fork the device into two conflicting siblings.
     Admitted {
         /// The workgroup that was joined.
         workgroup_id: GrainId,
         /// Its name, as the founding device chose it.
         workgroup_name: String,
-        /// The id of this device's own record.
-        device_id: GrainId,
+        /// This device's own record, as the inviter's ledger now holds it.
+        device: Device,
     },
     /// The invite was refused, and why — a message a user can act on.
     Rejected(String),
@@ -193,7 +196,7 @@ where
         &JoinResponse::Admitted {
             workgroup_id: workgroup.id,
             workgroup_name: workgroup.name.clone(),
-            device_id: device.id,
+            device: device.clone(),
         },
     )
     .await?;

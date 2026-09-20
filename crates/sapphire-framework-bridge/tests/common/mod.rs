@@ -10,9 +10,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use grain_id::GrainId;
-use sapphire_bridge_api::{BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration};
+use sapphire_bridge_api::{
+    BridgeClient, InviteParams, ManagedBy, RegisterParams, WorkspaceRegistration,
+};
 use sapphire_framework_bridge::{
-    Bridge, BridgeDir, LoopbackNetwork, NetConfig, Workgroup, adopt_workgroup,
+    Bridge, BridgeDir, LoopbackNetwork, NetConfig, PeerTransport, Ticket, Workgroup,
+    WorkgroupReplica, adopt_workgroup,
 };
 use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig};
 
@@ -350,11 +353,87 @@ pub fn introduce_both(a: &Host, b: &Host) {
     b.bridge().refresh_workgroup().unwrap();
 }
 
-/// Replicate the workgroup's own workspace from `a` to `b`, once, the way a bridge with a
-/// change to share does on its own: A scans its workgroup root and dials B for the
-/// workgroup's own workspace; B's inbound loop authorizes A and serves the session with
-/// B's replica. Each replica belongs to its running bridge — a fixture must never open a
-/// second one against the same store.
-pub async fn sync_workgroup(a: &Host, b: &Host) {
+/// Replicate the workgroup's own workspace from `host`'s running bridge into `joiner`'s
+/// bridge directory — once, the way a bridge with a change to share does on its own.
+///
+/// `host` is a full [`Host`], whose running bridge holds the workgroup's replica; `joiner`
+/// is only a bridge directory, of a host that has joined and runs no bridge. So the session
+/// runs the only way it can: the inviter's bridge dials [`Bridge::sync_workgroup_now`] —
+/// the seam a running bridge's own loop dials through — and the joiner side is served by a
+/// replica this fixture opens against the joiner's workgroup, with the joiner's node
+/// re-registered on the network so it can accept the dial as a bridge would.
+///
+/// The joiner's own record is identified once, before any replication: at that moment its
+/// ledger holds exactly the record its own join wrote, so the one that announces this
+/// host's node id is unambiguous.
+///
+/// The replica is dropped when the session ends, before the fixture returns: its store is a
+/// redb database, and a later call opens it again.
+pub async fn sync_workgroup(host: &Host, joiner: &BridgeDir, net: &LoopbackNetwork) {
+    let workgroup = Workgroup::open(joiner).unwrap().expect("a workgroup");
+    // At this moment the joiner's ledger holds exactly the record its own join wrote, so
+    // the one that announces this host's node id is unambiguous.
+    let own = workgroup
+        .devices()
+        .unwrap()
+        .entries()
+        .iter()
+        .find_map(|d| d.node_id.clone().map(|n| (d.id, n)))
+        .expect("the joiner announced its node id");
+    let (own_id, joiner_node) = own;
+
+    let replica = WorkgroupReplica::open(joiner, &workgroup, own_id).unwrap();
+    let transport = net.transport(&joiner_node);
+    let joiner_session = tokio::spawn(async move {
+        // The inviter dials the workgroup's own workspace, as a bridge would; a pairing
+        // attempt would be someone else's business.
+        let stream = match transport
+            .accept()
+            .await
+            .expect("the inviter dialed the joiner")
+        {
+            sapphire_framework_bridge::Inbound::Workspace(_, _, stream) => stream,
+            sapphire_framework_bridge::Inbound::Pairing(..) => {
+                panic!("the inviter dialed a pairing, not the workgroup workspace")
+            }
+        };
+        replica.session(stream).await
+    });
+
+    host.bridge()
+        .sync_workgroup_now(&joiner_node)
+        .await
+        .unwrap();
+    joiner_session
+        .await
+        .expect("the joiner's session task")
+        .expect("the joiner's session succeeded");
+}
+/// The node id of the third host.
+pub const NODE_C: &str = "c1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+/// Replicate the workgroup's own workspace from `a` to `b`, once, between two full hosts.
+///
+/// The earlier, two-`Host` form of [`sync_workgroup`]: both bridges are running, so each
+/// side's replica belongs to its running bridge, and `a` simply dials `b`.
+pub async fn sync_workgroup_between(a: &Host, b: &Host) {
     a.bridge().sync_workgroup_now(&b.node_id).await.unwrap();
+}
+
+/// Ask `host`'s running bridge for an invite ticket naming `device_name`.
+///
+/// `bridge.invite` is the front door for this in production — the CLI calls it — and the
+/// ticket it composes names the address a joiner must dial, which only the process holding
+/// the bound endpoint knows. Going through it exercises the whole path a real pairing uses.
+pub async fn invite(host: &Host, device_name: &str) -> Ticket {
+    let client = connect(host).await;
+    let result = client
+        .invite(InviteParams {
+            name: device_name.to_owned(),
+            ttl: None,
+            workgroup: None,
+        })
+        .await
+        .unwrap();
+    Ticket::decode(&result.ticket).unwrap()
 }

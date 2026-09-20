@@ -203,7 +203,7 @@ async fn a_workspace_the_other_host_published_appears_in_workspace_list() {
 
     // A publishes; the workgroup workspace replicates to B — one session, the way the
     // running bridges drive it.
-    common::sync_workgroup(&a, &b).await;
+    common::sync_workgroup_between(&a, &b).await;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {

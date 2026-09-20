@@ -170,7 +170,7 @@ impl RouteTable {
 }
 
 /// Write through a temporary file so a crash never leaves a half-written table.
-fn write_atomic(path: &Path, header: &str, body: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, header: &str, body: &str) -> Result<()> {
     use std::io::Write;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));

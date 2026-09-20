@@ -23,10 +23,14 @@ sapphire-registry = { package = "sapphire-framework-registry", version = "0.14.0
 sapphire-framework-session = { version = "0.14.0", path = "../sapphire-framework-session" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.14.0", path = "../sapphire-framework-sync" }
 async-trait.workspace = true
+chrono.workspace = true
 clap.workspace = true
+data-encoding = "2"
 dirs.workspace = true
 getrandom.workspace = true
 grain-id.workspace = true
+postcard = { version = "1", features = ["use-std"] }
+subtle = "2"
 iroh = { version = "1.2", optional = true }
 serde.workspace = true
 serde_json.workspace = true

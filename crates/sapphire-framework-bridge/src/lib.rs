@@ -14,6 +14,7 @@ mod control;
 mod data;
 mod dir;
 mod error;
+mod invite;
 #[cfg(feature = "node")]
 mod iroh;
 mod net;
@@ -34,6 +35,7 @@ use sapphire_ipc::{Endpoint, ServerInfo};
 pub use command::BridgeCommand;
 pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
 pub use error::{Error, Result};
+pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
 #[cfg(feature = "node")]
 pub use iroh::{IrohTransport, NodeAddr};
 pub use net::NetConfig;

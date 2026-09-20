@@ -150,17 +150,8 @@ impl Workgroup {
     ///
     /// A `join`ed host did not found its workgroup, so its record may sort anywhere in the
     /// ledger; which record is ours is a question only this host's node id can answer.
-    ///
-    /// Until the ledger first replicates, a joined host's ledger holds only the record its
-    /// own join wrote — which carries the workgroup's id as its record id, and no node id.
-    /// A host that has joined but not yet synced is exactly the host this answers for, so
-    /// the workgroup's own id is accepted as a last resort.
     pub fn this_device(&self, node_id: &str) -> Result<Device> {
-        if let Some(device) = self.devices()?.by_node_id(node_id) {
-            return Ok(device.clone());
-        }
-        let fallback = self.devices()?.get(self.id).cloned();
-        fallback.ok_or_else(|| {
+        self.devices()?.by_node_id(node_id).cloned().ok_or_else(|| {
             Error::Config(format!(
                 "no device of this workgroup has the node id {node_id}"
             ))

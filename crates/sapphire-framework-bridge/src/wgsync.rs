@@ -199,7 +199,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_retirement_replicates() {
         let (_ta, dir_a, wg_a) = host("host-a", NODE_A);
         let (_tb, dir_b, _) = host("host-b", NODE_B);

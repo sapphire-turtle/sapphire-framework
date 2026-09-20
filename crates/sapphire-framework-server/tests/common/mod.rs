@@ -292,14 +292,15 @@ fn sync_id_path(host: &Host) -> PathBuf {
 /// both the record's filename and the `Entry.author` of everything it wrote. Copying the
 /// record says exactly that.
 ///
-/// The copy's *name* is prefixed, so that it sorts after the receiving host's own record.
-/// The bridge resolves a host's own device by taking the ledger's first record by name
-/// (`Workgroup::this_device`, still a TODO for `workgroup join`), so a peer that sorted
-/// earlier would be mistaken for the host itself — and a host that thought it was its peer
-/// would filter that peer out of every dial.
+/// The copy's *name* is prefixed with `~`, the largest printable ASCII character, so it
+/// sorts after the receiving host's own record — which matters to the `switchboard.rs`
+/// fixtures, where both hosts are joined to one workgroup and a name that sorted first
+/// would make the joiner's ledger ambiguous about which record is whose. Real resolution
+/// never guesses: `Workgroup::this_device` matches on node id, which a test record copied
+/// wholesale preserves.
 fn copy_device(from: &Host, to: &Host) {
     let workgroup = Workgroup::open(&from.bridge_dir).unwrap().unwrap();
-    let own = workgroup.this_device().unwrap();
+    let own = workgroup.this_device(&from.node_id).unwrap();
     let source = from
         .bridge_dir
         .devices_dir(from.workgroup_id)

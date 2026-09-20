@@ -175,17 +175,21 @@ mod tests {
         let (_ta, dir_a, wg_a) = host("host-a", NODE_A);
         let (_tb, dir_b, _wg_b) = host("host-b", NODE_B);
 
-        // Force both sides onto the same workgroup id, as a real join would.
-        let wg_b = crate::testing::adopt_workgroup(&dir_b, &wg_a).unwrap();
-
-        let a = WorkgroupReplica::open(&dir_a, &wg_a, wg_a.this_device().unwrap().id).unwrap();
-        let b = WorkgroupReplica::open(&dir_b, &wg_b, wg_b.this_device().unwrap().id).unwrap();
-
-        // A learns about B.
+        // The joiner's own record is admitted on the inviter before the ledger travels: a
+        // real pairing writes it there, and `adopt_workgroup` copies the ledger wholesale.
         wg_a.devices()
             .unwrap()
             .add("host-b", Some(NODE_B.to_owned()), None)
             .unwrap();
+
+        // Force both sides onto the same workgroup id, as a real join would.
+        let wg_b = crate::testing::adopt_workgroup(&dir_b, &wg_a).unwrap();
+
+        let a =
+            WorkgroupReplica::open(&dir_a, &wg_a, wg_a.this_device(NODE_A).unwrap().id).unwrap();
+        let b =
+            WorkgroupReplica::open(&dir_b, &wg_b, wg_b.this_device(NODE_B).unwrap().id).unwrap();
+
         a.scan().unwrap();
 
         let (left, right) = tokio::io::duplex(64 * 1024);
@@ -203,14 +207,24 @@ mod tests {
     async fn a_retirement_replicates() {
         let (_ta, dir_a, wg_a) = host("host-a", NODE_A);
         let (_tb, dir_b, _) = host("host-b", NODE_B);
+
+        // B's own record is in the ledger before it travels: a real pairing writes it
+        // there, and `adopt_workgroup` copies the founder's ledger wholesale.
+        wg_a.devices()
+            .unwrap()
+            .add("host-b", Some(NODE_B.to_owned()), None)
+            .unwrap();
         let wg_b = crate::testing::adopt_workgroup(&dir_b, &wg_a).unwrap();
 
+        // The phone under test.
         wg_a.devices()
             .unwrap()
             .add("phone", Some("c1".repeat(32)), None)
             .unwrap();
-        let a = WorkgroupReplica::open(&dir_a, &wg_a, wg_a.this_device().unwrap().id).unwrap();
-        let b = WorkgroupReplica::open(&dir_b, &wg_b, wg_b.this_device().unwrap().id).unwrap();
+        let a =
+            WorkgroupReplica::open(&dir_a, &wg_a, wg_a.this_device(NODE_A).unwrap().id).unwrap();
+        let b =
+            WorkgroupReplica::open(&dir_b, &wg_b, wg_b.this_device(NODE_B).unwrap().id).unwrap();
         a.scan().unwrap();
         let (l, r) = tokio::io::duplex(64 * 1024);
         let _ = tokio::join!(a.session(l), b.session(r));
@@ -237,14 +251,15 @@ mod tests {
     #[test]
     fn the_workgroup_id_is_its_own_workspace_id() {
         let (_t, dir, wg) = host("host-a", NODE_A);
-        let replica = WorkgroupReplica::open(&dir, &wg, wg.this_device().unwrap().id).unwrap();
+        let replica =
+            WorkgroupReplica::open(&dir, &wg, wg.this_device(NODE_A).unwrap().id).unwrap();
         assert_eq!(replica.workspace_id(), wg.id);
     }
 
     #[test]
     fn opening_twice_against_one_directory_fails() {
         let (_t, dir, wg) = host("host-a", NODE_A);
-        let device = wg.this_device().unwrap().id;
+        let device = wg.this_device(NODE_A).unwrap().id;
         let _first = WorkgroupReplica::open(&dir, &wg, device).unwrap();
         assert!(
             WorkgroupReplica::open(&dir, &wg, device).is_err(),

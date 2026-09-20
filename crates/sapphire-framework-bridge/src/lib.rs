@@ -261,7 +261,7 @@ impl Bridge {
     /// Open the workgroup's own replica, naming this host's own device record as the author
     /// of its local writes.
     fn open_workgroup_replica(&self, workgroup: &Workgroup) -> Result<Arc<WorkgroupReplica>> {
-        let device_id = workgroup.this_device()?.id;
+        let device_id = workgroup.this_device(&self.transport.node_id())?.id;
         Ok(Arc::new(WorkgroupReplica::open(
             &self.dir, workgroup, device_id,
         )?))

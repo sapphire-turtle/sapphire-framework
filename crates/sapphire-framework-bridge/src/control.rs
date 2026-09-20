@@ -225,7 +225,9 @@ async fn register(
         .map_err(failed)?
         .ok_or(Error::NoWorkgroup)
         .map_err(failed)?;
-    let me = workgroup.this_device().map_err(failed)?;
+    let me = workgroup
+        .this_device(&bridge.transport().node_id())
+        .map_err(failed)?;
     encode(RegisterResult {
         device_id: me.id,
         node_id: bridge.transport().node_id(),

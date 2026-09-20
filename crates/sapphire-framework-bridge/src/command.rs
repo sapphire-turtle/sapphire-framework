@@ -257,7 +257,7 @@ fn workgroup_create(name: &str, device_name: &str) -> Result<i32> {
         workgroup.name,
         workgroup.id,
         device_name,
-        workgroup.this_device()?.id
+        workgroup.this_device(&node_id)?.id
     );
     Ok(0)
 }

@@ -307,8 +307,10 @@ impl Devices {
 
     /// Write one record into `dir` without opening the whole ledger.
     ///
-    /// Used by the migration, which already knows the id each record must keep.
-    pub(crate) fn write_record(dir: &Path, device: &Device) -> Result<()> {
+    /// `workgroup join` uses it: the inviter's ledger already holds the record under this
+    /// very id, so the joiner must write the same id — and not a random one [`Devices::add`]
+    /// would mint — for the replicated ledger to stay one device with one id.
+    pub fn write_record(dir: &Path, device: &Device) -> Result<()> {
         Devices {
             dir: dir.to_owned(),
             entries: Vec::new(),

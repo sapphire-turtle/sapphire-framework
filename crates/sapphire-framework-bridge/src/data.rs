@@ -15,7 +15,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::Bridge;
 use crate::error::{Error, Result};
+use crate::invite::Invites;
 use crate::net::NetConfig;
+use crate::pairing;
 use crate::peer::{BoxedStream, Inbound};
 use crate::routes::Route;
 use crate::wgsync;
@@ -296,6 +298,37 @@ fn wake(route: &Route) -> std::io::Result<()> {
 
 // ── the inbound loop ────────────────────────────────────────────────────────
 
+/// Answer one pairing attempt, as the running bridge promises every holder of a ticket.
+///
+/// Invites and the workgroup are read fresh — [`Invites::redeem`] re-reads the file, and
+/// the ledger is re-opened — because the bridge is long-lived and a joiner must be answered
+/// from what is on disk now. An unreadable directory is this host's trouble, which no reply
+/// can answer for, so the stream is hung up on and the loop carries on; [`pairing::admit`]
+/// itself reports every refusal to the joiner.
+async fn answer_pairing(bridge: &Bridge, stream: BoxedStream) {
+    let mut invites = match Invites::load(&bridge.dir.root.join("invites.toml")) {
+        Ok(invites) => invites,
+        Err(err) => {
+            tracing::warn!("a pairing attempt arrived, and the invites could not be read: {err}");
+            return;
+        }
+    };
+    let workgroup = match bridge.workgroup() {
+        Ok(Some(workgroup)) => workgroup,
+        Ok(None) => {
+            tracing::debug!("a pairing attempt arrived, and this host has no workgroup");
+            return;
+        }
+        Err(err) => {
+            tracing::warn!("a pairing attempt arrived, and the workgroup could not be read: {err}");
+            return;
+        }
+    };
+    if let Err(err) = pairing::admit(stream, &mut invites, &workgroup).await {
+        tracing::warn!(error = %err, "a pairing attempt was not answered");
+    }
+}
+
 /// Accept peer streams, authorize them, and park them for the app server that owns them.
 ///
 /// This loop is the only place that sees a peer asking for a workspace whose owner is not
@@ -304,14 +337,12 @@ fn wake(route: &Route) -> std::io::Result<()> {
 pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
     loop {
         let (peer_node_id, workspace_id, stream) = match bridge.transport().accept().await? {
-            // The pairing gate is the invite secret, and that gate lives in
-            // [`pairing::admit`], which is driven by the invite flow, not by this loop: a
-            // pairing connection is somebody holding a ticket, who is by definition not a
-            // member yet. Dropping it here would hang up on the very thing the ledger has
-            // no way to answer, so leave it for the invite flow to pick up.
-            Inbound::Pairing(from, stream) => {
-                drop(stream);
-                tracing::debug!(peer = %from, "a pairing attempt arrived on the data loop");
+            // The pairing gate is the invite secret, not the ledger — a joiner is not a
+            // member yet, so [`Workgroup::authorize`](crate::workgroup::Workgroup::authorize) would refuse it by definition. This
+            // is the one connection answered without authorization, by the invite flow
+            // itself and right here: a running bridge answers any holder of a ticket.
+            Inbound::Pairing(_from, stream) => {
+                answer_pairing(&bridge, stream).await;
                 continue;
             }
             Inbound::Workspace(from, workspace_id, stream) => (from, workspace_id, stream),
@@ -412,6 +443,9 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const NODE_B: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
     fn stream() -> BoxedStream {
         let (mine, _theirs) = tokio::io::duplex(64);
@@ -570,5 +604,48 @@ mod tests {
             0,
             "closing one side must show as end of file on the other"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_inbound_loop_answers_a_pairing_attempt() {
+        // A joiner holds a ticket, not a membership, so its connection must reach the invite
+        // flow instead of being hung up on. The bridge is set up exactly as `run` sets it
+        // up, except the transport: the loopback here carries the pairing.
+        let net = crate::peer::LoopbackNetwork::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = crate::dir::BridgeDir::at(tmp.path().join("bridge")).unwrap();
+        let wg = crate::workgroup::Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
+        let (_invite, secret) = crate::invite::Invites::load(&dir.root.join("invites.toml"))
+            .unwrap()
+            .create("phone", crate::invite::DEFAULT_TTL)
+            .unwrap();
+
+        let bridge = Bridge::new(dir.clone(), Arc::new(net.transport(NODE_A)), "0.0.0").unwrap();
+        let loop_task = tokio::spawn(inbound(Arc::new(bridge), NetConfig::default()));
+
+        // Join from a fresh host: the loop above must play the inviter's part.
+        let joiner_dir = crate::dir::BridgeDir::at(tmp.path().join("joiner")).unwrap();
+        let joined = crate::workgroup::Workgroup::join(
+            &joiner_dir,
+            &crate::invite::Ticket {
+                workgroup_id: wg.id,
+                node_addr: NODE_A.as_bytes().to_vec(),
+                secret,
+                expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            },
+            "phone",
+            &net.transport(NODE_B),
+        )
+        .await
+        .expect("the pairing attempt must be answered");
+        assert_eq!(joined.id, wg.id);
+        assert_eq!(
+            joined.this_device(NODE_B).unwrap().name,
+            "phone",
+            "the joiner must have its own record locally"
+        );
+
+        loop_task.abort();
+        let _ = loop_task.await;
     }
 }

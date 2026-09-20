@@ -75,6 +75,22 @@ pub trait PeerTransport: Send + Sync + 'static {
     /// ordinary authorized path.
     async fn accept(&self) -> Result<Inbound>;
 
+    /// Wait for an inbound pairing stream. Returns the caller's node id and the stream.
+    ///
+    /// The symmetric default is what [`Bridge::run`](crate::Bridge::run) relies on: one transport, one loop,
+    /// and every inbound connection — pairing or workspace — answered from it. iroh is
+    /// naturally one endpoint and this default is the whole of it there. A workspace-only
+    /// caller that still needs pairing to be answered does not exist; use
+    /// [`PeerTransport::accept`] and route, as the bridge does.
+    async fn accept_pairing(&self) -> Result<(String, BoxedStream)> {
+        loop {
+            match self.accept().await? {
+                Inbound::Pairing(from, stream) => return Ok((from, stream)),
+                Inbound::Workspace(..) => continue,
+            }
+        }
+    }
+
     /// Wait for an inbound workspace stream. Returns the caller's node id, what it asked
     /// for, and the stream.
     ///

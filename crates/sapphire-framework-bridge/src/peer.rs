@@ -114,6 +114,17 @@ pub trait PeerTransport: Send + Sync + 'static {
     /// This host's node id.
     fn node_id(&self) -> String;
 
+    /// The bytes to put in a ticket's `node_addr`, so a joiner can dial this host.
+    ///
+    /// The counterpart of [`PeerTransport::open_pairing`], which reads exactly these bytes
+    /// back. Defaults to the node id's own bytes, which is what a transport that is dialed
+    /// by name - the loopback - wants. A transport that needs an address as well as an id
+    /// overrides this, because only the process holding the bound endpoint knows which
+    /// socket addresses are reachable.
+    fn ticket_addr(&self) -> Result<Vec<u8>> {
+        Ok(self.node_id().into_bytes())
+    }
+
     /// Whether this host can currently reach `node_id`.
     ///
     /// An app server is told which devices of its workgroup are connected

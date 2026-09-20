@@ -253,6 +253,18 @@ pub const SYNC_DISABLE: &str = "sync.disable";
 /// Report a workspace's replication state.
 pub const SYNC_STATUS: &str = "sync.status";
 
+/// Place a workspace's directory, by name or id.
+pub const SYNC_MAP: &str = "sync.map";
+
+/// Parameters of [`SYNC_MAP`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SyncMapParams {
+    /// The workspace, by name or id, as the workgroup lists it.
+    pub workspace: String,
+    /// Where the workspace's root is on this host.
+    pub dir: PathBuf,
+}
+
 /// Result of [`SYNC_ENABLE`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SyncEnableResult {

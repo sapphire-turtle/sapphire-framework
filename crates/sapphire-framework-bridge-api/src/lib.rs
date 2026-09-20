@@ -35,6 +35,71 @@ pub const PEERS: &str = "bridge.peers";
 pub const STATUS: &str = "bridge.status";
 /// Notification: a peer wants a workspace this app server owns.
 pub const INCOMING: &str = "bridge.incoming";
+/// Create an invite, and get the ticket to hand to the joining device.
+pub const INVITE: &str = "bridge.invite";
+/// Join the workgroup a ticket names.
+pub const JOIN: &str = "bridge.join";
+/// List the workspaces the workgroup knows about.
+pub const WORKSPACES: &str = "bridge.workspaces";
+
+/// Parameters of [`INVITE`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InviteParams {
+    /// What the joining device will be called in the ledger.
+    pub name: String,
+    /// How long the invite stays good, in seconds. `None` uses the bridge's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<u64>,
+    /// The workgroup to invite into, by name or id. `None` uses this host's only one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workgroup: Option<String>,
+}
+
+/// Result of [`INVITE`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InviteResult {
+    /// The ticket, in the text form a user copies to the joining device.
+    pub ticket: String,
+}
+
+/// Parameters of [`JOIN`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct JoinParams {
+    /// The ticket the inviter produced.
+    pub ticket: String,
+    /// The name this device will carry in the ledger. `None` uses the host name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
+/// Result of [`JOIN`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct JoinResult {
+    /// The workgroup that was joined.
+    pub workgroup_id: GrainId,
+    /// Its name, as the founding device chose it.
+    pub workgroup_name: String,
+    /// This device's own record inside it.
+    pub device_id: GrainId,
+}
+
+/// One workspace the workgroup knows about.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct WorkgroupWorkspaceInfo {
+    /// Its identity across devices.
+    pub workspace_id: GrainId,
+    /// The application that owns it.
+    pub app_name: String,
+    /// The name the workgroup lists it under.
+    pub name: String,
+}
+
+/// Result of [`WORKSPACES`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspacesResult {
+    /// Every workspace the workgroup knows about.
+    pub workspaces: Vec<WorkgroupWorkspaceInfo>,
+}
 
 /// The success payload of a call that returns nothing.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -272,7 +337,9 @@ mod tests {
 
     #[test]
     fn method_names_are_namespaced() {
-        for name in [REGISTER, UNREGISTER, PEERS, STATUS, INCOMING] {
+        for name in [
+            REGISTER, UNREGISTER, PEERS, STATUS, INCOMING, INVITE, JOIN, WORKSPACES,
+        ] {
             assert!(name.starts_with("bridge."), "{name}");
         }
     }

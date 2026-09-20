@@ -23,6 +23,19 @@ pub enum Error {
     #[error("{0} is not a {1} workspace")]
     UnknownWorkspace(std::path::PathBuf, &'static str),
 
+    /// The workgroup has no workspace with this name or id.
+    #[error("the workgroup has no workspace {0}")]
+    UnknownWorkspaceName(String),
+
+    /// The workgroup workspace belongs to another application.
+    #[error("workspace {name} belongs to {app_name}, not this application")]
+    WrongApp {
+        /// The workspace's name.
+        name: String,
+        /// The application that owns it.
+        app_name: String,
+    },
+
     /// A workspace's sync identity could not be read or written.
     ///
     /// Never repaired by minting a new identity: the workspace may already exist on

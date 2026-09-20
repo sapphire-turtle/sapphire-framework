@@ -2887,8 +2887,9 @@ git commit -m "feat(bridge): reach other devices over iroh"
 **Interfaces:**
 - Produces:
   - `BridgeCommand::{Run, Status, Device, Workgroup, Workspace}` (`clap::Subcommand`)
-  - `DeviceCommand::{List, Forget { selector }}`
-  - `WorkgroupCommand::{Create { name, device_name }, List}`
+  - `DeviceCommand::{List, Invite { name, ttl, workgroup }, Forget { selector }}`
+  - `WorkgroupCommand::{Create { name, device_name }, Join { ticket, device_name }, List}`
+    (`Invite` and `Join` are step 8 of the pairing plan)
   - `WorkspaceCommand::List` — read-only, per spec §1: the bridge knows what the workgroup
     holds; the owning app's CLI decides what this host keeps
   - `async BridgeCommand::dispatch(self, version: &'static str) -> Result<i32>`
@@ -3023,7 +3024,10 @@ easiest boundary in this design to blur.
 twice.
 
 `status`, `device` and `workspace` connect to the running bridge over the control plane
-(`SpawnConfig::disabled()` — asking about a bridge must not start one) and print. `workgroup
+(`SpawnConfig::disabled()` — asking about a bridge must not start one) and print. That now
+includes `device invite` and `workgroup join`, which ask the running bridge rather than
+working on the directory: the ticket names the address a joiner must dial, and only the
+bridge holding the bound endpoint knows it. `workgroup
 create` works directly on the directory, because there is nothing to ask yet.
 
 - [ ] **Step 4: Note the repository convention**
@@ -3063,7 +3067,7 @@ git commit -m "feat(bridge): ship the sapphire-bridge binary and its CLI"
 |---|---|
 | **Replicating the workgroup workspace itself** — spec §1 makes the bridge the app server of one app, the workgroup, using `-sync` like any other owner. Here the device ledger is only read and written locally. | step 8, when a second device first exists to replicate with. `sapphire-framework-sync` is deliberately **not** a dependency of `-bridge` until then: an unused one is noise. |
 | `bridge log` and `status.json` | step 9, with the rest of the operational surface. There is no log file to read until then, and a subcommand that prints nothing is worse than one that does not exist. |
-| Pairing, invites, `workgroup join`, `pair create/accept` | step 8 |
+| Pairing, invites, `workgroup join`, `pair create/accept` | step 8 (`device invite` and `workgroup join` have since landed there; there is no `pair` tree — pairing is those two commands) |
 | `Workgroup::this_device` finding the record by node id rather than taking the first | step 8, with `join` |
 | The app server's sync runtime: watcher, `Replica`, `sync.enable` / `disable` / `status` | step 7 |
 | Publishing the workgroup's workspace list (`workspaces/<id>.toml`) | step 8 |

@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use grain_id::GrainId;
-use sapphire_bridge_api::{BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration};
+use sapphire_bridge_api::{
+    BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration, WorkspacesResult,
+};
 use sapphire_sync::{PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
 use sapphire_workspace::{AppContext, Workspace};
 use tokio::sync::{Mutex, OnceCell, mpsc};
@@ -21,7 +23,7 @@ mod methods;
 pub mod testing;
 mod watch;
 
-pub use id::{SYNC_ID_FILE, sync_id, sync_id_path};
+pub use id::{SYNC_ID_FILE, WORKSPACE_MAP_FILE, sync_id, sync_id_path};
 pub use methods::sync_router;
 pub use watch::{DEBOUNCE, Watcher};
 
@@ -205,6 +207,102 @@ impl SyncRuntime {
             self.reregister().await?;
         }
         Ok(())
+    }
+
+    /// The workspaces the workgroup knows about.
+    ///
+    /// Read straight from the bridge, so it reflects every device's registrations. The
+    /// bridge being down is not an empty answer — that would read as "nothing to map" — so
+    /// it is an error, and `sync.map` reports it.
+    pub async fn workspaces(&self) -> Result<WorkspacesResult> {
+        self.bridge
+            .workspaces()
+            .await
+            .map_err(|e| Error::Bridge(e.to_string()))
+    }
+
+    /// Map a workgroup workspace onto a directory of this host, and sync it.
+    ///
+    /// `selector` is the workspace's name or id, as [`workspaces`] lists it; `dir` must
+    /// already be a workspace of this application — the directory is placed, not made.
+    /// Writing the map and enabling sync are one step: a path mapped but not enabled would
+    /// converge on the next start anyway, but a workspace believed synced with no id to
+    /// converge under is the state the sync id's error discipline exists to prevent.
+    ///
+    /// [`workspaces`]: SyncRuntime::workspaces
+    pub async fn map(&self, selector: &str, dir: &Path) -> Result<GrainId> {
+        let workgroup = self.workspaces().await?;
+        let wanted = workgroup
+            .workspaces
+            .iter()
+            // A name is the user-facing handle; the id is the exact one. Two workspaces
+            // may not share a name, so a name names at most one.
+            .find(|w| w.name == selector || w.workspace_id.to_string() == selector)
+            .ok_or_else(|| Error::UnknownWorkspaceName(selector.to_owned()))?;
+
+        // Refuse another application's workspace: this server syncs its own application's
+        // workspaces, and `Workspace::from_root` would later refuse the directory anyway.
+        if wanted.app_name != self.ctx.app_name {
+            return Err(Error::WrongApp {
+                name: wanted.name.clone(),
+                app_name: wanted.app_name.clone(),
+            });
+        }
+
+        let root = dir.canonicalize().map_err(Error::Io)?;
+        let workspace = Workspace::from_root(self.ctx, &root)?;
+        if workspace.root != root {
+            return Err(Error::UnknownWorkspace(root, self.ctx.app_name));
+        }
+
+        // A directory already syncing under another identity is not remapped: the sync id
+        // is a device's word that it is the same workspace, and rewriting it silently
+        // would make two hosts disagree about what they share.
+        {
+            let synced = self.synced.lock().await;
+            if let Some(entry) = synced.get(&root)
+                && entry.workspace_id != wanted.workspace_id
+            {
+                return Err(Error::SyncId(format!(
+                    "{} already syncs as {}, not {}",
+                    root.display(),
+                    entry.workspace_id,
+                    wanted.workspace_id
+                )));
+            }
+        }
+
+        // The identity arrives from the workgroup, not from this host: two hosts that map
+        // the same workspace must sync as one, so the id is the one the workgroup lists,
+        // written before `enable` reads it. A different id already on disk is refused
+        // above; an absent one is written here.
+        let marker = workspace.marker_dir();
+        let id_path = marker.join(crate::sync::id::SYNC_ID_FILE);
+        match std::fs::read_to_string(&id_path) {
+            Ok(existing) if existing.trim() != wanted.workspace_id.to_string() => {
+                return Err(Error::SyncId(format!(
+                    "{} already holds identity {}, not {}",
+                    root.display(),
+                    existing.trim(),
+                    wanted.workspace_id
+                )));
+            }
+            Err(_) => {
+                std::fs::write(&id_path, format!("{}\n", wanted.workspace_id))
+                    .map_err(Error::Io)?;
+            }
+            Ok(_) => {}
+        }
+
+        // The map is what tells this application, on a later start, which workgroup
+        // workspace a directory is.
+        let map_path = root
+            .join(format!(".{}", self.ctx.app_name))
+            .join(WORKSPACE_MAP_FILE);
+        let workspace_id = wanted.workspace_id.to_string();
+        std::fs::write(&map_path, format!("{workspace_id}\n")).map_err(Error::Io)?;
+
+        self.enable(&root).await
     }
 
     /// What `sync.status` answers with.

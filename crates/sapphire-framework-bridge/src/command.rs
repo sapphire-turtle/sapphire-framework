@@ -11,7 +11,7 @@
 #[cfg(feature = "node")]
 use std::sync::Arc;
 
-use sapphire_bridge_api::{BRIDGE_NAME, BridgeClient};
+use sapphire_bridge_api::{BRIDGE_NAME, BridgeClient, InviteParams, JoinParams};
 use sapphire_ipc::{Endpoint, SpawnConfig};
 
 #[cfg(feature = "node")]
@@ -28,23 +28,14 @@ pub enum BridgeCommand {
     /// Report whether a bridge is running, and what it knows.
     Status,
     /// The workgroup's devices.
-    Device {
-        /// Which `device` command to run.
-        #[command(subcommand)]
-        command: DeviceCommand,
-    },
+    #[command(subcommand)]
+    Device(DeviceCommand),
     /// This host's workgroup.
-    Workgroup {
-        /// Which `workgroup` command to run.
-        #[command(subcommand)]
-        command: WorkgroupCommand,
-    },
+    #[command(subcommand)]
+    Workgroup(WorkgroupCommand),
     /// What the workgroup contains — read-only.
-    Workspace {
-        /// Which `workspace` command to run.
-        #[command(subcommand)]
-        command: WorkspaceCommand,
-    },
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
 }
 
 /// `device` subcommands.
@@ -52,6 +43,18 @@ pub enum BridgeCommand {
 pub enum DeviceCommand {
     /// List the workgroup's devices, and which are reachable.
     List,
+    /// Create an invite ticket for a device that is about to join.
+    Invite {
+        /// What the joining device will be called.
+        #[arg(long)]
+        name: String,
+        /// How long the invite stays good, in seconds.
+        #[arg(long)]
+        ttl: Option<u64>,
+        /// The workgroup to invite into, by name or id.
+        #[arg(long)]
+        workgroup: Option<String>,
+    },
     /// Retire a device, so it may no longer connect.
     ///
     /// The record stays as a tombstone: a device id is written into synced content and must
@@ -75,6 +78,14 @@ pub enum WorkgroupCommand {
     },
     /// Show the workgroup this host belongs to.
     List,
+    /// Join the workgroup a ticket names.
+    Join {
+        /// The ticket the inviting device printed.
+        ticket: String,
+        /// The name this device will carry. Defaults to this host's name.
+        #[arg(long)]
+        device_name: Option<String>,
+    },
 }
 
 /// `workspace` subcommands.
@@ -90,17 +101,26 @@ impl BridgeCommand {
         match self {
             BridgeCommand::Run => run(version).await,
             BridgeCommand::Status => status(version).await,
-            BridgeCommand::Device { command } => match command {
+            BridgeCommand::Device(command) => match command {
                 DeviceCommand::List => device_list(version).await,
+                DeviceCommand::Invite {
+                    name,
+                    ttl,
+                    workgroup,
+                } => device_invite(version, name, ttl, workgroup).await,
                 DeviceCommand::Forget { selector } => device_forget(&selector),
             },
-            BridgeCommand::Workgroup { command } => match command {
+            BridgeCommand::Workgroup(command) => match command {
                 WorkgroupCommand::Create { name, device_name } => {
                     workgroup_create(&name, &device_name)
                 }
+                WorkgroupCommand::Join {
+                    ticket,
+                    device_name,
+                } => workgroup_join(version, ticket, device_name).await,
                 WorkgroupCommand::List => workgroup_list(),
             },
-            BridgeCommand::Workspace { command } => match command {
+            BridgeCommand::Workspace(command) => match command {
                 WorkspaceCommand::List => workspace_list(version).await,
             },
         }
@@ -222,6 +242,59 @@ async fn device_list(version: &str) -> Result<i32> {
             if peer.connected { " (online)" } else { "" }
         );
     }
+    Ok(0)
+}
+
+/// Create an invite ticket, printed alone on its line so it can be piped.
+///
+/// The running bridge composes it: the ticket names the address a joiner must dial, and only
+/// the bridge holds the bound endpoint. Asking must not start a bridge, so a host with none
+/// running is reported, not started.
+async fn device_invite(
+    version: &str,
+    name: String,
+    ttl: Option<u64>,
+    workgroup: Option<String>,
+) -> Result<i32> {
+    let Some(client) = connect(version).await? else {
+        println!("no bridge is running");
+        return Ok(1);
+    };
+    let invite = client
+        .invite(InviteParams {
+            name,
+            ttl,
+            workgroup,
+        })
+        .await
+        .map_err(Error::Ipc)?;
+    // The ticket on its own line, and nothing else on that line: this is the one output a
+    // user is meant to pipe into the joining device.
+    println!("{}", invite.ticket);
+    Ok(0)
+}
+
+/// Join the workgroup a ticket names.
+///
+/// The running bridge does the pairing: it holds the endpoint the exchange runs over, and it
+/// is the process that must go on to serve the workgroup this host is joining. Asking must
+/// not start a bridge, so a host with none running is reported, not started.
+async fn workgroup_join(version: &str, ticket: String, device_name: Option<String>) -> Result<i32> {
+    let Some(client) = connect(version).await? else {
+        println!("no bridge is running");
+        return Ok(1);
+    };
+    let joined = client
+        .join(JoinParams {
+            ticket,
+            device_name,
+        })
+        .await
+        .map_err(Error::Ipc)?;
+    println!(
+        "joined workgroup {} ({}); this device is {}",
+        joined.workgroup_name, joined.workgroup_id, joined.device_id
+    );
     Ok(0)
 }
 
@@ -359,7 +432,9 @@ mod tests {
     }
 
     #[test]
-    fn pairing_is_not_here_yet() {
+    fn there_is_no_separate_pair_command() {
+        // Pairing is `device invite` and `workgroup join`; a `pair` tree would be a second
+        // spelling of the same two commands.
         assert!(Probe::try_parse_from(["b", "pair", "create"]).is_err());
     }
 
@@ -371,5 +446,92 @@ mod tests {
         let code = BridgeCommand::Status.dispatch("0.0.0").await.unwrap();
         unsafe { std::env::remove_var("SAPPHIRE_RUNTIME_DIR") };
         assert_eq!(code, 1);
+    }
+}
+
+#[cfg(test)]
+mod pairing_cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        command: BridgeCommand,
+    }
+
+    #[test]
+    fn the_pairing_subcommands_parse() {
+        for args in [
+            vec!["b", "device", "invite", "--name", "phone"],
+            vec!["b", "device", "invite", "--name", "phone", "--ttl", "300"],
+            vec!["b", "workgroup", "join", "sapphire:ABCDEF"],
+            vec![
+                "b",
+                "workgroup",
+                "join",
+                "sapphire:ABCDEF",
+                "--device-name",
+                "phone",
+            ],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn an_invite_needs_a_name() {
+        assert!(Probe::try_parse_from(["b", "device", "invite"]).is_err());
+    }
+
+    #[test]
+    fn a_join_needs_a_ticket() {
+        assert!(Probe::try_parse_from(["b", "workgroup", "join"]).is_err());
+    }
+
+    #[test]
+    fn mapping_a_workspace_is_still_not_a_bridge_command() {
+        // Placing a workspace on this host is the owning application's business.
+        assert!(Probe::try_parse_from(["b", "workspace", "map", "notes", "/tmp/x"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn joining_without_a_running_bridge_says_so_rather_than_starting_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: the test binary sets these before any other thread reads them.
+        unsafe {
+            std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp.path());
+            std::env::set_var(crate::dir::BRIDGE_DIR_ENV, tmp.path().join("bridge"));
+        }
+        let result = BridgeCommand::Workgroup(WorkgroupCommand::Join {
+            ticket: "sapphire:ABCDEF".into(),
+            device_name: Some("phone".into()),
+        })
+        .dispatch("0.0.0")
+        .await;
+        unsafe {
+            std::env::remove_var("SAPPHIRE_RUNTIME_DIR");
+            std::env::remove_var(crate::dir::BRIDGE_DIR_ENV);
+        }
+
+        match result {
+            Ok(code) => assert_eq!(code, 1, "a missing bridge is a non-zero exit, not a panic"),
+            Err(err) => assert!(
+                !err.to_string().contains("panic"),
+                "it must fail with a message, not a panic: {err}"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_ttl_is_read_as_seconds() {
+        let parsed =
+            Probe::try_parse_from(["b", "device", "invite", "--name", "p", "--ttl", "90"]).unwrap();
+        match parsed.command {
+            BridgeCommand::Device(DeviceCommand::Invite { ttl, .. }) => {
+                assert_eq!(ttl, Some(90));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

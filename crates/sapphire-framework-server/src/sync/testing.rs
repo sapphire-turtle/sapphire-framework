@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
     Ack, BridgeClient, GrainId, IncomingParams, PeersResult, RegisterParams, RegisterResult,
-    StatusResult, UnregisterParams,
+    StatusResult, UnregisterParams, WORKSPACES, WorkgroupWorkspaceInfo, WorkspacesResult,
 };
 use sapphire_ipc::{ClientInfo, Connection, ManagedBy, Router, ServerInfo, serve};
 
@@ -26,6 +26,8 @@ pub struct StubBridge {
     pub device_id: GrainId,
     /// The workgroup id it answers registrations with.
     pub workgroup_id: GrainId,
+    /// The workspaces it answers `bridge.workspaces` with.
+    pub listed: Arc<Mutex<Vec<WorkgroupWorkspaceInfo>>>,
     /// How many `bridge.peers` it has been asked for.
     ///
     /// Dials and status reports both ask; a test that watches this grow after touching a
@@ -41,6 +43,7 @@ impl StubBridge {
         let device_id = GrainId::random();
         let workgroup_id = GrainId::random();
         let peers_queries = Arc::new(AtomicUsize::new(0));
+        let listed = Arc::new(Mutex::new(Vec::new()));
 
         let (client_conn, server_conn) = Connection::pair();
         let announcer = server_conn.sender();
@@ -95,6 +98,18 @@ impl StubBridge {
                         }
                     }
                 })
+                .method(WORKSPACES, {
+                    let listed = Arc::clone(&listed);
+                    move |_| {
+                        let listed = Arc::clone(&listed);
+                        async move {
+                            serde_json::to_value(WorkspacesResult {
+                                workspaces: listed.lock().expect("stub").clone(),
+                            })
+                            .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
+                        }
+                    }
+                })
                 .method(sapphire_bridge_api::STATUS, |_| async move {
                     serde_json::to_value(StatusResult {
                         version: "stub".into(),
@@ -131,6 +146,7 @@ impl StubBridge {
         (
             StubBridge {
                 seen,
+                listed,
                 device_id,
                 workgroup_id,
                 peers_queries,
@@ -161,6 +177,11 @@ impl StubBridge {
     /// How many `bridge.peers` calls it has answered.
     pub fn peers_queries(&self) -> usize {
         self.peers_queries.load(Ordering::Relaxed)
+    }
+
+    /// Publish `info` as a workspace the workgroup knows about.
+    pub fn list(&self, info: WorkgroupWorkspaceInfo) {
+        self.listed.lock().expect("stub").push(info);
     }
 
     /// The last registration's workspace list.

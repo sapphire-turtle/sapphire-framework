@@ -6,8 +6,10 @@ use sapphire_ipc::{Client, ClientInfo, Endpoint, SpawnConfig, ensure_server};
 use tokio::sync::broadcast;
 
 use crate::{
-    Ack, BRIDGE_DATA_NAME, BRIDGE_NAME, DataHeader, GrainId, IncomingParams, PEERS, PeersResult,
-    REGISTER, RegisterParams, RegisterResult, STATUS, StatusResult, UNREGISTER, UnregisterParams,
+    Ack, BRIDGE_DATA_NAME, BRIDGE_NAME, DataHeader, GrainId, INVITE, IncomingParams, InviteParams,
+    InviteResult, JOIN, JoinParams, JoinResult, PEERS, PeersResult, REGISTER, RegisterParams,
+    RegisterResult, STATUS, StatusResult, UNREGISTER, UnregisterParams, WORKSPACES,
+    WorkspacesResult,
 };
 
 /// How many pending incoming announcements a subscriber may fall behind by.
@@ -92,6 +94,24 @@ impl BridgeClient {
     /// What the bridge knows about itself.
     pub async fn status(&self) -> sapphire_ipc::Result<StatusResult> {
         self.client.call(STATUS, serde_json::json!({})).await
+    }
+
+    /// Ask the bridge to create an invite, and get the ticket back.
+    ///
+    /// The bridge composes the ticket, because only the process holding the endpoint knows
+    /// the address a joiner must dial.
+    pub async fn invite(&self, params: InviteParams) -> sapphire_ipc::Result<InviteResult> {
+        self.client.call(INVITE, params).await
+    }
+
+    /// Ask the bridge to join the workgroup a ticket names.
+    pub async fn join(&self, params: JoinParams) -> sapphire_ipc::Result<JoinResult> {
+        self.client.call(JOIN, params).await
+    }
+
+    /// The workspaces the workgroup knows about.
+    pub async fn workspaces(&self) -> sapphire_ipc::Result<WorkspacesResult> {
+        self.client.call(WORKSPACES, serde_json::json!({})).await
     }
 
     /// Announcements that a peer wants a workspace this server owns.

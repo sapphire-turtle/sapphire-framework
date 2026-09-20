@@ -9,8 +9,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
-    Ack, BRIDGE_NAME, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams, RegisterResult,
-    RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams, WorkgroupStatus,
+    Ack, BRIDGE_NAME, INVITE, InviteParams, InviteResult, JOIN, JoinParams, JoinResult, PEERS,
+    PeerInfo, PeersResult, REGISTER, RegisterParams, RegisterResult, RouteStatus, STATUS,
+    StatusResult, UNREGISTER, UnregisterParams, WORKSPACES, WorkgroupStatus,
+    WorkgroupWorkspaceInfo, WorkspacesResult,
 };
 use sapphire_ipc::{
     Connection, Endpoint, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve,
@@ -19,6 +21,8 @@ use serde_json::Value;
 
 use crate::Bridge;
 use crate::error::{Error, Result};
+use crate::invite::{DEFAULT_TTL, Invites, Ticket};
+use crate::workgroup::Workgroup;
 
 // ── who is connected ────────────────────────────────────────────────────────
 
@@ -194,6 +198,27 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 async move { status(&bridge).map_err(failed).and_then(encode) }
             }
         })
+        .method(INVITE, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move { invite(&bridge, ctx).map_err(failed).and_then(encode) }
+            }
+        })
+        .method(JOIN, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move { join(&bridge, ctx).await.map_err(failed).and_then(encode) }
+            }
+        })
+        .method(WORKSPACES, {
+            let bridge = Arc::clone(&bridge);
+            move |_| {
+                let bridge = Arc::clone(&bridge);
+                async move { workspaces(&bridge).map_err(failed).and_then(encode) }
+            }
+        })
 }
 
 /// `bridge.register` — an app server announcing the workspaces it owns.
@@ -330,6 +355,105 @@ fn status(bridge: &Bridge) -> Result<StatusResult> {
         workgroup,
         routes,
     })
+}
+
+/// `bridge.invite` — create an invite, and hand back the ticket.
+///
+/// The bridge composes the ticket because the ticket names the address a joiner must dial,
+/// and only the process holding the bound endpoint knows it. Writing the invite is a local
+/// write to `invites.toml`: any process holding the lock may issue one, and the one that
+/// answers the pairing is not necessarily the one that created it.
+fn invite(bridge: &Bridge, ctx: RequestCtx) -> Result<InviteResult> {
+    let params: InviteParams = serde_json::from_value(ctx.params)
+        .map_err(|e| Error::Config(format!("malformed invite: {e}")))?;
+
+    let workgroup = bridge.workgroup()?.ok_or(Error::NoWorkgroup)?;
+    if let Some(selector) = &params.workgroup {
+        // One workgroup per host in this release, and the selector rule is name-first, the
+        // same one workspaces use (spec §3.5).
+        if selector != &workgroup.name && selector != &workgroup.id.to_string() {
+            return Err(Error::Config(format!(
+                "this host's workgroup is {} ({}), not {selector}",
+                workgroup.name, workgroup.id
+            )));
+        }
+    }
+
+    let ttl = params
+        .ttl
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(DEFAULT_TTL);
+    let (invite, secret) =
+        Invites::load(&bridge.dir.root.join("invites.toml"))?.create(&params.name, ttl)?;
+    let ticket = Ticket {
+        workgroup_id: workgroup.id,
+        node_addr: bridge.transport().ticket_addr()?,
+        secret,
+        expires_at: invite.expires_at,
+    };
+    Ok(InviteResult {
+        ticket: ticket.encode(),
+    })
+}
+
+/// `bridge.join` — join the workgroup a ticket names, as this device.
+///
+/// The running bridge does the dialing, because it holds the endpoint the pairing runs over
+/// and because it is the process that must go on to serve the new workgroup. A join replaces
+/// this host's workgroup directory, so the workgroup's own replica is re-opened afterwards:
+/// the one the bridge was serving belonged to a workgroup this host no longer is.
+async fn join(bridge: &Bridge, ctx: RequestCtx) -> Result<JoinResult> {
+    let params: JoinParams = serde_json::from_value(ctx.params)
+        .map_err(|e| Error::Config(format!("malformed join: {e}")))?;
+    let ticket = Ticket::decode(&params.ticket)?;
+    let device_name = params.device_name.unwrap_or_else(host_name);
+
+    // `Workgroup::join` refuses when a workgroup already exists; this reports the same fact
+    // without dialing, so the user gets the answer before any network work.
+    let workgroup = Workgroup::join(&bridge.dir, &ticket, &device_name, bridge.transport()).await?;
+    let result = JoinResult {
+        workgroup_id: workgroup.id,
+        workgroup_name: workgroup.name.clone(),
+        device_id: workgroup.this_device(&bridge.transport().node_id())?.id,
+    };
+
+    // Only now does the bridge serve it: a join that failed above must not leave a route or
+    // replica naming a workgroup this host never joined.
+    bridge.refresh_workgroup()?;
+    Ok(result)
+}
+
+/// `bridge.workspaces` — what the workgroup holds.
+///
+/// The bridge is the app server of the workgroup's own workspace, so this is the list it
+/// already keeps; it is read-only, per spec §1.
+fn workspaces(bridge: &Bridge) -> Result<WorkspacesResult> {
+    let workgroup = bridge.workgroup()?.ok_or(Error::NoWorkgroup)?;
+    let workspaces = workgroup
+        .workspaces()?
+        .into_iter()
+        .map(|w| WorkgroupWorkspaceInfo {
+            workspace_id: w.workspace_id,
+            app_name: w.app_name,
+            name: w.name,
+        })
+        .collect();
+    Ok(WorkspacesResult { workspaces })
+}
+
+/// This host's name, for a device record that was not given one.
+///
+/// There is no portable API for it, so this reads what the shell and Windows both export and
+/// falls back to a fixed name rather than failing a join over a cosmetic default.
+fn host_name() -> String {
+    for var in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(name) = std::env::var(var)
+            && !name.is_empty()
+        {
+            return name;
+        }
+    }
+    "device".to_owned()
 }
 
 /// Serialise a handler's answer.

@@ -313,12 +313,15 @@ impl Bridge {
 
     /// Pick up a workgroup this bridge did not know about when it started.
     ///
-    /// A test-util seam: the fixture that makes two hosts one workgroup does so after both
-    /// bridges run, and a restarted process would learn it at [`Bridge::run`]. Records the
-    /// workgroup's own route and re-opens its replica. A replica already open is replaced:
-    /// the workgroup it was opened against may be gone — a join replaces the directory
-    /// wholesale — and its store with it.
-    #[cfg(any(test, feature = "test-util"))]
+    /// Pick up a workgroup this bridge did not know about, or one whose directory changed
+    /// under it.
+    ///
+    /// Records the workgroup's own route and re-opens its replica. A replica already open is
+    /// replaced: the workgroup it was opened against may be gone — a join replaces the
+    /// directory wholesale — and its store with it. A running bridge calls this after it
+    /// joins, so it serves the new workgroup without a restart; a fixture calls it after
+    /// making two hosts one workgroup, which is what a restarted process would learn at
+    /// [`Bridge::run`].
     pub fn refresh_workgroup(&self) -> Result<()> {
         let Some(workgroup) = self.workgroup()? else {
             return Ok(());

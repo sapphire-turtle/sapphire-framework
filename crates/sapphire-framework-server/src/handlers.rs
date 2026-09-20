@@ -24,6 +24,8 @@ pub(crate) fn rpc_error(err: &Error) -> RpcError {
     let caller_error = matches!(
         err,
         Error::UnknownWorkspace(..)
+            | Error::UnknownWorkspaceName(..)
+            | Error::WrongApp { .. }
             | Error::SyncId(..)
             | Error::Workspace(
                 WsError::PathEscapesWorkspace { .. }

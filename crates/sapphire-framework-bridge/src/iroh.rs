@@ -259,6 +259,20 @@ impl PeerTransport for IrohTransport {
     fn node_id(&self) -> String {
         self.node_id.clone()
     }
+
+    fn ticket_addr(&self) -> Result<Vec<u8>> {
+        // The whole `EndpointAddr`, not just the id: a ticket that named no address would
+        // send the joiner to a discovery service it may not have (relays and discovery are
+        // both configurable off), and pairing must work on a host with neither.
+        let addr = self.endpoint.addr();
+        if addr.is_empty() {
+            return Err(Error::Peer(
+                "this endpoint has no address to put in a ticket yet".to_owned(),
+            ));
+        }
+        postcard::to_stdvec(&addr)
+            .map_err(|e| Error::Peer(format!("could not encode this host's address: {e}")))
+    }
 }
 
 /// Read the request line, leaving the stream positioned at the first byte of the payload.

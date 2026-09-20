@@ -9,6 +9,12 @@ use crate::error::{Error, Result};
 /// The file inside the marker directory that names the workspace.
 pub const SYNC_ID_FILE: &str = "sync-id";
 
+/// The file inside the marker directory that holds where the workspace lives.
+///
+/// The server cannot ask the bridge to name a directory — its control plane has no such
+/// method — so the application writes the path here, and `sync.map` reads it.
+pub const WORKSPACE_MAP_FILE: &str = "sync.map";
+
 /// `<root>/.<app_name>/sync-id`.
 pub fn sync_id_path(app_name: &str, root: &Path) -> PathBuf {
     root.join(format!(".{app_name}")).join(SYNC_ID_FILE)

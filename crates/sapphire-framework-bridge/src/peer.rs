@@ -78,9 +78,12 @@ pub trait PeerTransport: Send + Sync + 'static {
     /// Wait for an inbound workspace stream. Returns the caller's node id, what it asked
     /// for, and the stream.
     ///
-    /// The old shape of [`PeerTransport::accept`], kept for callers that know only the
-    /// workspace path. A pairing stream arriving meanwhile is left for a later `accept`:
-    /// refusing it here would hang up on an invite the bridge has every reason to answer.
+    /// The old shape of [`PeerTransport::accept`], for callers that only speak the
+    /// workspace protocol. A pairing attempt arriving meanwhile is hung up on, deliberately:
+    /// a caller of this shape has said it cannot answer one, and holding the stream open
+    /// while never reading it would leave the joiner waiting on a reply that is not coming.
+    /// The bridge itself uses [`PeerTransport::accept`] and routes pairing connections to
+    /// the invite flow.
     async fn accept_workspace(&self) -> Result<(String, GrainId, BoxedStream)> {
         loop {
             match self.accept().await? {
@@ -319,6 +322,50 @@ mod tests {
         let a = net.transport("node-a");
         let err = expect_err(a.open("node-nowhere", GrainId::random()).await);
         assert!(err.to_string().contains("node-nowhere"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_pairing_open_arrives_as_a_pairing_stream() {
+        let net = LoopbackNetwork::new();
+        let a = net.transport("node-a");
+        let b = net.transport("node-b");
+
+        let accept = tokio::spawn(async move { b.accept().await });
+        let mut opened = a.open_pairing(b"node-b").await.unwrap();
+
+        let (from, mut accepted) = match accept.await.unwrap().unwrap() {
+            Inbound::Pairing(from, stream) => (from, stream),
+            Inbound::Workspace(..) => panic!("a pairing open arrived as a workspace stream"),
+        };
+        assert_eq!(from, "node-a");
+
+        opened.write_all(b"pair").await.unwrap();
+        let mut buf = [0u8; 4];
+        accepted.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"pair");
+    }
+
+    #[tokio::test]
+    async fn a_pairing_attempt_meeting_a_workspace_only_listener_is_hung_up_on() {
+        // `accept_workspace` drops pairing streams: a caller of that shape cannot answer
+        // them, and leaving the joiner hanging on an unread stream would be worse than a
+        // clean close it can retry after.
+        let net = LoopbackNetwork::new();
+        let a = net.transport("node-a");
+        let b = net.transport("node-b");
+        let ws = GrainId::random();
+
+        let accept = tokio::spawn(async move { b.accept_workspace().await });
+        let mut pairing = a.open_pairing(b"node-b").await.unwrap();
+        let _opened = a.open("node-b", ws).await.unwrap();
+
+        let (from, asked, mut accepted) = accept.await.unwrap().unwrap();
+        assert_eq!(from, "node-a");
+        assert_eq!(asked, ws);
+
+        // The pairing half was dropped on the far side, so the joiner's write fails.
+        pairing.write_all(b"pair").await.unwrap_err();
+        assert!(matches!(accepted.write_all(b"ok").await, Ok(())));
     }
 
     #[tokio::test]

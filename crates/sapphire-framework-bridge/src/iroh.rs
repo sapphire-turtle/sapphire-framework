@@ -19,7 +19,8 @@ use ::iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, Transport
 
 use crate::error::{Error, Result};
 use crate::net::NetConfig;
-use crate::peer::{BoxedStream, PeerTransport, StreamRequest};
+use crate::pairing::PAIR_ALPN;
+use crate::peer::{BoxedStream, Inbound, PeerTransport, StreamRequest};
 
 /// How many bytes of the request line to accept before giving up.
 ///
@@ -60,9 +61,13 @@ impl IrohTransport {
 
         // `Minimal` rather than `N0`: it picks the crypto provider, and nothing else. Every
         // other thing `N0` turns on is what `net` is here to decide.
+        // Two protocols on one endpoint: the data plane and, on its own ALPN, pairing.
+        // They are listed together because iroh accepts per endpoint; which one a
+        // connection spoke is reported by `accept`, and the two are gated differently.
+        let alpns = vec![ALPN.to_vec(), PAIR_ALPN.to_vec()];
         let mut builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
-            .alpns(vec![ALPN.to_vec()])
+            .alpns(alpns)
             .address_lookup(known.clone());
         if net.discovery {
             builder = builder
@@ -158,7 +163,22 @@ impl PeerTransport for IrohTransport {
         Ok(Box::new(tokio::io::join(recv, send)))
     }
 
-    async fn accept(&self) -> Result<(String, GrainId, BoxedStream)> {
+    async fn open_pairing(&self, node_addr: &[u8]) -> Result<BoxedStream> {
+        let addr: ::iroh::EndpointAddr = postcard::from_bytes(node_addr)
+            .map_err(|e| Error::Peer(format!("the ticket's address is unreadable: {e}")))?;
+        let conn = self
+            .endpoint
+            .connect(addr, PAIR_ALPN)
+            .await
+            .map_err(|e| Error::Peer(format!("could not reach the inviter: {e}")))?;
+        let (send, recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| Error::Peer(format!("could not open a pairing stream: {e}")))?;
+        Ok(Box::new(tokio::io::join(recv, send)))
+    }
+
+    async fn accept(&self) -> Result<Inbound> {
         loop {
             let Some(incoming) = self.endpoint.accept().await else {
                 return Err(Error::Peer("the endpoint is closed".to_owned()));
@@ -166,10 +186,22 @@ impl PeerTransport for IrohTransport {
             // Any host on the network may send a packet here, so a failed handshake or a
             // stream that never arrives must not end the loop: it is one caller going away,
             // not this bridge stopping.
-            let accepting = match incoming.accept() {
+            let mut accepting = match incoming.accept() {
                 Ok(accepting) => accepting,
                 Err(err) => {
                     tracing::debug!("a peer could not be accepted: {err}");
+                    continue;
+                }
+            };
+            // Which ALPN the caller dialed decides what may arrive on the stream: a
+            // workspace request on the pairing ALPN, or a pairing exchange on the data
+            // ALPN, is a peer that is not speaking this protocol. Reading the ALPN first is
+            // also what keeps a pairing connection out of the code that reads a workspace
+            // request line.
+            let alpn = match accepting.alpn().await {
+                Ok(alpn) => alpn,
+                Err(err) => {
+                    tracing::debug!("a peer's protocol could not be read: {err}");
                     continue;
                 }
             };
@@ -188,6 +220,15 @@ impl PeerTransport for IrohTransport {
                     continue;
                 }
             };
+            if alpn == PAIR_ALPN {
+                // The pairing gate is the invite secret, not the ledger, and the ledger
+                // lookup `authorize` runs would fail every joiner by definition. This is
+                // the one connection that arrives before membership exists.
+                return Ok(Inbound::Pairing(
+                    from.to_string(),
+                    Box::new(tokio::io::join(recv, send)),
+                ));
+            }
             let (request, recv) = match read_request(recv).await {
                 Ok(read) => read,
                 Err(err) => {
@@ -205,9 +246,11 @@ impl PeerTransport for IrohTransport {
                     "a peer's request named a different node id than the one that called"
                 );
             }
-            return Ok((
+            return Ok(Inbound::Workspace(
                 from.to_string(),
                 request.workspace_id,
+                // `read_request` split the request line off `recv`; put the halves back
+                // together for the caller, which sees one stream starting at the payload.
                 Box::new(tokio::io::join(recv, send)),
             ));
         }

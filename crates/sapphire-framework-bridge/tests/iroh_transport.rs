@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use grain_id::GrainId;
-use sapphire_framework_bridge::{IrohTransport, NetConfig, PeerTransport};
+use sapphire_framework_bridge::{Inbound, IrohTransport, NetConfig, PeerTransport};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Result::unwrap_err` wants the success type to be `Debug`, and a peer stream is not: it is
@@ -85,11 +85,15 @@ async fn two_endpoints_exchange_bytes() {
     let accept = tokio::spawn(async move { accepting.accept().await });
     let mut opened = a.open(&b_node_id, ws).await.unwrap();
 
-    let (from, asked, mut accepted) = tokio::time::timeout(Duration::from_secs(10), accept)
+    let inbound = tokio::time::timeout(Duration::from_secs(10), accept)
         .await
         .expect("the far side to accept")
         .unwrap()
         .unwrap();
+    let (from, asked, mut accepted) = match inbound {
+        Inbound::Workspace(from, asked, stream) => (from, asked, stream),
+        Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+    };
     assert_eq!(from, a_node_id, "the far side must learn who called");
     assert_eq!(asked, ws, "the far side must learn what was asked for");
 

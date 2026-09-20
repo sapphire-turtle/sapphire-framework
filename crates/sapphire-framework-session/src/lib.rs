@@ -14,7 +14,7 @@ mod message;
 mod session;
 
 pub use error::{Error, Result};
-pub use frame::{Frame, read_frame, write_blob, write_control};
+pub use frame::{Frame, read_frame, read_framed, write_blob, write_control, write_framed};
 pub use message::Message;
 pub use session::{SessionOutcome, run_session};
 

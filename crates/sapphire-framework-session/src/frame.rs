@@ -48,7 +48,12 @@ where
     write_framed(w, TAG_BLOB, &payload).await
 }
 
-async fn write_framed<W>(w: &mut W, tag: u8, payload: &[u8]) -> Result<()>
+/// Send one frame: `tag`, then a four-byte big-endian length, then `payload`.
+///
+/// Public so a protocol riding on the same framing — the pairing exchange — writes with
+/// it rather than growing a second copy of the format. The payload is bounded by
+/// [`MAX_FRAME_LEN`] and flushed before returning.
+pub async fn write_framed<W>(w: &mut W, tag: u8, payload: &[u8]) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
@@ -65,7 +70,9 @@ where
     Ok(())
 }
 
-/// Read one frame. `None` at a clean end of stream.
+/// Read one frame's tag and payload, dispatching on `tag` with `read_tagged`.
+///
+/// `None` at a clean end of stream.
 pub async fn read_frame<R>(r: &mut R) -> Result<Option<Frame>>
 where
     R: AsyncRead + Unpin,
@@ -104,6 +111,34 @@ where
         }
         other => Err(Error::Protocol(format!("unknown frame tag {other}"))),
     }
+}
+
+/// Read one tagged frame's payload. `None` at a clean end of stream.
+///
+/// The caller decides what a tag means and what type the payload decodes to; this is
+/// the half of [`write_framed`] a protocol other than the session needs. Reading is
+/// bounded by [`MAX_FRAME_LEN`], so a peer that announces more than that is refused
+/// before anything is allocated.
+pub async fn read_framed<R>(r: &mut R) -> Result<Option<(u8, Vec<u8>)>>
+where
+    R: AsyncRead + Unpin,
+{
+    let tag = match r.read_u8().await {
+        Ok(tag) => tag,
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let len = r.read_u32().await? as usize;
+    // Check before allocating: a peer that announces 4 GiB must not make us try.
+    if len > MAX_FRAME_LEN {
+        return Err(Error::FrameTooLarge {
+            len,
+            max: MAX_FRAME_LEN,
+        });
+    }
+    let mut payload = vec![0u8; len];
+    r.read_exact(&mut payload).await?;
+    Ok(Some((tag, payload)))
 }
 
 #[cfg(test)]
@@ -203,6 +238,41 @@ mod tests {
 
         let mut cursor = std::io::Cursor::new(buf);
         assert!(read_frame(&mut cursor).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_raw_frame_round_trips_through_the_public_pair() {
+        let mut buf: Vec<u8> = Vec::new();
+        write_framed(&mut buf, 9, b"payload").await.unwrap();
+
+        let mut cursor = std::io::Cursor::new(buf);
+        assert_eq!(
+            read_framed(&mut cursor).await.unwrap(),
+            Some((9u8, b"payload".to_vec()))
+        );
+        // And a clean end of stream is `None`, as for `read_frame`.
+        assert!(read_framed(&mut cursor).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_raw_frame_that_is_too_large_to_write_is_refused() {
+        let mut buf: Vec<u8> = Vec::new();
+        let err = write_framed(&mut buf, 9, &vec![0u8; MAX_FRAME_LEN + 1])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::FrameTooLarge { .. }), "got {err:?}");
+        assert!(buf.is_empty(), "nothing must be written: {buf:?}");
+    }
+
+    #[tokio::test]
+    async fn a_raw_frame_that_announces_too_much_is_refused_before_allocating() {
+        let mut buf = vec![9u8];
+        buf.extend_from_slice(&((MAX_FRAME_LEN + 1) as u32).to_be_bytes());
+        let mut cursor = std::io::Cursor::new(buf);
+        assert!(matches!(
+            read_framed(&mut cursor).await.unwrap_err(),
+            Error::FrameTooLarge { .. }
+        ));
     }
 
     #[tokio::test]

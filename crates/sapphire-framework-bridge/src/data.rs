@@ -16,7 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::Bridge;
 use crate::error::{Error, Result};
 use crate::net::NetConfig;
-use crate::peer::BoxedStream;
+use crate::peer::{BoxedStream, Inbound};
 use crate::routes::Route;
 use crate::wgsync;
 
@@ -303,7 +303,19 @@ fn wake(route: &Route) -> std::io::Result<()> {
 /// owner.
 pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
     loop {
-        let (peer_node_id, workspace_id, stream) = bridge.transport().accept().await?;
+        let (peer_node_id, workspace_id, stream) = match bridge.transport().accept().await? {
+            // The pairing gate is the invite secret, and that gate lives in
+            // [`pairing::admit`], which is driven by the invite flow, not by this loop: a
+            // pairing connection is somebody holding a ticket, who is by definition not a
+            // member yet. Dropping it here would hang up on the very thing the ledger has
+            // no way to answer, so leave it for the invite flow to pick up.
+            Inbound::Pairing(from, stream) => {
+                drop(stream);
+                tracing::debug!(peer = %from, "a pairing attempt arrived on the data loop");
+                continue;
+            }
+            Inbound::Workspace(from, workspace_id, stream) => (from, workspace_id, stream),
+        };
 
         // 1. Authorize before anything else knows a stranger called.
         //

@@ -18,6 +18,7 @@ mod invite;
 #[cfg(feature = "node")]
 mod iroh;
 mod net;
+mod pairing;
 mod peer;
 mod routes;
 #[cfg(any(test, feature = "test-util"))]
@@ -39,7 +40,8 @@ pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
 #[cfg(feature = "node")]
 pub use iroh::{IrohTransport, NodeAddr};
 pub use net::NetConfig;
-pub use peer::{BoxedStream, PeerStream, PeerTransport, StreamRequest};
+pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
+pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
 #[cfg(any(test, feature = "test-util"))]
 pub use peer::{LoopbackNetwork, LoopbackTransport};
 pub use routes::{Route, RouteTable};

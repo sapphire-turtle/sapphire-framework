@@ -41,18 +41,56 @@ pub struct StreamRequest {
     pub node_id: String,
 }
 
+/// Which protocol an inbound stream arrived to speak.
+pub enum Inbound {
+    /// A workspace stream: the caller's node id, what it asked for, and the stream. The
+    /// ordinary path — authorized with the device ledger before anything is served.
+    Workspace(String, GrainId, BoxedStream),
+    /// A pairing stream, on its own ALPN: the caller's node id and the stream. The only
+    /// connection that arrives **before** membership exists, so it is gated by the invite
+    /// secret instead of by the ledger; see [`crate::pairing`].
+    Pairing(String, BoxedStream),
+}
+
 /// Reaching other devices.
 #[async_trait::async_trait]
 pub trait PeerTransport: Send + Sync + 'static {
     /// Open a stream to `node_id` asking for `workspace_id`.
     async fn open(&self, node_id: &str, workspace_id: GrainId) -> Result<BoxedStream>;
 
-    /// Wait for an inbound stream. Returns the caller's node id, what it asked for, and the
-    /// stream.
+    /// Open a stream to `node_addr` speaking the pairing protocol.
     ///
-    /// Authorization is the bridge's, not the transport's: a transport reports who called,
-    /// and the bridge decides.
-    async fn accept(&self) -> Result<(String, GrainId, BoxedStream)>;
+    /// `node_addr` is whatever the ticket's `node_addr` field carries — on iroh, the bytes
+    /// of an iroh `NodeAddr`. Taking bytes rather than a typed address is what keeps this
+    /// interface free of any one transport's types: a loopback test writes its node id
+    /// there and gets a stream to the transport of that name.
+    async fn open_pairing(&self, node_addr: &[u8]) -> Result<BoxedStream>;
+
+    /// Wait for an inbound stream, reporting which protocol it arrived to speak.
+    ///
+    /// A transport reports who called and what they want; the bridge decides what that is
+    /// worth. A pairing stream is answered by [`admit`](crate::pairing::admit), which
+    /// skips [`Workgroup::authorize`] — deliberately, and only there: the joiner is not a
+    /// member yet, so membership is the one test it cannot pass. Everything else is the
+    /// ordinary authorized path.
+    async fn accept(&self) -> Result<Inbound>;
+
+    /// Wait for an inbound workspace stream. Returns the caller's node id, what it asked
+    /// for, and the stream.
+    ///
+    /// The old shape of [`PeerTransport::accept`], kept for callers that know only the
+    /// workspace path. A pairing stream arriving meanwhile is left for a later `accept`:
+    /// refusing it here would hang up on an invite the bridge has every reason to answer.
+    async fn accept_workspace(&self) -> Result<(String, GrainId, BoxedStream)> {
+        loop {
+            match self.accept().await? {
+                Inbound::Workspace(from, workspace_id, stream) => {
+                    return Ok((from, workspace_id, stream));
+                }
+                Inbound::Pairing(_, stream) => drop(stream),
+            }
+        }
+    }
 
     /// This host's node id.
     fn node_id(&self) -> String;
@@ -81,11 +119,17 @@ const LOOPBACK_BUFFER: usize = 64 * 1024;
 #[cfg(any(test, feature = "test-util"))]
 type Inbox = mpsc::UnboundedSender<(String, GrainId, tokio::io::DuplexStream)>;
 
+/// The pairing half of a loopback node's inbox.
+#[cfg(any(test, feature = "test-util"))]
+type PairingInbox = mpsc::UnboundedSender<(String, tokio::io::DuplexStream)>;
+
 /// A set of transports that can reach each other, with no network.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug, Default)]
 pub struct LoopbackNetwork {
     nodes: Arc<Mutex<HashMap<String, Inbox>>>,
+    /// The pairing protocol has its own channel per node, as iroh has its own ALPN.
+    pairing: Arc<Mutex<HashMap<String, PairingInbox>>>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -98,14 +142,21 @@ impl LoopbackNetwork {
     /// A transport for `node_id`, registered on this network.
     pub fn transport(&self, node_id: &str) -> LoopbackTransport {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (pairing_tx, pairing_rx) = mpsc::unbounded_channel();
         self.nodes
             .lock()
             .expect("loopback network")
             .insert(node_id.to_owned(), tx);
+        self.pairing
+            .lock()
+            .expect("loopback network")
+            .insert(node_id.to_owned(), pairing_tx);
         LoopbackTransport {
             node_id: node_id.to_owned(),
             nodes: Arc::clone(&self.nodes),
             inbox: tokio::sync::Mutex::new(rx),
+            pairing_nodes: Arc::clone(&self.pairing),
+            pairing_inbox: tokio::sync::Mutex::new(pairing_rx),
         }
     }
 }
@@ -117,6 +168,8 @@ pub struct LoopbackTransport {
     node_id: String,
     nodes: Arc<Mutex<HashMap<String, Inbox>>>,
     inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
+    pairing_nodes: Arc<Mutex<HashMap<String, PairingInbox>>>,
+    pairing_inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -142,11 +195,37 @@ impl PeerTransport for LoopbackTransport {
         Ok(Box::new(mine))
     }
 
-    async fn accept(&self) -> Result<(String, GrainId, BoxedStream)> {
-        let mut inbox = self.inbox.lock().await;
-        match inbox.recv().await {
-            Some((from, ws, stream)) => Ok((from, ws, Box::new(stream))),
-            None => Err(Error::Peer("the loopback network is gone".to_owned())),
+    async fn open_pairing(&self, node_addr: &[u8]) -> Result<BoxedStream> {
+        let node = std::str::from_utf8(node_addr)
+            .map_err(|_| Error::Peer("the ticket's address is not a node id".to_owned()))?;
+        let inbox = {
+            self.pairing_nodes
+                .lock()
+                .expect("loopback network")
+                .get(node)
+                .cloned()
+        };
+        let Some(inbox) = inbox else {
+            return Err(Error::Peer(format!(
+                "no such node on the loopback network: {node}"
+            )));
+        };
+        if inbox.is_closed() {
+            return Err(Error::Peer(format!("{node} is no longer listening")));
+        }
+        let (mine, theirs) = tokio::io::duplex(LOOPBACK_BUFFER);
+        inbox
+            .send((self.node_id.clone(), theirs))
+            .map_err(|_| Error::Peer(format!("{node} is no longer listening")))?;
+        Ok(Box::new(mine))
+    }
+
+    async fn accept(&self) -> Result<Inbound> {
+        // One `select` over both inboxes is what "the same endpoint with a second ALPN"
+        // means here: either kind of caller is answered, whichever dials first.
+        tokio::select! {
+            item = next_workspace(&self.inbox) => item,
+            item = next_pairing(&self.pairing_inbox) => item,
         }
     }
 
@@ -162,6 +241,30 @@ impl PeerTransport for LoopbackTransport {
             .expect("loopback network")
             .get(node_id)
             .is_some_and(|inbox| !inbox.is_closed())
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+/// The next workspace stream, if the workspace inbox has one.
+async fn next_workspace(
+    inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
+) -> Result<Inbound> {
+    let mut inbox = inbox.lock().await;
+    match inbox.recv().await {
+        Some((from, ws, stream)) => Ok(Inbound::Workspace(from, ws, Box::new(stream))),
+        None => Err(Error::Peer("the loopback network is gone".to_owned())),
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+/// The next pairing attempt, from the pairing inbox.
+async fn next_pairing(
+    inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
+) -> Result<Inbound> {
+    let mut inbox = inbox.lock().await;
+    match inbox.recv().await {
+        Some((from, stream)) => Ok(Inbound::Pairing(from, Box::new(stream))),
+        None => Err(Error::Peer("the loopback network is gone".to_owned())),
     }
 }
 
@@ -191,7 +294,11 @@ mod tests {
         let accept = tokio::spawn(async move { b.accept().await });
         let mut opened = a.open("node-b", ws).await.unwrap();
 
-        let (from, asked, mut accepted) = accept.await.unwrap().unwrap();
+        let accepted = match accept.await.unwrap().unwrap() {
+            Inbound::Workspace(from, asked, stream) => (from, asked, stream),
+            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+        };
+        let (from, asked, mut accepted) = accepted;
         assert_eq!(from, "node-a");
         assert_eq!(asked, ws);
 
@@ -228,7 +335,10 @@ mod tests {
 
         let accept = tokio::spawn(async move { b.accept().await });
         let opened = a.open("node-b", GrainId::random()).await.unwrap();
-        let (_, _, mut accepted) = accept.await.unwrap().unwrap();
+        let mut accepted = match accept.await.unwrap().unwrap() {
+            Inbound::Workspace(_, _, stream) => stream,
+            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+        };
 
         drop(opened);
         let mut buf = [0u8; 1];
@@ -258,7 +368,10 @@ mod tests {
             async fn open(&self, _: &str, _: GrainId) -> Result<BoxedStream> {
                 Err(Error::Peer("no".to_owned()))
             }
-            async fn accept(&self) -> Result<(String, GrainId, BoxedStream)> {
+            async fn open_pairing(&self, _: &[u8]) -> Result<BoxedStream> {
+                Err(Error::Peer("no".to_owned()))
+            }
+            async fn accept(&self) -> Result<Inbound> {
                 Err(Error::Peer("no".to_owned()))
             }
             fn node_id(&self) -> String {

@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use grain_id::GrainId;
 use sapphire_bridge_api::{BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration};
-use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig, Workgroup};
+use sapphire_framework_bridge::{
+    Bridge, BridgeDir, LoopbackNetwork, NetConfig, Workgroup, adopt_workgroup,
+};
 use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig};
 
 /// The node id of the first host: 64 lowercase hex digits, as the ledger wants them.
@@ -43,6 +45,10 @@ pub struct Host {
     pub runtime: PathBuf,
     /// The workgroup this host joined.
     pub workgroup_id: GrainId,
+    /// This host's node id, for fixtures that name it on the network.
+    pub node_id: String,
+    /// The bridge this host runs, for fixtures that drive it directly.
+    bridge: std::sync::Arc<sapphire_framework_bridge::Bridge>,
     /// How to start this host's stub app server.
     app_server: AppServer,
     /// The app server's control connection, while it is connected.
@@ -64,6 +70,11 @@ impl Host {
                 root: "/workspace".into(),
             }],
         }
+    }
+
+    /// The bridge this host runs.
+    pub fn bridge(&self) -> std::sync::Arc<sapphire_framework_bridge::Bridge> {
+        Arc::clone(&self.bridge)
     }
 
     /// Hold on to an app server's control connection.
@@ -124,13 +135,16 @@ pub async fn start_with_net(
 
     let control = Endpoint::in_dir("bridge", runtime.clone());
     let data = Endpoint::in_dir("bridge-data", runtime.clone());
-    let bridge = Bridge::new(dir.clone(), Arc::new(net.transport(node_id)), "0.0.0")
-        .unwrap()
-        .net(config)
-        .control_endpoint(control.clone())
-        .data_endpoint(data);
+    let bridge = Arc::new(
+        Bridge::new(dir.clone(), Arc::new(net.transport(node_id)), "0.0.0")
+            .unwrap()
+            .net(config.clone())
+            .control_endpoint(control.clone())
+            .data_endpoint(data),
+    );
+    let shared = Arc::clone(&bridge);
     tokio::spawn(async move {
-        let _ = bridge.run().await;
+        let _ = shared.run_shared(config).await;
     });
 
     // Wait for the control endpoint to come up.
@@ -149,6 +163,8 @@ pub async fn start_with_net(
         control,
         runtime,
         workgroup_id: wg.id,
+        node_id: node_id.to_owned(),
+        bridge: Arc::clone(&bridge),
         app_server: AppServer {
             exe_path,
             managed_by,
@@ -313,4 +329,32 @@ pub async fn disconnect_owner(host: &Host) {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+}
+
+/// Make the two hosts one workgroup, without a pairing.
+///
+/// `introduce` applied in both directions plus the `adopt_workgroup` of Task 1, so the two
+/// hosts share a workgroup id — exactly what a real join produces, minus the pairing. B's
+/// workgroup is re-pointed at A's id, the way a joiner's is; B's bridge is told, the way a
+/// restarted process would learn it.
+pub fn introduce_both(a: &Host, b: &Host) {
+    introduce(&a.dir, a.workgroup_id, "host-a", &b.dir, b.workgroup_id);
+    introduce(&b.dir, b.workgroup_id, "host-b", &a.dir, a.workgroup_id);
+    let wg_a = Workgroup::open(&BridgeDir::at(a.tmp.path().join("bridge")).unwrap())
+        .unwrap()
+        .expect("A's workgroup");
+    let dir_b = BridgeDir::at(b.tmp.path().join("bridge")).unwrap();
+    // `adopt_workgroup` replaces B's workgroup wholesale and re-opens it under A's id.
+    let adopted = adopt_workgroup(&dir_b, &wg_a).unwrap();
+    assert_eq!(adopted.id, wg_a.id);
+    b.bridge().refresh_workgroup().unwrap();
+}
+
+/// Replicate the workgroup's own workspace from `a` to `b`, once, the way a bridge with a
+/// change to share does on its own: A scans its workgroup root and dials B for the
+/// workgroup's own workspace; B's inbound loop authorizes A and serves the session with
+/// B's replica. Each replica belongs to its running bridge — a fixture must never open a
+/// second one against the same store.
+pub async fn sync_workgroup(a: &Host, b: &Host) {
+    a.bridge().sync_workgroup_now(&b.node_id).await.unwrap();
 }

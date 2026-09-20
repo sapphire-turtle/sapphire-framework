@@ -216,6 +216,26 @@ async fn register(
         )
         .map_err(failed)?;
 
+    // Each registered workspace is announced to the workgroup: enabling sync on one host
+    // makes the workspace visible to every other. `name` defaults to the root directory's
+    // file name, the name the user already calls it by.
+    if let Some(workgroup) = bridge.workgroup().map_err(failed)? {
+        for registration in &params.workspaces {
+            let name = registration
+                .root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| registration.workspace_id.to_string());
+            workgroup
+                .publish_workspace(&crate::workgroup::WorkgroupWorkspace {
+                    workspace_id: registration.workspace_id,
+                    app_name: params.app_name.clone(),
+                    name,
+                })
+                .map_err(failed)?;
+        }
+    }
+
     // From here on this connection speaks for this app, until it closes.
     bridge.owners().connect(&params.app_name, ctx.peer.clone());
     session.record(&params.app_name);

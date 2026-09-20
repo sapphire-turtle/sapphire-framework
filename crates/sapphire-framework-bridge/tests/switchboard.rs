@@ -4,7 +4,7 @@ mod common;
 
 use common::*;
 use sapphire_bridge_api::{ManagedBy, RegisterParams, WorkspaceRegistration};
-use sapphire_framework_bridge::LoopbackNetwork;
+use sapphire_framework_bridge::{BridgeDir, LoopbackNetwork, Workgroup};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Result::unwrap_err` wants the success type to be `Debug`, and a raw stream is not: it is
@@ -143,4 +143,85 @@ async fn an_app_server_that_registers_twice_replaces_its_own_routes() {
         "a registration is the app's complete current list"
     );
     assert_eq!(owned[0].workspace_id, second);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn registering_a_workspace_publishes_it_to_the_workgroup() {
+    let net = LoopbackNetwork::new();
+    let a = common::start(&net, common::NODE_A, "host-a").await;
+    let client = common::connect(&a).await;
+
+    let ws = grain_id::GrainId::random();
+    client
+        .register(RegisterParams {
+            app_name: "sapphire-journal".into(),
+            exe_path: "/bin/true".into(),
+            managed_by: ManagedBy::Service,
+            workspaces: vec![WorkspaceRegistration {
+                workspace_id: ws,
+                root: "/a/notes".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    let wg = Workgroup::open(&BridgeDir::at(a.tmp.path().join("bridge")).unwrap())
+        .unwrap()
+        .expect("a workgroup");
+    let listed = wg.workspaces().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].workspace_id, ws);
+    assert_eq!(listed[0].app_name, "sapphire-journal");
+    assert_eq!(
+        listed[0].name, "notes",
+        "the published name defaults to the root directory's name"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_workspace_the_other_host_published_appears_in_workspace_list() {
+    let net = LoopbackNetwork::new();
+    let a = common::start(&net, common::NODE_A, "host-a").await;
+    let b = common::start(&net, common::NODE_B, "host-b").await;
+    common::introduce_both(&a, &b);
+
+    // A publishes; the workgroup workspace replicates to B.
+    let client_a = common::connect(&a).await;
+    let ws = grain_id::GrainId::random();
+    client_a
+        .register(RegisterParams {
+            app_name: "sapphire-journal".into(),
+            exe_path: "/bin/true".into(),
+            managed_by: ManagedBy::Service,
+            workspaces: vec![WorkspaceRegistration {
+                workspace_id: ws,
+                root: "/a/notes".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    // A publishes; the workgroup workspace replicates to B — one session, the way the
+    // running bridges drive it.
+    common::sync_workgroup(&a, &b).await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let wg_b = Workgroup::open(&BridgeDir::at(b.tmp.path().join("bridge")).unwrap())
+            .unwrap()
+            .expect("a workgroup");
+        if wg_b
+            .workspaces()
+            .unwrap()
+            .iter()
+            .any(|w| w.workspace_id == ws)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B never learned about A's workspace"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }

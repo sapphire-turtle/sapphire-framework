@@ -34,6 +34,25 @@ pub struct Workgroup {
     devices_dir: PathBuf,
 }
 
+/// One workspace the workgroup knows about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkgroupWorkspace {
+    /// Its identity across devices. Carried by the file name, not repeated inside.
+    pub workspace_id: GrainId,
+    /// Which application owns it.
+    pub app_name: String,
+    /// A human-chosen name, used as a selector.
+    pub name: String,
+}
+
+/// The on-file form of a workspace entry. The id is the file name, so it is not a field
+/// here — the same convention as a device record.
+#[derive(Debug, Deserialize, Serialize)]
+struct RawWorkspace {
+    app_name: String,
+    name: String,
+}
+
 impl Workgroup {
     /// Create a workgroup and write this device's own record into it.
     ///
@@ -258,6 +277,70 @@ impl Workgroup {
             )));
         }
         Ok(device.clone())
+    }
+
+    /// The workgroup's workspace list directory, inside the synced root.
+    fn workspaces_dir(&self) -> PathBuf {
+        self.dir.join("root").join("workspaces")
+    }
+
+    /// Every workspace the workgroup knows about.
+    ///
+    /// One file per workspace under the synced root; the file name is the workspace's id,
+    /// and the file says which application owns it and what it is called. The list is
+    /// ordered by name, so a listing is stable across hosts whose directories enumerate
+    /// differently.
+    pub fn workspaces(&self) -> Result<Vec<WorkgroupWorkspace>> {
+        let dir = self.workspaces_dir();
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(stem) = name.strip_suffix(".toml") else {
+                continue;
+            };
+            let workspace_id: GrainId = stem.parse().map_err(|_| {
+                Error::Config(format!(
+                    "{}: the file name is not a grain-id",
+                    entry.path().display()
+                ))
+            })?;
+            let text = std::fs::read_to_string(entry.path())?;
+            let raw: RawWorkspace = toml::from_str(&text)
+                .map_err(|e| Error::Config(format!("{}: {e}", entry.path().display())))?;
+            out.push(WorkgroupWorkspace {
+                workspace_id,
+                app_name: raw.app_name,
+                name: raw.name,
+            });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+
+    /// Announce a workspace to the workgroup, or update its entry.
+    ///
+    /// One file per workspace, for the same reason as one file per device: two hosts
+    /// publishing at the same moment write different files instead of contending for one.
+    pub fn publish_workspace(&self, ws: &WorkgroupWorkspace) -> Result<()> {
+        let dir = self.workspaces_dir();
+        std::fs::create_dir_all(&dir)?;
+        let body = toml::to_string_pretty(&RawWorkspace {
+            app_name: ws.app_name.clone(),
+            name: ws.name.clone(),
+        })
+        .map_err(|e| Error::Config(e.to_string()))?;
+        crate::routes::write_atomic(
+            &dir.join(format!("{}.toml", ws.workspace_id)),
+            "# A workspace of this workgroup. The file name is its id.\n",
+            &body,
+        )
     }
 }
 
@@ -504,5 +587,126 @@ mod tests {
             !joiner_dir.workgroup_dir(wg.id).exists(),
             "no partial directory may remain"
         );
+    }
+}
+
+#[cfg(test)]
+mod workspace_list_tests {
+    use super::*;
+    use crate::dir::BridgeDir;
+
+    const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+    fn workgroup() -> (tempfile::TempDir, BridgeDir, Workgroup) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
+        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
+        (tmp, dir, wg)
+    }
+
+    fn entry(app: &str, name: &str) -> WorkgroupWorkspace {
+        WorkgroupWorkspace {
+            workspace_id: GrainId::random(),
+            app_name: app.to_owned(),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn publishing_writes_one_file_per_workspace() {
+        let (_tmp, _dir, wg) = workgroup();
+        let notes = entry("sapphire-journal", "notes");
+        let books = entry("sapphire-ledger", "books");
+        wg.publish_workspace(&notes).unwrap();
+        wg.publish_workspace(&books).unwrap();
+
+        let listing = wg.dir.join("root").join("workspaces");
+        let mut names: Vec<String> = std::fs::read_dir(&listing)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut want = vec![
+            format!("{}.toml", notes.workspace_id),
+            format!("{}.toml", books.workspace_id),
+        ];
+        want.sort();
+        assert_eq!(names, want);
+    }
+
+    #[test]
+    fn the_list_survives_a_reload() {
+        let (_tmp, dir, wg) = workgroup();
+        let notes = entry("sapphire-journal", "notes");
+        wg.publish_workspace(&notes).unwrap();
+
+        let reopened = Workgroup::open(&dir).unwrap().expect("the workgroup");
+        let listed = reopened.workspaces().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].workspace_id, notes.workspace_id);
+        assert_eq!(listed[0].app_name, "sapphire-journal");
+        assert_eq!(listed[0].name, "notes");
+    }
+
+    #[test]
+    fn publishing_the_same_workspace_twice_does_not_duplicate_it() {
+        let (_tmp, _dir, wg) = workgroup();
+        let notes = entry("sapphire-journal", "notes");
+        wg.publish_workspace(&notes).unwrap();
+        wg.publish_workspace(&notes).unwrap();
+
+        assert_eq!(wg.workspaces().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn republishing_with_a_new_name_updates_that_file_only() {
+        let (_tmp, _dir, wg) = workgroup();
+        let notes = entry("sapphire-journal", "notes");
+        let books = entry("sapphire-ledger", "books");
+        wg.publish_workspace(&notes).unwrap();
+        wg.publish_workspace(&books).unwrap();
+
+        let renamed = WorkgroupWorkspace {
+            name: "journal".into(),
+            ..notes.clone()
+        };
+        wg.publish_workspace(&renamed).unwrap();
+
+        let listed = wg.workspaces().unwrap();
+        assert_eq!(listed.len(), 2);
+        let found = listed
+            .iter()
+            .find(|w| w.workspace_id == notes.workspace_id)
+            .unwrap();
+        assert_eq!(found.name, "journal");
+        let other = listed
+            .iter()
+            .find(|w| w.workspace_id == books.workspace_id)
+            .unwrap();
+        assert_eq!(
+            other.name, "books",
+            "the other file must not have been touched"
+        );
+    }
+
+    #[test]
+    fn a_file_whose_name_is_not_a_grain_id_is_refused() {
+        let (_tmp, _dir, wg) = workgroup();
+        let listing = wg.dir.join("root").join("workspaces");
+        std::fs::create_dir_all(&listing).unwrap();
+        std::fs::write(
+            listing.join("not-an-id!.toml"),
+            "app_name = \"x\"\nname = \"y\"\n",
+        )
+        .unwrap();
+
+        let err = wg.workspaces().unwrap_err();
+        assert!(err.to_string().contains("not-an-id!"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_workgroup_lists_nothing() {
+        let (_tmp, _dir, wg) = workgroup();
+        assert!(wg.workspaces().unwrap().is_empty());
     }
 }

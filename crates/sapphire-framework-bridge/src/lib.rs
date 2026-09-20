@@ -48,7 +48,7 @@ pub use routes::{Route, RouteTable};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;
 pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
-pub use workgroup::Workgroup;
+pub use workgroup::{Workgroup, WorkgroupWorkspace};
 
 use crate::control::{Owners, Wakes};
 use crate::data::Tickets;
@@ -150,41 +150,65 @@ impl Bridge {
             // reported when the bridge starts.
             None => NetConfig::load(&self.dir.net_toml())?,
         };
+        Arc::new(self).run_shared(net).await
+    }
+
+    /// As [`Bridge::run`], over a bridge shared between the caller and its loops, with the
+    /// network configuration already resolved by the caller.
+    ///
+    /// The form a fixture needs: a running bridge whose handle can still call back into it
+    /// — the workgroup session the dialing side runs on its own replica.
+    pub async fn run_shared(self: Arc<Self>, net: NetConfig) -> Result<()> {
         // The bridge is the app server of the workgroup's own workspace: it registers it
         // with itself, so a peer stream for it is routed like any other. Its owner is never
         // "online" in the app-server sense — the bridge serves it itself.
-        if let Some(workgroup) = self.workgroup()? {
-            self.routes
-                .lock()
-                .expect("routes")
-                .put(Route {
-                    workspace_id: workgroup.id,
-                    app_name: wgsync::WORKSPACE_APP_NAME.to_owned(),
-                    root: workgroup.dir.join("root"),
-                    // Never started by `wake_on_sync`: the bridge *is* the owner, and it is
-                    // running, or this code would not be running.
-                    exe_path: std::env::current_exe()?,
-                    managed_by: ManagedBy::Service,
-                })
-                .map_err(|e| {
-                    tracing::warn!("could not record the workgroup's own route: {e}");
-                    e
-                })?;
-            match self.open_workgroup_replica(&workgroup) {
-                Ok(replica) => {
-                    // Scan now, so a record a pairing on a peer wrote while this bridge was
-                    // down is recorded before the first session is served.
-                    if let Err(err) = replica.scan() {
-                        tracing::warn!("scanning the workgroup root failed: {err}");
-                    }
-                    *self.workgroup_replica.lock().expect("workgroup replica") = Some(replica);
-                }
-                Err(err) => tracing::warn!("the workgroup's own workspace will not sync: {err}"),
-            }
+        if let Some(workgroup) = self.workgroup()?
+            && let Err(err) = self.serve_workgroup(&workgroup)
+        {
+            tracing::warn!("the workgroup's own workspace will not sync: {err}");
         }
+        self.serve_loops(net).await
+    }
 
+    /// Record `workgroup`'s own route and open its replica, so this running bridge serves it.
+    ///
+    /// The part of starting up that names the workgroup, factored out because a test-util
+    /// caller can have the workgroup appear (or change) under a bridge that is already
+    /// running — what a restarted process would pick up at [`Bridge::run`].
+    fn serve_workgroup(&self, workgroup: &Workgroup) -> Result<()> {
+        // The bridge is the app server of the workgroup's own workspace: it registers it
+        // with itself, so a peer stream for it is routed like any other. Its owner is never
+        // "online" in the app-server sense — the bridge serves it itself.
+        self.routes
+            .lock()
+            .expect("routes")
+            .put(Route {
+                workspace_id: workgroup.id,
+                app_name: wgsync::WORKSPACE_APP_NAME.to_owned(),
+                root: workgroup.dir.join("root"),
+                // Never started by `wake_on_sync`: the bridge *is* the owner, and it is
+                // running, or this code would not be running.
+                exe_path: std::env::current_exe()?,
+                managed_by: ManagedBy::Service,
+            })
+            .map_err(|e| {
+                tracing::warn!("could not record the workgroup's own route: {e}");
+                e
+            })?;
+        let replica = self.open_workgroup_replica(workgroup)?;
+        // Scan now, so a record a pairing on a peer wrote while this bridge was down is
+        // recorded before the first session is served.
+        if let Err(err) = replica.scan() {
+            tracing::warn!("scanning the workgroup root failed: {err}");
+        }
+        *self.workgroup_replica.lock().expect("workgroup replica") = Some(replica);
+        Ok(())
+    }
+
+    /// The three serving loops, over this shared bridge.
+    async fn serve_loops(self: Arc<Self>, net: NetConfig) -> Result<()> {
         let (control_endpoint, data_endpoint) = self.endpoints();
-        let bridge = Arc::new(self);
+        let bridge = self;
         let info = ServerInfo {
             version: bridge.version.to_owned(),
             pid: std::process::id(),
@@ -285,6 +309,41 @@ impl Bridge {
     /// When each application was last started by `wake_on_sync`.
     pub(crate) fn wakes(&self) -> &Wakes {
         &self.wakes
+    }
+
+    /// Pick up a workgroup this bridge did not know about when it started.
+    ///
+    /// A test-util seam: the fixture that makes two hosts one workgroup does so after both
+    /// bridges run, and a restarted process would learn it at [`Bridge::run`]. Records the
+    /// workgroup's own route and re-opens its replica. A replica already open is replaced:
+    /// the workgroup it was opened against may be gone — a join replaces the directory
+    /// wholesale — and its store with it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn refresh_workgroup(&self) -> Result<()> {
+        let Some(workgroup) = self.workgroup()? else {
+            return Ok(());
+        };
+        *self.workgroup_replica.lock().expect("workgroup replica") = None;
+        self.serve_workgroup(&workgroup)
+    }
+
+    /// Run one workgroup replication session with a peer, now.
+    ///
+    /// Scans the workgroup root, dials `node_id` for the workgroup's own workspace, and
+    /// runs the session with this host's replica — what a bridge with a change to share
+    /// does on its own. A peer that cannot be dialed, or a session that fails, is the
+    /// caller's error: the replica is left as it is, and the next session retries.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn sync_workgroup_now(&self, node_id: &str) -> Result<()> {
+        let Some(workgroup) = self.workgroup()? else {
+            return Ok(());
+        };
+        let Some(replica) = self.workgroup_replica() else {
+            return Ok(());
+        };
+        replica.scan()?;
+        let stream = self.transport().open(node_id, workgroup.id).await?;
+        replica.session(stream).await
     }
 }
 

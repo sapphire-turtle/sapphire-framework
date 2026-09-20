@@ -19,6 +19,9 @@ mod iroh;
 mod net;
 mod peer;
 mod routes;
+#[cfg(any(test, feature = "test-util"))]
+mod testing;
+mod wgsync;
 mod workgroup;
 
 use std::path::PathBuf;
@@ -38,6 +41,9 @@ pub use peer::{BoxedStream, PeerStream, PeerTransport, StreamRequest};
 #[cfg(any(test, feature = "test-util"))]
 pub use peer::{LoopbackNetwork, LoopbackTransport};
 pub use routes::{Route, RouteTable};
+#[cfg(any(test, feature = "test-util"))]
+pub use testing::adopt_workgroup;
+pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
 pub use workgroup::Workgroup;
 
 use crate::control::{Owners, Wakes};
@@ -73,6 +79,9 @@ pub struct Bridge {
     tickets: Tickets,
     /// When each application was last started by `wake_on_sync`.
     wakes: Wakes,
+    /// The workgroup's own replica, once `run` has opened it. `None` until then, and for a
+    /// host without a workgroup for ever.
+    workgroup_replica: Mutex<Option<Arc<WorkgroupReplica>>>,
 }
 
 impl Bridge {
@@ -98,6 +107,7 @@ impl Bridge {
             owners: Owners::default(),
             tickets: Tickets::default(),
             wakes: Wakes::default(),
+            workgroup_replica: Mutex::new(None),
         })
     }
 
@@ -136,6 +146,39 @@ impl Bridge {
             // reported when the bridge starts.
             None => NetConfig::load(&self.dir.net_toml())?,
         };
+        // The bridge is the app server of the workgroup's own workspace: it registers it
+        // with itself, so a peer stream for it is routed like any other. Its owner is never
+        // "online" in the app-server sense — the bridge serves it itself.
+        if let Some(workgroup) = self.workgroup()? {
+            self.routes
+                .lock()
+                .expect("routes")
+                .put(Route {
+                    workspace_id: workgroup.id,
+                    app_name: wgsync::WORKSPACE_APP_NAME.to_owned(),
+                    root: workgroup.dir.join("root"),
+                    // Never started by `wake_on_sync`: the bridge *is* the owner, and it is
+                    // running, or this code would not be running.
+                    exe_path: std::env::current_exe()?,
+                    managed_by: ManagedBy::Service,
+                })
+                .map_err(|e| {
+                    tracing::warn!("could not record the workgroup's own route: {e}");
+                    e
+                })?;
+            match self.open_workgroup_replica(&workgroup) {
+                Ok(replica) => {
+                    // Scan now, so a record a pairing on a peer wrote while this bridge was
+                    // down is recorded before the first session is served.
+                    if let Err(err) = replica.scan() {
+                        tracing::warn!("scanning the workgroup root failed: {err}");
+                    }
+                    *self.workgroup_replica.lock().expect("workgroup replica") = Some(replica);
+                }
+                Err(err) => tracing::warn!("the workgroup's own workspace will not sync: {err}"),
+            }
+        }
+
         let (control_endpoint, data_endpoint) = self.endpoints();
         let bridge = Arc::new(self);
         let info = ServerInfo {
@@ -199,6 +242,25 @@ impl Bridge {
     /// Forget one workspace. `false` if it was not there.
     pub(crate) fn remove_route(&self, workspace_id: GrainId) -> Result<bool> {
         self.routes.lock().expect("routes").remove(workspace_id)
+    }
+
+    /// The workgroup's own replica, once [`Bridge::run`] has opened it.
+    ///
+    /// [`Bridge::run`]: Bridge::run
+    pub(crate) fn workgroup_replica(&self) -> Option<Arc<WorkgroupReplica>> {
+        self.workgroup_replica
+            .lock()
+            .expect("workgroup replica")
+            .clone()
+    }
+
+    /// Open the workgroup's own replica, naming this host's own device record as the author
+    /// of its local writes.
+    fn open_workgroup_replica(&self, workgroup: &Workgroup) -> Result<Arc<WorkgroupReplica>> {
+        let device_id = workgroup.this_device()?.id;
+        Ok(Arc::new(WorkgroupReplica::open(
+            &self.dir, workgroup, device_id,
+        )?))
     }
 
     /// The workgroup this host belongs to, if any.

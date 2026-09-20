@@ -5105,6 +5105,8 @@ dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
  "sapphire-framework-registry",
+ "sapphire-framework-session",
+ "sapphire-framework-sync",
  "serde",
  "serde_json",
  "tempfile",

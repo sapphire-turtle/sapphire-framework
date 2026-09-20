@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::net::NetConfig;
 use crate::peer::BoxedStream;
 use crate::routes::Route;
+use crate::wgsync;
 
 /// How long an unclaimed inbound stream is held.
 ///
@@ -332,6 +333,21 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
             drop(stream);
             continue;
         };
+
+        // The bridge is the app server of the workgroup's own workspace: no ticket and no
+        // announcement, the session is served here, and the loop goes straight back to
+        // accepting.
+        if route.app_name == wgsync::WORKSPACE_APP_NAME {
+            match bridge.workgroup_replica() {
+                Some(replica) => {
+                    if let Err(err) = replica.session(stream).await {
+                        tracing::warn!("a workgroup replication session failed: {err}");
+                    }
+                }
+                None => tracing::warn!("the workgroup's own workspace has no replica on this host"),
+            }
+            continue;
+        }
 
         // 3. Park it, so its owner can claim it by ticket, then announce it.
         let ticket = bridge.tickets().park(stream);

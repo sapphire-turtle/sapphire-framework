@@ -130,10 +130,17 @@ async fn an_app_server_that_registers_twice_replaces_its_own_routes() {
     client.register(register(second)).await.unwrap();
 
     let status = client.status().await.unwrap();
+    // The bridge's own row for the workgroup workspace is in the table too; the app's
+    // registration only governs the rows named after the app.
+    let owned: Vec<_> = status
+        .routes
+        .iter()
+        .filter(|route| route.app_name == "test-app")
+        .collect();
     assert_eq!(
-        status.routes.len(),
+        owned.len(),
         1,
         "a registration is the app's complete current list"
     );
-    assert_eq!(status.routes[0].workspace_id, second);
+    assert_eq!(owned[0].workspace_id, second);
 }

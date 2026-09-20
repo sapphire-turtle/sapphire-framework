@@ -104,6 +104,22 @@ impl RouteTable {
         self.save(next)
     }
 
+    /// Set the route for one workspace, replacing any row that named it already.
+    ///
+    /// For the bridge's own row for the workgroup workspace, which no app server registers:
+    /// the bridge writes it when it starts, and rewrites it on every start so a workgroup
+    /// deleted out from under a stopped bridge does not leave the row behind.
+    pub fn put(&mut self, route: Route) -> Result<()> {
+        let mut next: Vec<Route> = self
+            .routes
+            .iter()
+            .filter(|r| r.workspace_id != route.workspace_id)
+            .cloned()
+            .collect();
+        next.push(route);
+        self.save(next)
+    }
+
     /// Forget one workspace. `false` if it was not there.
     pub fn remove(&mut self, workspace_id: GrainId) -> Result<bool> {
         if self.get(workspace_id).is_none() {

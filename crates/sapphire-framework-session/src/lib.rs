@@ -4,17 +4,25 @@
 //! vectors, path updates and content. This crate is the only place that knows the wire
 //! format; it neither knows nor cares what carries the bytes.
 //!
-//! See `docs/superpowers/specs/2026-09-15-p2p-sync-iroh-design.md` §3.7.
+//! Two shapes of session are built on that exchange:
+//!
+//! - [`run_session`] — a one-shot catch-up. It returns once both sides are caught up.
+//! - [`open_live_session`] — the same catch-up, then a stream that stays open: each side
+//!   pushes what it commits and applies what arrives.
+//!
+//! See `docs/superpowers/specs/2026-09-15-p2p-sync-iroh-design.md` §3.7 and §4.2.
 
 #![warn(missing_docs)]
 
 mod error;
 mod frame;
+mod live;
 mod message;
 mod session;
 
 pub use error::{Error, Result};
 pub use frame::{Frame, read_frame, read_framed, write_blob, write_control, write_framed};
+pub use live::{LiveSession, open_live_session};
 pub use message::Message;
 pub use session::{SessionOutcome, run_session};
 

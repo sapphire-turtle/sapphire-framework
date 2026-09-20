@@ -33,6 +33,8 @@ pub enum Message {
     /// `Want` the peer sends after applying a page, and every file over the inline limit
     /// would silently never arrive.
     Settled,
+    /// A push of path states sent after the initial exchange, while the session stays open.
+    Live(Vec<PathUpdate>),
     /// The sender will not continue, and why.
     Refused(String),
 }
@@ -89,6 +91,27 @@ mod tests {
         let msg = Message::Refused("format 2".to_owned());
         match round_trip(&msg) {
             Message::Refused(why) => assert_eq!(why, "format 2"),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_live_push_round_trips() {
+        let mut vv = VersionVector::new();
+        vv.add_dot(&sapphire_sync::Dot {
+            replica: ReplicaId::new(),
+            counter: 3,
+        });
+        let msg = Message::Live(vec![PathUpdate {
+            path: "notes/hello.md".to_owned(),
+            versions: vec![],
+            seen: vv,
+        }]);
+        match round_trip(&msg) {
+            Message::Live(updates) => {
+                assert_eq!(updates.len(), 1);
+                assert_eq!(updates[0].path, "notes/hello.md");
+            }
             other => panic!("got {other:?}"),
         }
     }

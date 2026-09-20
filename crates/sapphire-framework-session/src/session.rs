@@ -16,6 +16,10 @@
 //!    and everything is simply resent next time; committing earlier would make the replica
 //!    claim versions whose content never arrived.
 //!
+//! The exchange is one function, [`initial_exchange`], because two callers start here:
+//! `run_session` finishes a session from what it returns, and `open_live_session` (in
+//! `live.rs`) keeps the stream and applies `Live` pushes on it.
+//!
 //! # Why there are two end markers
 //!
 //! `Done` says "my pages are complete" and is sent as soon as they are queued, so the peer
@@ -44,7 +48,7 @@ use grain_id::GrainId;
 use sapphire_sync::{
     Content, ContentHash, ContentSource, PathUpdate, Replica, Report, VersionVector,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -72,14 +76,14 @@ pub struct SessionOutcome {
 }
 
 /// One thing to put on the wire.
-enum Out {
+pub(crate) enum Out {
     Control(Message),
     Blob(ContentHash, Vec<u8>),
 }
 
 /// Content received inline or fetched during this session.
 #[derive(Default)]
-struct Received(HashMap<ContentHash, Vec<u8>>);
+pub(crate) struct Received(pub(crate) HashMap<ContentHash, Vec<u8>>);
 
 impl ContentSource for Received {
     fn fetch(&self, hash: &ContentHash) -> Option<Vec<u8>> {
@@ -88,7 +92,7 @@ impl ContentSource for Received {
 }
 
 /// Why the read loop stopped.
-enum Stop {
+pub(crate) enum Stop {
     /// The peer's `Done` and `Settled` are in and this side wants nothing more.
     Complete,
     /// The stream ended; the peer is gone.
@@ -97,6 +101,27 @@ enum Stop {
     Refused(String),
     /// The peer sent something this session does not allow.
     Protocol(String),
+}
+
+/// Everything the initial exchange left behind, for the caller that decides what happens
+/// next.
+pub(crate) struct Exchange<S> {
+    /// The peer's half of the stream, still to be read.
+    pub(crate) reader: ReadHalf<S>,
+    /// Everything this side sends goes through here, and one task drains it in order.
+    pub(crate) out: mpsc::Sender<Out>,
+    /// The task owning the write half.
+    pub(crate) writer: JoinHandle<()>,
+    /// The task queueing this side's pages and its `Done`.
+    pub(crate) queued: JoinHandle<()>,
+    /// Everything the peer said it has, as of its `Hello`.
+    pub(crate) peer_vv: VersionVector,
+    /// Content received inline, or fetched, during the exchange.
+    pub(crate) received: Received,
+    /// What the exchange did.
+    pub(crate) outcome: SessionOutcome,
+    /// How the read loop stopped.
+    pub(crate) stop: Stop,
 }
 
 /// Run a session to completion.
@@ -112,6 +137,60 @@ pub async fn run_session<S>(
     replica: &mut Replica,
     workspace_id: GrainId,
 ) -> Result<SessionOutcome>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let Exchange {
+        out,
+        writer,
+        queued,
+        peer_vv,
+        received,
+        outcome,
+        stop,
+        ..
+    } = initial_exchange(stream, replica, workspace_id).await?;
+    match stop {
+        Stop::Complete => {
+            // The peer is still reading: it exits only once it has seen this side's
+            // `Settled`, which is queued but not yet written. Draining the writer delivers
+            // `Done`, `Settled` and every pending answer.
+            let _ = queued.await;
+            let result = materialise(replica, &received, &peer_vv, outcome);
+            close(out, writer, result).await
+        }
+        // The peer is gone or has misbehaved, so there is nothing to deliver and a write
+        // may never complete. Abort: nothing is committed either way, and everything is
+        // resent next session.
+        Stop::Gone => {
+            queued.abort();
+            abort(out, writer);
+            Ok(outcome)
+        }
+        Stop::Refused(why) => {
+            queued.abort();
+            abort(out, writer);
+            Err(Error::Refused(why))
+        }
+        Stop::Protocol(why) => {
+            queued.abort();
+            abort(out, writer);
+            Err(Error::Protocol(why))
+        }
+    }
+}
+
+/// Run the initial exchange: `Hello`, this side's pages, and reading until the peer's
+/// `Done` and `Settled` are in and every hash this side asked for has been answered.
+///
+/// Both session kinds start here. Nothing is committed: the caller decides, so that an
+/// interrupted exchange leaves the version vector where it was. An error means the exchange
+/// never reached its end markers, and `run_session`'s own error mapping is the caller's job.
+pub(crate) async fn initial_exchange<S>(
+    stream: S,
+    replica: &mut Replica,
+    workspace_id: GrainId,
+) -> Result<Exchange<S>>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -159,13 +238,13 @@ where
                     ))),
                 )
                 .await;
-                return close(
+                return refuse(
                     out_tx,
                     writer_task,
-                    Err(Error::VersionMismatch {
+                    Error::VersionMismatch {
                         ours: SESSION_FORMAT_VERSION,
                         theirs: format,
-                    }),
+                    },
                 )
                 .await;
             }
@@ -177,26 +256,26 @@ where
                     ))),
                 )
                 .await;
-                return close(
+                return refuse(
                     out_tx,
                     writer_task,
-                    Err(Error::Protocol(format!(
+                    Error::Protocol(format!(
                         "workspace mismatch: the peer is syncing {theirs}, this session is for \
                      {workspace_id}"
-                    ))),
+                    )),
                 )
                 .await;
             }
             vv
         }
         Some(Frame::Control(Message::Refused(why))) => {
-            return close(out_tx, writer_task, Err(Error::Refused(why))).await;
+            return refuse(out_tx, writer_task, Error::Refused(why)).await;
         }
         other => {
-            return close(
+            return refuse(
                 out_tx,
                 writer_task,
-                Err(Error::Protocol(format!("expected Hello, got {other:?}"))),
+                Error::Protocol(format!("expected Hello, got {other:?}")),
             )
             .await;
         }
@@ -282,6 +361,14 @@ where
                 // unmaterialised until one does.
                 wanted.remove(&hash);
             }
+            Frame::Control(Message::Live(_)) => {
+                // A `Live` push travels only after both sides have left the exchange, and
+                // frames from one peer arrive in order, so a compliant peer cannot send one
+                // here.
+                break Stop::Protocol(
+                    "a Live push before the initial exchange finished".to_owned(),
+                );
+            }
             Frame::Control(Message::Refused(why)) => {
                 break Stop::Refused(why);
             }
@@ -306,39 +393,20 @@ where
         }
     };
 
-    let outcome = SessionOutcome {
-        sent,
-        received: received_count,
-        report,
-    };
-    match stop {
-        Stop::Complete => {
-            // The peer is still reading: it exits only once it has seen this side's
-            // `Settled`, which is queued but not yet written. Draining the writer delivers
-            // `Done`, `Settled` and every pending answer.
-            let _ = send_task.await;
-            let result = materialise(replica, &received, &peer_vv, outcome);
-            close(out_tx, writer_task, result).await
-        }
-        // The peer is gone or has misbehaved, so there is nothing to deliver and a write
-        // may never complete. Abort: nothing is committed either way, and everything is
-        // resent next session.
-        Stop::Gone => {
-            send_task.abort();
-            abort(out_tx, writer_task);
-            Ok(outcome)
-        }
-        Stop::Refused(why) => {
-            send_task.abort();
-            abort(out_tx, writer_task);
-            Err(Error::Refused(why))
-        }
-        Stop::Protocol(why) => {
-            send_task.abort();
-            abort(out_tx, writer_task);
-            Err(Error::Protocol(why))
-        }
-    }
+    Ok(Exchange {
+        reader,
+        out: out_tx,
+        writer: writer_task,
+        queued: send_task,
+        peer_vv,
+        received,
+        outcome: SessionOutcome {
+            sent,
+            received: received_count,
+            report,
+        },
+        stop,
+    })
 }
 
 /// Materialise what was waiting on content, then commit.
@@ -346,7 +414,7 @@ where
 /// Committing is what makes this replica claim it has what the peer had. It runs last, and
 /// only when the peer said `Done` and `Settled`; an interrupted session leaves the version
 /// vector where it was.
-fn materialise(
+pub(crate) fn materialise(
     replica: &mut Replica,
     received: &Received,
     peer_vv: &VersionVector,
@@ -369,7 +437,7 @@ fn materialise(
 }
 
 /// Queue one frame, or report that the writer is gone.
-async fn send(tx: &mpsc::Sender<Out>, item: Out) -> Result<()> {
+pub(crate) async fn send(tx: &mpsc::Sender<Out>, item: Out) -> Result<()> {
     tx.send(item)
         .await
         .map_err(|_| Error::Protocol("the stream closed".to_owned()))
@@ -389,17 +457,31 @@ async fn close(
     result
 }
 
+/// Send a `Refused` that is already queued, close the writer, and return `err`.
+///
+/// The exchange's own early exits: the peer is still reading, so what was queued has to
+/// reach it before the stream goes away.
+async fn refuse<S>(
+    out_tx: mpsc::Sender<Out>,
+    writer: JoinHandle<()>,
+    err: Error,
+) -> Result<Exchange<S>> {
+    drop(out_tx);
+    let _ = writer.await;
+    Err(err)
+}
+
 /// Close the outgoing side without waiting to deliver what is queued.
 ///
 /// Used only once the peer can no longer be expected to read, where a write may otherwise
 /// never complete.
-fn abort(out_tx: mpsc::Sender<Out>, writer: JoinHandle<()>) {
+pub(crate) fn abort(out_tx: mpsc::Sender<Out>, writer: JoinHandle<()>) {
     drop(out_tx);
     writer.abort();
 }
 
 /// Hashes these updates need that neither the store nor this session has.
-fn needed(
+pub(crate) fn needed(
     replica: &Replica,
     updates: &[PathUpdate],
     received: &Received,
@@ -425,7 +507,7 @@ fn needed(
     Ok(out)
 }
 
-fn merge_report(into: &mut Report, from: Report) {
+pub(crate) fn merge_report(into: &mut Report, from: Report) {
     into.changed += from.changed;
     into.recorded.extend(from.recorded);
     into.conflicts.extend(from.conflicts);

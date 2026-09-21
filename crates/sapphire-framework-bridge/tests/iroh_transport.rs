@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use grain_id::GrainId;
-use sapphire_framework_bridge::{Inbound, IrohTransport, NetConfig, PeerTransport};
+use sapphire_framework_bridge::{Inbound, IrohTransport, NetConfig, PeerTransport, relays};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// `Result::unwrap_err` wants the success type to be `Debug`, and a peer stream is not: it is
@@ -30,19 +30,27 @@ fn offline() -> NetConfig {
         wake_on_sync: false,
         discovery: false,
         relays: vec![],
+        use_default_relays: false,
     }
+}
+
+/// The transport for `net`, with its relay set already resolved the way the bridge does.
+async fn transport(tmp: &tempfile::TempDir, name: &str, net: &NetConfig) -> IrohTransport {
+    let config = relays(net, None).unwrap();
+    IrohTransport::new(&tmp.path().join(name), net, &config)
+        .await
+        .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_file_is_created_once_and_reused() {
     let tmp = tempfile::tempdir().unwrap();
-    let key = tmp.path().join("node.key");
 
-    let first = IrohTransport::new(&key, &offline()).await.unwrap();
+    let first = transport(&tmp, "node.key", &offline()).await;
     let id = first.node_id();
     drop(first);
 
-    let second = IrohTransport::new(&key, &offline()).await.unwrap();
+    let second = transport(&tmp, "node.key", &offline()).await;
     assert_eq!(second.node_id(), id, "the node id must survive a restart");
 }
 
@@ -52,7 +60,7 @@ async fn the_key_file_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let key = tmp.path().join("node.key");
-    let _ = IrohTransport::new(&key, &offline()).await.unwrap();
+    let _ = transport(&tmp, "node.key", &offline()).await;
     let mode = std::fs::metadata(&key).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
 }
@@ -60,17 +68,11 @@ async fn the_key_file_is_private() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_endpoints_exchange_bytes() {
     let tmp = tempfile::tempdir().unwrap();
-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
-        .await
-        .unwrap();
+    let a = transport(&tmp, "a.key", &offline()).await;
     // `accept` borrows the transport, and the accepting side must outlive the call: the
     // endpoint is what keeps the connection up. This is the shape the bridge uses, too — one
     // `Arc<dyn PeerTransport>` shared by the loops.
-    let b = Arc::new(
-        IrohTransport::new(&tmp.path().join("b.key"), &offline())
-            .await
-            .unwrap(),
-    );
+    let b = Arc::new(transport(&tmp, "b.key", &offline()).await);
 
     // B's identity and address are needed before B is moved into the accepting task.
     let b_node_id = b.node_id();
@@ -112,9 +114,7 @@ async fn two_endpoints_exchange_bytes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_id_that_is_not_a_node_id_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
-        .await
-        .unwrap();
+    let a = transport(&tmp, "a.key", &offline()).await;
 
     let err = expect_err(a.open("not-a-node-id", GrainId::random()).await);
     assert!(err.to_string().contains("not-a-node-id"), "{err}");
@@ -123,9 +123,7 @@ async fn a_node_id_that_is_not_a_node_id_is_refused() {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_address_that_is_not_an_address_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
-        .await
-        .unwrap();
+    let a = transport(&tmp, "a.key", &offline()).await;
 
     let mut addr = a.node_addr().await.unwrap();
     addr.addrs = vec!["not-an-address".to_owned()];

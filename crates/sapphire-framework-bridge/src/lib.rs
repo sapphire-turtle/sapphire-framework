@@ -20,6 +20,7 @@ mod iroh;
 mod net;
 mod pairing;
 mod peer;
+mod relay;
 mod routes;
 #[cfg(any(test, feature = "test-util"))]
 mod testing;
@@ -44,6 +45,7 @@ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pair
 pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
 #[cfg(any(test, feature = "test-util"))]
 pub use peer::{LoopbackNetwork, LoopbackTransport};
+pub use relay::{RelayConfig, relays};
 pub use routes::{Route, RouteTable};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;

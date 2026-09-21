@@ -13,14 +13,20 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 // `iroh` is also the name of this module, so the crate is spelled with a leading `::` or the
 // path would be ambiguous.
+use std::sync::Arc;
+
 use ::iroh::address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver};
 use ::iroh::endpoint::presets;
-use ::iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
+use ::iroh::{
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    defaults::prod::default_relay_map,
+};
 
 use crate::error::{Error, Result};
 use crate::net::NetConfig;
 use crate::pairing::PAIR_ALPN;
 use crate::peer::{BoxedStream, Inbound, PeerTransport, StreamRequest};
+use crate::relay::RelayConfig;
 
 /// How many bytes of the request line to accept before giving up.
 ///
@@ -53,9 +59,30 @@ impl IrohTransport {
     /// Bind an endpoint, loading or creating the secret key at `key_path`.
     ///
     /// `net` decides what the endpoint offers and uses: `discovery` turns on iroh's address
-    /// lookup services, and `relays` replaces the default relay set (an empty list disables
-    /// relays entirely, which is what a test or a fully local host wants).
-    pub async fn new(key_path: &Path, net: &NetConfig) -> Result<IrohTransport> {
+    /// lookup services, and the relay set is the host's own configuration merged with
+    /// `workgroup`'s published one — see [`relays`](crate::relays) for how the two files
+    /// combine. A caller that has already merged them (a test, mostly) uses
+    /// [`IrohTransport::new`] directly.
+    pub async fn new_with_relays(
+        key_path: &Path,
+        net: &NetConfig,
+        workgroup: Option<&crate::workgroup::Workgroup>,
+    ) -> Result<IrohTransport> {
+        let config = crate::relays(net, workgroup)?;
+        Self::new(key_path, net, &config).await
+    }
+
+    /// Bind an endpoint over an already-resolved relay configuration.
+    ///
+    /// `net` decides what the endpoint offers and uses: `discovery` turns on iroh's address
+    /// lookup services, and `relays` is taken as given — an empty list with
+    /// `use_default: false` disables relays entirely, which is what a test or a fully local
+    /// host wants.
+    pub async fn new(
+        key_path: &Path,
+        net: &NetConfig,
+        relays: &RelayConfig,
+    ) -> Result<IrohTransport> {
         let secret = load_or_create_key(key_path)?;
         let known = MemoryLookup::new();
 
@@ -77,7 +104,7 @@ impl IrohTransport {
         }
 
         let endpoint = builder
-            .relay_mode(relay_mode(net)?)
+            .relay_mode(relay_mode(relays)?)
             .bind()
             .await
             .map_err(|e| Error::Peer(format!("could not bind the endpoint: {e}")))?;
@@ -304,19 +331,32 @@ async fn read_request(
     Ok((request, recv))
 }
 
-/// The relay mode `net` asks for: none at all, or exactly the relays it names.
-fn relay_mode(net: &NetConfig) -> Result<RelayMode> {
-    if net.relays.is_empty() {
+/// The relay mode [`RelayConfig`] asks for.
+///
+/// A custom relay map **replaces** iroh's relay set rather than adding to it, so with
+/// `use_default` on, the public relays are folded back in first. The map is keyed by URL,
+/// which is what keeps this fold and the merge in [`relays`](crate::relays) from producing
+/// duplicates. Naming no relay is not an error either: a host may want direct connections
+/// only, and an endpoint told "no relays" gets [`RelayMode::Disabled`].
+fn relay_mode(config: &RelayConfig) -> Result<RelayMode> {
+    if !config.use_default && config.urls.is_empty() {
         return Ok(RelayMode::Disabled);
     }
-    let mut urls = Vec::with_capacity(net.relays.len());
-    for relay in &net.relays {
-        let url = relay
+    let map = if config.use_default {
+        default_relay_map()
+    } else {
+        RelayMap::empty()
+    };
+    for url in &config.urls {
+        let url: RelayUrl = url
             .parse()
-            .map_err(|e| Error::Config(format!("{relay}: not a relay URL: {e}")))?;
-        urls.push(url);
+            .map_err(|e| Error::Config(format!("{url}: not a relay URL: {e}")))?;
+        map.insert(
+            url.clone(),
+            Arc::new(::iroh::RelayConfig::from(url.clone())),
+        );
     }
-    Ok(RelayMode::custom(urls))
+    Ok(RelayMode::Custom(map))
 }
 
 /// Read the secret key, or create one at `0600`.
@@ -419,30 +459,47 @@ mod tests {
 
     #[test]
     fn no_relays_means_no_relay_transport() {
-        let net = NetConfig {
-            wake_on_sync: false,
-            discovery: false,
-            relays: vec![],
+        let config = crate::relay::RelayConfig {
+            urls: vec![],
+            use_default: false,
         };
-        assert!(matches!(relay_mode(&net).unwrap(), RelayMode::Disabled));
+        assert!(matches!(relay_mode(&config).unwrap(), RelayMode::Disabled));
     }
 
     #[test]
     fn a_named_relay_is_used_and_a_bad_one_is_refused() {
-        let net = NetConfig {
-            wake_on_sync: false,
-            discovery: false,
-            relays: vec!["https://relay.example/".to_owned()],
+        let config = crate::relay::RelayConfig {
+            urls: vec!["https://relay.example/".to_owned()],
+            use_default: false,
         };
-        assert!(matches!(relay_mode(&net).unwrap(), RelayMode::Custom(_)));
+        assert!(matches!(relay_mode(&config).unwrap(), RelayMode::Custom(_)));
 
-        let net = NetConfig {
-            wake_on_sync: false,
-            discovery: false,
-            relays: vec!["not a url".to_owned()],
+        let config = crate::relay::RelayConfig {
+            urls: vec!["not a url".to_owned()],
+            use_default: false,
         };
-        let err = relay_mode(&net).unwrap_err();
+        let err = relay_mode(&config).unwrap_err();
         assert!(err.to_string().contains("not a url"), "{err}");
+    }
+
+    #[test]
+    fn the_public_relays_are_folded_back_into_a_custom_map() {
+        // `RelayMode::Custom` replaces iroh's relay set rather than adding to it, so
+        // `use_default` must fold the public relays in itself or they would be lost.
+        let config = crate::relay::RelayConfig {
+            urls: vec!["https://relay.example/".to_owned()],
+            use_default: true,
+        };
+        let mode = relay_mode(&config).unwrap();
+        let RelayMode::Custom(map) = mode else {
+            panic!("expected a custom relay map");
+        };
+        let urls = map.urls::<Vec<::iroh::RelayUrl>>();
+        assert!(urls.contains(&"https://relay.example/".parse().unwrap()));
+        assert!(
+            urls.len() > 1,
+            "the public relays must be in the map too: {urls:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -464,8 +521,11 @@ mod tests {
             wake_on_sync: false,
             discovery: false,
             relays: vec![],
+            use_default_relays: false,
         };
-        let transport = IrohTransport::new(&path, &net).await.unwrap();
+        let transport = IrohTransport::new(&path, &net, &crate::relays(&net, None).unwrap())
+            .await
+            .unwrap();
         assert_eq!(transport.node_id(), id);
     }
 

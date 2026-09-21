@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::dir::BridgeDir;
 use crate::error::{Error, Result};
 use crate::invite::Ticket;
+use crate::net::NetConfig;
 use crate::pairing::{self, JoinRequest, JoinResponse};
 use crate::peer::PeerTransport;
 
@@ -330,6 +331,41 @@ impl Workgroup {
             "# A workspace of this workgroup. The file name is its id.\n",
             &body,
         )
+    }
+
+    /// Announce this workgroup's network configuration, replacing what was published before.
+    ///
+    /// What a self-hosted server writes so its devices learn about its relay: the file lives
+    /// in the synced root, so every device of the workgroup reads the same one. Each device
+    /// then merges it with its own `net.toml` in [`relays`](crate::relays) — announced never
+    /// replaces local.
+    pub fn publish_net(&self, net: &NetConfig) -> Result<()> {
+        crate::routes::write_atomic(
+            &self.net_toml(),
+            "# The network configuration this workgroup announces to its devices.\n",
+            &toml::to_string_pretty(net)
+                .map_err(|e| Error::Config(format!("could not encode net.toml: {e}")))?,
+        )
+    }
+
+    /// The workgroup's published [`NetConfig`], or the defaults when nothing is published.
+    ///
+    /// A missing file contributes nothing rather than failing: a workgroup that has not
+    /// announced a configuration is a normal state, not a broken one. An unreadable one
+    /// fails, for the same reason an unreadable `workgroup.toml` does — guessing at what a
+    /// half-written configuration meant is worse than reporting it.
+    pub fn published_net(&self) -> Result<NetConfig> {
+        match std::fs::read_to_string(self.net_toml()) {
+            Ok(text) => toml::from_str(&text)
+                .map_err(|e| Error::Config(format!("{}: {e}", self.net_toml().display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NetConfig::default()),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+
+    /// The workgroup's published `root/net.toml`, inside the synced root.
+    fn net_toml(&self) -> PathBuf {
+        self.dir.join("root").join("net.toml")
     }
 }
 

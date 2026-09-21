@@ -151,6 +151,7 @@ async fn build(
         wake_on_sync: false,
         discovery: false,
         relays: Vec::new(),
+        use_default_relays: false,
     })
     .control_endpoint(control.clone())
     .data_endpoint(data);

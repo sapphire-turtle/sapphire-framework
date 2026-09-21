@@ -14,8 +14,14 @@ pub struct NetConfig {
     pub wake_on_sync: bool,
     /// Use discovery services to find peers.
     pub discovery: bool,
-    /// Relay URLs to use in addition to the defaults.
+    /// Relay URLs to use, in addition to the public ones while `use_default_relays` is on.
     pub relays: Vec<String>,
+    /// Keep the public relays on alongside `relays`.
+    ///
+    /// Off only when this host wants the public relays gone entirely — and, once a
+    /// workgroup is joined, not even then on its own: [`relays`](crate::relays) turns
+    /// them off only when both sides say so.
+    pub use_default_relays: bool,
 }
 
 impl Default for NetConfig {
@@ -24,6 +30,7 @@ impl Default for NetConfig {
             wake_on_sync: true,
             discovery: true,
             relays: Vec::new(),
+            use_default_relays: true,
         }
     }
 }
@@ -32,7 +39,7 @@ impl NetConfig {
     /// Read the file, or the defaults if it is not there.
     ///
     /// Every field is optional in the file: a `net.toml` that sets only `wake_on_sync`
-    /// leaves discovery on and the relay list empty.
+    /// leaves discovery on, the relay list empty, and the public relays on.
     pub fn load(path: &Path) -> Result<NetConfig> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
@@ -55,6 +62,7 @@ mod tests {
         assert!(net.wake_on_sync);
         assert!(net.discovery);
         assert!(net.relays.is_empty());
+        assert!(net.use_default_relays);
     }
 
     #[test]
@@ -67,6 +75,7 @@ mod tests {
         assert!(!net.wake_on_sync);
         assert!(!net.discovery);
         assert!(net.relays.is_empty());
+        assert!(net.use_default_relays);
     }
 
     #[test]
@@ -75,12 +84,14 @@ mod tests {
         let path = tmp.path().join("net.toml");
         std::fs::write(
             &path,
-            "wake_on_sync = false\ndiscovery = false\nrelays = [\"https://relay.example/\"]\n",
+            "wake_on_sync = false\ndiscovery = false\nrelays = [\"https://relay.example/\"]\n\
+             use_default_relays = false\n",
         )
         .unwrap();
 
         let net = NetConfig::load(&path).unwrap();
         assert_eq!(net.relays, vec!["https://relay.example/".to_owned()]);
+        assert!(!net.use_default_relays);
     }
 
     #[test]

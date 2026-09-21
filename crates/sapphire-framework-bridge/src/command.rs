@@ -157,7 +157,16 @@ async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {
     // Read once, and hand the same configuration to the bridge: it would otherwise read
     // `net.toml` again when it starts its loops, and the two reads could disagree.
     let net = NetConfig::load(&dir.net_toml())?;
-    let transport = Arc::new(crate::iroh::IrohTransport::new(&dir.node_key(), &net).await?);
+    // The workgroup's published `net.toml` is read inside `new_with_relays`, so a
+    // publish that landed between the two reads is not split across them either.
+    let transport = Arc::new(
+        crate::iroh::IrohTransport::new_with_relays(
+            &dir.node_key(),
+            &net,
+            crate::workgroup::Workgroup::open(&dir)?.as_ref(),
+        )
+        .await?,
+    );
     Ok(Bridge::new(dir, transport, version)?.net(net))
 }
 

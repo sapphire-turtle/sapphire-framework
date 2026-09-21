@@ -14,6 +14,7 @@
 //! dead code.
 #![allow(dead_code)]
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,6 +31,8 @@ use sapphire_workspace::AppContext;
 pub const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 /// The node id of the second host.
 pub const NODE_B: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+/// The node id of a third host: the middle host, or an unreachable one.
+pub const NODE_S: &str = "c1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
 /// The version every side reports, so a client and a server always agree.
 pub const VERSION: &str = "0.0.0";
@@ -77,6 +80,10 @@ pub struct Host {
     runtime_dir: PathBuf,
     /// This host's connection to its own app server: the "client" end of the picture.
     pub client: Client,
+    /// The network this host was built on, so a test can read its frame counters.
+    net: LoopbackNetwork,
+    /// This host's connection to its own bridge, for fixtures that ask the bridge directly.
+    bridge_client: Arc<BridgeClient>,
     /// The sync runtime, held so a stopped host can drop it and release the replica store.
     runtime: Option<Arc<SyncRuntime>>,
     server: Option<tokio::task::JoinHandle<sapphire_framework_server::Result<()>>>,
@@ -176,7 +183,7 @@ async fn build(
     let endpoint = Endpoint::in_dir(ctx.app_name, runtime_dir.clone());
     let runtime = Arc::new(SyncRuntime::new(
         ctx,
-        bridge_client,
+        Arc::clone(&bridge_client),
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
         ManagedBy::Spawned,
     ));
@@ -206,6 +213,8 @@ async fn build(
         workgroup_id: workgroup.id,
         runtime_dir,
         client,
+        net: net.clone(),
+        bridge_client,
         runtime: Some(runtime),
         server: Some(server_task),
         bridge: Some(bridge_runtime),
@@ -213,6 +222,23 @@ async fn build(
 }
 
 impl Host {
+    /// This host's node id on the loopback network.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// The sync runtime, while the app server runs. `None` once stopped.
+    pub fn runtime(&self) -> Option<Arc<SyncRuntime>> {
+        self.runtime.clone()
+    }
+
+    /// Close this host's open sync sessions, as if its connections had been cut.
+    pub async fn drop_connections(&self) {
+        if let Some(runtime) = self.runtime() {
+            runtime.drop_connections().await;
+        }
+    }
+
     /// Stop this host's app server and bridge, leaving every directory as it is.
     ///
     /// The app server is asked to exit rather than aborted: its shutdown path is what stops
@@ -279,6 +305,24 @@ pub fn introduce(a: &Host, b: &Host) {
     }
     copy_device(a, b);
     copy_device(b, a);
+}
+
+/// Introduce every pair of `hosts`: one shared workspace identity and full ledgers.
+///
+/// [`introduce`] is the two-host case; this is its n-host form, so a middle host and an
+/// unreachable one can be built with the same machinery.
+pub fn introduce_all(hosts: &[&Host]) {
+    let shared = GrainId::random();
+    for host in hosts {
+        std::fs::write(sync_id_path(host), format!("{shared}\n")).unwrap();
+    }
+    for from in hosts {
+        for to in hosts {
+            if !std::ptr::eq(*from, *to) {
+                copy_device(from, to);
+            }
+        }
+    }
 }
 
 /// `<root>/.<app>/sync-id`.
@@ -369,4 +413,105 @@ async fn wait_until_listening(endpoint: &Endpoint, what: &str) {
         assert!(Instant::now() < deadline, "{what} never started listening");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+// ── live-propagation fixtures ───────────────────────────────────────────────
+
+/// Enable sync on `host`'s workspace, the way a client would.
+async fn enable_sync(host: &Host) {
+    let _: proto::SyncEnableResult = host
+        .client
+        .call(
+            proto::SYNC_ENABLE,
+            proto::WsParams {
+                ws: host.ws.clone(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// Two hosts sharing one workspace, synced and introduced.
+pub async fn synced_pair(net: &LoopbackNetwork) -> (Host, Host) {
+    let a = start_host(net, NODE_A, "host-a").await;
+    let b = start_host(net, NODE_B, "host-b").await;
+    introduce(&a, &b);
+    enable_sync(&a).await;
+    enable_sync(&b).await;
+    (a, b)
+}
+
+/// Three hosts sharing one workspace: `a`, a middle host `s`, and `b`.
+pub async fn synced_triple(net: &LoopbackNetwork) -> (Host, Host, Host) {
+    let a = start_host(net, NODE_A, "host-a").await;
+    let s = start_host(net, NODE_S, "host-s").await;
+    let b = start_host(net, NODE_B, "host-b").await;
+    introduce_all(&[&a, &s, &b]);
+    enable_sync(&a).await;
+    enable_sync(&s).await;
+    enable_sync(&b).await;
+    (a, s, b)
+}
+
+/// Wait until every host holds an open live session to every peer its bridge reports
+/// as connected.
+///
+/// "Settled" is about the dialer, not the files: the initial exchange of each session is
+/// what catches a host up, and `open_live_session` returns only once both sides have said
+/// `Done` and `Settled`. An open session to a peer therefore means "caught up with that
+/// peer", which is the state the live-propagation tests need before they write anything.
+///
+/// Unreachable peers are excluded by the bridge's own `connected` report — the loopback
+/// answers it from the partition's edges, so a host nobody can reach never blocks this.
+pub async fn settle(hosts: &[&Host]) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut settled = true;
+        for host in hosts {
+            let Some(runtime) = host.runtime() else {
+                settled = false;
+                break;
+            };
+            let peers = host
+                .bridge_client
+                .peers()
+                .await
+                .expect("the bridge answers peers");
+            let connected: HashSet<GrainId> = peers
+                .peers
+                .iter()
+                .filter(|p| p.connected && p.node_id != host.node_id())
+                .map(|p| p.device_id)
+                .collect();
+            let open: HashSet<GrainId> = runtime
+                .live_session_devices(&host.ws)
+                .await
+                .into_iter()
+                .collect();
+            if !connected.is_subset(&open) {
+                eprintln!(
+                    "NOT SETTLED on {}: connected={:?} open={:?}",
+                    host.node_id(),
+                    connected,
+                    open
+                );
+                settled = false;
+                break;
+            }
+        }
+        if settled {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the hosts never settled into live sessions"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// How many writes this host has made onto loopback streams — the test's stand-in for
+/// frames sent.
+pub fn frames_sent(host: &Host) -> u64 {
+    host.net.frames_sent(host.node_id())
 }

@@ -13,21 +13,26 @@ use grain_id::GrainId;
 use sapphire_bridge_api::{
     BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration, WorkspacesResult,
 };
-use sapphire_sync::{PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
+use sapphire_sync::{PathUpdate, PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
 use sapphire_workspace::{AppContext, Workspace};
-use tokio::sync::{Mutex, OnceCell, mpsc};
+use tokio::sync::{Mutex, OnceCell, broadcast, mpsc};
 
 pub mod id;
+mod live;
 mod methods;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing;
 mod watch;
 
 pub use id::{SYNC_ID_FILE, WORKSPACE_MAP_FILE, sync_id, sync_id_path};
+pub use live::DIAL_BACKOFF_MAX;
 pub use methods::sync_router;
 pub use watch::{DEBOUNCE, Watcher};
 
+use live::{LivePeers, dial_backoff};
+
 use crate::error::{Error, Result};
+
 use crate::host::WorkspaceHost;
 
 /// What `sync.status` reports.
@@ -96,6 +101,12 @@ pub struct SyncRuntime {
     /// Serialises re-indexing, so two sessions finishing at once do not both sweep the
     /// workspace through the same store.
     reindexing: Mutex<()>,
+    /// The live session table of every synced workspace, keyed by canonical root.
+    ///
+    /// One table per workspace rather than one for the runtime: a session is about one
+    /// workspace, and the two storm rules are per-workspace rules. A root that is not
+    /// synced has none, so a dial or a push for it is a no-op rather than an error.
+    live: Mutex<HashMap<PathBuf, Arc<LivePeers>>>,
 }
 
 impl SyncRuntime {
@@ -116,6 +127,7 @@ impl SyncRuntime {
             watcher: OnceCell::new(),
             host: OnceCell::new(),
             reindexing: Mutex::new(()),
+            live: Mutex::new(HashMap::new()),
         }
     }
 
@@ -131,7 +143,7 @@ impl SyncRuntime {
     ///
     /// Idempotent: enabling an already-synced workspace returns the same id and changes
     /// nothing.
-    pub async fn enable(&self, root: &Path) -> Result<GrainId> {
+    pub async fn enable(self: &Arc<Self>, root: &Path) -> Result<GrainId> {
         let key = root.canonicalize().map_err(Error::Io)?;
         let watch_key = key.clone();
         let workspace_id = sync_id(self.ctx.app_name, &key)?;
@@ -199,6 +211,11 @@ impl SyncRuntime {
         {
             watcher.unwatch(&key);
         }
+        // Any live session for a workspace this server no longer holds is closed: it would
+        // otherwise keep pushing files for a workspace nobody asked about any more.
+        if let Some(peers) = self.live.lock().await.remove(&key) {
+            peers.drop_connections().await;
+        }
         if let Some(removed) = removed {
             self.bridge
                 .unregister(removed.workspace_id)
@@ -230,7 +247,7 @@ impl SyncRuntime {
     /// converge under is the state the sync id's error discipline exists to prevent.
     ///
     /// [`workspaces`]: SyncRuntime::workspaces
-    pub async fn map(&self, selector: &str, dir: &Path) -> Result<GrainId> {
+    pub async fn map(self: &Arc<Self>, selector: &str, dir: &Path) -> Result<GrainId> {
         let workgroup = self.workspaces().await?;
         let wanted = workgroup
             .workspaces
@@ -359,17 +376,42 @@ impl SyncRuntime {
                 None => return Ok(()),
             }
         };
-        let outcome = {
+        let (outcome, updates) = {
             let mut replica = replica.lock().await;
-            replica.scan().map_err(|e| Error::Sync(e.to_string()))?
-        };
-        let mut synced = self.synced.lock().await;
-        if let Some(entry) = synced.get_mut(&key) {
-            entry.paused = match outcome {
-                ScanOutcome::Paused(reason) => Some(reason),
-                ScanOutcome::Scanned(_) => None,
+            let outcome = replica.scan().map_err(|e| Error::Sync(e.to_string()))?;
+            // What the scan committed, as path updates, so it can go out on the sessions
+            // that are already open. This is the whole point of the exact-path scan in
+            // `handlers.rs`: a write through the server reaches a peer live, not at the next
+            // dial.
+            let updates = match &outcome {
+                ScanOutcome::Scanned(report) => {
+                    let vv = replica.vv().clone();
+                    report
+                        .recorded
+                        .iter()
+                        .map(|entry| PathUpdate {
+                            path: entry.path.clone(),
+                            versions: vec![entry.clone()],
+                            seen: vv.clone(),
+                        })
+                        .collect()
+                }
+                ScanOutcome::Paused(_) => Vec::new(),
             };
+            (outcome, updates)
+        };
+        {
+            let mut synced = self.synced.lock().await;
+            if let Some(entry) = synced.get_mut(&key) {
+                entry.paused = match outcome {
+                    ScanOutcome::Paused(reason) => Some(reason),
+                    ScanOutcome::Scanned(_) => None,
+                };
+            }
         }
+        // After the map is unlocked: a push awaits every peer, and the table must not be
+        // held behind a slow one.
+        self.after_commit(&key, updates).await;
         Ok(())
     }
 
@@ -421,14 +463,14 @@ impl SyncRuntime {
     }
 
     /// Open a session with every peer that will take one.
-    pub async fn sync_now(&self, root: &Path) -> Result<()> {
+    pub async fn sync_now(self: &Arc<Self>, root: &Path) -> Result<()> {
         let Ok(key) = root.canonicalize() else {
             return Ok(());
         };
-        let (workspace_id, replica) = {
+        let workspace_id = {
             let synced = self.synced.lock().await;
             match synced.get(&key) {
-                Some(entry) => (entry.workspace_id, Arc::clone(&entry.replica)),
+                Some(entry) => entry.workspace_id,
                 None => return Ok(()),
             }
         };
@@ -439,27 +481,62 @@ impl SyncRuntime {
             .map_err(|e| Error::Bridge(e.to_string()))?;
         let me = self.device_id().await?;
 
-        for peer in peers.peers.into_iter().filter(|p| p.device_id != me) {
-            // A peer that does not host this workspace refuses, which is normal and cheap.
-            let stream = match self.bridge.open_stream(workspace_id, peer.device_id).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    tracing::debug!(peer = %peer.name, "no session: {err}");
-                    continue;
-                }
-            };
-            let mut replica = replica.lock().await;
-            if let Err(err) =
-                sapphire_framework_session::run_session(stream, &mut replica, workspace_id).await
+        // The same direction rule the dial loop follows: a host only dials peers with a
+        // greater device id. Dialling the other way from here would reintroduce the
+        // dial-both-ways deadlock the loop was cured of, just on a different trigger.
+        for peer in peers.peers.into_iter().filter(|p| me < p.device_id) {
+            // A peer that already has a live session is caught up by it: a second exchange
+            // on the same workspace would be redundant, and a second stream between the same
+            // pair is exactly what the tie-break cannot settle.
+            if let Some(live) = self.live_peers(&key).await
+                && live.has(&peer.device_id).await
             {
-                tracing::warn!(peer = %peer.name, "session failed: {err}");
+                continue;
             }
-            drop(replica);
-            // The session wrote files; the index has to catch up before this workspace is
-            // searchable again.
-            self.reindex(&key).await;
+            // One dial per peer at a time. `sync_now` runs beside the dial loop, and two
+            // overlapping outbound dials to one peer are the one case the tie-break rule
+            // cannot resolve — each end would see its own stream as `outbound`. Whoever
+            // arrives second simply leaves it to the next pass. The table is made here if
+            // the dial loop has not yet: the first dial after enabling must not depend on
+            // a tick that has not fired.
+            let Some((_, table)) = self.live_peers_or_create(&key).await else {
+                continue;
+            };
+            if !table.begin_dial(peer.device_id).await {
+                continue;
+            }
+            // A peer that does not host this workspace refuses, which is normal and cheap.
+            let result = self
+                .sync_one(&key, &peer.device_id, peer.name.clone(), workspace_id)
+                .await;
+            table.end_dial(peer.device_id).await;
+            if let Err(err) = result {
+                tracing::debug!(peer = %peer.name, "no session: {err}");
+            }
         }
         Ok(())
+    }
+
+    /// Dial one peer and adopt the stream as a live session.
+    ///
+    /// The one-shot path (`run_session`) would close the stream the moment the exchange
+    /// finished — while the accepting peer keeps its half open and pushes into it, a session
+    /// that dies with nothing reading it. So the dialled side is adopted live too, and both
+    /// ends of a pair agree that a session stays open.
+    async fn sync_one(
+        self: &Arc<Self>,
+        key: &Path,
+        device: &GrainId,
+        name: String,
+        workspace_id: GrainId,
+    ) -> Result<()> {
+        let stream = self.bridge.open_stream(workspace_id, *device).await?;
+        self.adopt_live_session(stream, key, *device, workspace_id)
+            .await
+            .map_err(|err| {
+                tracing::warn!(peer = %name, "a live session could not be started: {err}");
+                err
+            })
     }
 
     /// Answer the bridge's announcements until the connection closes.
@@ -482,6 +559,8 @@ impl SyncRuntime {
                     .find(|(_, s)| s.workspace_id == announcement.workspace_id)
                     .map(|(root, s)| (root.clone(), Arc::clone(&s.replica)))
             };
+            // `replica` is still what the accepted session shares, and `root` is where its
+            // files and its index live.
             let Some((root, replica)) = found else {
                 // The bridge routed to us for a workspace we no longer hold. Not fatal:
                 // ignore it and let the ticket expire.
@@ -494,6 +573,7 @@ impl SyncRuntime {
 
             let bridge = Arc::clone(&self.bridge);
             let workspace_id = announcement.workspace_id;
+            let peer = announcement.peer_device_id;
             let driver = Arc::clone(&self);
             tokio::spawn(async move {
                 let stream = match bridge.accept_stream(announcement.ticket).await {
@@ -503,17 +583,36 @@ impl SyncRuntime {
                         return;
                     }
                 };
-                let mut replica = replica.lock().await;
-                if let Err(err) =
-                    sapphire_framework_session::run_session(stream, &mut replica, workspace_id)
-                        .await
+                // Live, not one-shot: the peer that dialled is keeping this session open and
+                // pushing what it commits, so this side has to keep reading. A session that
+                // closed after the exchange would leave the dialler pushing into a stream
+                // nobody reads.
+                let (_, session) = match sapphire_framework_session::open_live_session(
+                    stream,
+                    Arc::clone(&replica),
+                    workspace_id,
+                )
+                .await
                 {
-                    tracing::warn!("an inbound session failed: {err}");
-                }
-                drop(replica);
+                    Ok(started) => started,
+                    Err(err) => {
+                        tracing::warn!("an inbound session failed: {err}");
+                        return;
+                    }
+                };
+                let Some((key, table)) = driver.live_peers_or_create(&root).await else {
+                    return;
+                };
+                // The peer dialled: this stream survives only if the *peer* has the lower
+                // device id. A stream that loses is dropped, which closes it, and the
+                // connection ends tidily rather than being left half-read.
+                let Some(updates) = table.insert(peer, session, false).await else {
+                    return;
+                };
                 // This is the receiving side: the files are on disk now and nobody else will
                 // index them.
-                driver.reindex(&root).await;
+                driver.reindex(&key).await;
+                driver.spawn_reader(table, updates, key, peer);
             });
         }
     }
@@ -521,6 +620,294 @@ impl SyncRuntime {
     /// Every synced root, for the watcher.
     pub async fn roots(&self) -> Vec<PathBuf> {
         self.synced.lock().await.keys().cloned().collect()
+    }
+
+    /// The live session table for `root`, if this runtime syncs it.
+    ///
+    /// `None` is not an error: a dial, a push or a drop for a workspace this server does not
+    /// hold is a no-op, and every caller below treats it that way.
+    async fn live_peers(&self, root: &Path) -> Option<Arc<LivePeers>> {
+        let key = root.canonicalize().ok()?;
+        self.live.lock().await.get(&key).cloned()
+    }
+
+    /// The live session table for `root`, creating it if this runtime syncs it.
+    ///
+    /// The two locks are taken one after the other, never nested: `synced` to decide whether
+    /// the workspace is ours at all, then `live` to get or make its table.
+    async fn live_peers_or_create(&self, root: &Path) -> Option<(PathBuf, Arc<LivePeers>)> {
+        let key = root.canonicalize().ok()?;
+        if !self.synced.lock().await.contains_key(&key) {
+            return None;
+        }
+        // A table is built by whoever walks the workspace first, and it needs this host's
+        // device id — the tie-break between two simultaneous streams is decided from it.
+        let me = self.device_id().await.ok()?;
+        let mut live = self.live.lock().await;
+        let peers = Arc::clone(
+            live.entry(key.clone())
+                .or_insert_with(|| Arc::new(LivePeers::new(me))),
+        );
+        Some((key, peers))
+    }
+
+    /// Push `updates` to every open session for `root`.
+    ///
+    /// Called with what a scan recorded. `from` is always `None` here: a local commit came
+    /// from this host, so no session is excluded. The forwarding path, which does name a
+    /// source, is [`LivePeers::fan_out`](live::LivePeers::fan_out) called directly by the
+    /// reader side of a session.
+    ///
+    /// Best-effort by contract: the commit already happened, and a peer that is gone is the
+    /// dialer's problem, not the writer's.
+    pub async fn after_commit(&self, root: &Path, updates: Vec<PathUpdate>) {
+        if updates.is_empty() {
+            return;
+        }
+        if let Some(peers) = self.live_peers(root).await {
+            peers.fan_out(&updates, None).await;
+        }
+    }
+
+    /// The devices with an open live session for `root`.
+    ///
+    /// Used by tests to wait for the dialer; empty for a workspace this server does not hold.
+    pub async fn live_session_devices(&self, root: &Path) -> Vec<GrainId> {
+        match self.live_peers(root).await {
+            Some(peers) => peers.devices().await,
+            None => Vec::new(),
+        }
+    }
+
+    /// Close every open live session, as if the connections had been cut.
+    ///
+    /// Called for a workspace being disabled, and by tests that want to watch the dialer
+    /// rebuild what was dropped.
+    pub async fn drop_connections(&self) {
+        let tables: Vec<Arc<LivePeers>> = self.live.lock().await.values().cloned().collect();
+        for peers in tables {
+            peers.drop_connections().await;
+        }
+    }
+
+    /// Keep a live session open to every peer, for every synced workspace.
+    ///
+    /// One walk per [`DIAL_INTERVAL`](live::DIAL_INTERVAL): for each synced workspace, ask
+    /// the bridge who is in the workgroup, and open a session to every peer that is connected
+    /// and does not already have one.
+    ///
+    /// A peer that cannot be reached is retried on a per-peer exponential backoff capped at
+    /// [`DIAL_BACKOFF_MAX`] — one failed attempt per walk, not one per spin — and the counter
+    /// resets when a session opens. An unreachable peer is therefore no obstacle to the
+    /// others: its dial fails, the walk moves on, and the next workspace is dialled.
+    ///
+    /// Runs until the task is aborted, which is what the app server's shutdown does with it.
+    /// It is allowed to fail like [`run`](SyncRuntime::run): only sync stops, and the app
+    /// server keeps serving files (spec §10).
+    pub async fn dial_loop(self: Arc<Self>) -> Result<()> {
+        let mut tick = tokio::time::interval(live::DIAL_INTERVAL);
+        // A missed tick is a late walk, not a burst of them: the interval is a pace, not a
+        // quota to make up.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut waiting: HashMap<GrainId, std::time::Instant> = HashMap::new();
+        let mut failures: HashMap<GrainId, u32> = HashMap::new();
+        loop {
+            tick.tick().await;
+            let roots = self.roots().await;
+            if roots.is_empty() {
+                continue;
+            }
+            let peers = match self.bridge.peers().await {
+                Ok(peers) => peers,
+                // The bridge is down or has no workgroup: nothing to dial, and the next walk
+                // asks again. Not an error for the caller — the app server is still serving.
+                Err(err) => {
+                    tracing::debug!("no peers to dial: {err}");
+                    continue;
+                }
+            };
+            let me = match self.device_id().await {
+                Ok(me) => me,
+                Err(err) => {
+                    tracing::warn!("no device id, so nobody to dial: {err}");
+                    continue;
+                }
+            };
+            let now = std::time::Instant::now();
+            // Dial only peers whose device id is greater than ours. Every device dialling
+            // every other can deadlock: two hosts that dial each other at once each hold
+            // their replica's lock across their own exchange and wait for the other's
+            // hello, which the other's dialler holds the lock for. With one direction per
+            // pair the wait chain is a DAG — a higher-id host never dials, so it never
+            // holds its lock out while a lower-id host's exchange needs it. The lower host
+            // dials within `DIAL_INTERVAL`, and the exchange is symmetric, so nothing is
+            // lost; the tie-break is left as the safety net it is.
+            for root in roots {
+                let Some((key, table)) = self.live_peers_or_create(&root).await else {
+                    continue;
+                };
+                let workspace_id = {
+                    let synced = self.synced.lock().await;
+                    match synced.get(&key) {
+                        Some(entry) => entry.workspace_id,
+                        None => continue,
+                    }
+                };
+                for peer in peers
+                    .peers
+                    .iter()
+                    .filter(|p| p.connected && me < p.device_id)
+                {
+                    let device = peer.device_id;
+                    if table.has(&device).await {
+                        // Already talking; a redial would drop a working session.
+                        failures.remove(&device);
+                        waiting.remove(&device);
+                        continue;
+                    }
+                    if let Some(until) = waiting.get(&device)
+                        && now < *until
+                    {
+                        // Backing off after a failure; the walk skips it until then.
+                        continue;
+                    }
+                    // The same claim `sync_now` takes: this walk and it can overlap, and a
+                    // double dial in one direction is the one race the tie-break cannot
+                    // settle. Skipping is free — the next pass, or `sync_now` itself, dials.
+                    if !table.begin_dial(device).await {
+                        continue;
+                    }
+                    let opened = self.bridge.open_stream(workspace_id, device).await;
+                    if opened.is_err() {
+                        table.end_dial(device).await;
+                    }
+                    match opened {
+                        Ok(stream) => {
+                            let adopted = self
+                                .adopt_live_session(stream, &root, device, workspace_id)
+                                .await;
+                            // The claim is out either way: the attempt is over, and a
+                            // session that died mid-exchange is re-dialled next pass.
+                            table.end_dial(device).await;
+                            match adopted {
+                                Ok(()) => {
+                                    failures.remove(&device);
+                                    waiting.remove(&device);
+                                }
+                                Err(err) => {
+                                    tracing::debug!(
+                                        peer = %peer.name,
+                                        err = %err,
+                                        "a live session could not be started"
+                                    );
+                                    let count = failures.entry(device).or_insert(0);
+                                    *count = count.saturating_add(1);
+                                    waiting.insert(device, now + dial_backoff(*count));
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            // Normal and cheap: a peer that does not host this workspace
+                            // refuses, and one that is unreachable cannot be opened.
+                            tracing::debug!("no stream to a peer: {err}");
+                            let count = failures.entry(device).or_insert(0);
+                            *count = count.saturating_add(1);
+                            waiting.insert(device, now + dial_backoff(*count));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Take ownership of an opened stream: run the exchange, then keep it live.
+    ///
+    /// The session is stored under `device` and its reader pumped until the stream ends. A
+    /// half-open or refused stream is not stored; the dialer retries it with backoff.
+    async fn adopt_live_session(
+        self: &Arc<Self>,
+        stream: sapphire_ipc::RawStream,
+        root: &Path,
+        device: GrainId,
+        workspace_id: GrainId,
+    ) -> Result<()> {
+        let replica = self.replica_of(root).await?;
+        let (_, session) = sapphire_framework_session::open_live_session(
+            stream,
+            Arc::clone(&replica),
+            workspace_id,
+        )
+        .await
+        .map_err(|e| Error::Sync(e.to_string()))?;
+        let Some((key, table)) = self.live_peers_or_create(root).await else {
+            return Ok(());
+        };
+        // This stream was dialled by us, so it is the one the pair keeps if this host's
+        // device id is the lower of the two. If it lost the tie-break the session is
+        // dropped here, which closes the stream, and the surviving one is already in the
+        // table.
+        let Some(updates) = table.insert(device, session, true).await else {
+            return Ok(());
+        };
+        // The session wrote files during the exchange; the index has to catch up before the
+        // workspace is searchable again.
+        self.reindex(&key).await;
+        self.spawn_reader(Arc::clone(&table), updates, key, device);
+        Ok(())
+    }
+
+    /// Forward what one session receives, and re-index it.
+    ///
+    /// This is the loop that makes A → S → B work: a batch that arrived on S's session with A
+    /// is applied (the session crate does that before publishing it), the workspace behind
+    /// `key` is re-indexed, and the batch is handed to every *other* session whose peer lacks
+    /// it — `from` is the device it came from, so it never goes back to A.
+    fn spawn_reader(
+        self: &Arc<Self>,
+        table: Arc<LivePeers>,
+        mut updates: broadcast::Receiver<Vec<PathUpdate>>,
+        key: PathBuf,
+        from: GrainId,
+    ) {
+        let driver = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match updates.recv().await {
+                    Ok(batch) => {
+                        // The files are on disk now (the session guarantees it before
+                        // publishing), so the index is behind them until the sweep below.
+                        driver.reindex(&key).await;
+                        table.fan_out(&batch, Some(from)).await;
+                    }
+                    // A burst bigger than the channel: the newest is kept and the gap is
+                    // covered by the next session's exchange. Losing a batch here cannot lose
+                    // an entry — the peer's vector does not cover it, so the next dial or push
+                    // carries it again.
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::debug!(
+                            device = %from,
+                            missed,
+                            "fell behind on a live session; the next exchange catches up"
+                        );
+                    }
+                    // The session closed. Its table entry is reaped by the next fan-out or
+                    // dial pass, and the dialer opens a fresh one.
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return;
+                    }
+                }
+            }
+        });
+    }
+
+    /// The replica of a synced `root`.
+    async fn replica_of(&self, root: &Path) -> Result<Arc<Mutex<Replica>>> {
+        let key = root.canonicalize().map_err(Error::Io)?;
+        let synced = self.synced.lock().await;
+        match synced.get(&key) {
+            Some(entry) => Ok(Arc::clone(&entry.replica)),
+            None => Err(Error::UnknownWorkspace(key, self.ctx.app_name)),
+        }
     }
 
     /// Watch the synced roots and, on a debounced report, scan and dial.

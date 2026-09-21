@@ -10,9 +10,17 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 // The loopback below is the only user of these, and it is behind the same gate.
 #[cfg(any(test, feature = "test-util"))]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+#[cfg(any(test, feature = "test-util"))]
+use std::pin::Pin;
+#[cfg(any(test, feature = "test-util"))]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(any(test, feature = "test-util"))]
 use std::sync::{Arc, Mutex};
+#[cfg(any(test, feature = "test-util"))]
+use std::task::{Context, Poll};
+#[cfg(any(test, feature = "test-util"))]
+use tokio::io::ReadBuf;
 #[cfg(any(test, feature = "test-util"))]
 use tokio::sync::mpsc;
 
@@ -160,6 +168,11 @@ pub struct LoopbackNetwork {
     nodes: Arc<Mutex<HashMap<String, Inbox>>>,
     /// The pairing protocol has its own channel per node, as iroh has its own ALPN.
     pairing: Arc<Mutex<HashMap<String, PairingInbox>>>,
+    /// Writes charged to each node, so a test can watch who is still talking.
+    frames: Arc<Mutex<HashMap<String, Arc<AtomicU64>>>>,
+    /// When set, only these pairs of node ids may open each other; `None` is a network
+    /// where every registered node reaches every other.
+    edges: Option<Arc<HashSet<(String, String)>>>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -169,10 +182,31 @@ impl LoopbackNetwork {
         LoopbackNetwork::default()
     }
 
+    /// A network where only the listed pairs of nodes can open each other.
+    ///
+    /// Every pair is connected in both directions, and every other pair is unreachable, as
+    /// if a firewall sat between them. A node named in no pair can still be registered — a
+    /// host every device lists but nobody can reach is exactly what the middle-host and
+    /// unreachable-peer tests are about.
+    pub fn partitioned(pairs: &[(&str, &str)]) -> LoopbackNetwork {
+        let mut edges = HashSet::new();
+        for (from, to) in pairs {
+            edges.insert(((*from).to_owned(), (*to).to_owned()));
+            edges.insert(((*to).to_owned(), (*from).to_owned()));
+        }
+        LoopbackNetwork {
+            nodes: Arc::default(),
+            pairing: Arc::default(),
+            frames: Arc::default(),
+            edges: Some(Arc::new(edges)),
+        }
+    }
+
     /// A transport for `node_id`, registered on this network.
     pub fn transport(&self, node_id: &str) -> LoopbackTransport {
         let (tx, rx) = mpsc::unbounded_channel();
         let (pairing_tx, pairing_rx) = mpsc::unbounded_channel();
+        let frames = Arc::new(AtomicU64::new(0));
         self.nodes
             .lock()
             .expect("loopback network")
@@ -181,13 +215,32 @@ impl LoopbackNetwork {
             .lock()
             .expect("loopback network")
             .insert(node_id.to_owned(), pairing_tx);
+        self.frames
+            .lock()
+            .expect("loopback network")
+            .insert(node_id.to_owned(), Arc::clone(&frames));
         LoopbackTransport {
             node_id: node_id.to_owned(),
             nodes: Arc::clone(&self.nodes),
             inbox: tokio::sync::Mutex::new(rx),
             pairing_nodes: Arc::clone(&self.pairing),
             pairing_inbox: tokio::sync::Mutex::new(pairing_rx),
+            frames,
+            edges: self.edges.clone(),
         }
+    }
+
+    /// How many writes `node_id` has made onto loopback streams so far.
+    ///
+    /// The loopback counts writes rather than protocol frames: the bridges relay bytes in
+    /// buffer-sized chunks, so one frame may arrive as one write or as several. For a test
+    /// asking "is this host still sending", the difference does not matter.
+    pub fn frames_sent(&self, node_id: &str) -> u64 {
+        self.frames
+            .lock()
+            .expect("loopback network")
+            .get(node_id)
+            .map_or(0, |count| count.load(Ordering::Relaxed))
     }
 }
 
@@ -200,12 +253,34 @@ pub struct LoopbackTransport {
     inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
     pairing_nodes: Arc<Mutex<HashMap<String, PairingInbox>>>,
     pairing_inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
+    /// This node's own write counter, charged by every stream it hands out.
+    frames: Arc<AtomicU64>,
+    /// Who this node may open; `None` is everybody.
+    edges: Option<Arc<HashSet<(String, String)>>>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl LoopbackTransport {
+    /// Whether `node_id` may be opened from this node at all.
+    fn reachable(&self, node_id: &str) -> bool {
+        match &self.edges {
+            None => true,
+            Some(edges) => edges.contains(&(self.node_id.clone(), node_id.to_owned())),
+        }
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
 #[async_trait::async_trait]
 impl PeerTransport for LoopbackTransport {
     async fn open(&self, node_id: &str, workspace_id: GrainId) -> Result<BoxedStream> {
+        if !self.reachable(node_id) {
+            // Indistinguishable from "no such node": an unreachable peer is one a test
+            // registered to be unreachable, and both mean the dial fails.
+            return Err(Error::Peer(format!(
+                "no such node on the loopback network: {node_id}"
+            )));
+        }
         let inbox = {
             let nodes = self.nodes.lock().expect("loopback network");
             nodes.get(node_id).cloned()
@@ -222,12 +297,20 @@ impl PeerTransport for LoopbackTransport {
         inbox
             .send((self.node_id.clone(), workspace_id, theirs))
             .map_err(|_| Error::Peer(format!("{node_id} is no longer listening")))?;
-        Ok(Box::new(mine))
+        Ok(Box::new(CountingStream {
+            inner: mine,
+            frames: Arc::clone(&self.frames),
+        }))
     }
 
     async fn open_pairing(&self, node_addr: &[u8]) -> Result<BoxedStream> {
         let node = std::str::from_utf8(node_addr)
             .map_err(|_| Error::Peer("the ticket's address is not a node id".to_owned()))?;
+        if !self.reachable(node) {
+            return Err(Error::Peer(format!(
+                "no such node on the loopback network: {node}"
+            )));
+        }
         let inbox = {
             self.pairing_nodes
                 .lock()
@@ -247,15 +330,18 @@ impl PeerTransport for LoopbackTransport {
         inbox
             .send((self.node_id.clone(), theirs))
             .map_err(|_| Error::Peer(format!("{node} is no longer listening")))?;
-        Ok(Box::new(mine))
+        Ok(Box::new(CountingStream {
+            inner: mine,
+            frames: Arc::clone(&self.frames),
+        }))
     }
 
     async fn accept(&self) -> Result<Inbound> {
         // One `select` over both inboxes is what "the same endpoint with a second ALPN"
         // means here: either kind of caller is answered, whichever dials first.
         tokio::select! {
-            item = next_workspace(&self.inbox) => item,
-            item = next_pairing(&self.pairing_inbox) => item,
+            item = next_workspace(&self.inbox, Arc::clone(&self.frames)) => item,
+            item = next_pairing(&self.pairing_inbox, Arc::clone(&self.frames)) => item,
         }
     }
 
@@ -265,7 +351,11 @@ impl PeerTransport for LoopbackTransport {
 
     fn is_connected(&self, node_id: &str) -> bool {
         // On the loopback, "connected" is exactly "registered and still listening": there is
-        // no connection to establish or lose in between.
+        // no connection to establish or lose in between. A partitioned network answers for
+        // its edges first: an unreachable node is not connected, however alive it is.
+        if !self.reachable(node_id) {
+            return false;
+        }
         self.nodes
             .lock()
             .expect("loopback network")
@@ -278,10 +368,18 @@ impl PeerTransport for LoopbackTransport {
 /// The next workspace stream, if the workspace inbox has one.
 async fn next_workspace(
     inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
+    frames: Arc<AtomicU64>,
 ) -> Result<Inbound> {
     let mut inbox = inbox.lock().await;
     match inbox.recv().await {
-        Some((from, ws, stream)) => Ok(Inbound::Workspace(from, ws, Box::new(stream))),
+        Some((from, ws, stream)) => Ok(Inbound::Workspace(
+            from,
+            ws,
+            Box::new(CountingStream {
+                inner: stream,
+                frames,
+            }),
+        )),
         None => Err(Error::Peer("the loopback network is gone".to_owned())),
     }
 }
@@ -290,11 +388,69 @@ async fn next_workspace(
 /// The next pairing attempt, from the pairing inbox.
 async fn next_pairing(
     inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
+    frames: Arc<AtomicU64>,
 ) -> Result<Inbound> {
     let mut inbox = inbox.lock().await;
     match inbox.recv().await {
-        Some((from, stream)) => Ok(Inbound::Pairing(from, Box::new(stream))),
+        Some((from, stream)) => Ok(Inbound::Pairing(
+            from,
+            Box::new(CountingStream {
+                inner: stream,
+                frames,
+            }),
+        )),
         None => Err(Error::Peer("the loopback network is gone".to_owned())),
+    }
+}
+
+/// Counts writes onto a stream, as the loopback's stand-in for frames sent.
+///
+/// The bridges relay session bytes in buffer-sized chunks rather than one write per frame,
+/// so the count moves with traffic rather than with the protocol. What a test asks — "is
+/// this host still sending?" — the count answers either way.
+#[cfg(any(test, feature = "test-util"))]
+struct CountingStream<S> {
+    inner: S,
+    frames: Arc<AtomicU64>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl<S: AsyncRead + Unpin> AsyncRead for CountingStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_read(cx, buf)
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_write(cx, buf) {
+            Poll::Ready(Ok(n)) if n > 0 => {
+                this.frames.fetch_add(1, Ordering::Relaxed);
+                Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_shutdown(cx)
     }
 }
 
@@ -454,5 +610,82 @@ mod tests {
         }
 
         assert!(!Blind.is_connected("anybody"));
+    }
+
+    #[tokio::test]
+    async fn a_partitioned_network_reaches_only_its_pairs() {
+        let net = LoopbackNetwork::partitioned(&[("node-a", "node-s")]);
+        let a = net.transport("node-a");
+        let s = net.transport("node-s");
+        // Alive but unused: keeping the transport open is what has node-b registered and
+        // listening for the unreachability assertions below.
+        let _b = net.transport("node-b");
+
+        // The listed pair works in both directions. `accept` is called inline so the
+        // transport stays alive: the inbox is unbounded, so the open does not have to wait
+        // for a listener to be waiting first.
+        let opened = a.open("node-s", GrainId::random()).await.unwrap();
+        let accepted = match s.accept().await.unwrap() {
+            Inbound::Workspace(_, _, stream) => stream,
+            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+        };
+        drop((opened, accepted));
+
+        // Everybody else is unreachable, even though the node is registered and listening.
+        assert!(
+            expect_err(a.open("node-b", GrainId::random()).await)
+                .to_string()
+                .contains("node-b")
+        );
+        assert!(
+            !a.is_connected("node-b"),
+            "an unreachable node is not connected"
+        );
+        assert!(a.is_connected("node-s"));
+    }
+
+    #[tokio::test]
+    async fn a_partitioned_pair_is_reachable_in_both_directions() {
+        let net = LoopbackNetwork::partitioned(&[("node-a", "node-b")]);
+        let a = net.transport("node-a");
+        let b = net.transport("node-b");
+
+        let accept = tokio::spawn(async move { b.accept().await });
+        let mut opened = a.open("node-b", GrainId::random()).await.unwrap();
+        let mut accepted = match accept.await.unwrap().unwrap() {
+            Inbound::Workspace(_, _, stream) => stream,
+            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+        };
+        opened.write_all(b"there").await.unwrap();
+        let mut buf = [0u8; 5];
+        accepted.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"there");
+    }
+
+    #[tokio::test]
+    async fn a_loopback_stream_counts_the_writes_its_owner_made() {
+        let net = LoopbackNetwork::new();
+        let a = net.transport("node-a");
+        let b = net.transport("node-b");
+        assert_eq!(net.frames_sent("node-a"), 0);
+
+        let accept = tokio::spawn(async move { b.accept().await });
+        let mut opened = a.open("node-b", GrainId::random()).await.unwrap();
+        let mut accepted = match accept.await.unwrap().unwrap() {
+            Inbound::Workspace(_, _, stream) => stream,
+            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
+        };
+
+        opened.write_all(b"hello").await.unwrap();
+        accepted.read_exact(&mut [0u8; 5]).await.unwrap();
+        assert!(
+            net.frames_sent("node-a") >= 1,
+            "a write onto the stream is charged to the stream's owner"
+        );
+        assert_eq!(
+            net.frames_sent("node-b"),
+            0,
+            "the receiving side has written nothing yet"
+        );
     }
 }

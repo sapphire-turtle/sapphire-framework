@@ -354,7 +354,6 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
         // workspaces this host holds by watching which requests are answered differently.
         // Nothing is ever sent back on a stream that fails this test.
         let Some(workgroup) = bridge.workgroup()? else {
-            tracing::warn!("a peer called, and this host has no workgroup");
             drop(stream);
             continue;
         };
@@ -369,10 +368,6 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
 
         // 2. Whose workspace is it?
         let Some(route) = bridge.route(workspace_id) else {
-            tracing::debug!(
-                workspace = %workspace_id,
-                "no app server on this host owns that workspace"
-            );
             drop(stream);
             continue;
         };

@@ -212,10 +212,11 @@ impl AppServer {
         #[cfg(windows)]
         let mut listener = sapphire_ipc::bind(&endpoint)?;
 
-        // The watcher and the bridge announcement loop, if sync is on. Started only once the
-        // socket is bound, so an early `?` above cannot leave two tasks running for a server
-        // that never served. Both are allowed to fail: only sync stops when they do, and the
-        // app server keeps serving files (spec §10). They are aborted with the server.
+        // The watcher, the bridge announcement loop and the dialer, if sync is on. Started
+        // only once the socket is bound, so an early `?` above cannot leave tasks running for
+        // a server that never served. All three are allowed to fail: only sync stops when
+        // they do, and the app server keeps serving files (spec §10). They are aborted with
+        // the server.
         let _sync_tasks = match &sync {
             Some(runtime) => {
                 let driver = Arc::clone(runtime);
@@ -230,7 +231,15 @@ impl AppServer {
                         tracing::warn!("the file watcher ended: {err}");
                     }
                 });
-                Some((announcements, watching))
+                // The dialer is what keeps a session open after the initial exchange, so a
+                // commit reaches a peer without waiting for the next one (spec §4.2).
+                let dialling = Arc::clone(runtime);
+                let dialling = tokio::spawn(async move {
+                    if let Err(err) = dialling.dial_loop().await {
+                        tracing::warn!("the live dial loop ended: {err}");
+                    }
+                });
+                Some((announcements, watching, dialling))
             }
             None => None,
         };
@@ -295,9 +304,10 @@ impl AppServer {
         }
 
         ticker.abort();
-        if let Some((announcements, watching)) = _sync_tasks {
+        if let Some((announcements, watching, dialling)) = _sync_tasks {
             announcements.abort();
             watching.abort();
+            dialling.abort();
         }
         host.close_all();
         drop(listener); // removes the socket file on Unix

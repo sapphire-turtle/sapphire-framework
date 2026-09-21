@@ -31,6 +31,7 @@ fn offline() -> NetConfig {
         discovery: false,
         relays: vec![],
         use_default_relays: false,
+        ..NetConfig::default()
     }
 }
 

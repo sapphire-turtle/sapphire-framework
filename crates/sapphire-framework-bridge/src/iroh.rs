@@ -45,6 +45,12 @@ pub struct NodeAddr {
     pub node_id: String,
     /// The socket addresses this device can be reached at, as `host:port`.
     pub addrs: Vec<String>,
+    /// The relay URLs this device is reachable through.
+    ///
+    /// Kept apart from `addrs` because they are a different kind of address: a peer with no
+    /// direct path can only be dialed through one of these, and a device built relay-only
+    /// has nothing else to offer.
+    pub relay_urls: Vec<String>,
 }
 
 /// This host's endpoint on the network.
@@ -83,6 +89,33 @@ impl IrohTransport {
         net: &NetConfig,
         relays: &RelayConfig,
     ) -> Result<IrohTransport> {
+        Self::bind(key_path, net, relays, false).await
+    }
+
+    /// Bind an endpoint with no direct paths: every connection goes through a relay.
+    ///
+    /// Direct connections are what iroh prefers whenever it can find a path, so an endpoint
+    /// built the ordinary way may reach a peer without the relay ever carrying a byte — which
+    /// makes "does the relay work" untestable. Removing the IP transports leaves the relay as
+    /// the only path, and a stream that arrives proves the relay carried it.
+    ///
+    /// `relays` must name at least one relay with `use_default: false`: an endpoint with
+    /// neither a direct path nor a relay can reach nobody.
+    pub async fn new_relay_only(
+        key_path: &Path,
+        net: &NetConfig,
+        relays: &RelayConfig,
+    ) -> Result<IrohTransport> {
+        Self::bind(key_path, net, relays, true).await
+    }
+
+    /// Bind an endpoint, `relay_only` deciding whether direct paths are offered.
+    async fn bind(
+        key_path: &Path,
+        net: &NetConfig,
+        relays: &RelayConfig,
+        relay_only: bool,
+    ) -> Result<IrohTransport> {
         let secret = load_or_create_key(key_path)?;
         let known = MemoryLookup::new();
 
@@ -103,6 +136,11 @@ impl IrohTransport {
                 .address_lookup(DnsAddressLookup::n0_dns());
         }
 
+        if relay_only {
+            // No IP transport is registered at all, so there is no direct path to find or
+            // fall back to: the relay is the only way out, and the only way in.
+            builder = builder.clear_ip_transports();
+        }
         let endpoint = builder
             .relay_mode(relay_mode(relays)?)
             .bind()
@@ -132,6 +170,7 @@ impl IrohTransport {
         Ok(NodeAddr {
             node_id: addr.id.to_string(),
             addrs: addr.ip_addrs().map(|addr| addr.to_string()).collect(),
+            relay_urls: addr.relay_urls().map(|url| url.to_string()).collect(),
         })
     }
 
@@ -148,6 +187,12 @@ impl IrohTransport {
                 .parse()
                 .map_err(|e| Error::Config(format!("{address}: not a socket address: {e}")))?;
             transports.push(TransportAddr::Ip(socket));
+        }
+        for url in &addr.relay_urls {
+            let url: RelayUrl = url
+                .parse()
+                .map_err(|e| Error::Config(format!("{url}: not a relay URL: {e}")))?;
+            transports.push(TransportAddr::Relay(url));
         }
         self.known
             .add_endpoint_info(EndpointAddr::from_parts(id, transports));
@@ -522,6 +567,7 @@ mod tests {
             discovery: false,
             relays: vec![],
             use_default_relays: false,
+            ..NetConfig::default()
         };
         let transport = IrohTransport::new(&path, &net, &crate::relays(&net, None).unwrap())
             .await

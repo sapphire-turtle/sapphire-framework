@@ -22,6 +22,14 @@ pub struct NetConfig {
     /// workgroup is joined, not even then on its own: [`relays`](crate::relays) turns
     /// them off only when both sides say so.
     pub use_default_relays: bool,
+    /// Run a relay for this workgroup from inside this process.
+    ///
+    /// Off unless `net.toml` names it: a relay needs a publicly reachable address and a
+    /// certificate, and most hosts have neither. The field is always present, so a `net.toml`
+    /// that names a relay still parses on a build without the `embedded-relay` feature — such
+    /// a build simply starts none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedded_relay: Option<crate::relay::EmbeddedRelayConfig>,
 }
 
 impl Default for NetConfig {
@@ -31,6 +39,7 @@ impl Default for NetConfig {
             discovery: true,
             relays: Vec::new(),
             use_default_relays: true,
+            embedded_relay: None,
         }
     }
 }

@@ -45,7 +45,9 @@ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pair
 pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
 #[cfg(any(test, feature = "test-util"))]
 pub use peer::{LoopbackNetwork, LoopbackTransport};
-pub use relay::{RelayConfig, relays};
+#[cfg(feature = "embedded-relay")]
+pub use relay::EmbeddedRelay;
+pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
 pub use routes::{Route, RouteTable};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;

@@ -152,6 +152,7 @@ async fn build(
         discovery: false,
         relays: Vec::new(),
         use_default_relays: false,
+        ..NetConfig::default()
     })
     .control_endpoint(control.clone())
     .data_endpoint(data);

@@ -8,6 +8,12 @@ repository.workspace = true
 keywords = ["sync", "p2p", "daemon", "local-first"]
 categories = ["command-line-utilities"]
 
+[features]
+default = []
+# Run a relay for this host's workgroup from inside the bridge. Off by default, like the
+# bridge's own feature: a relay needs a publicly reachable address and a certificate.
+embedded-relay = ["sapphire-bridge/embedded-relay"]
+
 [dependencies]
 sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.14.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
 clap.workspace = true

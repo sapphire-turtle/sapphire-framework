@@ -13,6 +13,9 @@ default = []
 # The real peer transport. Off by default so a build that only needs the switchboard, or a
 # test, does not compile iroh.
 node = ["dep:iroh"]
+# Run a relay server for a workgroup from inside this process. Off by default: a relay
+# needs a publicly reachable address and a certificate, and most hosts have neither.
+embedded-relay = ["dep:iroh-relay", "dep:rustls", "node"]
 # Loopback transport and fixtures for tests.
 test-util = []
 
@@ -32,6 +35,14 @@ grain-id.workspace = true
 postcard = { version = "1", features = ["use-std"] }
 subtle = "2"
 iroh = { version = "1.2", optional = true }
+# The relay *server*, compiled only behind `embedded-relay`. The `server` feature is the
+# part that serves; it brings iroh-relay's own TLS stack (`tls-ring`) with it. iroh itself
+# depends on this crate with no features, so the server code exists in a build only when
+# this feature turns it on.
+iroh-relay = { version = "1.2", default-features = false, features = ["server"], optional = true }
+# The relay server takes a ready [`rustls::ServerConfig`] for manually supplied
+# certificates, which is what a self-hosted relay has.
+rustls = { version = "0.23", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

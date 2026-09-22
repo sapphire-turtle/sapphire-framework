@@ -8,7 +8,7 @@
 //! on one name.
 //!
 //! ```toml
-//! # A native app that indexes a local workspace and talks to a remote server:
+//! # A native app that indexes a local workspace and talks to its app server:
 //! sapphire-framework = { version = "0.1", features = ["native", "redb-store"] }
 //! ```
 //!
@@ -29,14 +29,11 @@
 //! | `session` | [`session`] | `sapphire-framework-session` |
 //! | `ipc` | [`ipc`] | `sapphire-framework-ipc` |
 //! | `server` | [`server`] | `sapphire-framework-server` |
-//! | `rpc` | [`rpc`] | `sapphire-framework-rpc` |
 //! | `keys` | [`keys`] | `sapphire-framework-keys` |
 //! | `registry` | [`registry`] | `sapphire-framework-registry` |
 //! | `bridge` | [`bridge`] | `sapphire-framework-bridge` |
-//! | `blob` | [`blob`] | `sapphire-framework-blob` |
 //! | `backend` | [`backend`] | `sapphire-framework-backend` |
-//! | `remote-client` | [`remote_client`] | `sapphire-framework-remote-client` |
-//! | `remote-server` | [`remote_server`] | `sapphire-framework-remote-server` |
+//! | `gui` | [`gui`] | `sapphire-framework-gui` |
 //! | `service` | [`service`] | `sapphire-framework-service` |
 
 #[cfg(feature = "workspace")]
@@ -67,9 +64,6 @@ pub use sapphire_framework_ipc as ipc;
 #[cfg(feature = "server")]
 pub use sapphire_framework_server as server;
 
-#[cfg(feature = "rpc")]
-pub use sapphire_framework_rpc as rpc;
-
 #[cfg(feature = "keys")]
 pub use sapphire_framework_keys as keys;
 
@@ -79,20 +73,11 @@ pub use sapphire_framework_registry as registry;
 #[cfg(feature = "bridge")]
 pub use sapphire_framework_bridge as bridge;
 
-#[cfg(feature = "blob")]
-pub use sapphire_framework_blob as blob;
-
 #[cfg(feature = "backend")]
 pub use sapphire_backend as backend;
 
 #[cfg(feature = "gui")]
 pub use sapphire_framework_gui as gui;
-
-#[cfg(feature = "remote-client")]
-pub use sapphire_framework_remote_client as remote_client;
-
-#[cfg(feature = "remote-server")]
-pub use sapphire_framework_remote_server as remote_server;
 
 #[cfg(feature = "service")]
 pub use sapphire_framework_service as service;
@@ -109,8 +94,8 @@ pub mod prelude {
 
     #[cfg(feature = "backend")]
     pub use crate::backend::{
-        BackendEvent, LocalBackend, RemoteBackend, RemoteClient, SyncSummary, WorkspaceBackend,
-        WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection, WorkspaceSource,
+        BackendEvent, LocalBackend, SyncSummary, WorkspaceBackend, WorkspaceEntry,
+        WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection, WorkspaceSource,
     };
 
     // A UI leaves the cache to the app server: `IpcBackend` implements
@@ -119,29 +104,15 @@ pub mod prelude {
     #[cfg(feature = "backend")]
     pub use crate::backend::{IpcBackend, protocol};
 
-    // `backend` already re-exports `RemoteClient`; only pull it from the client
-    // crate when the backend module isn't present, to avoid a duplicate name.
-    #[cfg(all(feature = "remote-client", not(feature = "backend")))]
-    pub use crate::remote_client::RemoteClient;
-
-    // An application hosting its own routes alongside `/rpc` needs more than
-    // `router`/`serve`: `KeyStore` to build the state, `WsStoreConfig` for the
-    // resolver hook, and `protect`/`Authenticated` to put the same key on its
-    // own routes. `KeyStore` and friends moved to the `keys` crate (#103);
-    // `remote-server` chains the `keys` feature in, so one gate serves both.
+    // `KeyStore` and friends live in the `keys` crate (#103); the `keys`
+    // feature chains the crate's `axum` feature in, so an application hosting
+    // its own authenticated routes gets `protect`/`Authenticated` from here.
     #[cfg(feature = "keys")]
     pub use crate::keys::{AuthConfig, Authenticated, KeyEntry, KeyStore, protect};
 
-    #[cfg(feature = "remote-server")]
-    pub use crate::remote_server::{ServerState, Uuid, WsStore, WsStoreConfig, router, serve};
-
-    #[cfg(feature = "registry")]
-    pub use crate::registry::{Device, Devices, GrainId, MigrationReport, migrate_single_file};
-
     // `registry` and `keys` both expose the same `GrainId` (`KeyEntry::device_id`
     // lives in the key file). Re-exporting both would collide, so take it from
-    // `registry` when that feature is on, and from `keys` only when it is not
-    // (the same trick as `RemoteClient`).
+    // `registry` when that feature is on, and from `keys` only when it is not.
     #[cfg(all(feature = "keys", not(feature = "registry")))]
     pub use crate::keys::GrainId;
 

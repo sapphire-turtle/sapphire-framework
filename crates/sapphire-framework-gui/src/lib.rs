@@ -1,8 +1,8 @@
 //! Shared egui components for sapphire-framework apps.
 //!
 //! Currently: [`WorkspaceManager`], a workspace list + management screen
-//! (create local, add remote, open existing, delete) that operates on the
-//! shared [`WorkspaceRegistry`]. It is app-agnostic — timer / journal / ledger
+//! (create local, open existing, delete) that operates on the shared
+//! [`WorkspaceRegistry`]. It is app-agnostic — timer / journal / ledger
 //! render it and implement [`WorkspaceHost`] for the app-specific bits
 //! (marker name, how to initialize a new local workspace).
 //!
@@ -28,8 +28,7 @@ pub trait WorkspaceHost {
     fn create_local(&self, path: &Path, name: &str) -> Result<(), String>;
 
     /// Whether an entry looks reachable (for the list badge). The default
-    /// checks a local entry's marker directory; remote entries are assumed
-    /// reachable (no cheap check).
+    /// checks a local entry's marker directory.
     fn is_reachable(&self, entry: &WorkspaceEntry) -> bool {
         match &entry.path {
             Some(p) => p.join(format!(".{}", self.app_name())).is_dir(),
@@ -53,11 +52,6 @@ pub enum WorkspaceAction {
 enum Dialog {
     NewLocal {
         name: String,
-    },
-    AddRemote {
-        name: String,
-        url: String,
-        token: String,
     },
     ConfirmDelete {
         id: String,
@@ -95,13 +89,6 @@ impl WorkspaceManager {
         ui.horizontal(|ui| {
             ui.heading("Workspaces");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Add Remote").clicked() && self.dialog.is_none() {
-                    self.dialog = Some(Dialog::AddRemote {
-                        name: String::new(),
-                        url: String::new(),
-                        token: String::new(),
-                    });
-                }
                 if ui.button("Open Existing…").clicked()
                     && self.dialog.is_none()
                     && let Some(created) = self.open_existing(registry, host)
@@ -133,7 +120,7 @@ impl WorkspaceManager {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
                 ui.label("No workspaces yet.");
-                ui.label("Create a new one, add a remote, or open an existing folder.");
+                ui.label("Create a new one or open an existing folder.");
             });
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -165,10 +152,9 @@ impl WorkspaceManager {
     ) -> Option<WorkspaceAction> {
         let mut action = None;
         let name = entry.name.clone().unwrap_or_else(|| id.to_owned());
-        let subtitle = match (&entry.path, &entry.url) {
-            (Some(p), _) => p.display().to_string(),
-            (_, Some(u)) => u.clone(),
-            _ => "(invalid: no path or url)".to_owned(),
+        let subtitle = match &entry.path {
+            Some(p) => p.display().to_string(),
+            None => "(invalid: no path)".to_owned(),
         };
         let reachable = host.is_reachable(entry);
 
@@ -177,9 +163,6 @@ impl WorkspaceManager {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.strong(&name);
-                        if entry.url.is_some() {
-                            ui.small("remote");
-                        }
                         if !reachable {
                             ui.colored_label(Color32::YELLOW, "unreachable");
                         }
@@ -256,61 +239,6 @@ impl WorkspaceManager {
                     close = true;
                 }
             }
-            Some(Dialog::AddRemote { name, url, token }) => {
-                let mut open = true;
-                egui::Window::new("Add Remote Workspace")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .open(&mut open)
-                    .show(&ctx, |ui| {
-                        ui.set_min_width(420.0);
-                        ui.label("Name");
-                        ui.add(
-                            egui::TextEdit::singleline(name)
-                                .hint_text("e.g. Work")
-                                .desired_width(f32::INFINITY),
-                        );
-                        ui.add_space(6.0);
-                        ui.label("Server URL (append #ws for a specific workspace)");
-                        ui.add(
-                            egui::TextEdit::singleline(url)
-                                .hint_text("https://host:8080#work")
-                                .desired_width(f32::INFINITY),
-                        );
-                        ui.add_space(6.0);
-                        ui.label("Token (optional)");
-                        ui.add(
-                            egui::TextEdit::singleline(token)
-                                .password(true)
-                                .desired_width(f32::INFINITY),
-                        );
-                        ui.add_space(8.0);
-                        let name_t = name.trim().to_owned();
-                        let url_t = url.trim().to_owned();
-                        let can = !name_t.is_empty() && !url_t.is_empty();
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add_enabled(can, egui::Button::new("Add")).clicked() {
-                                let id = unique_id(&name_t, registry);
-                                let mut e = WorkspaceEntry::remote(url_t);
-                                e.name = Some(name_t.clone());
-                                let tok = token.trim();
-                                if !tok.is_empty() {
-                                    e.token = Some(tok.to_owned());
-                                }
-                                registry.insert(id.clone(), e);
-                                action = Some(WorkspaceAction::Created(id));
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close = true;
-                            }
-                        });
-                    });
-                if !open {
-                    close = true;
-                }
-            }
             Some(Dialog::ConfirmDelete { id, name, typed }) => {
                 let id = id.clone();
                 let expected = name.clone();
@@ -323,7 +251,7 @@ impl WorkspaceManager {
                     .show(&ctx, |ui| {
                         ui.set_min_width(360.0);
                         ui.label("This removes the workspace from the list.");
-                        ui.small("Files on disk / the remote server are not deleted.");
+                        ui.small("Files on disk are not deleted.");
                         ui.add_space(8.0);
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Type");

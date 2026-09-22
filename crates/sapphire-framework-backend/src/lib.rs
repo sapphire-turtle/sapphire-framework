@@ -4,12 +4,10 @@
 //! `sapphire_workspace::WorkspaceState` directly — its methods block and its
 //! search takes a `&rusqlite::Connection`-style borrow that leaks storage
 //! details. This crate hides that behind an `async` [`WorkspaceBackend`] with
-//! three implementations:
+//! two implementations:
 //!
 //! - [`LocalBackend`] wraps a local [`WorkspaceState`] and runs its blocking
 //!   operations on the tokio blocking pool.
-//! - [`RemoteBackend`] talks to a `sapphire-framework-remote-server` over
-//!   JSON-RPC (search + differential sync).
 //! - [`IpcBackend`] forwards every call to the application's server, which is
 //!   the only process that may open the cache.
 //!
@@ -30,25 +28,19 @@ mod error;
 mod ipc;
 mod local;
 pub mod protocol;
-mod remote;
 mod source;
 
 pub use error::{Error, Result};
 pub use ipc::IpcBackend;
 pub use local::LocalBackend;
-pub use remote::RemoteBackend;
 pub use source::{
-    DEFAULT_ID, DEFAULT_WS, WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry,
-    WorkspaceSelection, WorkspaceSource,
+    DEFAULT_ID, WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection,
+    WorkspaceSource,
 };
 
 // Re-export the search mode + result types (and the underlying state, which the
 // factory needs) so callers depend only on this crate.
 pub use sapphire_workspace::{FileSearchResult, SearchMode, WorkspaceState};
-
-// Re-export the remote client so callers can build a `WorkspaceSource::Remote`
-// without a separate dependency.
-pub use sapphire_remote_client::RemoteClient;
 
 /// Result of a sync cycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

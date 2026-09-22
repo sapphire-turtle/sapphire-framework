@@ -10,8 +10,8 @@ categories = ["filesystem", "database"]
 
 # Facade crate (bevy-style): depend on this one crate and enable features for the
 # pieces you need. Each feature exposes an internal crate as a module
-# (`sapphire_framework::workspace`, `::backend`, `::remote_server`, …). The
-# internal `sapphire-framework-*` crates stay split for compile isolation.
+# (`sapphire_framework::workspace`, `::backend`, `::keys`, …). The internal
+# `sapphire-framework-*` crates stay split for compile isolation.
 [features]
 default = ["workspace", "redb-store"]
 
@@ -23,19 +23,15 @@ sync = ["dep:sapphire-framework-sync"]
 session = ["dep:sapphire-framework-session"]
 ipc = ["dep:sapphire-framework-ipc"]
 server = ["dep:sapphire-framework-server", "backend"]
-rpc = ["dep:sapphire-framework-rpc"]
 registry = ["dep:sapphire-framework-registry"]
 bridge = ["dep:sapphire-framework-bridge"]
-blob = ["dep:sapphire-framework-blob"]
 backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
-remote-client = ["dep:sapphire-framework-remote-client", "rpc"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
-remote-server = ["dep:sapphire-framework-remote-server", "keys", "rpc", "blob"]
 service = ["dep:sapphire-framework-service"]
 
 # Everything usable on a native host.
-native = ["workspace", "backend", "remote-client", "remote-server", "registry"]
+native = ["workspace", "backend", "server", "bridge", "registry", "keys", "service"]
 
 # ── store / embedding passthrough (apply to whichever crates are enabled) ─────
 redb-store = [
@@ -52,13 +48,9 @@ sapphire-framework-sync = { version = "0.14.0", path = "../sapphire-framework-sy
 sapphire-framework-session = { version = "0.14.0", path = "../sapphire-framework-session", optional = true }
 sapphire-framework-ipc = { version = "0.14.0", path = "../sapphire-framework-ipc", optional = true }
 sapphire-framework-server = { version = "0.14.0", path = "../sapphire-framework-server", optional = true }
-sapphire-framework-rpc = { version = "0.14.0", path = "../sapphire-framework-rpc", optional = true }
 sapphire-framework-registry = { version = "0.14.0", path = "../sapphire-framework-registry", optional = true }
 sapphire-framework-bridge = { version = "0.14.0", path = "../sapphire-framework-bridge", optional = true }
-sapphire-framework-blob = { version = "0.14.0", path = "../sapphire-framework-blob", optional = true }
 sapphire-framework-backend = { version = "0.14.0", path = "../sapphire-framework-backend", optional = true, default-features = false }
 sapphire-framework-gui = { version = "0.14.0", path = "../sapphire-framework-gui", optional = true }
-sapphire-framework-remote-client = { version = "0.14.0", path = "../sapphire-framework-remote-client", optional = true }
-sapphire-framework-remote-server = { version = "0.14.0", path = "../sapphire-framework-remote-server", optional = true }
 sapphire-framework-keys = { version = "0.14.0", path = "../sapphire-framework-keys", optional = true }
 sapphire-framework-service = { version = "0.14.0", path = "../sapphire-framework-service", optional = true }

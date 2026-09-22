@@ -43,23 +43,7 @@ name = "sapphire-framework-track"
 version_group = "framework"
 
 [[package]]
-name = "sapphire-framework-rpc"
-version_group = "framework"
-
-[[package]]
-name = "sapphire-framework-blob"
-version_group = "framework"
-
-[[package]]
 name = "sapphire-framework-registry"
-version_group = "framework"
-
-[[package]]
-name = "sapphire-framework-remote-server"
-version_group = "framework"
-
-[[package]]
-name = "sapphire-framework-remote-client"
 version_group = "framework"
 
 [[package]]

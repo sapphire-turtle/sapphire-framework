@@ -7,10 +7,6 @@ pub enum Error {
     #[error(transparent)]
     Workspace(#[from] sapphire_workspace::Error),
 
-    /// The remote sync client failed.
-    #[error(transparent)]
-    Remote(#[from] sapphire_remote_client::Error),
-
     /// The IPC layer failed.
     #[error(transparent)]
     Ipc(#[from] sapphire_ipc::Error),
@@ -19,22 +15,12 @@ pub enum Error {
     #[error("backend task failed: {0}")]
     Join(String),
 
-    /// A push was rejected because the remote holds a newer, conflicting
-    /// version of one or more paths. The local cache keeps the caller's edit;
-    /// the next [`sync`](crate::WorkspaceBackend::sync) pulls the remote
-    /// version and reconciles last-writer-wins.
-    #[error("remote rejected push for {} path(s): {}", .paths.len(), .paths.join(", "))]
-    Conflict {
-        /// The workspace-relative paths the remote rejected.
-        paths: Vec<String>,
-    },
-
     /// The operation is not available on this backend.
     #[error("operation not supported by this backend: {0}")]
     Unsupported(&'static str),
 
-    /// A workspace registry entry or selection was invalid (e.g. both `path`
-    /// and `url` set, neither set, or an unknown workspace id).
+    /// A workspace registry entry or selection was invalid (e.g. an unknown
+    /// workspace id).
     #[error("invalid workspace configuration: {0}")]
     InvalidWorkspace(String),
 }

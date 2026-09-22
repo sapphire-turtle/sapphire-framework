@@ -51,6 +51,10 @@
 | `sapphire-framework-remote-server` | axum 単一 `POST /rpc`。origin+redb cache+change_log+blob | 10 + 結合 6 passed |
 | `sapphire-framework-remote-client` | reqwest JSON-RPC client | 結合 3 passed |
 
+> **この 4 crate は 2026-09 に削除された**（HTTP 同期スタック → p2p 同期）。現在地は
+> [`ARCHITECTURE.md`](./ARCHITECTURE.md)「実装の現在地」と
+> [`2026-09-16-process-architecture-design.md`](./superpowers/specs/2026-09-16-process-architecture-design.md) を参照。
+
 - change_log = redb `seq(u64)->Change(json)`。cursor=最後の seq。push は LWW(`updated_at`)+conflict 検出。
 - 結合テスト: `remote-server/tests/rpc.rs`（tower oneshot）・`remote-client/tests/roundtrip.rs`（実 `axum::serve` へ 1 往復）。
 - **SQLite ゼロ維持**: `cargo tree --workspace -i libsqlite3-sys` / `rusqlite` → 該当なし。

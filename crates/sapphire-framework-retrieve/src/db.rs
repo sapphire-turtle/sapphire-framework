@@ -215,7 +215,7 @@ impl RetrieveDb {
 
     /// バックエンドへの共有ハンドル。
     ///
-    /// 同じプロセスの別コンポーネント（例: remote-server の `WsStore`）に、
+    /// 同じプロセスの別コンポーネント（例: app server の別ワークスペース処理）に、
     /// このデータベースと**同じ**インデックスを使わせるためのもの。別に開くと
     /// 同じファイル群に対してインデックスが二重にできる。
     pub fn shared(&self) -> Arc<dyn RetrieveStore + Send + Sync> {

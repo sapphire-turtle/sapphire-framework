@@ -29,6 +29,16 @@ jobs:
       - name: Test
         run: cargo test --all-features --locked
 
+      # A facade feature can name a dependency that only compiles with its
+      # neighbours enabled: a manifest test sees the text, a compile proves the
+      # promise each feature makes on its own (`--locked` here covers the whole
+      # job's run above, so it is free).
+      - name: Each facade feature builds on its own
+        run: |
+          for f in workspace retrieve track sync session ipc server bridge keys service registry backend; do
+            cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
+          done
+
   # Privilege separation is the one thing the job above cannot test: these tests must start
   # as root, become two other users, and prove they cannot become root again. They are
   # `#[ignore]`d everywhere else, and the two accounts they name exist only here.

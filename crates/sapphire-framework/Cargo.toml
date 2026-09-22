@@ -31,7 +31,7 @@ keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
 
 # Everything usable on a native host.
-native = ["workspace", "backend", "server", "bridge", "registry", "keys", "service"]
+native = ["workspace", "backend", "server", "bridge", "registry", "service"]
 
 # ── store / embedding passthrough (apply to whichever crates are enabled) ─────
 redb-store = [

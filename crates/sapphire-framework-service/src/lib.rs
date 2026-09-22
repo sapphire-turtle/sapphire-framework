@@ -28,11 +28,16 @@
 //! this crate's service commands, so the dependency runs `-server` → `-service`, never the
 //! other way. The scope decision lands first; unit rendering and the install flow build on
 //! it.
+//!
+//! The install flow itself lives in [`manager`]: [`install`], [`uninstall`] and [`status`]
+//! drive everything through the [`ServiceManager`] trait, whose real implementation is the
+//! only thing in the crate that writes to the machine or runs a command.
 
 #![warn(missing_docs)]
 
 pub mod error;
 pub mod launchd;
+pub mod manager;
 pub mod privilege;
 pub mod scope;
 pub mod systemd;
@@ -40,6 +45,10 @@ pub mod windows;
 
 pub use error::{Error, Result};
 pub use launchd::{agent_path, label, render_launch_agent};
+pub use manager::{
+    Calls, InstallArgs, RecordingManager, ServiceCommand, ServiceManager, SystemManager, install,
+    status, uninstall,
+};
 pub use privilege::{HelperSpec, PrivilegeConfig, UserSpec};
 pub use scope::{
     Environment, InstallContext, Os, PostInstall, RunAs, Scope, ServiceSpec, resolve_scope,

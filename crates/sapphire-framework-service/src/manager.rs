@@ -23,7 +23,7 @@
 //! returns an [`InstallContext`], and the app CLI asks for the hint itself.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 use crate::launchd::{agent_path, label, render_launch_agent};
@@ -50,6 +50,19 @@ pub trait ServiceManager {
 
     /// Remove a unit file. Removing one that is not there is not an error.
     fn remove_unit(&self, path: &Path) -> Result<()>;
+
+    /// Hand a file the install wrote over to the user the service runs as, because a
+    /// post-install hook about to write there runs as root.
+    ///
+    /// Only a Linux system install whose [`ServiceSpec`] named a user calls this; every
+    /// other install needs nobody but its writer. The default does nothing: ownership
+    /// changes are real work on a real machine, and each implementation owns how, whether
+    /// and when its files change hands. Returning an error fails the install — the user the
+    /// hook is about to write for would otherwise find files owned by root.
+    fn chown_to_user(&self, path: &Path, user: &str) -> Result<()> {
+        let _ = (path, user);
+        Ok(())
+    }
 }
 
 /// The real service manager: real files, real commands.
@@ -93,6 +106,48 @@ impl ServiceManager for SystemManager {
             Err(error) => Err(error.into()),
         }
     }
+
+    fn chown_to_user(&self, path: &Path, user: &str) -> Result<()> {
+        hand_over_to_user(path, user)
+    }
+}
+
+/// Hand one file over to `user`, on Linux only.
+///
+/// Ownership is a Unix idea; the flows never call this off Linux, and a cfg here keeps the
+/// crate compiling where the call has no counterpart. The call runs while root, so the
+/// lookup goes through the C library's `getpwnam`; linking against libc anyway matches the
+/// crate's other Linux-only peers. A user who does not exist fails the install: a hook
+/// about to write into their directories has nowhere it belongs.
+#[cfg(target_os = "linux")]
+fn hand_over_to_user(path: &Path, user: &str) -> Result<()> {
+    let name = std::ffi::CString::new(user)
+        .map_err(|_| Error::Config(format!("the user {user:?} contains a NUL")))?;
+    // SAFETY: `name` is NUL-terminated and alive for the call, and `passwd` may stay
+    // uninitialised while the result is `NULL`.
+    let passwd = unsafe { libc::getpwnam(name.as_ptr()) };
+    if passwd.is_null() {
+        return Err(Error::Config(format!(
+            "no such user: {user}; the unit names {user} as the one the service runs as"
+        )));
+    }
+    // SAFETY: `passwd` is valid while the result is used; `path` is NUL-free because a path
+    // from this crate never holds a NUL, and it is alive for the call.
+    let uid = unsafe { (*passwd).pw_uid };
+    let gid = unsafe { (*passwd).pw_gid };
+    let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| Error::Config("the unit path contains a NUL".to_owned()))?;
+    // SAFETY: `path` is NUL-terminated and alive for the call.
+    if unsafe { libc::chown(path.as_ptr(), uid, gid) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+/// Hand one file over to `user`, on Linux only — nothing to do elsewhere.
+#[cfg(not(target_os = "linux"))]
+fn hand_over_to_user(_path: &Path, _user: &str) -> Result<()> {
+    Ok(())
 }
 
 /// What a [`RecordingManager`] was asked to do, in order.
@@ -119,6 +174,7 @@ pub struct RecordingManager {
     calls: Mutex<Calls>,
     fail_on: Option<String>,
     output: String,
+    order: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 impl RecordingManager {
@@ -142,6 +198,16 @@ impl RecordingManager {
     pub fn returning(text: &str) -> Self {
         Self {
             output: text.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// A manager that also appends to `order` as it goes: one entry per unit file written
+    /// and per command run, so a test can compare the install flow's own steps against
+    /// steps a post-install hook records into the same list.
+    pub fn ordered(order: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            order: Some(order),
             ..Self::default()
         }
     }
@@ -170,6 +236,12 @@ impl ServiceManager for RecordingManager {
             .expect("the recording manager's lock is never held across a panic")
             .units
             .push((path.to_owned(), body.to_owned()));
+        if let Some(order) = &self.order {
+            order
+                .lock()
+                .expect("the shared order list's lock is never held across a panic")
+                .push(format!("write_unit {}", path.display()));
+        }
         Ok(())
     }
 
@@ -181,6 +253,12 @@ impl ServiceManager for RecordingManager {
             .expect("the recording manager's lock is never held across a panic")
             .commands
             .push(command.to_vec());
+        if let Some(order) = &self.order {
+            order
+                .lock()
+                .expect("the shared order list's lock is never held across a panic")
+                .push(format!("run {}", command.join(" ")));
+        }
         if self.fails(command) {
             return Err(Error::Manager(format!("refused: {}", command.join(" "))));
         }
@@ -249,12 +327,25 @@ impl InstallArgs {
     }
 }
 
-/// Install a service: decide the scope and the target user, write the platform's file and
-/// activate it.
+/// Install a service: decide the scope and the target user, write the platform's file,
+/// activate it, and run the spec's post-install hook on what was installed.
 ///
 /// The unit's `ExecStart` (or its platform's equivalent) is the absolute path of the
 /// running executable — the app that called this — plus the spec's own arguments, because a
 /// service manager starts one file and nothing else.
+///
+/// The hook runs last, with the [`InstallContext`] the install resolved, so what it sees is
+/// what was installed, not what was asked for. It may skip out of it: an install with
+/// `--keep-helper` never runs the hook, leaving the file the application's configuration
+/// names to whoever wrote that configuration. When the hook fails, the install reports the
+/// hook's own error and that the service is installed and running — the files exist and the
+/// manager has started the service, which is exactly why a failed hook should be able to
+/// wait for a fix rather than undo an otherwise good install.
+///
+/// On a Linux system install that resolved to a named user, the unit file is handed to that
+/// user before the hook runs: files the hook writes into their directories are theirs, not
+/// root's. An app that drops privileges itself ([`RunAs::Root`] or privilege separation)
+/// resolves to no user, so nothing changes hands.
 pub fn install(
     spec: &ServiceSpec,
     args: &InstallArgs,
@@ -291,6 +382,27 @@ pub fn install(
         // copy left under the temporary directory has done its job. Failing an install that
         // succeeded over a leftover hand-over file would be the wrong trade.
         let _ = manager.remove_unit(&context.unit_path);
+    }
+
+    // The hook runs on an installed, running service, with the scope and the user the
+    // install resolved. `--keep-helper` leaves the file the application's configuration
+    // names to whoever wrote that configuration.
+    if let Some(hook) = spec.post_install.as_ref().filter(|_| !args.keep_helper) {
+        // A hook that writes into the target user's directories writes over files root
+        // owns; handing the unit file over first is what makes those writes the user's.
+        // Three conditions, two lines: the flat form hides them.
+        #[allow(clippy::collapsible_if)]
+        if let Some(user) = &context.target_user {
+            if env.os == Os::Linux && scope == Scope::System {
+                manager.chown_to_user(&context.unit_path, user)?;
+            }
+        }
+        if let Err(error) = hook(&context) {
+            return Err(Error::Manager(format!(
+                "{error}; the service is installed and running, so fix what the hook needs \
+                 and rerun the uninstall and install of your choice"
+            )));
+        }
     }
 
     Ok(context)
@@ -462,6 +574,7 @@ fn home_dir(env: &Environment) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::scope::RunAs;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn spec() -> ServiceSpec {
         ServiceSpec {
@@ -487,6 +600,19 @@ mod tests {
             euid: 0,
             sudo_user: Some("alice".into()),
             os: Os::Linux,
+        }
+    }
+
+    /// The brief's privilege helper, against this crate's own `privilege` types: they moved
+    /// here from `-server` in Task 1, so `-server` is not part of a unit file's vocabulary.
+    fn privileges_for(run_as: &str, helper: &str) -> crate::privilege::PrivilegeConfig {
+        crate::privilege::PrivilegeConfig {
+            run_as: run_as.parse().unwrap(),
+            helper: Some(crate::privilege::HelperSpec {
+                user: helper.parse().unwrap(),
+                program: std::path::PathBuf::from("/usr/lib/sapphire-agent/tool-broker"),
+                args: vec![],
+            }),
         }
     }
 
@@ -649,6 +775,102 @@ mod tests {
         assert!(
             constructions <= 2,
             "the real manager appears {constructions} times; tests must use RecordingManager"
+        );
+    }
+
+    #[test]
+    fn post_install_runs_after_activation() {
+        let order = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = Arc::clone(&order);
+        let mut spec = spec();
+        spec.post_install = Some(Box::new(move |_| {
+            recorded.lock().unwrap().push("post_install".to_owned());
+            Ok(())
+        }));
+
+        let manager = RecordingManager::ordered(Arc::clone(&order));
+        install(&spec, &InstallArgs::default(), &linux_user(), &manager).unwrap();
+
+        let order = order.lock().unwrap().clone();
+        assert_eq!(
+            order.last().map(String::as_str),
+            Some("post_install"),
+            "{order:?}"
+        );
+    }
+
+    #[test]
+    fn post_install_sees_the_resolved_target_user() {
+        let seen = Arc::new(Mutex::new(Option::<String>::None));
+        let recorded = Arc::clone(&seen);
+        let mut spec = spec();
+        spec.post_install = Some(Box::new(move |ctx| {
+            *recorded.lock().unwrap() = ctx.target_user.clone();
+            Ok(())
+        }));
+
+        install(
+            &spec,
+            &InstallArgs::default(),
+            &linux_root(),
+            &RecordingManager::default(),
+        )
+        .unwrap();
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn keep_helper_skips_post_install() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&ran);
+        let mut spec = spec();
+        spec.post_install = Some(Box::new(move |_| {
+            flag.store(true, Ordering::Relaxed);
+            Ok(())
+        }));
+
+        let args = InstallArgs {
+            keep_helper: true,
+            ..InstallArgs::default()
+        };
+        install(&spec, &args, &linux_user(), &RecordingManager::default()).unwrap();
+        assert!(!ran.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_failing_post_install_fails_the_install_and_says_what_was_done() {
+        let mut spec = spec();
+        spec.post_install = Some(Box::new(|_| Err(Error::Config("no room".into()))));
+
+        let err = install(
+            &spec,
+            &InstallArgs::default(),
+            &linux_user(),
+            &RecordingManager::default(),
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("no room"), "{message}");
+        assert!(
+            message.contains("installed"),
+            "the service is installed and running; say so rather than leaving it ambiguous: \
+            {message}"
+        );
+    }
+
+    #[test]
+    fn a_privilege_separated_spec_installs_as_a_root_unit_whatever_run_as_says() {
+        let mut spec = spec();
+        spec.system_run_as = RunAs::InvokingUser;
+        spec.privileges = Some(privileges_for("alice", "sapphire-agent-tools"));
+
+        let manager = RecordingManager::default();
+        install(&spec, &InstallArgs::default(), &linux_root(), &manager).unwrap();
+
+        let body = &manager.calls().units[0].1;
+        assert!(
+            !body.contains("\nUser="),
+            "an app that drops privileges itself must start as root: {body}"
         );
     }
 }

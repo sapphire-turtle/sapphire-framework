@@ -36,16 +36,16 @@ use sapphire_rpc::{
 use serde::Serialize;
 use serde_json::Value;
 
-mod auth;
 mod change_log;
 mod error;
-mod keys;
 mod ws_store;
 
-pub use auth::{Authenticated, protect};
 pub use change_log::ChangeLog;
 pub use error::{Error, Result};
-pub use keys::{KeyEntry, KeyStore};
+// Keys and auth moved to `sapphire-framework-keys` (#103). The old import
+// paths (`remote_server::KeyStore`, …) keep working through these re-exports;
+// `protect` now takes an `AuthConfig` instead of a `ServerState`.
+pub use sapphire_keys::{Authenticated, KeyEntry, KeyStore, protect};
 // `Authenticated::key_id` と `KeyEntry::id` の型。アプリが uuid を自前で
 // 依存に足さなくても名指しできるように出しておく。
 pub use uuid::Uuid;
@@ -143,6 +143,21 @@ impl ServerState {
         self.insecure
     }
 
+    /// The auth configuration this state serves its router with: the
+    /// configured key store (or none — the layer then fails closed) plus the
+    /// test-only bypass flag. See [`sapphire_keys::protect`].
+    pub fn auth_config(&self) -> sapphire_keys::AuthConfig {
+        let config = match &self.keys {
+            Some(keys) => sapphire_keys::AuthConfig::new(Arc::clone(keys)),
+            None => sapphire_keys::AuthConfig::unconfigured(),
+        };
+        if self.insecure {
+            config.insecure_for_tests()
+        } else {
+            config
+        }
+    }
+
     /// Get (opening if necessary) the store for workspace `ws`.
     ///
     /// 同じプロセスでアプリ自身のルート（MCP など）を生やす場合、そちらの
@@ -168,7 +183,7 @@ pub fn router(state: Arc<ServerState>) -> Router {
     let routes = Router::new()
         .route("/rpc", post(rpc_handler))
         .with_state(Arc::clone(&state));
-    crate::auth::protect(state, routes)
+    sapphire_keys::protect(Arc::new(state.auth_config()), routes)
 }
 
 /// Bind `addr` and serve until the process is stopped.

@@ -5272,6 +5272,7 @@ dependencies = [
  "sapphire-framework-bridge",
  "sapphire-framework-gui",
  "sapphire-framework-ipc",
+ "sapphire-framework-keys",
  "sapphire-framework-registry",
  "sapphire-framework-remote-client",
  "sapphire-framework-remote-server",
@@ -5394,6 +5395,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire-framework-keys"
+version = "0.14.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chrono",
+ "getrandom 0.4.3",
+ "grain-id",
+ "http-body-util",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "sapphire-framework-registry"
 version = "0.14.0"
 dependencies = [
@@ -5430,11 +5451,11 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "chrono",
- "getrandom 0.4.3",
  "grain-id",
  "http-body-util",
  "redb",
  "sapphire-framework-blob",
+ "sapphire-framework-keys",
  "sapphire-framework-retrieve",
  "sapphire-framework-rpc",
  "sapphire-framework-track",
@@ -5443,7 +5464,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
- "toml",
  "tower",
  "tracing",
  "uuid",

@@ -30,7 +30,8 @@ blob = ["dep:sapphire-framework-blob"]
 backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
 remote-client = ["dep:sapphire-framework-remote-client", "rpc"]
-remote-server = ["dep:sapphire-framework-remote-server", "rpc", "blob"]
+keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
+remote-server = ["dep:sapphire-framework-remote-server", "keys", "rpc", "blob"]
 service = ["dep:sapphire-framework-service"]
 
 # Everything usable on a native host.
@@ -59,4 +60,5 @@ sapphire-framework-backend = { version = "0.14.0", path = "../sapphire-framework
 sapphire-framework-gui = { version = "0.14.0", path = "../sapphire-framework-gui", optional = true }
 sapphire-framework-remote-client = { version = "0.14.0", path = "../sapphire-framework-remote-client", optional = true }
 sapphire-framework-remote-server = { version = "0.14.0", path = "../sapphire-framework-remote-server", optional = true }
+sapphire-framework-keys = { version = "0.14.0", path = "../sapphire-framework-keys", optional = true }
 sapphire-framework-service = { version = "0.14.0", path = "../sapphire-framework-service", optional = true }

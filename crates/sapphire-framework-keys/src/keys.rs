@@ -1062,3 +1062,88 @@ mod tests {
         assert!(text.contains("# device_id"), "{text}");
     }
 }
+
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+
+    #[test]
+    fn a_key_file_written_by_the_old_crate_still_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[key]]
+token = "sjt_abc123"
+id = "3f2a4b5c-6d7e-4f80-9112-233445566778"
+label = "laptop"
+created_at = "2026-08-25T00:00:00Z"
+"#,
+        )
+        .unwrap();
+
+        let store = KeyStore::load(&path).unwrap();
+        assert!(store.authenticate("sjt_abc123").is_some());
+        assert_eq!(store.entries()[0].label.as_deref(), Some("laptop"));
+    }
+
+    #[test]
+    fn a_key_with_only_a_token_is_completed_and_written_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        std::fs::write(&path, "[[key]]\ntoken = \"sjt_xyz\"\n").unwrap();
+
+        let store = KeyStore::load(&path).unwrap();
+        assert!(store.entries()[0].created_at.timestamp() > 0);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("created_at"),
+            "the completion must be written back:\n{text}"
+        );
+    }
+
+    #[test]
+    fn an_expired_key_does_not_authenticate_but_stays_in_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        std::fs::write(
+            &path,
+            "[[key]]\ntoken = \"sjt_old\"\nexpires_at = \"2020-01-01T00:00:00Z\"\n",
+        )
+        .unwrap();
+
+        let store = KeyStore::load(&path).unwrap();
+        assert!(store.authenticate("sjt_old").is_none());
+        assert_eq!(
+            store.entries().len(),
+            1,
+            "a key that vanished would leave nobody able to see why they cannot connect"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_generated_key_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("keys.toml");
+        let mut store = KeyStore::load(&path).unwrap();
+        store
+            .generate("sjt", None, None, Some("laptop".into()), None)
+            .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
+
+    #[test]
+    fn the_crate_does_not_pull_in_axum_by_default() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            manifest.contains("axum = { workspace = true, optional = true }"),
+            "a caller that only wants KeyStore should not link a web framework"
+        );
+    }
+}

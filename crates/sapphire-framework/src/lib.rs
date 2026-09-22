@@ -30,6 +30,7 @@
 //! | `ipc` | [`ipc`] | `sapphire-framework-ipc` |
 //! | `server` | [`server`] | `sapphire-framework-server` |
 //! | `rpc` | [`rpc`] | `sapphire-framework-rpc` |
+//! | `keys` | [`keys`] | `sapphire-framework-keys` |
 //! | `registry` | [`registry`] | `sapphire-framework-registry` |
 //! | `bridge` | [`bridge`] | `sapphire-framework-bridge` |
 //! | `blob` | [`blob`] | `sapphire-framework-blob` |
@@ -68,6 +69,9 @@ pub use sapphire_framework_server as server;
 
 #[cfg(feature = "rpc")]
 pub use sapphire_framework_rpc as rpc;
+
+#[cfg(feature = "keys")]
+pub use sapphire_framework_keys as keys;
 
 #[cfg(feature = "registry")]
 pub use sapphire_framework_registry as registry;
@@ -123,20 +127,23 @@ pub mod prelude {
     // An application hosting its own routes alongside `/rpc` needs more than
     // `router`/`serve`: `KeyStore` to build the state, `WsStoreConfig` for the
     // resolver hook, and `protect`/`Authenticated` to put the same key on its
-    // own routes.
+    // own routes. `KeyStore` and friends moved to the `keys` crate (#103);
+    // `remote-server` chains the `keys` feature in, so one gate serves both.
+    #[cfg(feature = "keys")]
+    pub use crate::keys::{AuthConfig, Authenticated, KeyEntry, KeyStore, protect};
+
     #[cfg(feature = "remote-server")]
-    pub use crate::remote_server::{
-        Authenticated, KeyStore, ServerState, Uuid, WsStore, WsStoreConfig, protect, router, serve,
-    };
+    pub use crate::remote_server::{ServerState, Uuid, WsStore, WsStoreConfig, router, serve};
 
     #[cfg(feature = "registry")]
     pub use crate::registry::{Device, Devices, GrainId, MigrationReport, migrate_single_file};
 
-    // `registry` and `remote-server` both expose the same `GrainId`. Re-exporting
-    // both would collide, so take it from `registry` when that feature is on, and
-    // from `remote-server` only when it is not (the same trick as `RemoteClient`).
-    #[cfg(all(feature = "remote-server", not(feature = "registry")))]
-    pub use crate::remote_server::GrainId;
+    // `registry` and `keys` both expose the same `GrainId` (`KeyEntry::device_id`
+    // lives in the key file). Re-exporting both would collide, so take it from
+    // `registry` when that feature is on, and from `keys` only when it is not
+    // (the same trick as `RemoteClient`).
+    #[cfg(all(feature = "keys", not(feature = "registry")))]
+    pub use crate::keys::GrainId;
 
     // The app server skeleton: an application builds one of these, adds its own
     // methods, and runs it. `WorkspaceHost` is here for handlers that reach a

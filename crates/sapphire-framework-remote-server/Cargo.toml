@@ -13,6 +13,7 @@ sapphire-rpc = { package = "sapphire-framework-rpc", version = "0.14.0", path = 
 sapphire-blob = { package = "sapphire-framework-blob", version = "0.14.0", path = "../sapphire-framework-blob" }
 sapphire-retrieve = { package = "sapphire-framework-retrieve", version = "0.14.0", path = "../sapphire-framework-retrieve", default-features = false, features = ["redb-store"] }
 sapphire-track = { package = "sapphire-framework-track", version = "0.14.0", path = "../sapphire-framework-track" }
+sapphire-keys = { package = "sapphire-framework-keys", version = "0.14.0", path = "../sapphire-framework-keys", features = ["axum"] }
 axum.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros"] }
 redb.workspace = true
@@ -23,8 +24,6 @@ chrono = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-toml.workspace = true
-getrandom.workspace = true
 grain-id.workspace = true
 
 [dev-dependencies]

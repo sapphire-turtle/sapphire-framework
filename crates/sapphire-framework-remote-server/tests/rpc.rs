@@ -216,7 +216,7 @@ async fn a_bad_token_is_rejected_with_http_401() {
 async fn protect_guards_a_foreign_route_with_the_same_key() {
     let (_t, st) = state(Some("sjt_secret"));
     let app = protect(
-        Arc::clone(&st),
+        Arc::new(st.auth_config()),
         Router::new().route("/mcp", axum::routing::get(|| async { "ok" })),
     );
 
@@ -246,7 +246,7 @@ async fn an_authenticated_request_carries_the_key_id() {
     let key_id = st.keys().unwrap().entries()[0].id;
 
     let app = protect(
-        Arc::clone(&st),
+        Arc::new(st.auth_config()),
         Router::new().route(
             "/whoami",
             axum::routing::get(
@@ -451,7 +451,7 @@ async fn protect_without_a_key_store_refuses_the_app_s_own_routes() {
     let st = Arc::new(ServerState::new(tmp.path()));
 
     let app = protect(
-        Arc::clone(&st),
+        Arc::new(st.auth_config()),
         Router::new().route("/mcp", axum::routing::get(|| async { "ok" })),
     );
 
@@ -473,7 +473,7 @@ async fn insecure_for_tests_is_the_only_way_through_without_keys() {
     assert!(st.is_insecure());
 
     let app = protect(
-        Arc::clone(&st),
+        Arc::new(st.auth_config()),
         Router::new().route("/mcp", axum::routing::get(|| async { "ok" })),
     );
     let response = app

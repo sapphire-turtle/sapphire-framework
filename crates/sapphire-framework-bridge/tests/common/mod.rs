@@ -409,6 +409,64 @@ pub async fn sync_workgroup(host: &Host, joiner: &BridgeDir, net: &LoopbackNetwo
         .expect("the joiner's session task")
         .expect("the joiner's session succeeded");
 }
+
+/// Start a bridge over `dir`, which already holds a joined workgroup.
+///
+/// The counterpart of [`start_with_net`] for a host that paired before it ran a bridge: the
+/// workgroup comes from `dir`, the way a real joiner's daemon starts.
+pub async fn start_joined(
+    net: &LoopbackNetwork,
+    tmp: tempfile::TempDir,
+    dir: BridgeDir,
+    node_id: &str,
+) -> Host {
+    let runtime = tmp.path().join("run");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let workgroup_id = Workgroup::open(&dir)
+        .unwrap()
+        .expect("a joined workgroup")
+        .id;
+
+    let control = Endpoint::in_dir("bridge", runtime.clone());
+    let data = Endpoint::in_dir("bridge-data", runtime.clone());
+    let bridge = Arc::new(
+        Bridge::new(dir.clone(), Arc::new(net.transport(node_id)), "0.0.0")
+            .unwrap()
+            .net(NetConfig::default())
+            .control_endpoint(control.clone())
+            .data_endpoint(data),
+    );
+    let shared = Arc::clone(&bridge);
+    tokio::spawn(async move {
+        let _ = shared.run_shared(NetConfig::default()).await;
+    });
+
+    // Wait for the control endpoint to come up.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !sapphire_ipc::probe(&control).await.unwrap_or(false) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the bridge never started"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    Host {
+        tmp,
+        dir,
+        control,
+        runtime,
+        workgroup_id,
+        node_id: node_id.to_owned(),
+        bridge: Arc::clone(&bridge),
+        app_server: AppServer {
+            exe_path: PathBuf::from("/bin/true"),
+            managed_by: ManagedBy::Service,
+        },
+        owner: Mutex::new(None),
+    }
+}
+
 /// The node id of the third host.
 pub const NODE_C: &str = "c1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 

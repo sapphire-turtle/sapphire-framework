@@ -143,3 +143,71 @@ async fn a_ticket_that_was_already_used_does_not_admit_a_second_device() {
         "a ticket is good once"
     );
 }
+
+/// A retire propagates to another *running* bridge, without a fixture doing the sync.
+///
+/// `a_retired_device_stops_being_admitted_everywhere` proves the ledger carries a
+/// retirement; this proves the running bridges carry it themselves. Nothing here scans or
+/// dials on a peer's behalf: both hosts run `Bridge::run_shared`, which is where the
+/// propagation a user gets must come from. This is the regression test for the review
+/// finding that a `device forget` stayed a local write until some fixture dialed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retirement_reaches_a_running_bridge_without_a_fixture_dialing() {
+    let net = LoopbackNetwork::new();
+    let a = common::start(&net, common::NODE_A, "host-a").await;
+    // B joins the way a real joiner does: pairing into a bare directory, then running its
+    // bridge over the workgroup it just got.
+    let (_tb, dir_b, _wg_b) = pair_in(&net, &a, common::NODE_B, "phone").await;
+    let b = common::start_joined(&net, _tb, dir_b, common::NODE_B).await;
+
+    // The membership itself arrived without any fixture help: A's pairing write is scanned
+    // and dialed by A's running bridge.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if Workgroup::open(&b.dir)
+            .unwrap()
+            .expect("a workgroup")
+            .authorize(common::NODE_B)
+            .is_ok()
+            && Workgroup::open(&b.dir)
+                .unwrap()
+                .unwrap()
+                .devices()
+                .unwrap()
+                .by_node_id(common::NODE_B)
+                .is_some()
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B's running bridge never learned its own device record"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // A retires the phone — the exact write `device forget` makes — and B's *running*
+    // bridge must refuse it afterwards, with nothing scanning or dialing for B.
+    let wg_a = Workgroup::open(&BridgeDir::at(a.tmp.path().join("bridge")).unwrap())
+        .unwrap()
+        .unwrap();
+    wg_a.devices().unwrap().retire("phone").unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let refused = Workgroup::open(&b.dir)
+            .unwrap()
+            .unwrap()
+            .authorize(common::NODE_B)
+            .err()
+            .is_some_and(|err| err.to_string().contains("retired"));
+        if refused {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "B's running bridge never learned the retirement"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}

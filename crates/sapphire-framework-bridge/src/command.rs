@@ -11,6 +11,8 @@
 #[cfg(feature = "node")]
 use std::sync::Arc;
 
+use std::io::Write as _;
+
 use sapphire_bridge_api::{
     BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
@@ -30,6 +32,15 @@ pub enum BridgeCommand {
     Run,
     /// Report whether a bridge is running, and what it knows.
     Status,
+    /// Show the bridge's log.
+    Log {
+        /// Keep printing as the log grows, as `tail -f` does.
+        #[arg(long)]
+        follow: bool,
+        /// How many lines of the log's end to show.
+        #[arg(long, default_value = "20")]
+        lines: usize,
+    },
     /// The workgroup's devices.
     #[command(subcommand)]
     Device(DeviceCommand),
@@ -104,6 +115,7 @@ impl BridgeCommand {
         match self {
             BridgeCommand::Run => run(version).await,
             BridgeCommand::Status => status(version).await,
+            BridgeCommand::Log { follow, lines } => log_command(follow, lines),
             BridgeCommand::Device(command) => match command {
                 DeviceCommand::List => device_list(version).await,
                 DeviceCommand::Invite {
@@ -149,6 +161,16 @@ async fn run(version: &'static str) -> Result<i32> {
         Err(err) => return Err(err),
     };
 
+    // One writer, guaranteed by the lock above: the log file is this bridge's alone for
+    // as long as it runs, and the guard keeps the writer thread alive until the run ends.
+    let _log = crate::logging::install(&dir)?;
+    // The record's first line names the run, so a log read across restarts shows where one
+    // bridge's story ended and the next began.
+    tracing::info!(
+        target: crate::logging::BRIDGE_TARGET,
+        "sapphire-bridge {version} starting (pid {})",
+        std::process::id()
+    );
     let bridge = build_bridge(dir, version).await?;
     bridge.run().await?;
     Ok(0)
@@ -306,6 +328,32 @@ fn read_status_report() -> Result<Option<StatusReport>> {
             stale: true,
         })),
     }
+}
+
+/// Show the end of the bridge's log, and with `--follow` keep showing it.
+///
+/// Works directly on the bridge directory: the log is a file this user already owns, and
+/// asking to read it must not bring a daemon up. A bridge that has never run here has no
+/// log, which is reported rather than failed.
+fn log_command(follow: bool, lines: usize) -> Result<i32> {
+    let dir = BridgeDir::open()?;
+    if !follow {
+        let lines = crate::logging::tail(&dir, lines)?;
+        if lines.is_empty() {
+            println!("the bridge has not written a log yet");
+            return Ok(1);
+        }
+        let mut out = std::io::stdout().lock();
+        for line in &lines {
+            writeln!(out, "{line}").map_err(Error::Io)?;
+        }
+        return Ok(0);
+    }
+    // Following never returns on its own; the process is interrupted instead, exactly as
+    // `tail -f` ends.
+    let mut out = std::io::stdout().lock();
+    crate::logging::follow(&dir, lines, &mut out, || false)?;
+    Ok(0)
 }
 
 /// List the workgroup's devices, as the running bridge sees them.

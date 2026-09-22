@@ -17,6 +17,7 @@ mod error;
 mod invite;
 #[cfg(feature = "node")]
 mod iroh;
+mod logging;
 mod net;
 mod pairing;
 mod peer;
@@ -41,6 +42,10 @@ pub use error::{Error, Result};
 pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
 #[cfg(feature = "node")]
 pub use iroh::{IrohTransport, NodeAddr};
+pub use logging::{
+    BRIDGE_TARGET, DEFAULT_LOG_FILTER, LOG_FILE, LOG_KEEP, LOG_MAX_BYTES, LogGuard, install,
+    install_console, install_with_limit, tail,
+};
 pub use net::NetConfig;
 pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
 pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};

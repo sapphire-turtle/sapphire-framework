@@ -15,12 +15,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sapphire_framework_bridge=info".into()),
-        )
-        .init();
+    // The bridge's own subscriber: the console, and — once `run` installs the log — the
+    // file layer. `tracing` allows one global subscriber per process, so the binary does
+    // not install its own and the bridge's file layer is not shut out.
+    sapphire_bridge::install_console();
 
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(BridgeCommand::Run);

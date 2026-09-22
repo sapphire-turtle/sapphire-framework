@@ -49,6 +49,10 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
 toml.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
+# The registry and the filters are what turn a writer into a layer: `registry` is what
+# `LayeredSubscriber` needs, `env-filter` is what `EnvFilter` exists behind.
+tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 url = "2"
 
 [target.'cfg(unix)'.dependencies]

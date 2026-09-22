@@ -9,6 +9,7 @@ members = [
     "crates/sapphire-framework-bridge-api",
     "crates/sapphire-framework-bridge",
     "crates/sapphire-framework-server",
+    "crates/sapphire-framework-service",
     "crates/sapphire-framework-retrieve",
     "crates/sapphire-framework-workspace",
     "crates/sapphire-framework-rpc",

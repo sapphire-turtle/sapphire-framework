@@ -1,0 +1,20 @@
+[package]
+name = "sapphire-framework-service"
+version.workspace = true
+edition.workspace = true
+description = "Register a sapphire-framework application with the OS service manager"
+license.workspace = true
+repository.workspace = true
+keywords = ["service", "systemd", "launchd", "daemon"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+toml.workspace = true

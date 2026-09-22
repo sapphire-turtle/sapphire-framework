@@ -36,6 +36,7 @@
 //! | `backend` | [`backend`] | `sapphire-framework-backend` |
 //! | `remote-client` | [`remote_client`] | `sapphire-framework-remote-client` |
 //! | `remote-server` | [`remote_server`] | `sapphire-framework-remote-server` |
+//! | `service` | [`service`] | `sapphire-framework-service` |
 
 #[cfg(feature = "workspace")]
 pub use sapphire_framework_workspace as workspace;
@@ -88,6 +89,9 @@ pub use sapphire_framework_remote_client as remote_client;
 
 #[cfg(feature = "remote-server")]
 pub use sapphire_framework_remote_server as remote_server;
+
+#[cfg(feature = "service")]
+pub use sapphire_framework_service as service;
 
 /// Commonly-used types, re-exported for `use sapphire_framework::prelude::*;`.
 ///

@@ -28,6 +28,7 @@
 pub mod error;
 pub mod privilege;
 pub mod scope;
+pub mod systemd;
 
 pub use error::{Error, Result};
 pub use privilege::{HelperSpec, PrivilegeConfig, UserSpec};
@@ -35,3 +36,4 @@ pub use scope::{
     Environment, InstallContext, Os, PostInstall, RunAs, Scope, ServiceSpec, resolve_scope,
     resolve_target_user,
 };
+pub use systemd::{activation, linger_hint, render_unit, unit_path};

@@ -1,20 +1,23 @@
-//! Platform-directory resolution, per-binary-type layout, and one-shot
-//! migration of the pre-unification layouts (issues #128/#129).
+//! Platform-directory resolution and the one-shot migrations of the
+//! pre-unification layouts (issues #128/#129 and this task's undo of the
+//! per-kind split).
 //!
-//! Layout (option B, decided in the design spec): every app stores state under
-//! `<platform-root>/<app-name>/<kind>/`, where `<kind>` is the binary type
-//! (`cli`, `server`, `desktop`). Two legacy layouts are migrated on first launch:
+//! Layout: every app stores state under `<platform-root>/<app-name>/` — cache,
+//! data and config each under their own platform root, with no per-kind layer.
+//! [`AppKind`] survives as a description of what a process does; it never
+//! appears in a path.
 //!
-//! - **Option A** (`<platform-root>/<app-name>-<kind>/`, agent today): the whole
-//!   directory is moved into place, normally with one `rename`.
-//! - **Shared** (`<platform-root>/<app-name>/<uuid>/` directly, journal/ledger
-//!   today): UUID-named per-workspace directories are moved under `<kind>/` the
-//!   first time a kind runs; later kinds just get their own empty directory and
-//!   rebuild caches.
+//! Two one-shot migrations run inside
+//! [`AppContext::init`](crate::context::AppContext::init):
 //!
-//! `keys.toml` files found under a migrated *cache* tree are moved into the
-//! matching per-workspace directory of the *data* tree once — they are secrets,
-//! not rebuildable cache.
+//! - **The unsplit migration** ([`unsplit_app_dir`]): #129 briefly stored
+//!   per-kind state under `<platform-root>/<app-name>/<kind>/` so that a
+//!   desktop app and a server would not open one database. The process
+//!   architecture removes the collision itself — only the server opens one —
+//!   so `<app>/<kind>/…` moves back up to `<app>/…`.
+//! - **The keys migration** ([`migrate_keys_to_data`]): `keys.toml` files found
+//!   under a migrated *cache* tree are moved into the matching per-workspace
+//!   directory of the *data* tree — they are secrets, not rebuildable cache.
 //!
 //! Every move is a same-filesystem `std::fs::rename` when possible; if the
 //! rename fails (e.g. the trees are on different mounts, `EXDEV`), it falls
@@ -22,7 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Which binary type is initialising the context.
+/// Which binary type a process is. No longer part of a resolved path: kept so
+/// an application can still describe what it is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppKind {
     Cli,
@@ -118,50 +122,61 @@ fn copy_path(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Apply the per-kind layout to `app_dir` (`<platform-root>/<app-name>`),
-/// migrating a legacy layout if one is present, and return the created
-/// per-kind directory. Idempotent: guarded by existence checks.
-pub fn migrate_app_dir(app_dir: &Path, kind: AppKind) -> std::io::Result<PathBuf> {
-    let app_name = app_dir
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let kind_dir = app_dir.join(kind.as_str());
+/// Move `<app>/<kind>/…` back up to `<app>/…` (spec §7), and return the app directory.
+///
+/// #129 split these per binary kind so a desktop app and a server would not open one
+/// database. The server is now the only process that opens one, so the split has no
+/// remaining purpose — and it never covered the case that mattered, since a CLI invocation
+/// and the stdio MCP server were both `cli`.
+///
+/// Idempotent, and it deletes nothing: where two kinds left a directory for one workspace,
+/// the server's wins and the others stay where they are, named in a warning.
+pub fn unsplit_app_dir(app_dir: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(app_dir)?;
 
-    // Option A: a sibling `<app>-<kind>` directory replaces the app directory.
-    if let Some(parent) = app_dir.parent() {
-        let legacy = parent.join(format!("{app_name}-{}", kind.as_str()));
-        if legacy.is_dir() && !kind_dir.exists() {
-            std::fs::create_dir_all(app_dir)?;
-            move_item(&legacy, &kind_dir)?;
-            return Ok(kind_dir);
-        }
-    }
-
-    std::fs::create_dir_all(&kind_dir)?;
-
-    // Shared layout: UUID-named per-workspace dirs directly under the app dir
-    // move under the kind directory. (No-op once a migration has run, since
-    // nothing UUID-named remains directly under the app dir.)
-    for entry in std::fs::read_dir(app_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let Some(name_str) = name.to_str().map(str::to_owned) else {
+    // Most specific first: the server's copy is the one the new architecture keeps writing.
+    for kind in [AppKind::Server, AppKind::Desktop, AppKind::Cli] {
+        let from = app_dir.join(kind.as_str());
+        if !from.is_dir() {
             continue;
-        };
-        if is_uuid_name(&name_str) && entry.file_type()?.is_dir() {
-            move_item(&app_dir.join(&name_str), &kind_dir.join(&name_str))?;
         }
+        for entry in std::fs::read_dir(&from)? {
+            let entry = entry?;
+            let target = app_dir.join(entry.file_name());
+            if target.exists() {
+                tracing::warn!(
+                    kept = %target.display(),
+                    left = %entry.path().display(),
+                    "two kinds left a directory for one workspace; the first kept wins and \
+                     the other is left in place — delete it once you are satisfied"
+                );
+                continue;
+            }
+            if let Err(err) = std::fs::rename(entry.path(), &target) {
+                // A cross-device rename fails; fall back to a copy, and still delete nothing
+                // on failure.
+                tracing::warn!(
+                    from = %entry.path().display(),
+                    to = %target.display(),
+                    "could not move: {err}"
+                );
+            }
+        }
+        // Only if it emptied out.
+        let _ = std::fs::remove_dir(&from);
     }
-    Ok(kind_dir)
+    Ok(app_dir.to_owned())
 }
 
-/// Move per-workspace `keys.toml` files from the (already migrated) cache
-/// tree's `<app>/<kind>/<uuid>/` layout into the data tree's. Once per uuid:
-/// skipped when the data tree already has that workspace directory, which is
-/// what keeps this a once-ever migration (and protects an already-migrated
-/// `keys.toml` from being overwritten on later launches).
+/// Move per-workspace `keys.toml` files from the cache tree into the data
+/// tree, using the per-kind `<app>/<kind>/<uuid>/` layout that the unsplit
+/// migration removes. Once per uuid: skipped when the data tree already has
+/// that workspace directory, which is what keeps this a once-ever migration
+/// (and protects an already-migrated `keys.toml` from being overwritten on
+/// later launches).
+///
+/// The cache tree passed in should be the one *before* [`unsplit_app_dir`]
+/// runs, so that `<app>/<kind>/<uuid>/keys.toml` is still there to move.
 pub fn migrate_keys_to_data(
     cache_app_dir: &Path,
     data_app_dir: &Path,
@@ -222,43 +237,6 @@ mod tests {
             workspace_dir_env_var("sapphire-ledger"),
             "SAPPHIRE_LEDGER_DIR"
         );
-    }
-
-    #[test]
-    fn option_a_sibling_directory_is_moved_into_the_kind_directory() {
-        let root = tempdir().unwrap();
-        let app_dir = root.path().join("sapphire-agent");
-        let legacy = root.path().join("sapphire-agent-server");
-        std::fs::create_dir_all(legacy.join("2f1c0000-0000-8000-8000-000000000000")).unwrap();
-        std::fs::write(legacy.join("keys.toml"), "k").unwrap();
-
-        let kind_dir = migrate_app_dir(&app_dir, AppKind::Server).unwrap();
-
-        assert_eq!(kind_dir, app_dir.join("server"));
-        assert!(
-            kind_dir
-                .join("2f1c0000-0000-8000-8000-000000000000")
-                .is_dir()
-        );
-        assert!(!legacy.exists());
-    }
-
-    #[test]
-    fn shared_uuid_directories_move_under_the_kind_directory_once() {
-        let root = tempdir().unwrap();
-        let app_dir = root.path().join("sapphire-journal");
-        let uuid = "2f1c0000-0000-8000-8000-000000000000";
-        std::fs::create_dir_all(app_dir.join(uuid)).unwrap();
-        std::fs::write(app_dir.join(uuid).join("keys.toml"), "k").unwrap();
-
-        let first = migrate_app_dir(&app_dir, AppKind::Server).unwrap();
-        let second = migrate_app_dir(&app_dir, AppKind::Server).unwrap();
-
-        assert!(first.join(uuid).is_dir());
-        assert_eq!(first, second);
-        assert!(first.join(uuid).join("keys.toml").exists());
-        // the legacy flat layout is gone
-        assert!(!app_dir.join(uuid).exists());
     }
 
     #[test]
@@ -376,13 +354,169 @@ mod tests {
         assert!(!file_from.exists());
         assert_eq!(std::fs::read_to_string(&file_to).unwrap(), "secret");
     }
+}
+
+#[cfg(test)]
+mod unsplit_tests {
+    use super::*;
+
+    /// Build `<root>/<app>/<kind>/<uuid>/` with a file in it.
+    fn seed(root: &std::path::Path, app: &str, kind: &str, uuid: &str, file: &str) {
+        let dir = root.join(app).join(kind).join(uuid);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), b"x").unwrap();
+    }
 
     #[test]
-    fn migration_is_a_noop_on_a_fresh_layout() {
-        let root = tempdir().unwrap();
-        let app_dir = root.path().join("sapphire-tally");
-        let kind_dir = migrate_app_dir(&app_dir, AppKind::Server).unwrap();
-        assert!(kind_dir.exists());
-        assert_eq!(kind_dir.file_name().unwrap(), "server");
+    fn a_per_kind_directory_moves_up_one_level() {
+        let tmp = tempfile::tempdir().unwrap();
+        seed(
+            tmp.path(),
+            "sapphire-journal",
+            "server",
+            "ws-1",
+            "docs.redb",
+        );
+
+        let app_dir = unsplit_app_dir(&tmp.path().join("sapphire-journal")).unwrap();
+
+        assert_eq!(app_dir, tmp.path().join("sapphire-journal"));
+        assert!(app_dir.join("ws-1").join("docs.redb").exists());
+        assert!(
+            !app_dir.join("server").join("ws-1").exists(),
+            "the moved directory must not be left behind as well"
+        );
+    }
+
+    #[test]
+    fn migrating_twice_changes_nothing_the_second_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-journal");
+        seed(
+            tmp.path(),
+            "sapphire-journal",
+            "server",
+            "ws-1",
+            "docs.redb",
+        );
+
+        unsplit_app_dir(&app_dir).unwrap();
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert!(app_dir.join("ws-1").join("docs.redb").exists());
+    }
+
+    #[test]
+    fn the_server_copy_wins_when_two_kinds_left_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-journal");
+        std::fs::create_dir_all(app_dir.join("cli").join("ws-1")).unwrap();
+        std::fs::write(app_dir.join("cli").join("ws-1").join("mark"), b"cli").unwrap();
+        std::fs::create_dir_all(app_dir.join("server").join("ws-1")).unwrap();
+        std::fs::write(app_dir.join("server").join("ws-1").join("mark"), b"server").unwrap();
+
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(app_dir.join("ws-1").join("mark")).unwrap(),
+            "server"
+        );
+    }
+
+    #[test]
+    fn a_losing_copy_is_left_in_place_rather_than_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-journal");
+        std::fs::create_dir_all(app_dir.join("cli").join("ws-1")).unwrap();
+        std::fs::write(app_dir.join("cli").join("ws-1").join("mark"), b"cli").unwrap();
+        std::fs::create_dir_all(app_dir.join("server").join("ws-1")).unwrap();
+        std::fs::write(app_dir.join("server").join("ws-1").join("mark"), b"server").unwrap();
+
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert!(
+            app_dir.join("cli").join("ws-1").join("mark").exists(),
+            "a directory this migration could not move must be left for the user to look at"
+        );
+    }
+
+    #[test]
+    fn keys_move_with_their_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-agent");
+        std::fs::create_dir_all(app_dir.join("server").join("ws-1")).unwrap();
+        std::fs::write(
+            app_dir.join("server").join("ws-1").join("keys.toml"),
+            b"[[key]]\n",
+        )
+        .unwrap();
+
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert!(
+            app_dir.join("ws-1").join("keys.toml").exists(),
+            "a server that lost its keys refuses to start"
+        );
+    }
+
+    #[test]
+    fn an_app_directory_that_was_never_split_is_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-journal");
+        std::fs::create_dir_all(app_dir.join("ws-1")).unwrap();
+        std::fs::write(app_dir.join("ws-1").join("docs.redb"), b"x").unwrap();
+
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert!(app_dir.join("ws-1").join("docs.redb").exists());
+    }
+
+    #[test]
+    fn a_missing_app_directory_is_created_not_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("brand-new");
+        assert_eq!(unsplit_app_dir(&app_dir).unwrap(), app_dir);
+        assert!(app_dir.is_dir());
+    }
+
+    #[test]
+    fn a_directory_that_is_not_a_kind_is_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_dir = tmp.path().join("sapphire-journal");
+        std::fs::create_dir_all(app_dir.join("ws-1")).unwrap();
+        // A workspace uuid could look like anything; only the three known kinds move.
+        std::fs::create_dir_all(app_dir.join("desktop-notes")).unwrap();
+
+        unsplit_app_dir(&app_dir).unwrap();
+
+        assert!(app_dir.join("desktop-notes").is_dir());
+    }
+
+    #[test]
+    fn the_resolved_cache_path_no_longer_contains_a_kind() {
+        // Every env mutation in this crate's tests goes through `TestEnv` (see
+        // `test_env.rs`); the data and config categories are pinned to their own
+        // tempdirs so `init` never touches the real platform directories.
+        let _env = crate::test_env::TestEnv::lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        crate::test_env::TestEnv::set("SAPPHIRE_UNSPLIT_CACHE_DIR", tmp.path());
+        crate::test_env::TestEnv::set("SAPPHIRE_UNSPLIT_DATA_DIR", data.path());
+        crate::test_env::TestEnv::set("SAPPHIRE_UNSPLIT_CONFIG_DIR", config.path());
+        static CTX: crate::AppContext = crate::AppContext::new("sapphire-unsplit");
+        CTX.init(AppKind::Server);
+        crate::test_env::TestEnv::remove("SAPPHIRE_UNSPLIT_CACHE_DIR");
+        crate::test_env::TestEnv::remove("SAPPHIRE_UNSPLIT_DATA_DIR");
+        crate::test_env::TestEnv::remove("SAPPHIRE_UNSPLIT_CONFIG_DIR");
+
+        let cache = CTX.cache_dir();
+        for kind in ["/cli", "/server", "/desktop"] {
+            assert!(
+                !cache.to_string_lossy().contains(kind),
+                "the kind is still in the path: {}",
+                cache.display()
+            );
+        }
     }
 }

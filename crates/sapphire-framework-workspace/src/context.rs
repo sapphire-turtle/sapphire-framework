@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use crate::app_dirs::{AppKind, app_dir_env_var, migrate_app_dir, migrate_keys_to_data};
+use crate::app_dirs::{AppKind, app_dir_env_var, migrate_keys_to_data, unsplit_app_dir};
 use crate::workspace::path_uuid;
 
 /// Application-wide context shared across all [`Workspace`](crate::Workspace) instances.
@@ -13,9 +13,9 @@ use crate::workspace::path_uuid;
 /// resolves the three platform roots with the `dirs` crate (re-exported by the
 /// framework facade for apps), applies each category's
 /// `SAPPHIRE_<APP-UPPER>_<CATEGORY>_DIR` env override (an env var replaces the
-/// *platform root*, never the `<app_name>/<kind>` layer), and applies the
-/// per-binary-type layout and one-shot migration of [`crate::app_dirs`] —
-/// first writer wins, as with [`set_cache_dir`](Self::set_cache_dir).
+/// *platform root* only — the path is simply `<platform-root>/<app_name>`),
+/// and applies the one-shot migrations of [`crate::app_dirs`] — first writer
+/// wins, as with [`set_cache_dir`](Self::set_cache_dir).
 ///
 /// # Usage
 ///
@@ -45,14 +45,14 @@ pub struct AppContext {
     /// Default: `false` — any path that resolves outside the workspace root
     /// returns [`Error::PathEscapesWorkspace`](crate::Error::PathEscapesWorkspace).
     allow_external_paths: bool,
-    /// App-specific cache directory (per-kind layout applied by
-    /// [`init`](Self::init) or set via [`set_cache_dir`](Self::set_cache_dir)).
+    /// App-specific cache directory (resolved by [`init`](Self::init) or set
+    /// via [`set_cache_dir`](Self::set_cache_dir)).
     cache_dir: OnceLock<PathBuf>,
-    /// App-specific persistent data directory (per-kind layout applied by
-    /// [`init`](Self::init) or set via [`set_data_dir`](Self::set_data_dir)).
+    /// App-specific persistent data directory (resolved by [`init`](Self::init)
+    /// or set via [`set_data_dir`](Self::set_data_dir)).
     data_dir: OnceLock<PathBuf>,
-    /// App-specific config directory (per-kind layout applied by
-    /// [`init`](Self::init) or set via [`set_config_dir`](Self::set_config_dir)).
+    /// App-specific config directory (resolved by [`init`](Self::init) or set
+    /// via [`set_config_dir`](Self::set_config_dir)).
     config_dir: OnceLock<PathBuf>,
 }
 
@@ -72,55 +72,85 @@ impl AppContext {
     /// Initialise the cache, data and config directories from the platform
     /// defaults (`dirs::cache_dir` / `dirs::data_dir` / `dirs::config_dir`,
     /// each falling back to [`std::env::temp_dir`] when unavailable), applying
-    /// each category's env override and the per-binary-type layout and
-    /// one-shot migration described in [`crate::app_dirs`], and store all
-    /// three (first writer wins, as with [`set_cache_dir`](Self::set_cache_dir)).
+    /// each category's env override and the one-shot migrations described in
+    /// [`crate::app_dirs`], and store all three (first writer wins, as with
+    /// [`set_cache_dir`](Self::set_cache_dir)).
     ///
     /// Each category's env var (`SAPPHIRE_<APP-UPPER>_CACHE_DIR`, `..._DATA_DIR`,
     /// `..._CONFIG_DIR` — see [`app_dir_env_var`](crate::app_dirs::app_dir_env_var))
-    /// replaces the *platform root* only; the `<app_name>/<kind>` layering
-    /// always applies on top.
+    /// replaces the *platform root* only; the path is always
+    /// `<platform-root>/<app_name>`, with no per-kind layer.
     ///
-    /// `keys.toml` migration from the cache tree into the data tree runs once
-    /// per workspace (see [`migrate_keys_to_data`](crate::app_dirs::migrate_keys_to_data)),
-    /// best-effort — a failure is logged, never fatal at startup.
+    /// Two migrations run, both best-effort — a failure is logged, never fatal
+    /// at startup:
+    ///
+    /// - the secrets migration (`keys.toml` from the cache tree into the data
+    ///   tree, once per workspace — see
+    ///   [`migrate_keys_to_data`](crate::app_dirs::migrate_keys_to_data)),
+    ///   which reads the pre-#129 per-kind layout, so it runs first;
+    /// - the unsplit migration (`<app>/<kind>/…` moves back up to `<app>/…` —
+    ///   see [`unsplit_app_dir`](crate::app_dirs::unsplit_app_dir)).
+    ///
+    /// `kind` now only steers the secrets migration; it never appears in a
+    /// resolved path.
     pub fn init(&self, kind: AppKind) {
-        let cache = self.init_category("cache", kind, dirs::cache_dir());
-        let data = self.init_category("data", kind, dirs::data_dir());
-        let config = self.init_category("config", kind, dirs::config_dir());
-        if let Some(dir) = cache.as_deref() {
-            self.set_cache_dir(dir.to_owned());
+        let cache_app = self
+            .category_root("cache", dirs::cache_dir())
+            .join(self.app_name);
+        let data_app = self
+            .category_root("data", dirs::data_dir())
+            .join(self.app_name);
+        let config_app = self
+            .category_root("config", dirs::config_dir())
+            .join(self.app_name);
+
+        // Secrets first, while the cache tree is still in the per-kind layout
+        // the unsplit migration is about to undo: keys.toml moves from
+        // `<app>/<kind>/<uuid>/` in the cache tree into the data tree. Under
+        // #129 the per-kind directories already existed by the time this ran;
+        // the data tree's is recreated here only when the cache tree still has
+        // one to migrate from (and the unsplit pass below removes it again
+        // when nothing is moved into it).
+        if cache_app.join(kind.as_str()).is_dir() {
+            let data_kind = data_app.join(kind.as_str());
+            if let Err(err) = std::fs::create_dir_all(&data_kind) {
+                tracing::warn!(
+                    "could not prepare the data directory {}: {err}",
+                    data_kind.display()
+                );
+            }
         }
-        if let Some(dir) = data.as_deref() {
-            self.set_data_dir(dir.to_owned());
-        }
-        if let Some(dir) = config.as_deref() {
-            self.set_config_dir(dir.to_owned());
-        }
-        // Once-per-workspace secrets migration, once both trees exist:
-        // keys.toml files move from the cache tree into the data tree (the
-        // app dir is the parent of each per-kind directory).
-        let app_dir =
-            |dir: &Option<PathBuf>| dir.as_deref().and_then(|p| p.parent().map(Path::to_owned));
-        if let (Some(cache_app), Some(data_app)) = (app_dir(&cache), app_dir(&data))
-            && let Err(err) = migrate_keys_to_data(&cache_app, &data_app, kind)
-        {
+        if let Err(err) = migrate_keys_to_data(&cache_app, &data_app, kind) {
             tracing::warn!("keys.toml cache-to-data migration failed: {err}");
         }
+
+        // Undo the per-kind layout (#129): `<app>/<kind>/…` moves back up to
+        // `<app>/…`, idempotently and without deleting anything.
+        for (category, app_dir) in [
+            ("cache", cache_app.as_path()),
+            ("data", data_app.as_path()),
+            ("config", config_app.as_path()),
+        ] {
+            if let Err(err) = unsplit_app_dir(app_dir) {
+                tracing::warn!(
+                    "could not prepare the {} directory {}: {err}",
+                    category,
+                    app_dir.display()
+                );
+            }
+        }
+
+        self.set_cache_dir(cache_app);
+        self.set_data_dir(data_app);
+        self.set_config_dir(config_app);
     }
 
-    /// Resolve one category's per-kind directory: env-var override or the
-    /// platform root (fallback [`std::env::temp_dir`]), then
-    /// [`migrate_app_dir`](crate::app_dirs::migrate_app_dir) on
-    /// `<root>/<app_name>`.  `None` (with a warning) when the tree cannot be
-    /// prepared.
-    fn init_category(
-        &self,
-        category: &str,
-        kind: AppKind,
-        platform_root: Option<PathBuf>,
-    ) -> Option<PathBuf> {
-        let root = std::env::var(app_dir_env_var(self.app_name, category))
+    /// Resolve one category's platform root: the category's env override
+    /// (`SAPPHIRE_<APP-UPPER>_<CATEGORY>_DIR`, which replaces the platform
+    /// root only) or the platform default, falling back to
+    /// [`std::env::temp_dir`] when neither is available.
+    fn category_root(&self, category: &str, platform_root: Option<PathBuf>) -> PathBuf {
+        std::env::var(app_dir_env_var(self.app_name, category))
             .ok()
             .filter(|v| !v.is_empty())
             .map(|v| {
@@ -128,19 +158,7 @@ impl AppContext {
                 p.clone().canonicalize().unwrap_or(p)
             })
             .or(platform_root)
-            .unwrap_or_else(std::env::temp_dir);
-        let app_dir = root.join(self.app_name);
-        match migrate_app_dir(&app_dir, kind) {
-            Ok(kind_dir) => Some(kind_dir),
-            Err(err) => {
-                tracing::warn!(
-                    "could not prepare the {} directory {}: {err}",
-                    category,
-                    app_dir.display()
-                );
-                None
-            }
-        }
+            .unwrap_or_else(std::env::temp_dir)
     }
 
     /// Allow file operations on paths outside the workspace root.
@@ -239,7 +257,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn init_sets_all_three_dirs_under_the_kind_directory() {
+    fn init_sets_all_three_dirs_under_the_app_directory() {
         let _env = TestEnv::lock();
         let (cache, data, config) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
         TestEnv::set("SAPPHIRE_TESTJOURNAL_CACHE_DIR", cache.path());
@@ -247,18 +265,9 @@ mod tests {
         TestEnv::set("SAPPHIRE_TESTJOURNAL_CONFIG_DIR", config.path());
         let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new("sapphire-testjournal")));
         ctx.init(AppKind::Server);
-        assert_eq!(
-            ctx.cache_dir(),
-            cache.path().join("sapphire-testjournal").join("server")
-        );
-        assert_eq!(
-            ctx.data_dir(),
-            data.path().join("sapphire-testjournal").join("server")
-        );
-        assert_eq!(
-            ctx.config_dir(),
-            config.path().join("sapphire-testjournal").join("server")
-        );
+        assert_eq!(ctx.cache_dir(), cache.path().join("sapphire-testjournal"));
+        assert_eq!(ctx.data_dir(), data.path().join("sapphire-testjournal"));
+        assert_eq!(ctx.config_dir(), config.path().join("sapphire-testjournal"));
     }
 
     #[test]
@@ -272,22 +281,16 @@ mod tests {
             Box::leak(Box::new(AppContext::new("sapphire-testjournal2")));
         ctx.init(AppKind::Server);
         ctx.init(AppKind::Cli); // first writer wins — no change
-        assert_eq!(
-            ctx.cache_dir(),
-            cache.path().join("sapphire-testjournal2").join("server")
-        );
-        assert_eq!(
-            ctx.data_dir(),
-            data.path().join("sapphire-testjournal2").join("server")
-        );
+        assert_eq!(ctx.cache_dir(), cache.path().join("sapphire-testjournal2"));
+        assert_eq!(ctx.data_dir(), data.path().join("sapphire-testjournal2"));
         assert_eq!(
             ctx.config_dir(),
-            config.path().join("sapphire-testjournal2").join("server")
+            config.path().join("sapphire-testjournal2")
         );
     }
 
     #[test]
-    fn init_moves_legacy_shared_uuid_dirs_under_the_kind_directory() {
+    fn init_keeps_a_pre_split_flat_uuid_directory_in_place() {
         let _env = TestEnv::lock();
         let (cache, data, config) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
         let uuid = "2f1c0000-0000-8000-8000-000000000000";
@@ -298,19 +301,13 @@ mod tests {
         let ctx: &'static AppContext =
             Box::leak(Box::new(AppContext::new("sapphire-testjournal4")));
         ctx.init(AppKind::Cli);
-        let kind_dir = cache.path().join("sapphire-testjournal4").join("cli");
-        assert_eq!(ctx.cache_dir(), kind_dir);
+        let app_dir = cache.path().join("sapphire-testjournal4");
+        assert_eq!(ctx.cache_dir(), app_dir);
         assert!(
-            kind_dir.join(uuid).is_dir(),
-            "shared-layout UUID dir must move under the kind dir"
+            app_dir.join(uuid).is_dir(),
+            "the flat pre-#129 layout is already the target shape"
         );
-        assert!(
-            !cache
-                .path()
-                .join("sapphire-testjournal4")
-                .join(uuid)
-                .exists()
-        );
+        assert!(!app_dir.join("cli").exists());
     }
 
     #[test]
@@ -332,11 +329,7 @@ mod tests {
         let ctx: &'static AppContext =
             Box::leak(Box::new(AppContext::new("sapphire-testjournal5")));
         ctx.init(AppKind::Server);
-        let data_uuid = data
-            .path()
-            .join("sapphire-testjournal5")
-            .join("server")
-            .join(uuid);
+        let data_uuid = data.path().join("sapphire-testjournal5").join(uuid);
         assert_eq!(
             std::fs::read_to_string(data_uuid.join("keys.toml")).unwrap(),
             "secret"
@@ -358,16 +351,12 @@ mod tests {
         let uuid = crate::path_uuid(root.path()).to_string();
         assert_eq!(
             ctx.cache_dir_for(root.path()),
-            cache
-                .path()
-                .join("sapphire-testjournal3")
-                .join("cli")
-                .join(uuid)
+            cache.path().join("sapphire-testjournal3").join(uuid)
         );
     }
 
     #[test]
-    fn model_cache_dir_is_under_the_kind_cache_directory() {
+    fn model_cache_dir_is_under_the_app_cache_directory() {
         let _env = TestEnv::lock();
         let (cache, data, config) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
         TestEnv::set("SAPPHIRE_TESTJOURNAL6_CACHE_DIR", cache.path());
@@ -378,11 +367,7 @@ mod tests {
         ctx.init(AppKind::Desktop);
         assert_eq!(
             ctx.model_cache_dir(),
-            cache
-                .path()
-                .join("sapphire-testjournal6")
-                .join("desktop")
-                .join("models")
+            cache.path().join("sapphire-testjournal6").join("models")
         );
     }
 }

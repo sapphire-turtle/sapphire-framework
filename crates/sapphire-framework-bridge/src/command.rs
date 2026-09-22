@@ -608,6 +608,13 @@ mod tests {
     }
 
     #[test]
+    fn the_log_subcommand_parses() {
+        assert!(Probe::try_parse_from(["b", "log"]).is_ok());
+        assert!(Probe::try_parse_from(["b", "log", "--follow"]).is_ok());
+        assert!(Probe::try_parse_from(["b", "log", "--lines", "50"]).is_ok());
+    }
+
+    #[test]
     fn there_is_no_way_to_map_a_workspace_from_here() {
         // Placing a workspace on this host is the owning application's business (spec §1).
         assert!(Probe::try_parse_from(["b", "workspace", "map", "notes", "/tmp/x"]).is_err());

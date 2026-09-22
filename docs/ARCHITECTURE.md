@@ -104,6 +104,11 @@ Cargo workspace（モノレポ）。既存済み ✅ / 予定 ⬜。
 | `sapphire-framework-mcp` | rmcp ベース MCP 骨格（`RecallServer` 汎用化 + stdio/http transport） | ⬜ |
 | `sapphire-framework-cache-wasm` | wasm 専用: IndexedDB/OPFS の track/entries + substring 検索 | ⬜ |
 
+> **bridge の可視化**: `<bridge dir>/status.json`（5 秒ごと + 変化時、アトミック書き込み）と
+> `<bridge dir>/logs/node.log`（10 MiB × 3 でローテーション）。書き手は単一インスタンスロックが
+> 保証する 1 プロセスのみなので、ログは再起動をまたいで連続する。`sapphire-bridge status` は
+> 稼働中の bridge に問い合わせ、応答が無ければ `status.json` を読む。
+
 ## GUI 向け 非同期 Backend trait
 
 **framework 側は実装済み**（`sapphire-framework-backend`）: `#[async_trait]` の `WorkspaceBackend`

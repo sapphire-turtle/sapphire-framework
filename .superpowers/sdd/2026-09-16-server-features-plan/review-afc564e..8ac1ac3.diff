@@ -1,0 +1,1143 @@
+# Review package: afc564e..8ac1ac3
+
+## Commits
+8ac1ac3 feat(session): keep a session open and push what is committed
+
+## Files changed
+ crates/sapphire-framework-session/src/lib.rs     |  10 +-
+ crates/sapphire-framework-session/src/live.rs    | 320 +++++++++++++++++++++++
+ crates/sapphire-framework-session/src/message.rs |  23 ++
+ crates/sapphire-framework-session/src/session.rs | 184 +++++++++----
+ crates/sapphire-framework-session/tests/live.rs  | 244 +++++++++++++++++
+ 5 files changed, 729 insertions(+), 52 deletions(-)
+
+## Diff
+diff --git a/crates/sapphire-framework-session/src/lib.rs b/crates/sapphire-framework-session/src/lib.rs
+index 5efa992..48a00ef 100644
+--- a/crates/sapphire-framework-session/src/lib.rs
++++ b/crates/sapphire-framework-session/src/lib.rs
+@@ -1,27 +1,35 @@
+ //! The replication session two sapphire-framework replicas run over a byte stream.
+ //!
+ //! One `Replica` per side, one bidirectional stream, and a framed exchange of version
+ //! vectors, path updates and content. This crate is the only place that knows the wire
+ //! format; it neither knows nor cares what carries the bytes.
+ //!
+-//! See `docs/superpowers/specs/2026-09-15-p2p-sync-iroh-design.md` §3.7.
++//! Two shapes of session are built on that exchange:
++//!
++//! - [`run_session`] — a one-shot catch-up. It returns once both sides are caught up.
++//! - [`open_live_session`] — the same catch-up, then a stream that stays open: each side
++//!   pushes what it commits and applies what arrives.
++//!
++//! See `docs/superpowers/specs/2026-09-15-p2p-sync-iroh-design.md` §3.7 and §4.2.
+ 
+ #![warn(missing_docs)]
+ 
+ mod error;
+ mod frame;
++mod live;
+ mod message;
+ mod session;
+ 
+ pub use error::{Error, Result};
+ pub use frame::{Frame, read_frame, read_framed, write_blob, write_control, write_framed};
++pub use live::{LiveSession, open_live_session};
+ pub use message::Message;
+ pub use session::{SessionOutcome, run_session};
+ 
+ /// The session format this build speaks. Sent in the first message and checked.
+ pub const SESSION_FORMAT_VERSION: u32 = 1;
+ 
+ /// Largest payload carried inline in an `Updates` page, in bytes. Anything larger is
+ /// fetched by hash within the same session.
+ pub const INLINE_LIMIT: usize = 64 * 1024;
+ 
+diff --git a/crates/sapphire-framework-session/src/live.rs b/crates/sapphire-framework-session/src/live.rs
+new file mode 100644
+index 0000000..ac347f2
+--- /dev/null
++++ b/crates/sapphire-framework-session/src/live.rs
+@@ -0,0 +1,320 @@
++//! The phase after `Done`: a session that stays open and pushes what is committed.
++//!
++//! [`open_live_session`] runs the same initial exchange as [`crate::run_session`] and then,
++//! instead of closing the stream, keeps reading it. `Live` messages are applied as they
++//! arrive and published on a broadcast, and [`LiveSession::push`] sends a batch through the
++//! same writer task the exchange used. The two ends of one session are two independent
++//! `LiveSession`s: each side pushes what it commits and applies what arrives, and neither is
++//! a client.
++//!
++//! Content does not travel inside a `Live` message. A batch that names a file this side does
++//! not have is answered with `Want` on the same stream, and the peer's `Blob` settles it
++//! through the machinery the exchange already uses. A batch is published only once every
++//! hash it was waiting on has been answered, so a host that forwards what it receives never
++//! announces an entry it cannot serve.
++//!
++//! # A dead peer must not stall the others
++//!
++//! The write half belongs to one task fed by a bounded channel, so a peer that stopped
++//! reading only fills its own queue. [`LiveSession::push`] fails at once once the session has
++//! closed, so a caller looping over peers moves on to the next one instead of waiting on one
++//! that went away.
++
++use std::collections::HashSet;
++use std::sync::atomic::{AtomicBool, Ordering};
++use std::sync::{Arc, Mutex};
++
++use grain_id::GrainId;
++use sapphire_sync::{ContentHash, PathUpdate, Replica, VersionVector};
++use tokio::io::{AsyncRead, AsyncWrite};
++use tokio::sync::{broadcast, mpsc};
++use tokio::task::JoinHandle;
++
++use crate::error::{Error, Result};
++use crate::frame::{Frame, read_frame};
++use crate::message::Message;
++use crate::session::{self, Exchange, Out, SessionOutcome, Stop, send};
++
++/// How many batches may wait for a subscriber before the oldest is dropped. Applies to the
++/// broadcast of received updates, not to the wire.
++const LIVE_QUEUE: usize = 64;
++
++/// A session that stays open after the initial exchange.
++///
++/// Dropping it closes the session; `close` is the same thing said out loud.
++pub struct LiveSession {
++    out: mpsc::Sender<Out>,
++    updates: broadcast::Sender<Vec<PathUpdate>>,
++    peer_vv: Arc<Mutex<VersionVector>>,
++    open: Arc<AtomicBool>,
++    reader: JoinHandle<()>,
++}
++
++impl LiveSession {
++    /// Send updates to the peer.
++    ///
++    /// Fails rather than waiting once the session has closed, so a caller looping over
++    /// peers does not stall on one that went away.
++    pub async fn push(&self, updates: Vec<PathUpdate>) -> Result<()> {
++        if !self.is_open() {
++            return Err(Error::Protocol("the session is closed".to_owned()));
++        }
++        self.out
++            .send(Out::Control(Message::Live(updates)))
++            .await
++            .map_err(|_| Error::Protocol("the session is closed".to_owned()))
++    }
++
++    /// Updates that arrived from the peer, after they were applied.
++    ///
++    /// A batch is published once every hash it was waiting on has been answered — with the
++    /// bytes, or with `Missing` — so a subscriber forwarding it forwards what this host can
++    /// answer for.
++    pub fn updates(&self) -> broadcast::Receiver<Vec<PathUpdate>> {
++        self.updates.subscribe()
++    }
++
++    /// Everything the peer is known to have.
++    ///
++    /// Consulted before forwarding: an entry the peer already covers must not be sent again,
++    /// or three connected hosts will pass one edit round in a circle. It advances as the
++    /// peer's batches arrive, because each one carries what the peer had when it sent it.
++    pub fn peer_vv(&self) -> VersionVector {
++        self.peer_vv.lock().expect("peer vv").clone()
++    }
++
++    /// Is the session still usable?
++    pub fn is_open(&self) -> bool {
++        self.open.load(Ordering::Relaxed)
++    }
++
++    /// Close it.
++    pub fn close(self) {
++        drop(self);
++    }
++}
++
++impl Drop for LiveSession {
++    fn drop(&mut self) {
++        self.open.store(false, Ordering::Relaxed);
++        self.reader.abort();
++    }
++}
++
++/// A batch that arrived and is waiting for content before it can be announced.
++struct Pending {
++    /// What the peer sent.
++    batch: Vec<PathUpdate>,
++    /// The hashes this batch is still waiting on. Empty means it is ready to publish.
++    outstanding: HashSet<ContentHash>,
++}
++
++/// Run the initial exchange and then keep the session open.
++///
++/// Both sides call this: each sends what the other lacks during the exchange and afterwards
++/// pushes what it commits, so the returned [`LiveSession`] is the same handle on either end
++/// of the stream. The [`SessionOutcome`] is returned as soon as both sides have said `Done`
++/// and `Settled` — "we are caught up" — while the session itself keeps going until a side
++/// closes it or the stream ends.
++///
++/// The replica is locked for the exchange and for every arriving batch, so a scan or a local
++/// commit on this side waits behind one batch rather than behind the session. Nothing is
++/// committed when the peer goes away or breaks the protocol: the error says which happened,
++/// and the replica's version vector is left where it was.
++///
++/// `S` must be `'static` because both halves of the stream are moved into tasks; a stream
++/// owned by the caller (a socket, a spliced pipe, a duplex) is.
++pub async fn open_live_session<S>(
++    stream: S,
++    replica: Arc<tokio::sync::Mutex<Replica>>,
++    workspace_id: GrainId,
++) -> Result<(SessionOutcome, LiveSession)>
++where
++    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
++{
++    let exchange = {
++        let mut locked = replica.lock().await;
++        session::initial_exchange(stream, &mut locked, workspace_id).await?
++    };
++
++    // A session is only live once the exchange reached its end markers. Anything else is
++    // reported as the failure it is: `run_session` may treat a peer that simply left as
++    // "nothing happened", but a caller asking for a live session cannot.
++    if !matches!(&exchange.stop, Stop::Complete) {
++        let why = match &exchange.stop {
++            Stop::Gone => Error::Protocol("the peer left before the exchange finished".to_owned()),
++            Stop::Refused(why) => Error::Refused(why.clone()),
++            Stop::Protocol(why) => Error::Protocol(why.clone()),
++            Stop::Complete => unreachable!("checked above"),
++        };
++        exchange.queued.abort();
++        session::abort(exchange.out, exchange.writer);
++        return Err(why);
++    }
++
++    let Exchange {
++        reader,
++        out,
++        writer: _,
++        queued,
++        peer_vv,
++        mut received,
++        outcome,
++        stop: _,
++    } = exchange;
++
++    // The peer is still reading, so what this side queued during the exchange — its last
++    // pages, its `Done` — has to reach the wire before the live phase starts writing.
++    let _ = queued.await;
++
++    // Caught up: materialise what was waiting on content and commit, exactly as
++    // `run_session` does at this point.
++    let outcome = {
++        let mut locked = replica.lock().await;
++        session::materialise(&mut locked, &received, &peer_vv, outcome)?
++    };
++
++    let peer_vv = Arc::new(Mutex::new(peer_vv));
++    let open = Arc::new(AtomicBool::new(true));
++    let (updates, _) = broadcast::channel(LIVE_QUEUE);
++
++    let reader_task = {
++        let replica = Arc::clone(&replica);
++        let peer_vv = Arc::clone(&peer_vv);
++        let open = Arc::clone(&open);
++        let updates = updates.clone();
++        let out = out.clone();
++        let mut reader = reader;
++        // Hashes asked for and not yet answered. One `Want` for a hash however many batches
++        // need it.
++        let mut wanted: HashSet<ContentHash> = HashSet::new();
++        // Batches joined but not yet announced; each is held until its own hashes are in.
++        let mut pending: Vec<Pending> = Vec::new();
++        tokio::spawn(async move {
++            loop {
++                // Set when content landed, so the files behind it are written before the
++                // batches waiting on it are announced.
++                let mut wrote_content = false;
++                match read_frame(&mut reader).await {
++                    Ok(Some(Frame::Control(Message::Live(batch)))) => {
++                        // The peer had all of this when it sent the batch, so its own
++                        // version vector covers it. Merging now is what keeps a forwarder
++                        // from sending the same entries back for ever.
++                        {
++                            let mut known = peer_vv.lock().expect("peer vv");
++                            for update in &batch {
++                                known.merge(&update.seen);
++                            }
++                        }
++                        let missing = {
++                            let mut locked = replica.lock().await;
++                            // The join is idempotent, so a repeated batch costs nothing.
++                            if let Err(err) = locked.apply(&batch, &received) {
++                                tracing::warn!("a live batch was not applied: {err}");
++                                break;
++                            }
++                            match session::needed(&locked, &batch, &received) {
++                                Ok(missing) => missing,
++                                Err(err) => {
++                                    tracing::warn!("a live batch could not be checked: {err}");
++                                    break;
++                                }
++                            }
++                        };
++                        // Content travels by hash, so a batch naming a file this side does
++                        // not have is completed by asking for it on this same stream.
++                        let mut outstanding = HashSet::new();
++                        for hash in missing {
++                            if wanted.insert(hash)
++                                && send(&out, Out::Control(Message::Want(hash))).await.is_err()
++                            {
++                                return;
++                            }
++                            outstanding.insert(hash);
++                        }
++                        pending.push(Pending { batch, outstanding });
++                    }
++                    Ok(Some(Frame::Control(Message::Want(hash)))) => {
++                        let answer = {
++                            let locked = replica.lock().await;
++                            match locked.read_content(&hash) {
++                                Ok(Some(bytes)) => Out::Blob(hash, bytes),
++                                _ => Out::Control(Message::Missing(hash)),
++                            }
++                        };
++                        if send(&out, answer).await.is_err() {
++                            break;
++                        }
++                    }
++                    Ok(Some(Frame::Blob { hash, bytes })) => {
++                        // Verify before storing: content is addressed by hash, so a peer
++                        // that sent the wrong bytes under one must not be able to plant
++                        // them.
++                        if ContentHash::of_bytes(&bytes) != hash {
++                            tracing::warn!("content does not match {hash}");
++                            break;
++                        }
++                        remember(&mut wanted, &mut pending, hash);
++                        received.0.insert(hash, bytes);
++                        wrote_content = true;
++                    }
++                    // The peer does not have it either. Another peer may; the path simply
++                    // stays unmaterialised until one does, and the batches that wanted it
++                    // can be announced without it.
++                    Ok(Some(Frame::Control(Message::Missing(hash)))) => {
++                        remember(&mut wanted, &mut pending, hash);
++                    }
++                    // The exchange is over and frames arrive in order, so `Done`, `Settled`,
++                    // `Updates`, a second `Hello` or a `Refused` cannot follow here.
++                    Ok(Some(other)) => {
++                        tracing::warn!("a live session got an unexpected frame: {other:?}");
++                        break;
++                    }
++                    Ok(None) => break,
++                    Err(err) => {
++                        tracing::debug!("a live session stopped reading: {err}");
++                        break;
++                    }
++                }
++
++                if wrote_content {
++                    // Write the bytes to disk before any batch that names them is
++                    // announced: a subscriber reads the file, not the store.
++                    let mut locked = replica.lock().await;
++                    if let Err(err) = locked.fetch_missing(&received) {
++                        tracing::warn!("fetched content did not settle: {err}");
++                        break;
++                    }
++                }
++                // Announce every batch that is no longer waiting on anything. Failing only
++                // means nobody is listening.
++                pending.retain(|entry| {
++                    if entry.outstanding.is_empty() {
++                        let _ = updates.send(entry.batch.clone());
++                        false
++                    } else {
++                        true
++                    }
++                });
++            }
++            open.store(false, Ordering::Relaxed);
++        })
++    };
++
++    let live = LiveSession {
++        out,
++        updates,
++        peer_vv,
++        open,
++        reader: reader_task,
++    };
++    Ok((outcome, live))
++}
++
++/// Record that `hash` is answered: it is no longer wanted, and no pending batch waits on it.
++fn remember(wanted: &mut HashSet<ContentHash>, pending: &mut [Pending], hash: ContentHash) {
++    wanted.remove(&hash);
++    for entry in pending.iter_mut() {
++        entry.outstanding.remove(&hash);
++    }
++}
+diff --git a/crates/sapphire-framework-session/src/message.rs b/crates/sapphire-framework-session/src/message.rs
+index 27d8185..aae365f 100644
+--- a/crates/sapphire-framework-session/src/message.rs
++++ b/crates/sapphire-framework-session/src/message.rs
+@@ -26,20 +26,22 @@ pub enum Message {
+     Want(ContentHash),
+     /// The sender does not have the content behind this hash either.
+     Missing(ContentHash),
+     /// The sender will ask for nothing further, and has answered every `Want` it will get.
+     ///
+     /// Sent after the peer's `Done`, once this side's want list is empty — at which point it
+     /// cannot grow again. Without it a side that stopped reading at `Done` would drop the
+     /// `Want` the peer sends after applying a page, and every file over the inline limit
+     /// would silently never arrive.
+     Settled,
++    /// A push of path states sent after the initial exchange, while the session stays open.
++    Live(Vec<PathUpdate>),
+     /// The sender will not continue, and why.
+     Refused(String),
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     fn round_trip(msg: &Message) -> Message {
+         let json = serde_json::to_vec(msg).unwrap();
+@@ -85,11 +87,32 @@ mod tests {
+     }
+ 
+     #[test]
+     fn a_refusal_round_trips() {
+         let msg = Message::Refused("format 2".to_owned());
+         match round_trip(&msg) {
+             Message::Refused(why) => assert_eq!(why, "format 2"),
+             other => panic!("got {other:?}"),
+         }
+     }
++
++    #[test]
++    fn a_live_push_round_trips() {
++        let mut vv = VersionVector::new();
++        vv.add_dot(&sapphire_sync::Dot {
++            replica: ReplicaId::new(),
++            counter: 3,
++        });
++        let msg = Message::Live(vec![PathUpdate {
++            path: "notes/hello.md".to_owned(),
++            versions: vec![],
++            seen: vv,
++        }]);
++        match round_trip(&msg) {
++            Message::Live(updates) => {
++                assert_eq!(updates.len(), 1);
++                assert_eq!(updates[0].path, "notes/hello.md");
++            }
++            other => panic!("got {other:?}"),
++        }
++    }
+ }
+diff --git a/crates/sapphire-framework-session/src/session.rs b/crates/sapphire-framework-session/src/session.rs
+index c35a7d0..68571ff 100644
+--- a/crates/sapphire-framework-session/src/session.rs
++++ b/crates/sapphire-framework-session/src/session.rs
+@@ -9,20 +9,24 @@
+ //!    mismatch, or a different workspace, ends the session with `Refused` before any state
+ //!    is exchanged.
+ //! 2. Every path state the peer's version vector does not cover, in pages of [`PAGE`], each
+ //!    page preceded by the content it inlines (64 KiB or less), then `Done`.
+ //! 3. `Want` for content that was not inlined, answered with a blob or `Missing`.
+ //! 4. `Settled`, once the sender will ask for nothing more.
+ //! 5. `commit_session` last. An interrupted session leaves the version vector where it was,
+ //!    and everything is simply resent next time; committing earlier would make the replica
+ //!    claim versions whose content never arrived.
+ //!
++//! The exchange is one function, [`initial_exchange`], because two callers start here:
++//! `run_session` finishes a session from what it returns, and `open_live_session` (in
++//! `live.rs`) keeps the stream and applies `Live` pushes on it.
++//!
+ //! # Why there are two end markers
+ //!
+ //! `Done` says "my pages are complete" and is sent as soon as they are queued, so the peer
+ //! can start asking for content without waiting for anything. That leaves a race worth
+ //! naming: a peer that has just applied a page and is about to send `Want` looks exactly
+ //! like a peer that needs nothing. A side that stopped reading at `Done` would therefore
+ //! drop the `Want` for every file over [`INLINE_LIMIT`] — and, with it, the file. `Settled`
+ //! closes the race. It is sent once the sender's want list can no longer grow (the peer's
+ //! pages are in and every hash asked for has been answered), so the receiver knows no `Want`
+ //! can follow, and both sides exit only after seeing the peer's `Done` *and* `Settled`.
+@@ -37,21 +41,21 @@
+ //! Everything this side sends goes through one task, so the read loop never blocks on a
+ //! write. Two `run_session` calls facing each other would otherwise deadlock the moment both
+ //! wrote more than the socket buffer while each waited to read.
+ 
+ use std::collections::{HashMap, HashSet};
+ 
+ use grain_id::GrainId;
+ use sapphire_sync::{
+     Content, ContentHash, ContentSource, PathUpdate, Replica, Report, VersionVector,
+ };
+-use tokio::io::{AsyncRead, AsyncWrite};
++use tokio::io::{AsyncRead, AsyncWrite, ReadHalf};
+ use tokio::sync::mpsc;
+ use tokio::task::JoinHandle;
+ 
+ use crate::error::{Error, Result};
+ use crate::frame::{Frame, read_frame, write_blob, write_control};
+ use crate::message::Message;
+ use crate::{INLINE_LIMIT, SESSION_FORMAT_VERSION};
+ 
+ /// How many path states travel in one `Updates` message.
+ const PAGE: usize = 256;
+@@ -65,60 +69,135 @@ const QUEUE: usize = 64;
+ pub struct SessionOutcome {
+     /// Path updates sent.
+     pub sent: usize,
+     /// Path updates received.
+     pub received: usize,
+     /// What applying them did.
+     pub report: Report,
+ }
+ 
+ /// One thing to put on the wire.
+-enum Out {
++pub(crate) enum Out {
+     Control(Message),
+     Blob(ContentHash, Vec<u8>),
+ }
+ 
+ /// Content received inline or fetched during this session.
+ #[derive(Default)]
+-struct Received(HashMap<ContentHash, Vec<u8>>);
++pub(crate) struct Received(pub(crate) HashMap<ContentHash, Vec<u8>>);
+ 
+ impl ContentSource for Received {
+     fn fetch(&self, hash: &ContentHash) -> Option<Vec<u8>> {
+         self.0.get(hash).cloned()
+     }
+ }
+ 
+ /// Why the read loop stopped.
+-enum Stop {
++pub(crate) enum Stop {
+     /// The peer's `Done` and `Settled` are in and this side wants nothing more.
+     Complete,
+     /// The stream ended; the peer is gone.
+     Gone,
+     /// The peer refused to continue, and why.
+     Refused(String),
+     /// The peer sent something this session does not allow.
+     Protocol(String),
+ }
+ 
++/// Everything the initial exchange left behind, for the caller that decides what happens
++/// next.
++pub(crate) struct Exchange<S> {
++    /// The peer's half of the stream, still to be read.
++    pub(crate) reader: ReadHalf<S>,
++    /// Everything this side sends goes through here, and one task drains it in order.
++    pub(crate) out: mpsc::Sender<Out>,
++    /// The task owning the write half.
++    pub(crate) writer: JoinHandle<()>,
++    /// The task queueing this side's pages and its `Done`.
++    pub(crate) queued: JoinHandle<()>,
++    /// Everything the peer said it has, as of its `Hello`.
++    pub(crate) peer_vv: VersionVector,
++    /// Content received inline, or fetched, during the exchange.
++    pub(crate) received: Received,
++    /// What the exchange did.
++    pub(crate) outcome: SessionOutcome,
++    /// How the read loop stopped.
++    pub(crate) stop: Stop,
++}
++
+ /// Run a session to completion.
+ ///
+ /// Returns once both sides have said `Done` and `Settled` and every piece of content this
+ /// side asked for has been answered — with the bytes, or with `Missing`. A stream that ends
+ /// first returns without an error, but commits nothing.
+ ///
+ /// `S` must be `'static` because the write half is moved into a task; a stream owned by the
+ /// caller (a socket, a spliced pipe, a duplex) is.
+ pub async fn run_session<S>(
+     stream: S,
+     replica: &mut Replica,
+     workspace_id: GrainId,
+ ) -> Result<SessionOutcome>
++where
++    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
++{
++    let Exchange {
++        out,
++        writer,
++        queued,
++        peer_vv,
++        received,
++        outcome,
++        stop,
++        ..
++    } = initial_exchange(stream, replica, workspace_id).await?;
++    match stop {
++        Stop::Complete => {
++            // The peer is still reading: it exits only once it has seen this side's
++            // `Settled`, which is queued but not yet written. Draining the writer delivers
++            // `Done`, `Settled` and every pending answer.
++            let _ = queued.await;
++            let result = materialise(replica, &received, &peer_vv, outcome);
++            close(out, writer, result).await
++        }
++        // The peer is gone or has misbehaved, so there is nothing to deliver and a write
++        // may never complete. Abort: nothing is committed either way, and everything is
++        // resent next session.
++        Stop::Gone => {
++            queued.abort();
++            abort(out, writer);
++            Ok(outcome)
++        }
++        Stop::Refused(why) => {
++            queued.abort();
++            abort(out, writer);
++            Err(Error::Refused(why))
++        }
++        Stop::Protocol(why) => {
++            queued.abort();
++            abort(out, writer);
++            Err(Error::Protocol(why))
++        }
++    }
++}
++
++/// Run the initial exchange: `Hello`, this side's pages, and reading until the peer's
++/// `Done` and `Settled` are in and every hash this side asked for has been answered.
++///
++/// Both session kinds start here. Nothing is committed: the caller decides, so that an
++/// interrupted exchange leaves the version vector where it was. An error means the exchange
++/// never reached its end markers, and `run_session`'s own error mapping is the caller's job.
++pub(crate) async fn initial_exchange<S>(
++    stream: S,
++    replica: &mut Replica,
++    workspace_id: GrainId,
++) -> Result<Exchange<S>>
+ where
+     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+ {
+     let (mut reader, mut writer) = tokio::io::split(stream);
+ 
+     // The writer task owns the write half and drains the channel in order, so the read loop
+     // is never blocked by a peer that is slow to read.
+     let (out_tx, mut out_rx) = mpsc::channel::<Out>(QUEUE);
+     let writer_task = tokio::spawn(async move {
+         while let Some(item) = out_rx.recv().await {
+@@ -152,58 +231,58 @@ where
+             ..
+         })) => {
+             if format != SESSION_FORMAT_VERSION {
+                 let _ = send(
+                     &out_tx,
+                     Out::Control(Message::Refused(format!(
+                         "session format {format}, expected {SESSION_FORMAT_VERSION}"
+                     ))),
+                 )
+                 .await;
+-                return close(
++                return refuse(
+                     out_tx,
+                     writer_task,
+-                    Err(Error::VersionMismatch {
++                    Error::VersionMismatch {
+                         ours: SESSION_FORMAT_VERSION,
+                         theirs: format,
+-                    }),
++                    },
+                 )
+                 .await;
+             }
+             if theirs != workspace_id {
+                 let _ = send(
+                     &out_tx,
+                     Out::Control(Message::Refused(format!(
+                         "this stream is for workspace {workspace_id}, not {theirs}"
+                     ))),
+                 )
+                 .await;
+-                return close(
++                return refuse(
+                     out_tx,
+                     writer_task,
+-                    Err(Error::Protocol(format!(
++                    Error::Protocol(format!(
+                         "workspace mismatch: the peer is syncing {theirs}, this session is for \
+                      {workspace_id}"
+-                    ))),
++                    )),
+                 )
+                 .await;
+             }
+             vv
+         }
+         Some(Frame::Control(Message::Refused(why))) => {
+-            return close(out_tx, writer_task, Err(Error::Refused(why))).await;
++            return refuse(out_tx, writer_task, Error::Refused(why)).await;
+         }
+         other => {
+-            return close(
++            return refuse(
+                 out_tx,
+                 writer_task,
+-                Err(Error::Protocol(format!("expected Hello, got {other:?}"))),
++                Error::Protocol(format!("expected Hello, got {other:?}")),
+             )
+             .await;
+         }
+     };
+ 
+     // 2. Build the outgoing side as owned data, then hand it to a task. Computing it up
+     //    front keeps the read loop free while it is written.
+     let delta = replica
+         .delta_for(&peer_vv)
+         .map_err(|e| Error::Sync(e.to_string()))?;
+@@ -275,20 +354,28 @@ where
+                     Ok(Some(bytes)) => Out::Blob(hash, bytes),
+                     _ => Out::Control(Message::Missing(hash)),
+                 };
+                 send(&out_tx, answer).await?;
+             }
+             Frame::Control(Message::Missing(hash)) => {
+                 // The peer does not have it either. Another peer may; the path simply stays
+                 // unmaterialised until one does.
+                 wanted.remove(&hash);
+             }
++            Frame::Control(Message::Live(_)) => {
++                // A `Live` push travels only after both sides have left the exchange, and
++                // frames from one peer arrive in order, so a compliant peer cannot send one
++                // here.
++                break Stop::Protocol(
++                    "a Live push before the initial exchange finished".to_owned(),
++                );
++            }
+             Frame::Control(Message::Refused(why)) => {
+                 break Stop::Refused(why);
+             }
+             Frame::Control(Message::Hello { .. }) => {
+                 break Stop::Protocol("a second Hello".to_owned());
+             }
+             Frame::Blob { hash, bytes } => {
+                 // Verify before storing: content is addressed by hash, so a peer that sent
+                 // the wrong bytes under one must not be able to plant them.
+                 if ContentHash::of_bytes(&bytes) != hash {
+@@ -299,61 +386,42 @@ where
+             }
+         }
+         // The peer's pages are all in, so this side's want list can no longer grow: settling
+         // tells the peer it may close as soon as it wants nothing more either.
+         if peer_done && wanted.is_empty() && !settled {
+             settled = true;
+             send(&out_tx, Out::Control(Message::Settled)).await?;
+         }
+     };
+ 
+-    let outcome = SessionOutcome {
+-        sent,
+-        received: received_count,
+-        report,
+-    };
+-    match stop {
+-        Stop::Complete => {
+-            // The peer is still reading: it exits only once it has seen this side's
+-            // `Settled`, which is queued but not yet written. Draining the writer delivers
+-            // `Done`, `Settled` and every pending answer.
+-            let _ = send_task.await;
+-            let result = materialise(replica, &received, &peer_vv, outcome);
+-            close(out_tx, writer_task, result).await
+-        }
+-        // The peer is gone or has misbehaved, so there is nothing to deliver and a write
+-        // may never complete. Abort: nothing is committed either way, and everything is
+-        // resent next session.
+-        Stop::Gone => {
+-            send_task.abort();
+-            abort(out_tx, writer_task);
+-            Ok(outcome)
+-        }
+-        Stop::Refused(why) => {
+-            send_task.abort();
+-            abort(out_tx, writer_task);
+-            Err(Error::Refused(why))
+-        }
+-        Stop::Protocol(why) => {
+-            send_task.abort();
+-            abort(out_tx, writer_task);
+-            Err(Error::Protocol(why))
+-        }
+-    }
++    Ok(Exchange {
++        reader,
++        out: out_tx,
++        writer: writer_task,
++        queued: send_task,
++        peer_vv,
++        received,
++        outcome: SessionOutcome {
++            sent,
++            received: received_count,
++            report,
++        },
++        stop,
++    })
+ }
+ 
+ /// Materialise what was waiting on content, then commit.
+ ///
+ /// Committing is what makes this replica claim it has what the peer had. It runs last, and
+ /// only when the peer said `Done` and `Settled`; an interrupted session leaves the version
+ /// vector where it was.
+-fn materialise(
++pub(crate) fn materialise(
+     replica: &mut Replica,
+     received: &Received,
+     peer_vv: &VersionVector,
+     mut outcome: SessionOutcome,
+ ) -> Result<SessionOutcome> {
+     let fetched = replica
+         .fetch_missing(received)
+         .map_err(|e| Error::Sync(e.to_string()))?;
+     merge_report(&mut outcome.report, fetched);
+     replica
+@@ -362,51 +430,65 @@ fn materialise(
+     tracing::debug!(
+         sent = outcome.sent,
+         received = outcome.received,
+         changed = outcome.report.changed,
+         "session complete"
+     );
+     Ok(outcome)
+ }
+ 
+ /// Queue one frame, or report that the writer is gone.
+-async fn send(tx: &mpsc::Sender<Out>, item: Out) -> Result<()> {
++pub(crate) async fn send(tx: &mpsc::Sender<Out>, item: Out) -> Result<()> {
+     tx.send(item)
+         .await
+         .map_err(|_| Error::Protocol("the stream closed".to_owned()))
+ }
+ 
+ /// Close the outgoing side, let the writer flush what is queued, and return `result`.
+ ///
+ /// Dropping the sender is what ends the writer task; it drains first, so a `Refused` or a
+ /// `Settled` queued moments ago still reaches the peer before the stream goes away.
+ async fn close(
+     out_tx: mpsc::Sender<Out>,
+     writer: JoinHandle<()>,
+     result: Result<SessionOutcome>,
+ ) -> Result<SessionOutcome> {
+     drop(out_tx);
+     let _ = writer.await;
+     result
+ }
+ 
++/// Send a `Refused` that is already queued, close the writer, and return `err`.
++///
++/// The exchange's own early exits: the peer is still reading, so what was queued has to
++/// reach it before the stream goes away.
++async fn refuse<S>(
++    out_tx: mpsc::Sender<Out>,
++    writer: JoinHandle<()>,
++    err: Error,
++) -> Result<Exchange<S>> {
++    drop(out_tx);
++    let _ = writer.await;
++    Err(err)
++}
++
+ /// Close the outgoing side without waiting to deliver what is queued.
+ ///
+ /// Used only once the peer can no longer be expected to read, where a write may otherwise
+ /// never complete.
+-fn abort(out_tx: mpsc::Sender<Out>, writer: JoinHandle<()>) {
++pub(crate) fn abort(out_tx: mpsc::Sender<Out>, writer: JoinHandle<()>) {
+     drop(out_tx);
+     writer.abort();
+ }
+ 
+ /// Hashes these updates need that neither the store nor this session has.
+-fn needed(
++pub(crate) fn needed(
+     replica: &Replica,
+     updates: &[PathUpdate],
+     received: &Received,
+ ) -> Result<Vec<ContentHash>> {
+     let mut out = Vec::new();
+     for update in updates {
+         for entry in &update.versions {
+             let Some(hash) = entry.content.hash() else {
+                 continue;
+             };
+@@ -418,16 +500,16 @@ fn needed(
+                 .map_err(|e| Error::Sync(e.to_string()))?
+                 .is_some();
+             if !have {
+                 out.push(hash);
+             }
+         }
+     }
+     Ok(out)
+ }
+ 
+-fn merge_report(into: &mut Report, from: Report) {
++pub(crate) fn merge_report(into: &mut Report, from: Report) {
+     into.changed += from.changed;
+     into.recorded.extend(from.recorded);
+     into.conflicts.extend(from.conflicts);
+     into.skipped.extend(from.skipped);
+ }
+diff --git a/crates/sapphire-framework-session/tests/live.rs b/crates/sapphire-framework-session/tests/live.rs
+new file mode 100644
+index 0000000..035bb2d
+--- /dev/null
++++ b/crates/sapphire-framework-session/tests/live.rs
+@@ -0,0 +1,244 @@
++//! A session that keeps going after the initial exchange.
++
++use std::sync::Arc;
++
++use sapphire_framework_session::open_live_session;
++use sapphire_sync::{Replica, ReplicaConfig, SystemClock};
++use tokio::sync::Mutex;
++
++struct Side {
++    _tmp: tempfile::TempDir,
++    root: std::path::PathBuf,
++    replica: Arc<Mutex<Replica>>,
++}
++
++fn side(name: &str) -> Side {
++    let tmp = tempfile::tempdir().unwrap();
++    let root = tmp.path().join(name);
++    std::fs::create_dir_all(root.join(".test-app")).unwrap();
++    let state = tmp.path().join("state");
++    std::fs::create_dir_all(&state).unwrap();
++    let config = ReplicaConfig::new(
++        "test-app",
++        root.clone(),
++        grain_id::GrainId::random(),
++        &state,
++    );
++    let replica = Replica::open(config, Arc::new(SystemClock)).unwrap();
++    Side {
++        _tmp: tmp,
++        root,
++        replica: Arc::new(Mutex::new(replica)),
++    }
++}
++
++async fn scan(side: &Side) -> Vec<sapphire_sync::PathUpdate> {
++    let mut replica = side.replica.lock().await;
++    let outcome = replica.scan().unwrap();
++    match outcome {
++        sapphire_sync::ScanOutcome::Scanned(report) => report
++            .recorded
++            .into_iter()
++            .map(|entry| sapphire_sync::PathUpdate {
++                path: entry.path.clone(),
++                versions: vec![entry],
++                seen: replica.vv().clone(),
++            })
++            .collect(),
++        sapphire_sync::ScanOutcome::Paused(_) => vec![],
++    }
++}
++
++/// Wait until `rel` exists on `side`, or fail.
++async fn await_file(side: &Side, rel: &str) -> String {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
++    loop {
++        if let Ok(text) = std::fs::read_to_string(side.root.join(rel)) {
++            return text;
++        }
++        assert!(std::time::Instant::now() < deadline, "{rel} never arrived");
++        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++    }
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn the_initial_exchange_still_happens() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++    std::fs::write(a.root.join("first.md"), "before the session").unwrap();
++    scan(&a).await;
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (outcome_a, _live_a) = x.unwrap();
++    let (_outcome_b, _live_b) = y.unwrap();
++
++    assert_eq!(outcome_a.sent, 1);
++    assert_eq!(await_file(&b, "first.md").await, "before the session");
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_push_after_the_exchange_arrives_without_a_new_session() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, _live_b) = y.unwrap();
++
++    std::fs::write(a.root.join("later.md"), "after the session started").unwrap();
++    let updates = scan(&a).await;
++    live_a.push(updates).await.unwrap();
++
++    assert_eq!(
++        await_file(&b, "later.md").await,
++        "after the session started"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_subscriber_sees_what_arrived() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, live_b) = y.unwrap();
++
++    let mut received = live_b.updates();
++    std::fs::write(a.root.join("watched.md"), "x").unwrap();
++    live_a.push(scan(&a).await).await.unwrap();
++
++    let updates = tokio::time::timeout(std::time::Duration::from_secs(10), received.recv())
++        .await
++        .expect("an update within ten seconds")
++        .unwrap();
++    assert!(
++        updates.iter().any(|u| u.path.ends_with("watched.md")),
++        "{updates:?}"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn the_peers_version_vector_advances_as_pushes_are_taken() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, live_b) = y.unwrap();
++
++    let before = live_a.peer_vv();
++    std::fs::write(b.root.join("from-b.md").clone(), "x").unwrap();
++    let updates = scan(&b).await;
++    live_b.push(updates).await.unwrap();
++    await_file(&a, "from-b.md").await;
++
++    assert_ne!(
++        live_a.peer_vv(),
++        before,
++        "the peer's version vector must advance, or every entry is forwarded for ever"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn closing_one_side_is_visible_on_the_other() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, live_b) = y.unwrap();
++
++    live_a.close();
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
++    while live_b.is_open() {
++        assert!(
++            std::time::Instant::now() < deadline,
++            "the close was never noticed"
++        );
++        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++    }
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn pushing_on_a_closed_session_fails_rather_than_hanging() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, live_b) = y.unwrap();
++    live_b.close();
++
++    // Give the close a moment to reach A, then push.
++    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++    std::fs::write(a.root.join("into-the-void.md"), "x").unwrap();
++    let result = tokio::time::timeout(
++        std::time::Duration::from_secs(5),
++        live_a.push(scan(&a).await),
++    )
++    .await;
++    assert!(result.is_ok(), "push must not hang on a closed session");
++}
++#[tokio::test(flavor = "multi_thread")]
++async fn a_push_larger_than_the_inline_limit_is_fetched_by_hash() {
++    let ws = grain_id::GrainId::random();
++    let a = side("a");
++    let b = side("b");
++
++    let (left, right) = tokio::io::duplex(64 * 1024);
++    let (x, y) = tokio::join!(
++        open_live_session(left, Arc::clone(&a.replica), ws),
++        open_live_session(right, Arc::clone(&b.replica), ws)
++    );
++    let (_, live_a) = x.unwrap();
++    let (_, live_b) = y.unwrap();
++
++    // A `Live` message carries no content, so this is the path that asks for it by hash
++    // and only announces the batch once the bytes are on disk.
++    let mut received = live_b.updates();
++    let big = "x".repeat(300_000);
++    std::fs::write(a.root.join("big.md"), &big).unwrap();
++    live_a.push(scan(&a).await).await.unwrap();
++
++    let updates = tokio::time::timeout(std::time::Duration::from_secs(20), received.recv())
++        .await
++        .expect("an update within twenty seconds")
++        .unwrap();
++    assert!(
++        updates.iter().any(|u| u.path.ends_with("big.md")),
++        "{updates:?}"
++    );
++    // And by the time it is announced the file is there, so a forwarder can serve it.
++    assert_eq!(await_file(&b, "big.md").await.len(), 300_000);
++}

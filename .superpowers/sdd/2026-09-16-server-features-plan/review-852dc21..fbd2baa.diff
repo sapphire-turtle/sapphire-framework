@@ -1,0 +1,952 @@
+# Review package: 852dc21..fbd2baa
+
+## Commits
+fbd2baa feat(bridge): merge relay configuration from the host and its workgroup
+
+## Files changed
+ Cargo.lock                                         |   1 +
+ crates/sapphire-framework-bridge/Cargo.toml        |   1 +
+ crates/sapphire-framework-bridge/src/command.rs    |  11 +-
+ crates/sapphire-framework-bridge/src/iroh.rs       | 120 ++++++++++----
+ crates/sapphire-framework-bridge/src/lib.rs        |   2 +
+ crates/sapphire-framework-bridge/src/net.rs        |  17 +-
+ crates/sapphire-framework-bridge/src/relay.rs      | 173 +++++++++++++++++++++
+ crates/sapphire-framework-bridge/src/workgroup.rs  |  36 +++++
+ .../tests/iroh_transport.rs                        |  36 ++---
+ .../sapphire-framework-server/tests/common/mod.rs  |   1 +
+ 10 files changed, 345 insertions(+), 53 deletions(-)
+
+## Diff
+diff --git a/Cargo.lock b/Cargo.lock
+index f263a09..932ef62 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5150,20 +5150,21 @@ dependencies = [
+  "sapphire-framework-session",
+  "sapphire-framework-sync",
+  "serde",
+  "serde_json",
+  "subtle",
+  "tempfile",
+  "thiserror 2.0.20",
+  "tokio",
+  "toml",
+  "tracing",
++ "url",
+  "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+ name = "sapphire-framework-bridge-api"
+ version = "0.14.0"
+ dependencies = [
+  "grain-id",
+  "sapphire-framework-ipc",
+  "serde",
+diff --git a/crates/sapphire-framework-bridge/Cargo.toml b/crates/sapphire-framework-bridge/Cargo.toml
+index 1a7e449..f5eca46 100644
+--- a/crates/sapphire-framework-bridge/Cargo.toml
++++ b/crates/sapphire-framework-bridge/Cargo.toml
+@@ -31,20 +31,21 @@ getrandom.workspace = true
+ grain-id.workspace = true
+ postcard = { version = "1", features = ["use-std"] }
+ subtle = "2"
+ iroh = { version = "1.2", optional = true }
+ serde.workspace = true
+ serde_json.workspace = true
+ thiserror.workspace = true
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
+ toml.workspace = true
+ tracing.workspace = true
++url = "2"
+ 
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.59", features = [
+     "Win32_Foundation",
+     "Win32_System_Threading",
+ ] }
+ 
+diff --git a/crates/sapphire-framework-bridge/src/command.rs b/crates/sapphire-framework-bridge/src/command.rs
+index 102bc33..6429344 100644
+--- a/crates/sapphire-framework-bridge/src/command.rs
++++ b/crates/sapphire-framework-bridge/src/command.rs
+@@ -150,21 +150,30 @@ async fn run(version: &'static str) -> Result<i32> {
+     bridge.run().await?;
+     Ok(0)
+ }
+ 
+ /// The bridge this host should run: the iroh transport, over the directory's configuration.
+ #[cfg(feature = "node")]
+ async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {
+     // Read once, and hand the same configuration to the bridge: it would otherwise read
+     // `net.toml` again when it starts its loops, and the two reads could disagree.
+     let net = NetConfig::load(&dir.net_toml())?;
+-    let transport = Arc::new(crate::iroh::IrohTransport::new(&dir.node_key(), &net).await?);
++    // The workgroup's published `net.toml` is read inside `new_with_relays`, so a
++    // publish that landed between the two reads is not split across them either.
++    let transport = Arc::new(
++        crate::iroh::IrohTransport::new_with_relays(
++            &dir.node_key(),
++            &net,
++            crate::workgroup::Workgroup::open(&dir)?.as_ref(),
++        )
++        .await?,
++    );
+     Ok(Bridge::new(dir, transport, version)?.net(net))
+ }
+ 
+ /// Without the `node` feature there is no transport to reach other devices with.
+ #[cfg(not(feature = "node"))]
+ async fn build_bridge(_dir: BridgeDir, _version: &'static str) -> Result<Bridge> {
+     Err(Error::Config(
+         "this build has no peer transport; rebuild sapphire-bridge with the `node` feature"
+             .to_owned(),
+     ))
+diff --git a/crates/sapphire-framework-bridge/src/iroh.rs b/crates/sapphire-framework-bridge/src/iroh.rs
+index fece64f..cee3e95 100644
+--- a/crates/sapphire-framework-bridge/src/iroh.rs
++++ b/crates/sapphire-framework-bridge/src/iroh.rs
+@@ -6,28 +6,34 @@
+ 
+ use std::net::SocketAddr;
+ use std::path::Path;
+ 
+ use grain_id::GrainId;
+ use sapphire_bridge_api::ALPN;
+ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+ 
+ // `iroh` is also the name of this module, so the crate is spelled with a leading `::` or the
+ // path would be ambiguous.
++use std::sync::Arc;
++
+ use ::iroh::address_lookup::{DnsAddressLookup, MemoryLookup, PkarrPublisher, PkarrResolver};
+ use ::iroh::endpoint::presets;
+-use ::iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, TransportAddr};
++use ::iroh::{
++    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr,
++    defaults::prod::default_relay_map,
++};
+ 
+ use crate::error::{Error, Result};
+ use crate::net::NetConfig;
+ use crate::pairing::PAIR_ALPN;
+ use crate::peer::{BoxedStream, Inbound, PeerTransport, StreamRequest};
++use crate::relay::RelayConfig;
+ 
+ /// How many bytes of the request line to accept before giving up.
+ ///
+ /// The request is a small JSON object; anything past this is a peer that is not speaking this
+ /// protocol, and reading forever on it would be a way to make the bridge allocate.
+ const MAX_REQUEST_LINE: u64 = 4 * 1024;
+ 
+ /// A device's node id and the addresses that reach it.
+ ///
+ /// This is what one device hands another out of band — the pairing flow this plan leaves for
+@@ -46,23 +52,44 @@ pub struct IrohTransport {
+     endpoint: Endpoint,
+     node_id: String,
+     /// Addresses learned out of band, so a peer can be dialed without a discovery service.
+     known: MemoryLookup,
+ }
+ 
+ impl IrohTransport {
+     /// Bind an endpoint, loading or creating the secret key at `key_path`.
+     ///
+     /// `net` decides what the endpoint offers and uses: `discovery` turns on iroh's address
+-    /// lookup services, and `relays` replaces the default relay set (an empty list disables
+-    /// relays entirely, which is what a test or a fully local host wants).
+-    pub async fn new(key_path: &Path, net: &NetConfig) -> Result<IrohTransport> {
++    /// lookup services, and the relay set is the host's own configuration merged with
++    /// `workgroup`'s published one — see [`relays`](crate::relays) for how the two files
++    /// combine. A caller that has already merged them (a test, mostly) uses
++    /// [`IrohTransport::new`] directly.
++    pub async fn new_with_relays(
++        key_path: &Path,
++        net: &NetConfig,
++        workgroup: Option<&crate::workgroup::Workgroup>,
++    ) -> Result<IrohTransport> {
++        let config = crate::relays(net, workgroup)?;
++        Self::new(key_path, net, &config).await
++    }
++
++    /// Bind an endpoint over an already-resolved relay configuration.
++    ///
++    /// `net` decides what the endpoint offers and uses: `discovery` turns on iroh's address
++    /// lookup services, and `relays` is taken as given — an empty list with
++    /// `use_default: false` disables relays entirely, which is what a test or a fully local
++    /// host wants.
++    pub async fn new(
++        key_path: &Path,
++        net: &NetConfig,
++        relays: &RelayConfig,
++    ) -> Result<IrohTransport> {
+         let secret = load_or_create_key(key_path)?;
+         let known = MemoryLookup::new();
+ 
+         // `Minimal` rather than `N0`: it picks the crypto provider, and nothing else. Every
+         // other thing `N0` turns on is what `net` is here to decide.
+         // Two protocols on one endpoint: the data plane and, on its own ALPN, pairing.
+         // They are listed together because iroh accepts per endpoint; which one a
+         // connection spoke is reported by `accept`, and the two are gated differently.
+         let alpns = vec![ALPN.to_vec(), PAIR_ALPN.to_vec()];
+         let mut builder = Endpoint::builder(presets::Minimal)
+@@ -70,21 +97,21 @@ impl IrohTransport {
+             .alpns(alpns)
+             .address_lookup(known.clone());
+         if net.discovery {
+             builder = builder
+                 .address_lookup(PkarrPublisher::n0_dns())
+                 .address_lookup(PkarrResolver::n0_dns())
+                 .address_lookup(DnsAddressLookup::n0_dns());
+         }
+ 
+         let endpoint = builder
+-            .relay_mode(relay_mode(net)?)
++            .relay_mode(relay_mode(relays)?)
+             .bind()
+             .await
+             .map_err(|e| Error::Peer(format!("could not bind the endpoint: {e}")))?;
+         let node_id = endpoint.id().to_string();
+ 
+         Ok(IrohTransport {
+             endpoint,
+             node_id,
+             known,
+         })
+@@ -297,33 +324,46 @@ async fn read_request(
+     if read as u64 > MAX_REQUEST_LINE {
+         return Err(Error::Protocol(format!(
+             "the request line is longer than {MAX_REQUEST_LINE} bytes"
+         )));
+     }
+     let request = serde_json::from_str(line.trim())
+         .map_err(|e| Error::Protocol(format!("bad peer request: {e}")))?;
+     Ok((request, recv))
+ }
+ 
+-/// The relay mode `net` asks for: none at all, or exactly the relays it names.
+-fn relay_mode(net: &NetConfig) -> Result<RelayMode> {
+-    if net.relays.is_empty() {
++/// The relay mode [`RelayConfig`] asks for.
++///
++/// A custom relay map **replaces** iroh's relay set rather than adding to it, so with
++/// `use_default` on, the public relays are folded back in first. The map is keyed by URL,
++/// which is what keeps this fold and the merge in [`relays`](crate::relays) from producing
++/// duplicates. Naming no relay is not an error either: a host may want direct connections
++/// only, and an endpoint told "no relays" gets [`RelayMode::Disabled`].
++fn relay_mode(config: &RelayConfig) -> Result<RelayMode> {
++    if !config.use_default && config.urls.is_empty() {
+         return Ok(RelayMode::Disabled);
+     }
+-    let mut urls = Vec::with_capacity(net.relays.len());
+-    for relay in &net.relays {
+-        let url = relay
++    let map = if config.use_default {
++        default_relay_map()
++    } else {
++        RelayMap::empty()
++    };
++    for url in &config.urls {
++        let url: RelayUrl = url
+             .parse()
+-            .map_err(|e| Error::Config(format!("{relay}: not a relay URL: {e}")))?;
+-        urls.push(url);
++            .map_err(|e| Error::Config(format!("{url}: not a relay URL: {e}")))?;
++        map.insert(
++            url.clone(),
++            Arc::new(::iroh::RelayConfig::from(url.clone())),
++        );
+     }
+-    Ok(RelayMode::custom(urls))
++    Ok(RelayMode::Custom(map))
+ }
+ 
+ /// Read the secret key, or create one at `0600`.
+ ///
+ /// This file **is** the device's identity: losing it means rejoining every workgroup as a new
+ /// device, so it is created once and never regenerated on a parse failure.
+ fn load_or_create_key(path: &Path) -> Result<SecretKey> {
+     match std::fs::read(path) {
+         Ok(bytes) => parse_key(path, &bytes),
+         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+@@ -412,67 +452,87 @@ fn create_private(path: &Path, bytes: &[u8; 32]) -> Result<Created> {
+     }
+     Ok(Created::Yes)
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn no_relays_means_no_relay_transport() {
+-        let net = NetConfig {
+-            wake_on_sync: false,
+-            discovery: false,
+-            relays: vec![],
++        let config = crate::relay::RelayConfig {
++            urls: vec![],
++            use_default: false,
+         };
+-        assert!(matches!(relay_mode(&net).unwrap(), RelayMode::Disabled));
++        assert!(matches!(relay_mode(&config).unwrap(), RelayMode::Disabled));
+     }
+ 
+     #[test]
+     fn a_named_relay_is_used_and_a_bad_one_is_refused() {
+-        let net = NetConfig {
+-            wake_on_sync: false,
+-            discovery: false,
+-            relays: vec!["https://relay.example/".to_owned()],
++        let config = crate::relay::RelayConfig {
++            urls: vec!["https://relay.example/".to_owned()],
++            use_default: false,
+         };
+-        assert!(matches!(relay_mode(&net).unwrap(), RelayMode::Custom(_)));
++        assert!(matches!(relay_mode(&config).unwrap(), RelayMode::Custom(_)));
+ 
+-        let net = NetConfig {
+-            wake_on_sync: false,
+-            discovery: false,
+-            relays: vec!["not a url".to_owned()],
++        let config = crate::relay::RelayConfig {
++            urls: vec!["not a url".to_owned()],
++            use_default: false,
+         };
+-        let err = relay_mode(&net).unwrap_err();
++        let err = relay_mode(&config).unwrap_err();
+         assert!(err.to_string().contains("not a url"), "{err}");
+     }
+ 
++    #[test]
++    fn the_public_relays_are_folded_back_into_a_custom_map() {
++        // `RelayMode::Custom` replaces iroh's relay set rather than adding to it, so
++        // `use_default` must fold the public relays in itself or they would be lost.
++        let config = crate::relay::RelayConfig {
++            urls: vec!["https://relay.example/".to_owned()],
++            use_default: true,
++        };
++        let mode = relay_mode(&config).unwrap();
++        let RelayMode::Custom(map) = mode else {
++            panic!("expected a custom relay map");
++        };
++        let urls = map.urls::<Vec<::iroh::RelayUrl>>();
++        assert!(urls.contains(&"https://relay.example/".parse().unwrap()));
++        assert!(
++            urls.len() > 1,
++            "the public relays must be in the map too: {urls:?}"
++        );
++    }
++
+     #[tokio::test(flavor = "multi_thread")]
+     async fn the_node_id_follows_from_the_key_file() {
+         let tmp = tempfile::tempdir().unwrap();
+         let path = tmp.path().join("node.key");
+ 
+         // Derived without an endpoint, and stable across calls.
+         let id = load_or_create_node_id(&path).unwrap();
+         assert_eq!(
+             id.len(),
+             64,
+             "a node id is 64 lowercase hex characters: {id}"
+         );
+         assert_eq!(load_or_create_node_id(&path).unwrap(), id);
+ 
+         // The same identity the transport binds.
+         let net = NetConfig {
+             wake_on_sync: false,
+             discovery: false,
+             relays: vec![],
++            use_default_relays: false,
+         };
+-        let transport = IrohTransport::new(&path, &net).await.unwrap();
++        let transport = IrohTransport::new(&path, &net, &crate::relays(&net, None).unwrap())
++            .await
++            .unwrap();
+         assert_eq!(transport.node_id(), id);
+     }
+ 
+     #[test]
+     fn a_key_of_the_wrong_length_is_not_replaced() {
+         let tmp = tempfile::tempdir().unwrap();
+         let path = tmp.path().join("node.key");
+         std::fs::write(&path, b"short").unwrap();
+ 
+         let err = load_or_create_key(&path).unwrap_err();
+diff --git a/crates/sapphire-framework-bridge/src/lib.rs b/crates/sapphire-framework-bridge/src/lib.rs
+index 7cb70ca..b18c30c 100644
+--- a/crates/sapphire-framework-bridge/src/lib.rs
++++ b/crates/sapphire-framework-bridge/src/lib.rs
+@@ -13,20 +13,21 @@ mod command;
+ mod control;
+ mod data;
+ mod dir;
+ mod error;
+ mod invite;
+ #[cfg(feature = "node")]
+ mod iroh;
+ mod net;
+ mod pairing;
+ mod peer;
++mod relay;
+ mod routes;
+ #[cfg(any(test, feature = "test-util"))]
+ mod testing;
+ mod wgsync;
+ mod workgroup;
+ 
+ use std::path::PathBuf;
+ use std::sync::{Arc, Mutex};
+ 
+ use grain_id::GrainId;
+@@ -37,20 +38,21 @@ pub use command::BridgeCommand;
+ pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
+ pub use error::{Error, Result};
+ pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
+ #[cfg(feature = "node")]
+ pub use iroh::{IrohTransport, NodeAddr};
+ pub use net::NetConfig;
+ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
+ pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use peer::{LoopbackNetwork, LoopbackTransport};
++pub use relay::{RelayConfig, relays};
+ pub use routes::{Route, RouteTable};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use testing::adopt_workgroup;
+ pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
+ pub use workgroup::{Workgroup, WorkgroupWorkspace};
+ 
+ use crate::control::{Owners, Wakes};
+ use crate::data::Tickets;
+ 
+ /// The switchboard: one control plane, one data plane, and the tables they share.
+diff --git a/crates/sapphire-framework-bridge/src/net.rs b/crates/sapphire-framework-bridge/src/net.rs
+index 7dec9ed..b1e958f 100644
+--- a/crates/sapphire-framework-bridge/src/net.rs
++++ b/crates/sapphire-framework-bridge/src/net.rs
+@@ -7,39 +7,46 @@ use serde::{Deserialize, Serialize};
+ use crate::error::{Error, Result};
+ 
+ /// What this host does on the network.
+ #[derive(Clone, Debug, Deserialize, Serialize)]
+ #[serde(default)]
+ pub struct NetConfig {
+     /// Start a stopped app server when a peer asks for one of its workspaces.
+     pub wake_on_sync: bool,
+     /// Use discovery services to find peers.
+     pub discovery: bool,
+-    /// Relay URLs to use in addition to the defaults.
++    /// Relay URLs to use, in addition to the public ones while `use_default_relays` is on.
+     pub relays: Vec<String>,
++    /// Keep the public relays on alongside `relays`.
++    ///
++    /// Off only when this host wants the public relays gone entirely — and, once a
++    /// workgroup is joined, not even then on its own: [`relays`](crate::relays) turns
++    /// them off only when both sides say so.
++    pub use_default_relays: bool,
+ }
+ 
+ impl Default for NetConfig {
+     fn default() -> Self {
+         NetConfig {
+             wake_on_sync: true,
+             discovery: true,
+             relays: Vec::new(),
++            use_default_relays: true,
+         }
+     }
+ }
+ 
+ impl NetConfig {
+     /// Read the file, or the defaults if it is not there.
+     ///
+     /// Every field is optional in the file: a `net.toml` that sets only `wake_on_sync`
+-    /// leaves discovery on and the relay list empty.
++    /// leaves discovery on, the relay list empty, and the public relays on.
+     pub fn load(path: &Path) -> Result<NetConfig> {
+         match std::fs::read_to_string(path) {
+             Ok(text) => {
+                 toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+             }
+             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NetConfig::default()),
+             Err(e) => Err(Error::Io(e)),
+         }
+     }
+ }
+@@ -48,46 +55,50 @@ impl NetConfig {
+ mod tests {
+     use super::*;
+ 
+     #[test]
+     fn a_missing_file_is_the_defaults() {
+         let tmp = tempfile::tempdir().unwrap();
+         let net = NetConfig::load(&tmp.path().join("net.toml")).unwrap();
+         assert!(net.wake_on_sync);
+         assert!(net.discovery);
+         assert!(net.relays.is_empty());
++        assert!(net.use_default_relays);
+     }
+ 
+     #[test]
+     fn a_partial_file_keeps_the_other_defaults() {
+         let tmp = tempfile::tempdir().unwrap();
+         let path = tmp.path().join("net.toml");
+         std::fs::write(&path, "wake_on_sync = false\ndiscovery = false\n").unwrap();
+ 
+         let net = NetConfig::load(&path).unwrap();
+         assert!(!net.wake_on_sync);
+         assert!(!net.discovery);
+         assert!(net.relays.is_empty());
++        assert!(net.use_default_relays);
+     }
+ 
+     #[test]
+     fn relays_round_trip_through_the_file() {
+         let tmp = tempfile::tempdir().unwrap();
+         let path = tmp.path().join("net.toml");
+         std::fs::write(
+             &path,
+-            "wake_on_sync = false\ndiscovery = false\nrelays = [\"https://relay.example/\"]\n",
++            "wake_on_sync = false\ndiscovery = false\nrelays = [\"https://relay.example/\"]\n\
++             use_default_relays = false\n",
+         )
+         .unwrap();
+ 
+         let net = NetConfig::load(&path).unwrap();
+         assert_eq!(net.relays, vec!["https://relay.example/".to_owned()]);
++        assert!(!net.use_default_relays);
+     }
+ 
+     #[test]
+     fn an_unreadable_file_names_itself_in_the_error() {
+         let tmp = tempfile::tempdir().unwrap();
+         let path = tmp.path().join("net.toml");
+         std::fs::write(&path, "wake_on_sync = \"yes\"\n").unwrap();
+ 
+         let err = NetConfig::load(&path).unwrap_err();
+         assert!(err.to_string().contains("net.toml"), "{err}");
+diff --git a/crates/sapphire-framework-bridge/src/relay.rs b/crates/sapphire-framework-bridge/src/relay.rs
+new file mode 100644
+index 0000000..02c4d7b
+--- /dev/null
++++ b/crates/sapphire-framework-bridge/src/relay.rs
+@@ -0,0 +1,173 @@
++//! Relay configuration, merged from the host's `net.toml` and the workgroup's published one.
++//!
++//! Two files decide which relays a device uses, and neither overrides the other. The host's
++//! `net.toml` is local preference; the workgroup's is what a self-hosted server announces to
++//! its devices, synced with the rest of the workgroup root. They are **merged**: a device
++//! keeps its own relays and gains the workgroup's, because a device that lost its own relay
++//! when it joined a workgroup would be worse off than before. The public relays go off only
++//! when both sides turn them off, so one side cannot silently strand the other.
++
++use crate::error::{Error, Result};
++use crate::net::NetConfig;
++use crate::workgroup::Workgroup;
++
++/// The relays this host's endpoint should use.
++///
++/// The endpoint reads this through [`relay_mode`](crate::iroh::relay_mode) — which lives
++/// behind the `node` feature — so this type stays free of iroh and a build without the
++/// transport can still compute and validate its configuration.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub struct RelayConfig {
++    /// The custom relay URLs, deduplicated: the host's own first, then the workgroup's.
++    pub urls: Vec<String>,
++    /// Whether the public relays stay on in addition to `urls`.
++    pub use_default: bool,
++}
++
++/// Merge the host's relay configuration with the workgroup's published one.
++///
++/// The host's `net.toml` is local preference; the workgroup's is what a self-hosted server
++/// announces. A device without a workgroup, or whose workgroup has published nothing yet,
++/// simply uses its own configuration — the defaults keep the public relays on.
++///
++/// Every URL on either side is validated here rather than where the endpoint is built, so a
++/// typo in either file is a configuration error at startup, not a silent lack of
++/// connectivity after it.
++pub fn relays(host: &NetConfig, workgroup: Option<&Workgroup>) -> Result<RelayConfig> {
++    let announced = match workgroup {
++        Some(workgroup) => workgroup.published_net()?,
++        None => NetConfig::default(),
++    };
++    for url in host.relays.iter().chain(&announced.relays) {
++        if let Err(err) = url::Url::parse(url) {
++            return Err(Error::Config(format!("{url}: not a relay URL: {err}")));
++        }
++    }
++    let mut urls: Vec<String> = Vec::with_capacity(host.relays.len() + announced.relays.len());
++    for url in host.relays.iter().chain(&announced.relays) {
++        if !urls.contains(url) {
++            urls.push(url.clone());
++        }
++    }
++    Ok(RelayConfig {
++        urls,
++        // One side alone must not be able to strand the other: the public relays go off
++        // only when both sides turned them off.
++        use_default: host.use_default_relays || announced.use_default_relays,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::dir::BridgeDir;
++
++    const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
++
++    fn host_with(urls: &[&str], use_default: bool) -> NetConfig {
++        NetConfig {
++            relays: urls.iter().map(|u| (*u).to_owned()).collect(),
++            use_default_relays: use_default,
++            ..NetConfig::default()
++        }
++    }
++
++    /// A workgroup whose root publishes `net` under `root/net.toml`.
++    ///
++    /// The returned temporaries must stay alive for the workgroup to stay on disk.
++    fn workgroup_with_net(net: &NetConfig) -> (tempfile::TempDir, BridgeDir, Workgroup) {
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
++        wg.publish_net(net).unwrap();
++        (tmp, dir, wg)
++    }
++
++    #[test]
++    fn with_no_configuration_the_public_relays_are_used() {
++        let config = relays(&NetConfig::default(), None).unwrap();
++        assert!(config.use_default);
++        assert!(config.urls.is_empty());
++    }
++
++    #[test]
++    fn a_hosts_own_relay_is_used() {
++        let config = relays(&host_with(&["https://relay.example"], true), None).unwrap();
++        assert_eq!(config.urls, vec!["https://relay.example".to_owned()]);
++        assert!(config.use_default);
++    }
++
++    #[test]
++    fn the_two_sources_are_merged_not_overridden() {
++        let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&["https://group.example"], true));
++        let config = relays(&host_with(&["https://mine.example"], true), Some(&wg)).unwrap();
++
++        let mut urls = config.urls.clone();
++        urls.sort();
++        assert_eq!(
++            urls,
++            vec![
++                "https://group.example".to_owned(),
++                "https://mine.example".to_owned()
++            ],
++            "a device must not lose its own relay by joining a workgroup"
++        );
++    }
++
++    #[test]
++    fn a_duplicate_relay_appears_once() {
++        let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&["https://same.example"], true));
++        let config = relays(&host_with(&["https://same.example"], true), Some(&wg)).unwrap();
++        assert_eq!(config.urls.len(), 1);
++    }
++
++    #[test]
++    fn the_public_relays_go_off_only_when_both_sides_say_so() {
++        let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&[], false));
++
++        // Host still wants them.
++        assert!(
++            relays(&host_with(&[], true), Some(&wg))
++                .unwrap()
++                .use_default
++        );
++        // Both say no.
++        assert!(
++            !relays(&host_with(&[], false), Some(&wg))
++                .unwrap()
++                .use_default
++        );
++    }
++
++    #[test]
++    fn a_workgroup_without_a_published_net_file_contributes_nothing() {
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
++        let config = relays(&host_with(&["https://mine.example"], true), Some(&wg)).unwrap();
++        assert_eq!(config.urls, vec!["https://mine.example".to_owned()]);
++    }
++
++    #[test]
++    fn a_relay_url_that_is_not_a_url_is_refused() {
++        let err = relays(&host_with(&["not a url"], true), None).unwrap_err();
++        assert!(err.to_string().contains("not a url"), "{err}");
++    }
++
++    #[test]
++    fn a_bad_url_published_by_the_workgroup_is_refused_too() {
++        let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&["not a url either"], true));
++
++        let err = relays(&host_with(&[], true), Some(&wg)).unwrap_err();
++        assert!(err.to_string().contains("not a relay URL"), "{err}");
++        assert!(err.to_string().contains("not a url either"), "{err}");
++    }
++
++    #[test]
++    fn a_good_url_on_both_sides_is_accepted() {
++        let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&["https://group.example"], true));
++        let config = relays(&host_with(&["https://group.example"], true), Some(&wg)).unwrap();
++        assert_eq!(config.urls, vec!["https://group.example".to_owned()]);
++        assert!(config.use_default);
++    }
++}
+diff --git a/crates/sapphire-framework-bridge/src/workgroup.rs b/crates/sapphire-framework-bridge/src/workgroup.rs
+index ec40c1c..ba1dea7 100644
+--- a/crates/sapphire-framework-bridge/src/workgroup.rs
++++ b/crates/sapphire-framework-bridge/src/workgroup.rs
+@@ -2,20 +2,21 @@
+ 
+ use std::path::PathBuf;
+ 
+ use grain_id::GrainId;
+ use sapphire_registry::{Device, Devices};
+ use serde::{Deserialize, Serialize};
+ 
+ use crate::dir::BridgeDir;
+ use crate::error::{Error, Result};
+ use crate::invite::Ticket;
++use crate::net::NetConfig;
+ use crate::pairing::{self, JoinRequest, JoinResponse};
+ use crate::peer::PeerTransport;
+ 
+ /// The `workgroup.toml` inside a workgroup's root: what the workgroup says about itself.
+ ///
+ /// It lives in the workgroup's synced root, so every device of the workgroup sees the same
+ /// name once the workgroup is shared.
+ #[derive(Debug, Deserialize, Serialize)]
+ struct WorkgroupFile {
+     name: String,
+@@ -324,20 +325,55 @@ impl Workgroup {
+             app_name: ws.app_name.clone(),
+             name: ws.name.clone(),
+         })
+         .map_err(|e| Error::Config(e.to_string()))?;
+         crate::routes::write_atomic(
+             &dir.join(format!("{}.toml", ws.workspace_id)),
+             "# A workspace of this workgroup. The file name is its id.\n",
+             &body,
+         )
+     }
++
++    /// Announce this workgroup's network configuration, replacing what was published before.
++    ///
++    /// What a self-hosted server writes so its devices learn about its relay: the file lives
++    /// in the synced root, so every device of the workgroup reads the same one. Each device
++    /// then merges it with its own `net.toml` in [`relays`](crate::relays) — announced never
++    /// replaces local.
++    pub fn publish_net(&self, net: &NetConfig) -> Result<()> {
++        crate::routes::write_atomic(
++            &self.net_toml(),
++            "# The network configuration this workgroup announces to its devices.\n",
++            &toml::to_string_pretty(net)
++                .map_err(|e| Error::Config(format!("could not encode net.toml: {e}")))?,
++        )
++    }
++
++    /// The workgroup's published [`NetConfig`], or the defaults when nothing is published.
++    ///
++    /// A missing file contributes nothing rather than failing: a workgroup that has not
++    /// announced a configuration is a normal state, not a broken one. An unreadable one
++    /// fails, for the same reason an unreadable `workgroup.toml` does — guessing at what a
++    /// half-written configuration meant is worse than reporting it.
++    pub fn published_net(&self) -> Result<NetConfig> {
++        match std::fs::read_to_string(self.net_toml()) {
++            Ok(text) => toml::from_str(&text)
++                .map_err(|e| Error::Config(format!("{}: {e}", self.net_toml().display()))),
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NetConfig::default()),
++            Err(e) => Err(Error::Io(e)),
++        }
++    }
++
++    /// The workgroup's published `root/net.toml`, inside the synced root.
++    fn net_toml(&self) -> PathBuf {
++        self.dir.join("root").join("net.toml")
++    }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::dir::BridgeDir;
+     use crate::net::NetConfig;
+ 
+     const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+     const NODE_B: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+diff --git a/crates/sapphire-framework-bridge/tests/iroh_transport.rs b/crates/sapphire-framework-bridge/tests/iroh_transport.rs
+index 7920a80..62c51c2 100644
+--- a/crates/sapphire-framework-bridge/tests/iroh_transport.rs
++++ b/crates/sapphire-framework-bridge/tests/iroh_transport.rs
+@@ -3,81 +3,83 @@
+ //! These are the tests that say the real transport works: the loopback tests in `peer.rs`
+ //! prove the switchboard, not the network. Everything here stays offline — the endpoints are
+ //! built from an offline [`NetConfig`], so a machine with no route to a relay still runs them.
+ 
+ #![cfg(feature = "node")]
+ 
+ use std::sync::Arc;
+ use std::time::Duration;
+ 
+ use grain_id::GrainId;
+-use sapphire_framework_bridge::{Inbound, IrohTransport, NetConfig, PeerTransport};
++use sapphire_framework_bridge::{Inbound, IrohTransport, NetConfig, PeerTransport, relays};
+ use tokio::io::{AsyncReadExt, AsyncWriteExt};
+ 
+ /// `Result::unwrap_err` wants the success type to be `Debug`, and a peer stream is not: it is
+ /// an arbitrary reader and writer. Unwrapping by hand keeps `PeerStream` free of a `Debug`
+ /// bound no transport should have to satisfy.
+ #[track_caller]
+ fn expect_err<T>(result: sapphire_framework_bridge::Result<T>) -> sapphire_framework_bridge::Error {
+     match result {
+         Ok(_) => panic!("expected an error"),
+         Err(err) => err,
+     }
+ }
+ 
+ /// A host that neither discovers peers nor uses a relay: local addresses only.
+ fn offline() -> NetConfig {
+     NetConfig {
+         wake_on_sync: false,
+         discovery: false,
+         relays: vec![],
++        use_default_relays: false,
+     }
+ }
+ 
++/// The transport for `net`, with its relay set already resolved the way the bridge does.
++async fn transport(tmp: &tempfile::TempDir, name: &str, net: &NetConfig) -> IrohTransport {
++    let config = relays(net, None).unwrap();
++    IrohTransport::new(&tmp.path().join(name), net, &config)
++        .await
++        .unwrap()
++}
++
+ #[tokio::test(flavor = "multi_thread")]
+ async fn a_key_file_is_created_once_and_reused() {
+     let tmp = tempfile::tempdir().unwrap();
+-    let key = tmp.path().join("node.key");
+ 
+-    let first = IrohTransport::new(&key, &offline()).await.unwrap();
++    let first = transport(&tmp, "node.key", &offline()).await;
+     let id = first.node_id();
+     drop(first);
+ 
+-    let second = IrohTransport::new(&key, &offline()).await.unwrap();
++    let second = transport(&tmp, "node.key", &offline()).await;
+     assert_eq!(second.node_id(), id, "the node id must survive a restart");
+ }
+ 
+ #[cfg(unix)]
+ #[tokio::test(flavor = "multi_thread")]
+ async fn the_key_file_is_private() {
+     use std::os::unix::fs::PermissionsExt;
+     let tmp = tempfile::tempdir().unwrap();
+     let key = tmp.path().join("node.key");
+-    let _ = IrohTransport::new(&key, &offline()).await.unwrap();
++    let _ = transport(&tmp, "node.key", &offline()).await;
+     let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+     assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+ }
+ 
+ #[tokio::test(flavor = "multi_thread")]
+ async fn two_endpoints_exchange_bytes() {
+     let tmp = tempfile::tempdir().unwrap();
+-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
+-        .await
+-        .unwrap();
++    let a = transport(&tmp, "a.key", &offline()).await;
+     // `accept` borrows the transport, and the accepting side must outlive the call: the
+     // endpoint is what keeps the connection up. This is the shape the bridge uses, too — one
+     // `Arc<dyn PeerTransport>` shared by the loops.
+-    let b = Arc::new(
+-        IrohTransport::new(&tmp.path().join("b.key"), &offline())
+-            .await
+-            .unwrap(),
+-    );
++    let b = Arc::new(transport(&tmp, "b.key", &offline()).await);
+ 
+     // B's identity and address are needed before B is moved into the accepting task.
+     let b_node_id = b.node_id();
+     let b_addr = b.node_addr().await.unwrap();
+ 
+     // Teach A where B is, since discovery is off: nothing else tells A how to reach B.
+     a.add_known_address(&b_addr).unwrap();
+ 
+     let ws = GrainId::random();
+     let a_node_id = a.node_id();
+@@ -105,30 +107,26 @@ async fn two_endpoints_exchange_bytes() {
+     // And the far side can answer, on the same stream.
+     accepted.write_all(b"pong").await.unwrap();
+     let mut back = [0u8; 4];
+     opened.read_exact(&mut back).await.unwrap();
+     assert_eq!(&back, b"pong");
+ }
+ 
+ #[tokio::test(flavor = "multi_thread")]
+ async fn a_node_id_that_is_not_a_node_id_is_refused() {
+     let tmp = tempfile::tempdir().unwrap();
+-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
+-        .await
+-        .unwrap();
++    let a = transport(&tmp, "a.key", &offline()).await;
+ 
+     let err = expect_err(a.open("not-a-node-id", GrainId::random()).await);
+     assert!(err.to_string().contains("not-a-node-id"), "{err}");
+ }
+ 
+ #[tokio::test(flavor = "multi_thread")]
+ async fn an_address_that_is_not_an_address_is_refused() {
+     let tmp = tempfile::tempdir().unwrap();
+-    let a = IrohTransport::new(&tmp.path().join("a.key"), &offline())
+-        .await
+-        .unwrap();
++    let a = transport(&tmp, "a.key", &offline()).await;
+ 
+     let mut addr = a.node_addr().await.unwrap();
+     addr.addrs = vec!["not-an-address".to_owned()];
+     let err = expect_err(a.add_known_address(&addr));
+     assert!(err.to_string().contains("not-an-address"), "{err}");
+ }
+diff --git a/crates/sapphire-framework-server/tests/common/mod.rs b/crates/sapphire-framework-server/tests/common/mod.rs
+index 4bcba2e..891131d 100644
+--- a/crates/sapphire-framework-server/tests/common/mod.rs
++++ b/crates/sapphire-framework-server/tests/common/mod.rs
+@@ -144,20 +144,21 @@ async fn build(
+     let bridge = Bridge::new(
+         bridge_dir.clone(),
+         Arc::new(net.transport(node_id)),
+         VERSION,
+     )
+     .unwrap()
+     .net(NetConfig {
+         wake_on_sync: false,
+         discovery: false,
+         relays: Vec::new(),
++        use_default_relays: false,
+     })
+     .control_endpoint(control.clone())
+     .data_endpoint(data);
+     let bridge_runtime = tokio::runtime::Builder::new_multi_thread()
+         .enable_all()
+         .build()
+         .expect("a runtime for the bridge");
+     bridge_runtime.spawn(async move {
+         let _ = bridge.run().await;
+     });

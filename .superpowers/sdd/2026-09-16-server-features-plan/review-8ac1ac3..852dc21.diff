@@ -1,0 +1,1941 @@
+# Review package: 8ac1ac3..852dc21
+
+## Commits
+852dc21 feat(server): propagate commits live, and through a host in the middle
+
+## Files changed
+ crates/sapphire-framework-bridge/src/data.rs       |   5 -
+ crates/sapphire-framework-bridge/src/peer.rs       | 249 ++++++++++-
+ crates/sapphire-framework-server/src/lib.rs        |  22 +-
+ crates/sapphire-framework-server/src/sync/live.rs  | 191 +++++++++
+ crates/sapphire-framework-server/src/sync/mod.rs   | 467 +++++++++++++++++++--
+ .../sapphire-framework-server/tests/common/mod.rs  | 147 ++++++-
+ crates/sapphire-framework-server/tests/live.rs     | 141 +++++++
+ 7 files changed, 1162 insertions(+), 60 deletions(-)
+
+## Diff
+diff --git a/crates/sapphire-framework-bridge/src/data.rs b/crates/sapphire-framework-bridge/src/data.rs
+index 6a0628f..190a821 100644
+--- a/crates/sapphire-framework-bridge/src/data.rs
++++ b/crates/sapphire-framework-bridge/src/data.rs
+@@ -347,39 +347,34 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
+             }
+             Inbound::Workspace(from, workspace_id, stream) => (from, workspace_id, stream),
+         };
+ 
+         // 1. Authorize before anything else knows a stranger called.
+         //
+         // Deliberately before step 2: an unauthorized peer must not be able to learn which
+         // workspaces this host holds by watching which requests are answered differently.
+         // Nothing is ever sent back on a stream that fails this test.
+         let Some(workgroup) = bridge.workgroup()? else {
+-            tracing::warn!("a peer called, and this host has no workgroup");
+             drop(stream);
+             continue;
+         };
+         let device = match workgroup.authorize(&peer_node_id) {
+             Ok(device) => device,
+             Err(err) => {
+                 tracing::debug!(peer = %peer_node_id, "refused an inbound stream: {err}");
+                 drop(stream);
+                 continue;
+             }
+         };
+ 
+         // 2. Whose workspace is it?
+         let Some(route) = bridge.route(workspace_id) else {
+-            tracing::debug!(
+-                workspace = %workspace_id,
+-                "no app server on this host owns that workspace"
+-            );
+             drop(stream);
+             continue;
+         };
+ 
+         // The bridge is the app server of the workgroup's own workspace: no ticket and no
+         // announcement, the session is served here, and the loop goes straight back to
+         // accepting.
+         if route.app_name == wgsync::WORKSPACE_APP_NAME {
+             match bridge.workgroup_replica() {
+                 Some(replica) => {
+diff --git a/crates/sapphire-framework-bridge/src/peer.rs b/crates/sapphire-framework-bridge/src/peer.rs
+index ffd6832..bc2e8d3 100644
+--- a/crates/sapphire-framework-bridge/src/peer.rs
++++ b/crates/sapphire-framework-bridge/src/peer.rs
+@@ -3,24 +3,32 @@
+ //! An interface, not an implementation: the switchboard, the routing and the authorization
+ //! are all testable against [`LoopbackTransport`], and iroh is one implementation behind the
+ //! `node` feature.
+ 
+ use grain_id::GrainId;
+ use serde::{Deserialize, Serialize};
+ use tokio::io::{AsyncRead, AsyncWrite};
+ 
+ // The loopback below is the only user of these, and it is behind the same gate.
+ #[cfg(any(test, feature = "test-util"))]
+-use std::collections::HashMap;
++use std::collections::{HashMap, HashSet};
++#[cfg(any(test, feature = "test-util"))]
++use std::pin::Pin;
++#[cfg(any(test, feature = "test-util"))]
++use std::sync::atomic::{AtomicU64, Ordering};
+ #[cfg(any(test, feature = "test-util"))]
+ use std::sync::{Arc, Mutex};
+ #[cfg(any(test, feature = "test-util"))]
++use std::task::{Context, Poll};
++#[cfg(any(test, feature = "test-util"))]
++use tokio::io::ReadBuf;
++#[cfg(any(test, feature = "test-util"))]
+ use tokio::sync::mpsc;
+ 
+ #[cfg(any(test, feature = "test-util"))]
+ use crate::error::Error;
+ use crate::error::Result;
+ 
+ /// A bidirectional byte stream to another device.
+ pub trait PeerStream: AsyncRead + AsyncWrite + Send + Unpin {}
+ impl<T: AsyncRead + AsyncWrite + Send + Unpin> PeerStream for T {}
+ 
+@@ -153,158 +161,306 @@ type Inbox = mpsc::UnboundedSender<(String, GrainId, tokio::io::DuplexStream)>;
+ #[cfg(any(test, feature = "test-util"))]
+ type PairingInbox = mpsc::UnboundedSender<(String, tokio::io::DuplexStream)>;
+ 
+ /// A set of transports that can reach each other, with no network.
+ #[cfg(any(test, feature = "test-util"))]
+ #[derive(Clone, Debug, Default)]
+ pub struct LoopbackNetwork {
+     nodes: Arc<Mutex<HashMap<String, Inbox>>>,
+     /// The pairing protocol has its own channel per node, as iroh has its own ALPN.
+     pairing: Arc<Mutex<HashMap<String, PairingInbox>>>,
++    /// Writes charged to each node, so a test can watch who is still talking.
++    frames: Arc<Mutex<HashMap<String, Arc<AtomicU64>>>>,
++    /// When set, only these pairs of node ids may open each other; `None` is a network
++    /// where every registered node reaches every other.
++    edges: Option<Arc<HashSet<(String, String)>>>,
+ }
+ 
+ #[cfg(any(test, feature = "test-util"))]
+ impl LoopbackNetwork {
+     /// An empty network.
+     pub fn new() -> LoopbackNetwork {
+         LoopbackNetwork::default()
+     }
+ 
++    /// A network where only the listed pairs of nodes can open each other.
++    ///
++    /// Every pair is connected in both directions, and every other pair is unreachable, as
++    /// if a firewall sat between them. A node named in no pair can still be registered — a
++    /// host every device lists but nobody can reach is exactly what the middle-host and
++    /// unreachable-peer tests are about.
++    pub fn partitioned(pairs: &[(&str, &str)]) -> LoopbackNetwork {
++        let mut edges = HashSet::new();
++        for (from, to) in pairs {
++            edges.insert(((*from).to_owned(), (*to).to_owned()));
++            edges.insert(((*to).to_owned(), (*from).to_owned()));
++        }
++        LoopbackNetwork {
++            nodes: Arc::default(),
++            pairing: Arc::default(),
++            frames: Arc::default(),
++            edges: Some(Arc::new(edges)),
++        }
++    }
++
+     /// A transport for `node_id`, registered on this network.
+     pub fn transport(&self, node_id: &str) -> LoopbackTransport {
+         let (tx, rx) = mpsc::unbounded_channel();
+         let (pairing_tx, pairing_rx) = mpsc::unbounded_channel();
++        let frames = Arc::new(AtomicU64::new(0));
+         self.nodes
+             .lock()
+             .expect("loopback network")
+             .insert(node_id.to_owned(), tx);
+         self.pairing
+             .lock()
+             .expect("loopback network")
+             .insert(node_id.to_owned(), pairing_tx);
++        self.frames
++            .lock()
++            .expect("loopback network")
++            .insert(node_id.to_owned(), Arc::clone(&frames));
+         LoopbackTransport {
+             node_id: node_id.to_owned(),
+             nodes: Arc::clone(&self.nodes),
+             inbox: tokio::sync::Mutex::new(rx),
+             pairing_nodes: Arc::clone(&self.pairing),
+             pairing_inbox: tokio::sync::Mutex::new(pairing_rx),
++            frames,
++            edges: self.edges.clone(),
+         }
+     }
++
++    /// How many writes `node_id` has made onto loopback streams so far.
++    ///
++    /// The loopback counts writes rather than protocol frames: the bridges relay bytes in
++    /// buffer-sized chunks, so one frame may arrive as one write or as several. For a test
++    /// asking "is this host still sending", the difference does not matter.
++    pub fn frames_sent(&self, node_id: &str) -> u64 {
++        self.frames
++            .lock()
++            .expect("loopback network")
++            .get(node_id)
++            .map_or(0, |count| count.load(Ordering::Relaxed))
++    }
+ }
+ 
+ /// One device's end of a [`LoopbackNetwork`].
+ #[cfg(any(test, feature = "test-util"))]
+ #[derive(Debug)]
+ pub struct LoopbackTransport {
+     node_id: String,
+     nodes: Arc<Mutex<HashMap<String, Inbox>>>,
+     inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
+     pairing_nodes: Arc<Mutex<HashMap<String, PairingInbox>>>,
+     pairing_inbox: tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
++    /// This node's own write counter, charged by every stream it hands out.
++    frames: Arc<AtomicU64>,
++    /// Who this node may open; `None` is everybody.
++    edges: Option<Arc<HashSet<(String, String)>>>,
++}
++
++#[cfg(any(test, feature = "test-util"))]
++impl LoopbackTransport {
++    /// Whether `node_id` may be opened from this node at all.
++    fn reachable(&self, node_id: &str) -> bool {
++        match &self.edges {
++            None => true,
++            Some(edges) => edges.contains(&(self.node_id.clone(), node_id.to_owned())),
++        }
++    }
+ }
+ 
+ #[cfg(any(test, feature = "test-util"))]
+ #[async_trait::async_trait]
+ impl PeerTransport for LoopbackTransport {
+     async fn open(&self, node_id: &str, workspace_id: GrainId) -> Result<BoxedStream> {
++        if !self.reachable(node_id) {
++            // Indistinguishable from "no such node": an unreachable peer is one a test
++            // registered to be unreachable, and both mean the dial fails.
++            return Err(Error::Peer(format!(
++                "no such node on the loopback network: {node_id}"
++            )));
++        }
+         let inbox = {
+             let nodes = self.nodes.lock().expect("loopback network");
+             nodes.get(node_id).cloned()
+         };
+         let Some(inbox) = inbox else {
+             return Err(Error::Peer(format!(
+                 "no such node on the loopback network: {node_id}"
+             )));
+         };
+         if inbox.is_closed() {
+             return Err(Error::Peer(format!("{node_id} is no longer listening")));
+         }
+         let (mine, theirs) = tokio::io::duplex(LOOPBACK_BUFFER);
+         inbox
+             .send((self.node_id.clone(), workspace_id, theirs))
+             .map_err(|_| Error::Peer(format!("{node_id} is no longer listening")))?;
+-        Ok(Box::new(mine))
++        Ok(Box::new(CountingStream {
++            inner: mine,
++            frames: Arc::clone(&self.frames),
++        }))
+     }
+ 
+     async fn open_pairing(&self, node_addr: &[u8]) -> Result<BoxedStream> {
+         let node = std::str::from_utf8(node_addr)
+             .map_err(|_| Error::Peer("the ticket's address is not a node id".to_owned()))?;
++        if !self.reachable(node) {
++            return Err(Error::Peer(format!(
++                "no such node on the loopback network: {node}"
++            )));
++        }
+         let inbox = {
+             self.pairing_nodes
+                 .lock()
+                 .expect("loopback network")
+                 .get(node)
+                 .cloned()
+         };
+         let Some(inbox) = inbox else {
+             return Err(Error::Peer(format!(
+                 "no such node on the loopback network: {node}"
+             )));
+         };
+         if inbox.is_closed() {
+             return Err(Error::Peer(format!("{node} is no longer listening")));
+         }
+         let (mine, theirs) = tokio::io::duplex(LOOPBACK_BUFFER);
+         inbox
+             .send((self.node_id.clone(), theirs))
+             .map_err(|_| Error::Peer(format!("{node} is no longer listening")))?;
+-        Ok(Box::new(mine))
++        Ok(Box::new(CountingStream {
++            inner: mine,
++            frames: Arc::clone(&self.frames),
++        }))
+     }
+ 
+     async fn accept(&self) -> Result<Inbound> {
+         // One `select` over both inboxes is what "the same endpoint with a second ALPN"
+         // means here: either kind of caller is answered, whichever dials first.
+         tokio::select! {
+-            item = next_workspace(&self.inbox) => item,
+-            item = next_pairing(&self.pairing_inbox) => item,
++            item = next_workspace(&self.inbox, Arc::clone(&self.frames)) => item,
++            item = next_pairing(&self.pairing_inbox, Arc::clone(&self.frames)) => item,
+         }
+     }
+ 
+     fn node_id(&self) -> String {
+         self.node_id.clone()
+     }
+ 
+     fn is_connected(&self, node_id: &str) -> bool {
+         // On the loopback, "connected" is exactly "registered and still listening": there is
+-        // no connection to establish or lose in between.
++        // no connection to establish or lose in between. A partitioned network answers for
++        // its edges first: an unreachable node is not connected, however alive it is.
++        if !self.reachable(node_id) {
++            return false;
++        }
+         self.nodes
+             .lock()
+             .expect("loopback network")
+             .get(node_id)
+             .is_some_and(|inbox| !inbox.is_closed())
+     }
+ }
+ 
+ #[cfg(any(test, feature = "test-util"))]
+ /// The next workspace stream, if the workspace inbox has one.
+ async fn next_workspace(
+     inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, GrainId, tokio::io::DuplexStream)>>,
++    frames: Arc<AtomicU64>,
+ ) -> Result<Inbound> {
+     let mut inbox = inbox.lock().await;
+     match inbox.recv().await {
+-        Some((from, ws, stream)) => Ok(Inbound::Workspace(from, ws, Box::new(stream))),
++        Some((from, ws, stream)) => Ok(Inbound::Workspace(
++            from,
++            ws,
++            Box::new(CountingStream {
++                inner: stream,
++                frames,
++            }),
++        )),
+         None => Err(Error::Peer("the loopback network is gone".to_owned())),
+     }
+ }
+ 
+ #[cfg(any(test, feature = "test-util"))]
+ /// The next pairing attempt, from the pairing inbox.
+ async fn next_pairing(
+     inbox: &tokio::sync::Mutex<mpsc::UnboundedReceiver<(String, tokio::io::DuplexStream)>>,
++    frames: Arc<AtomicU64>,
+ ) -> Result<Inbound> {
+     let mut inbox = inbox.lock().await;
+     match inbox.recv().await {
+-        Some((from, stream)) => Ok(Inbound::Pairing(from, Box::new(stream))),
++        Some((from, stream)) => Ok(Inbound::Pairing(
++            from,
++            Box::new(CountingStream {
++                inner: stream,
++                frames,
++            }),
++        )),
+         None => Err(Error::Peer("the loopback network is gone".to_owned())),
+     }
+ }
+ 
++/// Counts writes onto a stream, as the loopback's stand-in for frames sent.
++///
++/// The bridges relay session bytes in buffer-sized chunks rather than one write per frame,
++/// so the count moves with traffic rather than with the protocol. What a test asks — "is
++/// this host still sending?" — the count answers either way.
++#[cfg(any(test, feature = "test-util"))]
++struct CountingStream<S> {
++    inner: S,
++    frames: Arc<AtomicU64>,
++}
++
++#[cfg(any(test, feature = "test-util"))]
++impl<S: AsyncRead + Unpin> AsyncRead for CountingStream<S> {
++    fn poll_read(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &mut ReadBuf<'_>,
++    ) -> Poll<std::io::Result<()>> {
++        let this = self.get_mut();
++        Pin::new(&mut this.inner).poll_read(cx, buf)
++    }
++}
++
++#[cfg(any(test, feature = "test-util"))]
++impl<S: AsyncWrite + Unpin> AsyncWrite for CountingStream<S> {
++    fn poll_write(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++        buf: &[u8],
++    ) -> Poll<std::io::Result<usize>> {
++        let this = self.get_mut();
++        match Pin::new(&mut this.inner).poll_write(cx, buf) {
++            Poll::Ready(Ok(n)) if n > 0 => {
++                this.frames.fetch_add(1, Ordering::Relaxed);
++                Poll::Ready(Ok(n))
++            }
++            other => other,
++        }
++    }
++
++    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++        let this = self.get_mut();
++        Pin::new(&mut this.inner).poll_flush(cx)
++    }
++
++    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++        let this = self.get_mut();
++        Pin::new(&mut this.inner).poll_shutdown(cx)
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+ 
+     /// `Result::unwrap_err` wants the success type to be `Debug`, and a peer stream is not:
+     /// it is an arbitrary reader and writer. Unwrapping by hand keeps `PeerStream` free of a
+     /// `Debug` bound no transport should have to satisfy.
+     #[track_caller]
+     fn expect_err<T>(result: Result<T>) -> Error {
+@@ -448,11 +604,88 @@ mod tests {
+             async fn accept(&self) -> Result<Inbound> {
+                 Err(Error::Peer("no".to_owned()))
+             }
+             fn node_id(&self) -> String {
+                 "blind".to_owned()
+             }
+         }
+ 
+         assert!(!Blind.is_connected("anybody"));
+     }
++
++    #[tokio::test]
++    async fn a_partitioned_network_reaches_only_its_pairs() {
++        let net = LoopbackNetwork::partitioned(&[("node-a", "node-s")]);
++        let a = net.transport("node-a");
++        let s = net.transport("node-s");
++        // Alive but unused: keeping the transport open is what has node-b registered and
++        // listening for the unreachability assertions below.
++        let _b = net.transport("node-b");
++
++        // The listed pair works in both directions. `accept` is called inline so the
++        // transport stays alive: the inbox is unbounded, so the open does not have to wait
++        // for a listener to be waiting first.
++        let opened = a.open("node-s", GrainId::random()).await.unwrap();
++        let accepted = match s.accept().await.unwrap() {
++            Inbound::Workspace(_, _, stream) => stream,
++            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
++        };
++        drop((opened, accepted));
++
++        // Everybody else is unreachable, even though the node is registered and listening.
++        assert!(
++            expect_err(a.open("node-b", GrainId::random()).await)
++                .to_string()
++                .contains("node-b")
++        );
++        assert!(
++            !a.is_connected("node-b"),
++            "an unreachable node is not connected"
++        );
++        assert!(a.is_connected("node-s"));
++    }
++
++    #[tokio::test]
++    async fn a_partitioned_pair_is_reachable_in_both_directions() {
++        let net = LoopbackNetwork::partitioned(&[("node-a", "node-b")]);
++        let a = net.transport("node-a");
++        let b = net.transport("node-b");
++
++        let accept = tokio::spawn(async move { b.accept().await });
++        let mut opened = a.open("node-b", GrainId::random()).await.unwrap();
++        let mut accepted = match accept.await.unwrap().unwrap() {
++            Inbound::Workspace(_, _, stream) => stream,
++            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
++        };
++        opened.write_all(b"there").await.unwrap();
++        let mut buf = [0u8; 5];
++        accepted.read_exact(&mut buf).await.unwrap();
++        assert_eq!(&buf, b"there");
++    }
++
++    #[tokio::test]
++    async fn a_loopback_stream_counts_the_writes_its_owner_made() {
++        let net = LoopbackNetwork::new();
++        let a = net.transport("node-a");
++        let b = net.transport("node-b");
++        assert_eq!(net.frames_sent("node-a"), 0);
++
++        let accept = tokio::spawn(async move { b.accept().await });
++        let mut opened = a.open("node-b", GrainId::random()).await.unwrap();
++        let mut accepted = match accept.await.unwrap().unwrap() {
++            Inbound::Workspace(_, _, stream) => stream,
++            Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
++        };
++
++        opened.write_all(b"hello").await.unwrap();
++        accepted.read_exact(&mut [0u8; 5]).await.unwrap();
++        assert!(
++            net.frames_sent("node-a") >= 1,
++            "a write onto the stream is charged to the stream's owner"
++        );
++        assert_eq!(
++            net.frames_sent("node-b"),
++            0,
++            "the receiving side has written nothing yet"
++        );
++    }
+ }
+diff --git a/crates/sapphire-framework-server/src/lib.rs b/crates/sapphire-framework-server/src/lib.rs
+index 393e33b..677e608 100644
+--- a/crates/sapphire-framework-server/src/lib.rs
++++ b/crates/sapphire-framework-server/src/lib.rs
+@@ -205,39 +205,48 @@ impl AppServer {
+         if let Some(extend) = extend {
+             router = extend(router);
+         }
+         let router = Arc::new(router);
+ 
+         #[cfg(unix)]
+         let listener = sapphire_ipc::bind(&endpoint).await?;
+         #[cfg(windows)]
+         let mut listener = sapphire_ipc::bind(&endpoint)?;
+ 
+-        // The watcher and the bridge announcement loop, if sync is on. Started only once the
+-        // socket is bound, so an early `?` above cannot leave two tasks running for a server
+-        // that never served. Both are allowed to fail: only sync stops when they do, and the
+-        // app server keeps serving files (spec §10). They are aborted with the server.
++        // The watcher, the bridge announcement loop and the dialer, if sync is on. Started
++        // only once the socket is bound, so an early `?` above cannot leave tasks running for
++        // a server that never served. All three are allowed to fail: only sync stops when
++        // they do, and the app server keeps serving files (spec §10). They are aborted with
++        // the server.
+         let _sync_tasks = match &sync {
+             Some(runtime) => {
+                 let driver = Arc::clone(runtime);
+                 let announcements = tokio::spawn(async move {
+                     if let Err(err) = driver.run().await {
+                         tracing::warn!("the bridge announcement loop ended: {err}");
+                     }
+                 });
+                 let changing = Arc::clone(runtime);
+                 let watching = tokio::spawn(async move {
+                     if let Err(err) = changing.watch_changes().await {
+                         tracing::warn!("the file watcher ended: {err}");
+                     }
+                 });
+-                Some((announcements, watching))
++                // The dialer is what keeps a session open after the initial exchange, so a
++                // commit reaches a peer without waiting for the next one (spec §4.2).
++                let dialling = Arc::clone(runtime);
++                let dialling = tokio::spawn(async move {
++                    if let Err(err) = dialling.dial_loop().await {
++                        tracing::warn!("the live dial loop ended: {err}");
++                    }
++                });
++                Some((announcements, watching, dialling))
+             }
+             None => None,
+         };
+ 
+         // Close cold workspaces, and stop when nothing has used us for a while.
+         let ticker = {
+             let host = Arc::clone(&host);
+             let live = Arc::clone(&live);
+             let last_activity = Arc::clone(&last_activity);
+             let stop_tx = stop_tx.clone();
+@@ -288,23 +297,24 @@ impl AppServer {
+                         let _ = serve(conn, router, app, info).await;
+                         live.fetch_sub(1, Ordering::Relaxed);
+                         *last_activity.lock().expect("activity clock") =
+                             std::time::Instant::now();
+                     });
+                 }
+             }
+         }
+ 
+         ticker.abort();
+-        if let Some((announcements, watching)) = _sync_tasks {
++        if let Some((announcements, watching, dialling)) = _sync_tasks {
+             announcements.abort();
+             watching.abort();
++            dialling.abort();
+         }
+         host.close_all();
+         drop(listener); // removes the socket file on Unix
+         Ok(())
+     }
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/crates/sapphire-framework-server/src/sync/live.rs b/crates/sapphire-framework-server/src/sync/live.rs
+new file mode 100644
+index 0000000..2b372e5
+--- /dev/null
++++ b/crates/sapphire-framework-server/src/sync/live.rs
+@@ -0,0 +1,191 @@
++//! The live session tables of a SyncRuntime, one per synced workspace.
++//!
++//! One `LivePeers` per synced workspace: it holds the open sessions to peers, pushes a local
++//! commit to all of them, and forwards what a session receives to every session whose peer
++//! lacks it. The dialing loop and the inbound accept path both end here, at `insert`, so the
++//! two sides of one pair agree on which stream survives — the one rule that keeps two
++//! scheduled dialers from keeping two different streams alive.
++
++use std::collections::{HashMap, HashSet};
++use std::sync::Arc;
++use std::time::Duration;
++
++use grain_id::GrainId;
++use sapphire_framework_session::LiveSession;
++use sapphire_sync::PathUpdate;
++use tokio::sync::{Mutex, broadcast};
++
++/// How often the dialer walks the peers.
++pub const DIAL_INTERVAL: Duration = Duration::from_secs(5);
++
++/// The longest the dialer stays away from a peer that keeps refusing.
++pub const DIAL_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
++
++/// How long the dialer waits after the `attempt`-th failure to a peer.
++///
++/// Doubling from one second: 1, 2, 4, 8, … capped at five minutes. The counter resets when a
++/// session opens, so a peer that is merely slow is not punished for long.
++pub(crate) fn dial_backoff(attempt: u32) -> Duration {
++    let secs = 1u64 << attempt.min(9);
++    Duration::from_secs(secs).min(DIAL_BACKOFF_MAX)
++}
++
++/// The live session table of one workspace.
++pub(crate) struct LivePeers {
++    /// This host's device id, so a pair's two ends can agree on which of their streams
++    /// survives — see [`LivePeers::insert`].
++    me: GrainId,
++    /// One session per peer device, while it is open.
++    sessions: Mutex<HashMap<GrainId, Arc<LiveSession>>>,
++    /// The peers this host is dialing right now.
++    ///
++    /// A dial is started from two places — `sync_now` when a workspace is enabled, and the
++    /// dial loop on its interval — and they can overlap. Two outbound streams to one peer
++    /// would give the pair's two ends a second stream whose fate the one `insert` rule
++    /// cannot settle (both ends would see `outbound`), so a dialer claims a peer before
++    /// opening its stream and releases the claim when the attempt is over; the second
++    /// dialer skips it until the next walk.
++    dialing: Mutex<HashSet<GrainId>>,
++}
++
++impl LivePeers {
++    /// The session table of a host with device id `me`.
++    pub(crate) fn new(me: GrainId) -> LivePeers {
++        LivePeers {
++            me,
++            sessions: Mutex::new(HashMap::new()),
++            dialing: Mutex::new(HashSet::new()),
++        }
++    }
++
++    /// Claim the right to dial `device`, or `false` if a dial is already under way.
++    pub(crate) async fn begin_dial(&self, device: GrainId) -> bool {
++        self.dialing.lock().await.insert(device)
++    }
++
++    /// Release the claim [`begin_dial`](Self::begin_dial) took.
++    pub(crate) async fn end_dial(&self, device: GrainId) {
++        self.dialing.lock().await.remove(&device);
++    }
++
++    /// Send `updates` to every open session whose peer lacks them.
++    ///
++    /// `from` is the device a batch arrived from, when forwarding: it is never sent back
++    /// there. Two rules keep a triangle quiet:
++    ///
++    /// 1. never back to the source (`from` is skipped);
++    /// 2. never what the peer already has (the session's `peer_vv` covers it).
++    ///
++    /// A push that fails is not retried here: the session is dead or the peer is gone, the
++    /// next fan-out or dial pass notices, and the batch rides the next exchange. One slow
++    /// peer does not stall the rest — each push is its own await.
++    pub(crate) async fn fan_out(&self, updates: &[PathUpdate], from: Option<GrainId>) {
++        if updates.is_empty() {
++            return;
++        }
++        let mut sessions = self.sessions.lock().await;
++        // Closed sessions go now: nobody is behind them waiting to be told.
++        sessions.retain(|_, session| session.is_open());
++        for (device, session) in sessions.iter() {
++            if Some(device) == from.as_ref() {
++                continue;
++            }
++            let seen: Vec<_> = updates.iter().map(|u| u.seen.clone()).collect();
++            if seen.iter().all(|v| session.peer_vv().covers(v)) {
++                continue;
++            }
++            if let Err(err) = session.push(updates.to_vec()).await {
++                tracing::debug!(%device, "a live push failed: {err}");
++            }
++        }
++    }
++
++    /// Remember `session` as the open session to `device`, and return its update stream.
++    ///
++    /// `outbound` says which side dialled. Both ends of a pair dial on a schedule, so two
++    /// streams between the same two devices routinely come up at once — and if each end kept
++    /// whichever it stored last, the two ends could keep *different* streams, each one
++    /// holding a session whose far half the peer had already dropped. Both would then read
++    /// EOF and go quiet, and the pair would never settle.
++    ///
++    /// So the two ends agree on a rule both can compute: **the stream whose initiator has
++    /// the lower device id survives**. For the stream A dialled, A sees `outbound` with
++    /// `A < B` — keeps. For the stream B dialled, A sees `!outbound` with `A < B` — drops.
++    /// Same stream, same verdict, either end.
++    ///
++    /// `None` means this stream lost the tie-break: it is dropped here, closing it, and the
++    /// surviving one is already in the table. Subscribing *before* the session is stored is
++    /// what guarantees the caller's reader sees every batch announced from now on.
++    pub(crate) async fn insert(
++        &self,
++        device: GrainId,
++        session: LiveSession,
++        outbound: bool,
++    ) -> Option<broadcast::Receiver<Vec<PathUpdate>>> {
++        if (self.me < device) != outbound {
++            return None;
++        }
++        let updates = session.updates();
++        self.sessions.lock().await.insert(device, Arc::new(session));
++        Some(updates)
++    }
++
++    /// The devices with an open session.
++    pub(crate) async fn devices(&self) -> Vec<GrainId> {
++        let sessions = self.sessions.lock().await;
++        sessions
++            .iter()
++            .filter(|(_, session)| session.is_open())
++            .map(|(device, _)| *device)
++            .collect()
++    }
++
++    /// Whether `device` has an open session.
++    pub(crate) async fn has(&self, device: &GrainId) -> bool {
++        self.sessions
++            .lock()
++            .await
++            .get(device)
++            .is_some_and(|session| session.is_open())
++    }
++
++    /// Close every session, as if the connections had been cut.
++    ///
++    /// Dropping a `LiveSession` stops its reader task; the dialer's next walk opens fresh
++    /// ones, which is how "a peer that goes away is redialled" holds.
++    pub(crate) async fn drop_connections(&self) {
++        self.sessions.lock().await.clear();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn the_dial_backoff_doubles_and_caps_at_five_minutes() {
++        assert_eq!(dial_backoff(0), Duration::from_secs(1));
++        assert_eq!(dial_backoff(1), Duration::from_secs(2));
++        assert_eq!(dial_backoff(2), Duration::from_secs(4));
++        assert_eq!(
++            dial_backoff(3),
++            Duration::from_secs(8),
++            "each failure doubles the wait"
++        );
++        assert_eq!(
++            dial_backoff(4),
++            Duration::from_secs(16),
++            "each failure doubles the wait"
++        );
++        assert_eq!(
++            dial_backoff(9),
++            DIAL_BACKOFF_MAX,
++            "doubling reaches the cap at nine failures"
++        );
++        assert_eq!(
++            dial_backoff(40),
++            DIAL_BACKOFF_MAX,
++            "the cap holds however many failures"
++        );
++    }
++}
+diff --git a/crates/sapphire-framework-server/src/sync/mod.rs b/crates/sapphire-framework-server/src/sync/mod.rs
+index ace4daf..2fb4df2 100644
+--- a/crates/sapphire-framework-server/src/sync/mod.rs
++++ b/crates/sapphire-framework-server/src/sync/mod.rs
+@@ -6,35 +6,40 @@
+ //! See `docs/superpowers/specs/2026-09-16-process-architecture-design.md` §4.2.
+ 
+ use std::collections::HashMap;
+ use std::path::{Path, PathBuf};
+ use std::sync::Arc;
+ 
+ use grain_id::GrainId;
+ use sapphire_bridge_api::{
+     BridgeClient, ManagedBy, RegisterParams, WorkspaceRegistration, WorkspacesResult,
+ };
+-use sapphire_sync::{PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
++use sapphire_sync::{PathUpdate, PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
+ use sapphire_workspace::{AppContext, Workspace};
+-use tokio::sync::{Mutex, OnceCell, mpsc};
++use tokio::sync::{Mutex, OnceCell, broadcast, mpsc};
+ 
+ pub mod id;
++mod live;
+ mod methods;
+ #[cfg(any(test, feature = "test-util"))]
+ pub mod testing;
+ mod watch;
+ 
+ pub use id::{SYNC_ID_FILE, WORKSPACE_MAP_FILE, sync_id, sync_id_path};
++pub use live::DIAL_BACKOFF_MAX;
+ pub use methods::sync_router;
+ pub use watch::{DEBOUNCE, Watcher};
+ 
++use live::{LivePeers, dial_backoff};
++
+ use crate::error::{Error, Result};
++
+ use crate::host::WorkspaceHost;
+ 
+ /// What `sync.status` reports.
+ #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+ pub struct SyncStatus {
+     /// Whether this workspace is synced at all.
+     pub enabled: bool,
+     /// Its identity across devices, when it is.
+     pub workspace_id: Option<GrainId>,
+     /// How many devices the workgroup has, this host excluded.
+@@ -89,56 +94,63 @@ pub struct SyncRuntime {
+     /// the host is what keeps a received file and its index moving together, and it is the
+     /// *same* [`WorkspaceState`](sapphire_workspace::WorkspaceState) the server serves from —
+     /// opening a second one would collide on the retrieve store's exclusive lock.
+     ///
+     /// Absent for a runtime nobody has wired to an app server (a test stub driving the
+     /// replica directly). Nothing then indexes, which is correct: nothing owns an index.
+     host: OnceCell<Arc<WorkspaceHost>>,
+     /// Serialises re-indexing, so two sessions finishing at once do not both sweep the
+     /// workspace through the same store.
+     reindexing: Mutex<()>,
++    /// The live session table of every synced workspace, keyed by canonical root.
++    ///
++    /// One table per workspace rather than one for the runtime: a session is about one
++    /// workspace, and the two storm rules are per-workspace rules. A root that is not
++    /// synced has none, so a dial or a push for it is a no-op rather than an error.
++    live: Mutex<HashMap<PathBuf, Arc<LivePeers>>>,
+ }
+ 
+ impl SyncRuntime {
+     /// A runtime for `ctx`'s application.
+     pub fn new(
+         ctx: &'static AppContext,
+         bridge: Arc<BridgeClient>,
+         exe_path: PathBuf,
+         managed_by: ManagedBy,
+     ) -> SyncRuntime {
+         SyncRuntime {
+             ctx,
+             bridge,
+             exe_path,
+             managed_by,
+             synced: Mutex::new(HashMap::new()),
+             device_id: OnceCell::new(),
+             watcher: OnceCell::new(),
+             host: OnceCell::new(),
+             reindexing: Mutex::new(()),
++            live: Mutex::new(HashMap::new()),
+         }
+     }
+ 
+     /// Tell the runtime which app server owns these workspaces' caches.
+     ///
+     /// Called by [`AppServer::sync`](crate::AppServer::sync). First writer wins: a runtime
+     /// belongs to the server that wired it.
+     pub(crate) fn set_host(&self, host: Arc<WorkspaceHost>) {
+         let _ = self.host.set(host);
+     }
+ 
+     /// Start syncing `root`, returning its identity across devices.
+     ///
+     /// Idempotent: enabling an already-synced workspace returns the same id and changes
+     /// nothing.
+-    pub async fn enable(&self, root: &Path) -> Result<GrainId> {
++    pub async fn enable(self: &Arc<Self>, root: &Path) -> Result<GrainId> {
+         let key = root.canonicalize().map_err(Error::Io)?;
+         let watch_key = key.clone();
+         let workspace_id = sync_id(self.ctx.app_name, &key)?;
+ 
+         // The map stays locked across opening the replica, so two simultaneous `enable`s for
+         // one root cannot both open it — the store is a redb database, and it is opened once.
+         {
+             let mut synced = self.synced.lock().await;
+             if let Some(existing) = synced.get(&key) {
+                 return Ok(existing.workspace_id);
+@@ -192,20 +204,25 @@ impl SyncRuntime {
+     pub async fn disable(&self, root: &Path) -> Result<()> {
+         let Ok(key) = root.canonicalize() else {
+             return Ok(());
+         };
+         let removed = self.synced.lock().await.remove(&key);
+         if removed.is_some()
+             && let Some(watcher) = self.watcher.get()
+         {
+             watcher.unwatch(&key);
+         }
++        // Any live session for a workspace this server no longer holds is closed: it would
++        // otherwise keep pushing files for a workspace nobody asked about any more.
++        if let Some(peers) = self.live.lock().await.remove(&key) {
++            peers.drop_connections().await;
++        }
+         if let Some(removed) = removed {
+             self.bridge
+                 .unregister(removed.workspace_id)
+                 .await
+                 .map_err(|e| Error::Bridge(e.to_string()))?;
+             self.reregister().await?;
+         }
+         Ok(())
+     }
+ 
+@@ -223,21 +240,21 @@ impl SyncRuntime {
+ 
+     /// Map a workgroup workspace onto a directory of this host, and sync it.
+     ///
+     /// `selector` is the workspace's name or id, as [`workspaces`] lists it; `dir` must
+     /// already be a workspace of this application — the directory is placed, not made.
+     /// Writing the map and enabling sync are one step: a path mapped but not enabled would
+     /// converge on the next start anyway, but a workspace believed synced with no id to
+     /// converge under is the state the sync id's error discipline exists to prevent.
+     ///
+     /// [`workspaces`]: SyncRuntime::workspaces
+-    pub async fn map(&self, selector: &str, dir: &Path) -> Result<GrainId> {
++    pub async fn map(self: &Arc<Self>, selector: &str, dir: &Path) -> Result<GrainId> {
+         let workgroup = self.workspaces().await?;
+         let wanted = workgroup
+             .workspaces
+             .iter()
+             // A name is the user-facing handle; the id is the exact one. Two workspaces
+             // may not share a name, so a name names at most one.
+             .find(|w| w.name == selector || w.workspace_id.to_string() == selector)
+             .ok_or_else(|| Error::UnknownWorkspaceName(selector.to_owned()))?;
+ 
+         // Refuse another application's workspace: this server syncs its own application's
+@@ -352,31 +369,56 @@ impl SyncRuntime {
+         let Ok(key) = root.canonicalize() else {
+             return Ok(());
+         };
+         let replica = {
+             let synced = self.synced.lock().await;
+             match synced.get(&key) {
+                 Some(entry) => Arc::clone(&entry.replica),
+                 None => return Ok(()),
+             }
+         };
+-        let outcome = {
++        let (outcome, updates) = {
+             let mut replica = replica.lock().await;
+-            replica.scan().map_err(|e| Error::Sync(e.to_string()))?
+-        };
+-        let mut synced = self.synced.lock().await;
+-        if let Some(entry) = synced.get_mut(&key) {
+-            entry.paused = match outcome {
+-                ScanOutcome::Paused(reason) => Some(reason),
+-                ScanOutcome::Scanned(_) => None,
++            let outcome = replica.scan().map_err(|e| Error::Sync(e.to_string()))?;
++            // What the scan committed, as path updates, so it can go out on the sessions
++            // that are already open. This is the whole point of the exact-path scan in
++            // `handlers.rs`: a write through the server reaches a peer live, not at the next
++            // dial.
++            let updates = match &outcome {
++                ScanOutcome::Scanned(report) => {
++                    let vv = replica.vv().clone();
++                    report
++                        .recorded
++                        .iter()
++                        .map(|entry| PathUpdate {
++                            path: entry.path.clone(),
++                            versions: vec![entry.clone()],
++                            seen: vv.clone(),
++                        })
++                        .collect()
++                }
++                ScanOutcome::Paused(_) => Vec::new(),
+             };
++            (outcome, updates)
++        };
++        {
++            let mut synced = self.synced.lock().await;
++            if let Some(entry) = synced.get_mut(&key) {
++                entry.paused = match outcome {
++                    ScanOutcome::Paused(reason) => Some(reason),
++                    ScanOutcome::Scanned(_) => None,
++                };
++            }
+         }
++        // After the map is unlocked: a push awaits every peer, and the table must not be
++        // held behind a slow one.
++        self.after_commit(&key, updates).await;
+         Ok(())
+     }
+ 
+     /// Bring the search index up to date with files a session has written.
+     ///
+     /// A replication session moves files, not index rows: the index belongs to the app
+     /// server, and the sync core is deliberately free of it. So the side that *applied* a
+     /// change re-indexes, which is what makes a file that arrived from a peer searchable
+     /// without a manual reindex — the claim the whole architecture rests on.
+     ///
+@@ -414,122 +456,467 @@ impl SyncRuntime {
+             Ok(Err(err)) => {
+                 tracing::warn!(root = %root.display(), "re-indexing after a session failed: {err}");
+             }
+             Err(err) => {
+                 tracing::warn!(root = %root.display(), "re-indexing after a session failed: {err}");
+             }
+         }
+     }
+ 
+     /// Open a session with every peer that will take one.
+-    pub async fn sync_now(&self, root: &Path) -> Result<()> {
++    pub async fn sync_now(self: &Arc<Self>, root: &Path) -> Result<()> {
+         let Ok(key) = root.canonicalize() else {
+             return Ok(());
+         };
+-        let (workspace_id, replica) = {
++        let workspace_id = {
+             let synced = self.synced.lock().await;
+             match synced.get(&key) {
+-                Some(entry) => (entry.workspace_id, Arc::clone(&entry.replica)),
++                Some(entry) => entry.workspace_id,
+                 None => return Ok(()),
+             }
+         };
+         let peers = self
+             .bridge
+             .peers()
+             .await
+             .map_err(|e| Error::Bridge(e.to_string()))?;
+         let me = self.device_id().await?;
+ 
+-        for peer in peers.peers.into_iter().filter(|p| p.device_id != me) {
+-            // A peer that does not host this workspace refuses, which is normal and cheap.
+-            let stream = match self.bridge.open_stream(workspace_id, peer.device_id).await {
+-                Ok(stream) => stream,
+-                Err(err) => {
+-                    tracing::debug!(peer = %peer.name, "no session: {err}");
+-                    continue;
+-                }
+-            };
+-            let mut replica = replica.lock().await;
+-            if let Err(err) =
+-                sapphire_framework_session::run_session(stream, &mut replica, workspace_id).await
++        // The same direction rule the dial loop follows: a host only dials peers with a
++        // greater device id. Dialling the other way from here would reintroduce the
++        // dial-both-ways deadlock the loop was cured of, just on a different trigger.
++        for peer in peers.peers.into_iter().filter(|p| me < p.device_id) {
++            // A peer that already has a live session is caught up by it: a second exchange
++            // on the same workspace would be redundant, and a second stream between the same
++            // pair is exactly what the tie-break cannot settle.
++            if let Some(live) = self.live_peers(&key).await
++                && live.has(&peer.device_id).await
+             {
+-                tracing::warn!(peer = %peer.name, "session failed: {err}");
++                continue;
++            }
++            // One dial per peer at a time. `sync_now` runs beside the dial loop, and two
++            // overlapping outbound dials to one peer are the one case the tie-break rule
++            // cannot resolve — each end would see its own stream as `outbound`. Whoever
++            // arrives second simply leaves it to the next pass. The table is made here if
++            // the dial loop has not yet: the first dial after enabling must not depend on
++            // a tick that has not fired.
++            let Some((_, table)) = self.live_peers_or_create(&key).await else {
++                continue;
++            };
++            if !table.begin_dial(peer.device_id).await {
++                continue;
++            }
++            // A peer that does not host this workspace refuses, which is normal and cheap.
++            let result = self
++                .sync_one(&key, &peer.device_id, peer.name.clone(), workspace_id)
++                .await;
++            table.end_dial(peer.device_id).await;
++            if let Err(err) = result {
++                tracing::debug!(peer = %peer.name, "no session: {err}");
+             }
+-            drop(replica);
+-            // The session wrote files; the index has to catch up before this workspace is
+-            // searchable again.
+-            self.reindex(&key).await;
+         }
+         Ok(())
+     }
+ 
++    /// Dial one peer and adopt the stream as a live session.
++    ///
++    /// The one-shot path (`run_session`) would close the stream the moment the exchange
++    /// finished — while the accepting peer keeps its half open and pushes into it, a session
++    /// that dies with nothing reading it. So the dialled side is adopted live too, and both
++    /// ends of a pair agree that a session stays open.
++    async fn sync_one(
++        self: &Arc<Self>,
++        key: &Path,
++        device: &GrainId,
++        name: String,
++        workspace_id: GrainId,
++    ) -> Result<()> {
++        let stream = self.bridge.open_stream(workspace_id, *device).await?;
++        self.adopt_live_session(stream, key, *device, workspace_id)
++            .await
++            .map_err(|err| {
++                tracing::warn!(peer = %name, "a live session could not be started: {err}");
++                err
++            })
++    }
++
+     /// Answer the bridge's announcements until the connection closes.
+     pub async fn run(self: Arc<Self>) -> Result<()> {
+         let mut incoming = self.bridge.incoming();
+         loop {
+             let announcement = match incoming.recv().await {
+                 Ok(a) => a,
+                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                     tracing::warn!(missed = n, "fell behind on bridge announcements");
+                     continue;
+                 }
+                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+             };
+ 
+             let found = {
+                 let synced = self.synced.lock().await;
+                 synced
+                     .iter()
+                     .find(|(_, s)| s.workspace_id == announcement.workspace_id)
+                     .map(|(root, s)| (root.clone(), Arc::clone(&s.replica)))
+             };
++            // `replica` is still what the accepted session shares, and `root` is where its
++            // files and its index live.
+             let Some((root, replica)) = found else {
+                 // The bridge routed to us for a workspace we no longer hold. Not fatal:
+                 // ignore it and let the ticket expire.
+                 tracing::debug!(
+                     workspace = %announcement.workspace_id,
+                     "an announcement for a workspace this server does not hold"
+                 );
+                 continue;
+             };
+ 
+             let bridge = Arc::clone(&self.bridge);
+             let workspace_id = announcement.workspace_id;
++            let peer = announcement.peer_device_id;
+             let driver = Arc::clone(&self);
+             tokio::spawn(async move {
+                 let stream = match bridge.accept_stream(announcement.ticket).await {
+                     Ok(stream) => stream,
+                     Err(err) => {
+                         tracing::warn!("could not claim an announced stream: {err}");
+                         return;
+                     }
+                 };
+-                let mut replica = replica.lock().await;
+-                if let Err(err) =
+-                    sapphire_framework_session::run_session(stream, &mut replica, workspace_id)
+-                        .await
++                // Live, not one-shot: the peer that dialled is keeping this session open and
++                // pushing what it commits, so this side has to keep reading. A session that
++                // closed after the exchange would leave the dialler pushing into a stream
++                // nobody reads.
++                let (_, session) = match sapphire_framework_session::open_live_session(
++                    stream,
++                    Arc::clone(&replica),
++                    workspace_id,
++                )
++                .await
+                 {
+-                    tracing::warn!("an inbound session failed: {err}");
+-                }
+-                drop(replica);
++                    Ok(started) => started,
++                    Err(err) => {
++                        tracing::warn!("an inbound session failed: {err}");
++                        return;
++                    }
++                };
++                let Some((key, table)) = driver.live_peers_or_create(&root).await else {
++                    return;
++                };
++                // The peer dialled: this stream survives only if the *peer* has the lower
++                // device id. A stream that loses is dropped, which closes it, and the
++                // connection ends tidily rather than being left half-read.
++                let Some(updates) = table.insert(peer, session, false).await else {
++                    return;
++                };
+                 // This is the receiving side: the files are on disk now and nobody else will
+                 // index them.
+-                driver.reindex(&root).await;
++                driver.reindex(&key).await;
++                driver.spawn_reader(table, updates, key, peer);
+             });
+         }
+     }
+ 
+     /// Every synced root, for the watcher.
+     pub async fn roots(&self) -> Vec<PathBuf> {
+         self.synced.lock().await.keys().cloned().collect()
+     }
+ 
++    /// The live session table for `root`, if this runtime syncs it.
++    ///
++    /// `None` is not an error: a dial, a push or a drop for a workspace this server does not
++    /// hold is a no-op, and every caller below treats it that way.
++    async fn live_peers(&self, root: &Path) -> Option<Arc<LivePeers>> {
++        let key = root.canonicalize().ok()?;
++        self.live.lock().await.get(&key).cloned()
++    }
++
++    /// The live session table for `root`, creating it if this runtime syncs it.
++    ///
++    /// The two locks are taken one after the other, never nested: `synced` to decide whether
++    /// the workspace is ours at all, then `live` to get or make its table.
++    async fn live_peers_or_create(&self, root: &Path) -> Option<(PathBuf, Arc<LivePeers>)> {
++        let key = root.canonicalize().ok()?;
++        if !self.synced.lock().await.contains_key(&key) {
++            return None;
++        }
++        // A table is built by whoever walks the workspace first, and it needs this host's
++        // device id — the tie-break between two simultaneous streams is decided from it.
++        let me = self.device_id().await.ok()?;
++        let mut live = self.live.lock().await;
++        let peers = Arc::clone(
++            live.entry(key.clone())
++                .or_insert_with(|| Arc::new(LivePeers::new(me))),
++        );
++        Some((key, peers))
++    }
++
++    /// Push `updates` to every open session for `root`.
++    ///
++    /// Called with what a scan recorded. `from` is always `None` here: a local commit came
++    /// from this host, so no session is excluded. The forwarding path, which does name a
++    /// source, is [`LivePeers::fan_out`](live::LivePeers::fan_out) called directly by the
++    /// reader side of a session.
++    ///
++    /// Best-effort by contract: the commit already happened, and a peer that is gone is the
++    /// dialer's problem, not the writer's.
++    pub async fn after_commit(&self, root: &Path, updates: Vec<PathUpdate>) {
++        if updates.is_empty() {
++            return;
++        }
++        if let Some(peers) = self.live_peers(root).await {
++            peers.fan_out(&updates, None).await;
++        }
++    }
++
++    /// The devices with an open live session for `root`.
++    ///
++    /// Used by tests to wait for the dialer; empty for a workspace this server does not hold.
++    pub async fn live_session_devices(&self, root: &Path) -> Vec<GrainId> {
++        match self.live_peers(root).await {
++            Some(peers) => peers.devices().await,
++            None => Vec::new(),
++        }
++    }
++
++    /// Close every open live session, as if the connections had been cut.
++    ///
++    /// Called for a workspace being disabled, and by tests that want to watch the dialer
++    /// rebuild what was dropped.
++    pub async fn drop_connections(&self) {
++        let tables: Vec<Arc<LivePeers>> = self.live.lock().await.values().cloned().collect();
++        for peers in tables {
++            peers.drop_connections().await;
++        }
++    }
++
++    /// Keep a live session open to every peer, for every synced workspace.
++    ///
++    /// One walk per [`DIAL_INTERVAL`](live::DIAL_INTERVAL): for each synced workspace, ask
++    /// the bridge who is in the workgroup, and open a session to every peer that is connected
++    /// and does not already have one.
++    ///
++    /// A peer that cannot be reached is retried on a per-peer exponential backoff capped at
++    /// [`DIAL_BACKOFF_MAX`] — one failed attempt per walk, not one per spin — and the counter
++    /// resets when a session opens. An unreachable peer is therefore no obstacle to the
++    /// others: its dial fails, the walk moves on, and the next workspace is dialled.
++    ///
++    /// Runs until the task is aborted, which is what the app server's shutdown does with it.
++    /// It is allowed to fail like [`run`](SyncRuntime::run): only sync stops, and the app
++    /// server keeps serving files (spec §10).
++    pub async fn dial_loop(self: Arc<Self>) -> Result<()> {
++        let mut tick = tokio::time::interval(live::DIAL_INTERVAL);
++        // A missed tick is a late walk, not a burst of them: the interval is a pace, not a
++        // quota to make up.
++        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
++        let mut waiting: HashMap<GrainId, std::time::Instant> = HashMap::new();
++        let mut failures: HashMap<GrainId, u32> = HashMap::new();
++        loop {
++            tick.tick().await;
++            let roots = self.roots().await;
++            if roots.is_empty() {
++                continue;
++            }
++            let peers = match self.bridge.peers().await {
++                Ok(peers) => peers,
++                // The bridge is down or has no workgroup: nothing to dial, and the next walk
++                // asks again. Not an error for the caller — the app server is still serving.
++                Err(err) => {
++                    tracing::debug!("no peers to dial: {err}");
++                    continue;
++                }
++            };
++            let me = match self.device_id().await {
++                Ok(me) => me,
++                Err(err) => {
++                    tracing::warn!("no device id, so nobody to dial: {err}");
++                    continue;
++                }
++            };
++            let now = std::time::Instant::now();
++            // Dial only peers whose device id is greater than ours. Every device dialling
++            // every other can deadlock: two hosts that dial each other at once each hold
++            // their replica's lock across their own exchange and wait for the other's
++            // hello, which the other's dialler holds the lock for. With one direction per
++            // pair the wait chain is a DAG — a higher-id host never dials, so it never
++            // holds its lock out while a lower-id host's exchange needs it. The lower host
++            // dials within `DIAL_INTERVAL`, and the exchange is symmetric, so nothing is
++            // lost; the tie-break is left as the safety net it is.
++            for root in roots {
++                let Some((key, table)) = self.live_peers_or_create(&root).await else {
++                    continue;
++                };
++                let workspace_id = {
++                    let synced = self.synced.lock().await;
++                    match synced.get(&key) {
++                        Some(entry) => entry.workspace_id,
++                        None => continue,
++                    }
++                };
++                for peer in peers
++                    .peers
++                    .iter()
++                    .filter(|p| p.connected && me < p.device_id)
++                {
++                    let device = peer.device_id;
++                    if table.has(&device).await {
++                        // Already talking; a redial would drop a working session.
++                        failures.remove(&device);
++                        waiting.remove(&device);
++                        continue;
++                    }
++                    if let Some(until) = waiting.get(&device)
++                        && now < *until
++                    {
++                        // Backing off after a failure; the walk skips it until then.
++                        continue;
++                    }
++                    // The same claim `sync_now` takes: this walk and it can overlap, and a
++                    // double dial in one direction is the one race the tie-break cannot
++                    // settle. Skipping is free — the next pass, or `sync_now` itself, dials.
++                    if !table.begin_dial(device).await {
++                        continue;
++                    }
++                    let opened = self.bridge.open_stream(workspace_id, device).await;
++                    if opened.is_err() {
++                        table.end_dial(device).await;
++                    }
++                    match opened {
++                        Ok(stream) => {
++                            let adopted = self
++                                .adopt_live_session(stream, &root, device, workspace_id)
++                                .await;
++                            // The claim is out either way: the attempt is over, and a
++                            // session that died mid-exchange is re-dialled next pass.
++                            table.end_dial(device).await;
++                            match adopted {
++                                Ok(()) => {
++                                    failures.remove(&device);
++                                    waiting.remove(&device);
++                                }
++                                Err(err) => {
++                                    tracing::debug!(
++                                        peer = %peer.name,
++                                        err = %err,
++                                        "a live session could not be started"
++                                    );
++                                    let count = failures.entry(device).or_insert(0);
++                                    *count = count.saturating_add(1);
++                                    waiting.insert(device, now + dial_backoff(*count));
++                                }
++                            }
++                        }
++                        Err(err) => {
++                            // Normal and cheap: a peer that does not host this workspace
++                            // refuses, and one that is unreachable cannot be opened.
++                            tracing::debug!("no stream to a peer: {err}");
++                            let count = failures.entry(device).or_insert(0);
++                            *count = count.saturating_add(1);
++                            waiting.insert(device, now + dial_backoff(*count));
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    /// Take ownership of an opened stream: run the exchange, then keep it live.
++    ///
++    /// The session is stored under `device` and its reader pumped until the stream ends. A
++    /// half-open or refused stream is not stored; the dialer retries it with backoff.
++    async fn adopt_live_session(
++        self: &Arc<Self>,
++        stream: sapphire_ipc::RawStream,
++        root: &Path,
++        device: GrainId,
++        workspace_id: GrainId,
++    ) -> Result<()> {
++        let replica = self.replica_of(root).await?;
++        let (_, session) = sapphire_framework_session::open_live_session(
++            stream,
++            Arc::clone(&replica),
++            workspace_id,
++        )
++        .await
++        .map_err(|e| Error::Sync(e.to_string()))?;
++        let Some((key, table)) = self.live_peers_or_create(root).await else {
++            return Ok(());
++        };
++        // This stream was dialled by us, so it is the one the pair keeps if this host's
++        // device id is the lower of the two. If it lost the tie-break the session is
++        // dropped here, which closes the stream, and the surviving one is already in the
++        // table.
++        let Some(updates) = table.insert(device, session, true).await else {
++            return Ok(());
++        };
++        // The session wrote files during the exchange; the index has to catch up before the
++        // workspace is searchable again.
++        self.reindex(&key).await;
++        self.spawn_reader(Arc::clone(&table), updates, key, device);
++        Ok(())
++    }
++
++    /// Forward what one session receives, and re-index it.
++    ///
++    /// This is the loop that makes A → S → B work: a batch that arrived on S's session with A
++    /// is applied (the session crate does that before publishing it), the workspace behind
++    /// `key` is re-indexed, and the batch is handed to every *other* session whose peer lacks
++    /// it — `from` is the device it came from, so it never goes back to A.
++    fn spawn_reader(
++        self: &Arc<Self>,
++        table: Arc<LivePeers>,
++        mut updates: broadcast::Receiver<Vec<PathUpdate>>,
++        key: PathBuf,
++        from: GrainId,
++    ) {
++        let driver = Arc::clone(self);
++        tokio::spawn(async move {
++            loop {
++                match updates.recv().await {
++                    Ok(batch) => {
++                        // The files are on disk now (the session guarantees it before
++                        // publishing), so the index is behind them until the sweep below.
++                        driver.reindex(&key).await;
++                        table.fan_out(&batch, Some(from)).await;
++                    }
++                    // A burst bigger than the channel: the newest is kept and the gap is
++                    // covered by the next session's exchange. Losing a batch here cannot lose
++                    // an entry — the peer's vector does not cover it, so the next dial or push
++                    // carries it again.
++                    Err(broadcast::error::RecvError::Lagged(missed)) => {
++                        tracing::debug!(
++                            device = %from,
++                            missed,
++                            "fell behind on a live session; the next exchange catches up"
++                        );
++                    }
++                    // The session closed. Its table entry is reaped by the next fan-out or
++                    // dial pass, and the dialer opens a fresh one.
++                    Err(broadcast::error::RecvError::Closed) => {
++                        return;
++                    }
++                }
++            }
++        });
++    }
++
++    /// The replica of a synced `root`.
++    async fn replica_of(&self, root: &Path) -> Result<Arc<Mutex<Replica>>> {
++        let key = root.canonicalize().map_err(Error::Io)?;
++        let synced = self.synced.lock().await;
++        match synced.get(&key) {
++            Some(entry) => Ok(Arc::clone(&entry.replica)),
++            None => Err(Error::UnknownWorkspace(key, self.ctx.app_name)),
++        }
++    }
++
+     /// Watch the synced roots and, on a debounced report, scan and dial.
+     ///
+     /// This is the safety net for everything the app server did not do itself — a file
+     /// edited in an editor, a `git checkout`. The exact path is [`scan`] called from
+     /// `handlers.rs` right after a write the server made. A scan that finds nothing is
+     /// cheap; a scan that is skipped loses an edit until the next one.
+     ///
+     /// Returns when the reporting channel closes — that is, when the [`Watcher`] this
+     /// runtime holds is dropped, which happens when the runtime itself is.
+     ///
+diff --git a/crates/sapphire-framework-server/tests/common/mod.rs b/crates/sapphire-framework-server/tests/common/mod.rs
+index d90b6d8..4bcba2e 100644
+--- a/crates/sapphire-framework-server/tests/common/mod.rs
++++ b/crates/sapphire-framework-server/tests/common/mod.rs
+@@ -7,36 +7,39 @@
+ //!
+ //! Every piece is in this process rather than spawned. A spawned app server finds its bridge
+ //! through `SAPPHIRE_RUNTIME_DIR`, and that is one variable in one environment: two hosts
+ //! cannot hold two values of it, so two hosts cannot be two spawned processes. The bridge's
+ //! own `switchboard.rs` and `wake.rs` solve it the same way.
+ //!
+ //! Each test file is its own crate, so a fixture one of them does not use is reported as
+ //! dead code.
+ #![allow(dead_code)]
+ 
++use std::collections::HashSet;
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::time::{Duration, Instant};
+ 
+ use grain_id::GrainId;
+ use sapphire_backend::protocol as proto;
+ use sapphire_bridge_api::{BridgeClient, ManagedBy};
+ use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig, Workgroup};
+ use sapphire_framework_server::{AppServer, SyncRuntime};
+ use sapphire_ipc::{Client, ClientInfo, Endpoint, SpawnConfig, ensure_server};
+ use sapphire_workspace::AppContext;
+ 
+ /// The node id of the first host: 64 lowercase hex digits, as the ledger wants them.
+ pub const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+ /// The node id of the second host.
+ pub const NODE_B: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
++/// The node id of a third host: the middle host, or an unreachable one.
++pub const NODE_S: &str = "c1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+ 
+ /// The version every side reports, so a client and a server always agree.
+ pub const VERSION: &str = "0.0.0";
+ 
+ /// The application both hosts serve.
+ ///
+ /// One name is right: the marker directory, the sync identity and the registration are all
+ /// keyed by it, and two hosts syncing one workspace are two servers of one application.
+ pub static CTX: AppContext = AppContext::new("sapphire-converge");
+ 
+@@ -70,20 +73,24 @@ pub struct Host {
+     /// The workspace root. Named `ws` because every RPC that names a workspace names it.
+     pub ws: PathBuf,
+     /// The bridge directory and the workgroup this host founded.
+     pub bridge_dir: BridgeDir,
+     pub workgroup_id: GrainId,
+     /// Where this host's sockets live. Reclaimed on restart, so `stop_bridge` can wait for
+     /// the old one to let go of them.
+     runtime_dir: PathBuf,
+     /// This host's connection to its own app server: the "client" end of the picture.
+     pub client: Client,
++    /// The network this host was built on, so a test can read its frame counters.
++    net: LoopbackNetwork,
++    /// This host's connection to its own bridge, for fixtures that ask the bridge directly.
++    bridge_client: Arc<BridgeClient>,
+     /// The sync runtime, held so a stopped host can drop it and release the replica store.
+     runtime: Option<Arc<SyncRuntime>>,
+     server: Option<tokio::task::JoinHandle<sapphire_framework_server::Result<()>>>,
+     /// The bridge runs on its own runtime, because a bridge is its own process.
+     ///
+     /// Both halves of that matter. A bridge is its own *process*: killing it must close the
+     /// control connections it already accepted, or an app server would keep talking to a
+     /// corpse and [`Host::stop_bridge`] would test nothing. And a runtime is the only thing
+     /// that owns those connections — aborting `run` never touches the `serve_connection`
+     /// tasks it spawned. So the bridge gets a runtime of its own, and stopping it means
+@@ -169,21 +176,21 @@ async fn build(
+     .unwrap();
+     let bridge_client = Arc::new(BridgeClient::from_client(
+         Arc::new(control_client),
+         runtime_dir.clone(),
+     ));
+ 
+     // The app server, with sync wired the way an application wires it.
+     let endpoint = Endpoint::in_dir(ctx.app_name, runtime_dir.clone());
+     let runtime = Arc::new(SyncRuntime::new(
+         ctx,
+-        bridge_client,
++        Arc::clone(&bridge_client),
+         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
+         ManagedBy::Spawned,
+     ));
+     let server = AppServer::new(ctx, VERSION)
+         .endpoint(endpoint.clone())
+         .managed_by(ManagedBy::Spawned)
+         .idle_exit(None)
+         .sync(Arc::clone(&runtime));
+     let server_task = tokio::spawn(async move { server.run().await });
+     wait_until_listening(&endpoint, "the app server").await;
+@@ -199,27 +206,46 @@ async fn build(
+ 
+     Host {
+         tmp: Some(tmp),
+         node_id: node_id.to_owned(),
+         device_name: device_name.to_owned(),
+         ws: root,
+         bridge_dir,
+         workgroup_id: workgroup.id,
+         runtime_dir,
+         client,
++        net: net.clone(),
++        bridge_client,
+         runtime: Some(runtime),
+         server: Some(server_task),
+         bridge: Some(bridge_runtime),
+     }
+ }
+ 
+ impl Host {
++    /// This host's node id on the loopback network.
++    pub fn node_id(&self) -> &str {
++        &self.node_id
++    }
++
++    /// The sync runtime, while the app server runs. `None` once stopped.
++    pub fn runtime(&self) -> Option<Arc<SyncRuntime>> {
++        self.runtime.clone()
++    }
++
++    /// Close this host's open sync sessions, as if its connections had been cut.
++    pub async fn drop_connections(&self) {
++        if let Some(runtime) = self.runtime() {
++            runtime.drop_connections().await;
++        }
++    }
++
+     /// Stop this host's app server and bridge, leaving every directory as it is.
+     ///
+     /// The app server is asked to exit rather than aborted: its shutdown path is what stops
+     /// the watcher and closes the workspaces, and an aborted server would leave the watcher
+     /// running and the replica store locked for the next start.
+     pub async fn stop(&mut self) {
+         let _: std::result::Result<proto::Ack, _> = self
+             .client
+             .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+             .await;
+@@ -274,20 +300,38 @@ pub fn introduce(a: &Host, b: &Host) {
+     // A workspace's identity is a grain-id in `.<app>/sync-id`, and it travels with the
+     // workspace. Minting one per host would make two unrelated workspaces that never merge.
+     let shared = GrainId::random();
+     for host in [a, b] {
+         std::fs::write(sync_id_path(host), format!("{shared}\n")).unwrap();
+     }
+     copy_device(a, b);
+     copy_device(b, a);
+ }
+ 
++/// Introduce every pair of `hosts`: one shared workspace identity and full ledgers.
++///
++/// [`introduce`] is the two-host case; this is its n-host form, so a middle host and an
++/// unreachable one can be built with the same machinery.
++pub fn introduce_all(hosts: &[&Host]) {
++    let shared = GrainId::random();
++    for host in hosts {
++        std::fs::write(sync_id_path(host), format!("{shared}\n")).unwrap();
++    }
++    for from in hosts {
++        for to in hosts {
++            if !std::ptr::eq(*from, *to) {
++                copy_device(from, to);
++            }
++        }
++    }
++}
++
+ /// `<root>/.<app>/sync-id`.
+ fn sync_id_path(host: &Host) -> PathBuf {
+     host.ws.join(format!(".{}", ctx().app_name)).join("sync-id")
+ }
+ 
+ /// Give `to` the record of `from`'s own device — the same id, the same node id.
+ ///
+ /// The ledger is synced, so a device travels to another host with its id intact; the id is
+ /// both the record's filename and the `Entry.author` of everything it wrote. Copying the
+ /// record says exactly that.
+@@ -363,10 +407,111 @@ async fn wait_until_not_listening(endpoint: &Endpoint) {
+ }
+ 
+ /// Wait until something listens on `endpoint`, polling rather than sleeping.
+ async fn wait_until_listening(endpoint: &Endpoint, what: &str) {
+     let deadline = Instant::now() + Duration::from_secs(10);
+     while !sapphire_ipc::probe(endpoint).await.unwrap_or(false) {
+         assert!(Instant::now() < deadline, "{what} never started listening");
+         tokio::time::sleep(Duration::from_millis(20)).await;
+     }
+ }
++
++// ── live-propagation fixtures ───────────────────────────────────────────────
++
++/// Enable sync on `host`'s workspace, the way a client would.
++async fn enable_sync(host: &Host) {
++    let _: proto::SyncEnableResult = host
++        .client
++        .call(
++            proto::SYNC_ENABLE,
++            proto::WsParams {
++                ws: host.ws.clone(),
++            },
++        )
++        .await
++        .unwrap();
++}
++
++/// Two hosts sharing one workspace, synced and introduced.
++pub async fn synced_pair(net: &LoopbackNetwork) -> (Host, Host) {
++    let a = start_host(net, NODE_A, "host-a").await;
++    let b = start_host(net, NODE_B, "host-b").await;
++    introduce(&a, &b);
++    enable_sync(&a).await;
++    enable_sync(&b).await;
++    (a, b)
++}
++
++/// Three hosts sharing one workspace: `a`, a middle host `s`, and `b`.
++pub async fn synced_triple(net: &LoopbackNetwork) -> (Host, Host, Host) {
++    let a = start_host(net, NODE_A, "host-a").await;
++    let s = start_host(net, NODE_S, "host-s").await;
++    let b = start_host(net, NODE_B, "host-b").await;
++    introduce_all(&[&a, &s, &b]);
++    enable_sync(&a).await;
++    enable_sync(&s).await;
++    enable_sync(&b).await;
++    (a, s, b)
++}
++
++/// Wait until every host holds an open live session to every peer its bridge reports
++/// as connected.
++///
++/// "Settled" is about the dialer, not the files: the initial exchange of each session is
++/// what catches a host up, and `open_live_session` returns only once both sides have said
++/// `Done` and `Settled`. An open session to a peer therefore means "caught up with that
++/// peer", which is the state the live-propagation tests need before they write anything.
++///
++/// Unreachable peers are excluded by the bridge's own `connected` report — the loopback
++/// answers it from the partition's edges, so a host nobody can reach never blocks this.
++pub async fn settle(hosts: &[&Host]) {
++    let deadline = Instant::now() + Duration::from_secs(30);
++    loop {
++        let mut settled = true;
++        for host in hosts {
++            let Some(runtime) = host.runtime() else {
++                settled = false;
++                break;
++            };
++            let peers = host
++                .bridge_client
++                .peers()
++                .await
++                .expect("the bridge answers peers");
++            let connected: HashSet<GrainId> = peers
++                .peers
++                .iter()
++                .filter(|p| p.connected && p.node_id != host.node_id())
++                .map(|p| p.device_id)
++                .collect();
++            let open: HashSet<GrainId> = runtime
++                .live_session_devices(&host.ws)
++                .await
++                .into_iter()
++                .collect();
++            if !connected.is_subset(&open) {
++                eprintln!(
++                    "NOT SETTLED on {}: connected={:?} open={:?}",
++                    host.node_id(),
++                    connected,
++                    open
++                );
++                settled = false;
++                break;
++            }
++        }
++        if settled {
++            return;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "the hosts never settled into live sessions"
++        );
++        tokio::time::sleep(Duration::from_millis(50)).await;
++    }
++}
++
++/// How many writes this host has made onto loopback streams — the test's stand-in for
++/// frames sent.
++pub fn frames_sent(host: &Host) -> u64 {
++    host.net.frames_sent(host.node_id())
++}
+diff --git a/crates/sapphire-framework-server/tests/live.rs b/crates/sapphire-framework-server/tests/live.rs
+new file mode 100644
+index 0000000..2ac3208
+--- /dev/null
++++ b/crates/sapphire-framework-server/tests/live.rs
+@@ -0,0 +1,141 @@
++//! Live propagation between app servers, including through a middle host.
++//!
++//! The claim under test is the app server's half of the "sync feels immediate" goal: a
++//! commit made through one host's IPC reaches every other host over sessions that are
++//! already open, a host in the middle forwards what it receives, and the two storm rules —
++//! never back to the source, never what the peer already has — hold when three hosts are
++//! connected in a triangle.
++
++mod common;
++
++use std::path::PathBuf;
++
++use sapphire_backend::protocol as proto;
++use sapphire_framework_bridge::LoopbackNetwork;
++
++/// Wait for `rel` to appear on `host`, with a deadline rather than a sleep.
++async fn await_file(host: &common::Host, rel: &str) -> String {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
++    loop {
++        if let Ok(text) = std::fs::read_to_string(host.ws.join(rel)) {
++            return text;
++        }
++        assert!(std::time::Instant::now() < deadline, "{rel} never arrived");
++        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
++    }
++}
++
++async fn write(host: &common::Host, rel: &str, content: &str) {
++    let _: proto::Ack = host
++        .client
++        .call(
++            proto::WRITE_FILE,
++            proto::ContentParams {
++                ws: host.ws.clone(),
++                path: PathBuf::from(rel),
++                content: content.into(),
++            },
++        )
++        .await
++        .unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_change_arrives_without_waiting_for_the_next_dial() {
++    let net = LoopbackNetwork::new();
++    let (a, b) = common::synced_pair(&net).await;
++    common::settle(&[&a, &b]).await;
++
++    let started = std::time::Instant::now();
++    write(&a, "quick.md", "now").await;
++    assert_eq!(await_file(&b, "quick.md").await, "now");
++
++    assert!(
++        started.elapsed() < std::time::Duration::from_secs(10),
++        "a live session should deliver in well under the dial interval, took {:?}",
++        started.elapsed()
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_change_propagates_through_a_host_in_the_middle() {
++    // A and S are connected; S and B are connected; A and B are not. This is the topology a
++    // self-hosted server exists for.
++    let net = LoopbackNetwork::partitioned(&[
++        (common::NODE_A, common::NODE_S),
++        (common::NODE_S, common::NODE_B),
++    ]);
++    let (a, s, b) = common::synced_triple(&net).await;
++    common::settle(&[&a, &s, &b]).await;
++
++    write(&a, "relayed.md", "from a").await;
++    assert_eq!(await_file(&b, "relayed.md").await, "from a");
++    let _ = s;
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn an_entry_is_not_forwarded_back_to_the_peer_it_came_from() {
++    let net = LoopbackNetwork::new();
++    let (a, b) = common::synced_pair(&net).await;
++    common::settle(&[&a, &b]).await;
++
++    let before = common::frames_sent(&b);
++    write(&a, "one-way.md", "x").await;
++    await_file(&b, "one-way.md").await;
++    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
++
++    let after = common::frames_sent(&b);
++    assert!(
++        after - before < 5,
++        "B sent {} frames for one incoming file; it is echoing",
++        after - before
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn three_connected_hosts_do_not_loop_an_edit_between_them() {
++    let net = LoopbackNetwork::new(); // fully connected
++    let (a, s, b) = common::synced_triple(&net).await;
++    common::settle(&[&a, &s, &b]).await;
++
++    write(&a, "triangle.md", "x").await;
++    await_file(&b, "triangle.md").await;
++    await_file(&s, "triangle.md").await;
++
++    // Let any loop run for a while, then check nobody is still talking.
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++    let quiet_a = common::frames_sent(&a);
++    let quiet_b = common::frames_sent(&b);
++    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
++
++    assert_eq!(common::frames_sent(&a), quiet_a, "A is still sending");
++    assert_eq!(common::frames_sent(&b), quiet_b, "B is still sending");
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_peer_that_goes_away_is_redialled() {
++    let net = LoopbackNetwork::new();
++    let (a, b) = common::synced_pair(&net).await;
++    common::settle(&[&a, &b]).await;
++
++    b.drop_connections().await;
++    write(&a, "after-drop.md", "x").await;
++
++    assert_eq!(
++        await_file(&b, "after-drop.md").await,
++        "x",
++        "a dropped connection must be redialled, not mourned"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn an_unreachable_peer_does_not_stall_the_others() {
++    let net = LoopbackNetwork::partitioned(&[(common::NODE_A, common::NODE_B)]);
++    let (a, s, b) = common::synced_triple(&net).await;
++    // S is listed in the workgroup but reachable by nobody.
++    common::settle(&[&a, &b]).await;
++
++    write(&a, "despite-s.md", "x").await;
++    assert_eq!(await_file(&b, "despite-s.md").await, "x");
++    let _ = s;
++}

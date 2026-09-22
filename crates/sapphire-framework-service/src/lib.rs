@@ -12,6 +12,12 @@
 //! | a regular user | `~/.config/systemd/user/<app>.service` | `systemctl --user enable --now` |
 //! | root, including `sudo` | `/etc/systemd/system/<app>.service`, `After=network-online.target` | `systemctl enable --now` |
 //!
+//! Off Linux the crate is user level only: a LaunchAgent on macOS ([`launchd`]) and a
+//! scheduled task on Windows ([`windows`]). LaunchDaemons and real Windows services can be
+//! added when someone needs them — [`Scope::System`] is refused off Linux, so an install
+//! with administrator rights fails with the Linux-only message rather than quietly making
+//! a user-level thing.
+//!
 //! And for the user a system unit runs as: [`RunAs::Root`] carries no `User=` (the app drops
 //! privileges itself); [`RunAs::InvokingUser`] takes `$SUDO_USER`, and refuses to run with an
 //! explanation when neither it nor `--run-as` is available — a root `sapphire-bridge` would
@@ -26,14 +32,18 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod launchd;
 pub mod privilege;
 pub mod scope;
 pub mod systemd;
+pub mod windows;
 
 pub use error::{Error, Result};
+pub use launchd::{agent_path, label, render_launch_agent};
 pub use privilege::{HelperSpec, PrivilegeConfig, UserSpec};
 pub use scope::{
     Environment, InstallContext, Os, PostInstall, RunAs, Scope, ServiceSpec, resolve_scope,
     resolve_target_user,
 };
 pub use systemd::{activation, linger_hint, render_unit, unit_path};
+pub use windows::render_task;

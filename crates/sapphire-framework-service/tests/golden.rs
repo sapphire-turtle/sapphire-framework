@@ -6,7 +6,8 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_framework_service::{
-    HelperSpec, InstallContext, PrivilegeConfig, RunAs, Scope, ServiceSpec, render_unit,
+    HelperSpec, InstallContext, PrivilegeConfig, RunAs, Scope, ServiceSpec, render_launch_agent,
+    render_task, render_unit,
 };
 
 fn golden(name: &str) -> String {
@@ -124,4 +125,55 @@ fn a_privilege_separated_unit_names_both_users() {
     let rendered = render_unit(&spec(RunAs::Root, true), &ctx(Scope::System, None));
     assert!(rendered.contains("alice"), "{rendered}");
     assert!(rendered.contains("sapphire-agent-tools"), "{rendered}");
+}
+
+#[test]
+fn a_launch_agent() {
+    check(
+        "launchagent.plist",
+        &render_launch_agent(&spec(RunAs::InvokingUser, false), &ctx(Scope::User, None)),
+    );
+}
+
+#[test]
+fn a_launch_agent_label_is_namespaced() {
+    let rendered = render_launch_agent(&spec(RunAs::InvokingUser, false), &ctx(Scope::User, None));
+    assert!(
+        rendered.contains("net.fireturtle.sapphire.sapphire-agent"),
+        "a LaunchAgent label is a global namespace: {rendered}"
+    );
+}
+
+#[test]
+fn a_scheduled_task() {
+    check(
+        "task.xml",
+        &render_task(&spec(RunAs::InvokingUser, false), &ctx(Scope::User, None)),
+    );
+}
+
+#[test]
+fn a_scheduled_task_runs_at_logon() {
+    let rendered = render_task(&spec(RunAs::InvokingUser, false), &ctx(Scope::User, None));
+    assert!(rendered.contains("LogonTrigger"), "{rendered}");
+}
+
+#[test]
+fn an_argument_with_a_space_survives_the_xml() {
+    let mut with_space = spec(RunAs::InvokingUser, false);
+    with_space.args = vec!["server".into(), "--note".into(), "a b".into()];
+    let rendered = render_task(&with_space, &ctx(Scope::User, None));
+    assert!(rendered.contains("\"a b\""), "{rendered}");
+}
+
+#[test]
+fn an_ampersand_in_a_description_is_escaped() {
+    let mut awkward = spec(RunAs::InvokingUser, false);
+    awkward.description = "Notes & ledger".into();
+    let rendered = render_task(&awkward, &ctx(Scope::User, None));
+    assert!(rendered.contains("Notes &amp; ledger"), "{rendered}");
+    assert!(
+        !rendered.contains("Notes & ledger"),
+        "unescaped XML: {rendered}"
+    );
 }

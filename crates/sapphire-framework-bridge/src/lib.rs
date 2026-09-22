@@ -22,6 +22,7 @@ mod pairing;
 mod peer;
 mod relay;
 mod routes;
+mod status;
 #[cfg(any(test, feature = "test-util"))]
 mod testing;
 mod wgsync;
@@ -49,6 +50,7 @@ pub use peer::{LoopbackNetwork, LoopbackTransport};
 pub use relay::EmbeddedRelay;
 pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
 pub use routes::{Route, RouteTable};
+pub use status::{PeerStatus, STATUS_INTERVAL, StatusFile, StatusSource, StatusWriter};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;
 pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
@@ -222,11 +224,25 @@ impl Bridge {
             managed_by: ManagedBy::Spawned,
         };
 
-        tokio::select! {
+        // Keep `status.json` current for exactly as long as the bridge serves: the writer's
+        // handle is dropped when the loops end, which stops it and leaves the last snapshot
+        // on disk. It needs the resolved `net`, which only this function still holds.
+        let status = status::StatusWriter::start(
+            bridge.dir.status_json(),
+            Arc::new(status::BridgeSource::new(
+                Arc::clone(&bridge),
+                net.clone(),
+                chrono::Utc::now(),
+            )),
+        );
+
+        let result = tokio::select! {
             result = control::listen(Arc::clone(&bridge), control_endpoint, info) => result,
             result = data::listen(Arc::clone(&bridge), data_endpoint) => result,
             result = data::inbound(bridge, net) => result,
-        }
+        };
+        drop(status);
+        result
     }
 
     // ── what the loops share ────────────────────────────────────────────────

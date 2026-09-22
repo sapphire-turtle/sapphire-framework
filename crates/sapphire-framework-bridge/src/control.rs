@@ -299,14 +299,24 @@ async fn unregister(bridge: &Bridge, ctx: RequestCtx) -> std::result::Result<Val
 /// `bridge.peers` — the workgroup's devices, and which are reachable.
 fn peers(bridge: &Bridge) -> Result<PeersResult> {
     let workgroup = bridge.workgroup()?.ok_or(Error::NoWorkgroup)?;
+    Ok(PeersResult {
+        peers: peer_infos(bridge, &workgroup)?,
+    })
+}
+
+/// Every non-retired device of `workgroup`, and which are reachable.
+///
+/// Shared with `status.json`, which reports the same devices without a control-plane
+/// caller to ask it first.
+pub(crate) fn peer_infos(bridge: &Bridge, workgroup: &Workgroup) -> Result<Vec<PeerInfo>> {
     let devices = workgroup.devices()?;
-    let peers = devices
+    Ok(devices
         .entries()
         .iter()
         .filter(|d| !d.is_retired())
         .map(|d| {
-            // A device that has never announced itself has no node id; `PeerInfo` reports that
-            // as an empty string rather than a made-up one.
+            // A device that has never announced itself has no node id; `PeerInfo` reports
+            // that as an empty string rather than a made-up one.
             let node_id = d.node_id.clone().unwrap_or_default();
             PeerInfo {
                 device_id: d.id,
@@ -315,13 +325,40 @@ fn peers(bridge: &Bridge) -> Result<PeersResult> {
                 node_id,
             }
         })
-        .collect();
-    Ok(PeersResult { peers })
+        .collect())
 }
 
 /// `bridge.status` — what this bridge knows about itself.
 fn status(bridge: &Bridge) -> Result<StatusResult> {
-    let routes = bridge
+    let workgroup = bridge.workgroup()?;
+    Ok(StatusResult {
+        version: bridge.version().to_owned(),
+        node_id: bridge.transport().node_id(),
+        workgroup: workgroup.as_ref().map(workgroup_status).transpose()?,
+        routes: route_statuses(bridge),
+    })
+}
+
+/// What `workgroup` says about itself, as [`WorkgroupStatus`] carries it.
+///
+/// Shared with `status.json`, which reports the same fact without a caller to ask it first.
+pub(crate) fn workgroup_status(workgroup: &Workgroup) -> Result<WorkgroupStatus> {
+    let devices = workgroup
+        .devices()?
+        .entries()
+        .iter()
+        .filter(|d| !d.is_retired())
+        .count();
+    Ok(WorkgroupStatus {
+        workgroup_id: workgroup.id,
+        name: workgroup.name.clone(),
+        devices,
+    })
+}
+
+/// The routing table, saying of each row whether its owner is connected right now.
+pub(crate) fn route_statuses(bridge: &Bridge) -> Vec<RouteStatus> {
+    bridge
         .route_entries()
         .iter()
         .map(|route| RouteStatus {
@@ -330,31 +367,7 @@ fn status(bridge: &Bridge) -> Result<StatusResult> {
             root: route.root.clone(),
             owner_online: bridge.owners().is_online(&route.app_name),
         })
-        .collect();
-
-    let workgroup = match bridge.workgroup()? {
-        Some(workgroup) => {
-            let devices = workgroup
-                .devices()?
-                .entries()
-                .iter()
-                .filter(|d| !d.is_retired())
-                .count();
-            Some(WorkgroupStatus {
-                workgroup_id: workgroup.id,
-                name: workgroup.name.clone(),
-                devices,
-            })
-        }
-        None => None,
-    };
-
-    Ok(StatusResult {
-        version: bridge.version().to_owned(),
-        node_id: bridge.transport().node_id(),
-        workgroup,
-        routes,
-    })
+        .collect()
 }
 
 /// `bridge.invite` — create an invite, and hand back the ticket.

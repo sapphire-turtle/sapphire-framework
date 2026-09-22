@@ -11,12 +11,15 @@
 #[cfg(feature = "node")]
 use std::sync::Arc;
 
-use sapphire_bridge_api::{BRIDGE_NAME, BridgeClient, InviteParams, JoinParams};
+use sapphire_bridge_api::{
+    BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
+};
 use sapphire_ipc::{Endpoint, SpawnConfig};
 
 #[cfg(feature = "node")]
 use crate::NetConfig;
 use crate::error::{Error, Result};
+use crate::status::StatusFile;
 use crate::workgroup::Workgroup;
 use crate::{Bridge, BridgeDir, InstanceLock};
 
@@ -195,27 +198,56 @@ async fn connect(version: &str) -> Result<Option<BridgeClient>> {
 }
 
 /// Report what the running bridge knows about itself.
+///
+/// A live bridge answers on the control plane, where every fact is current. A bridge that
+/// has stopped still has a story worth telling — which app servers were connected, what the
+/// workgroup looked like — so when nothing answers, the last snapshot of `status.json` is
+/// reported instead, printed the same way so nobody has to learn two formats.
 async fn status(version: &str) -> Result<i32> {
-    let Some(client) = connect(version).await? else {
+    let report = match connect(version).await? {
+        Some(client) => Some(StatusReport::live(
+            client.status().await?,
+            client.peers().await?.peers,
+        )?),
+        None => read_status_report()?,
+    };
+    let Some(report) = report else {
         println!("no bridge is running");
         return Ok(1);
     };
-    let status = client.status().await?;
 
     println!(
-        "sapphire-bridge {} (node {}, {} workspace(s))",
-        status.version,
-        status.node_id,
-        status.routes.len()
+        "sapphire-bridge {} (node {}, {} workspace(s)){}",
+        report.status.version,
+        report.status.node_id,
+        report.status.routes.len(),
+        if report.stale {
+            " — last seen before the bridge stopped"
+        } else {
+            ""
+        }
     );
-    match status.workgroup {
+    match report.status.workgroup {
         Some(workgroup) => println!(
             "workgroup {} ({}), {} device(s)",
             workgroup.name, workgroup.workgroup_id, workgroup.devices
         ),
         None => println!("no workgroup"),
     }
-    for route in status.routes {
+    for peer in report.peers {
+        println!(
+            "  {} {} {}{}",
+            peer.name,
+            peer.device_id,
+            if peer.node_id.is_empty() {
+                "-".to_owned()
+            } else {
+                peer.node_id
+            },
+            if peer.connected { " (online)" } else { "" }
+        );
+    }
+    for route in report.status.routes {
         println!(
             "  {} {} {}{}",
             route.workspace_id,
@@ -225,6 +257,55 @@ async fn status(version: &str) -> Result<i32> {
         );
     }
     Ok(0)
+}
+
+/// What `bridge status` prints: the control plane's answer, or the last snapshot.
+struct StatusReport {
+    status: StatusResult,
+    peers: Vec<PeerInfo>,
+    /// Whether this came from the file a stopped bridge left behind.
+    stale: bool,
+}
+
+impl StatusReport {
+    /// A live answer: the control plane's own status and device list.
+    fn live(status: StatusResult, peers: Vec<PeerInfo>) -> Result<StatusReport> {
+        Ok(StatusReport {
+            status,
+            peers,
+            stale: false,
+        })
+    }
+}
+
+/// The last snapshot `status.json` holds, as a report.
+///
+/// `None` when the bridge has never run here; an unreadable snapshot is an error rather
+/// than something to guess at.
+fn read_status_report() -> Result<Option<StatusReport>> {
+    let dir = BridgeDir::open()?;
+    match StatusFile::load(&dir.status_json())? {
+        None => Ok(None),
+        Some(snapshot) => Ok(Some(StatusReport {
+            peers: snapshot
+                .peers
+                .iter()
+                .map(|p| PeerInfo {
+                    device_id: p.device_id,
+                    name: p.name.clone(),
+                    node_id: p.node_id.clone(),
+                    connected: p.connected,
+                })
+                .collect(),
+            status: StatusResult {
+                version: snapshot.version,
+                node_id: snapshot.node_id,
+                workgroup: snapshot.workgroup,
+                routes: snapshot.routes,
+            },
+            stale: true,
+        })),
+    }
 }
 
 /// List the workgroup's devices, as the running bridge sees them.
@@ -401,6 +482,50 @@ fn this_node_id(_dir: &BridgeDir) -> Result<String> {
     ))
 }
 
+/// A controlled environment for the CLI tests that read or set one.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// The environment variables these tests set are process-global, and `cargo test`
+    /// runs a binary's tests in parallel: two tests setting them would race, and one
+    /// reading another test's directory would pass by luck until it does not. One lock
+    /// serializes every test that touches them.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    /// Distinguishes the directories two concurrent tests may set, so a set after this
+    /// test's window is never confused with this test's.
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Run `body` with both directories pointed inside `tmp`, and alone.
+    ///
+    /// Returns what `body` returned. The directories stay set until the body ends, and no
+    /// other env-touching test can run while it does.
+    pub(crate) async fn with_dirs<T, F>(
+        tmp: &std::path::Path,
+        body: impl FnOnce(std::path::PathBuf) -> F,
+    ) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let _guard = ENV_LOCK.lock().await;
+        let token = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: no other thread reads the environment while the lock is held.
+        unsafe {
+            std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp);
+            std::env::set_var(
+                crate::dir::BRIDGE_DIR_ENV,
+                tmp.join(format!("bridge-{token}")),
+            );
+        }
+        let value = body(tmp.join(format!("bridge-{token}"))).await;
+        unsafe {
+            std::env::remove_var("SAPPHIRE_RUNTIME_DIR");
+            std::env::remove_var(crate::dir::BRIDGE_DIR_ENV);
+        }
+        value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,11 +575,70 @@ mod tests {
     #[tokio::test]
     async fn status_against_no_bridge_exits_non_zero() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: set before any other thread reads the environment in this test binary.
-        unsafe { std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp.path()) };
-        let code = BridgeCommand::Status.dispatch("0.0.0").await.unwrap();
-        unsafe { std::env::remove_var("SAPPHIRE_RUNTIME_DIR") };
+        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
+            BridgeDir::at(bridge).unwrap();
+            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
+        })
+        .await;
         assert_eq!(code, 1);
+    }
+}
+
+#[cfg(test)]
+mod status_fallback_tests {
+    use super::*;
+    use crate::status::PeerStatus;
+    use chrono::Utc;
+    use grain_id::GrainId;
+
+    #[tokio::test]
+    async fn status_without_a_bridge_reports_the_last_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
+            let dir = BridgeDir::at(bridge).unwrap();
+            // The bridge stopped after writing this.
+            let stopped = crate::status::StatusFile {
+                version: "0.14.0".into(),
+                pid: std::process::id(),
+                started_at: Utc::now(),
+                node_id: "aaaa".into(),
+                workgroup: Some(sapphire_bridge_api::WorkgroupStatus {
+                    workgroup_id: GrainId::random(),
+                    name: "home".into(),
+                    devices: 1,
+                }),
+                peers: vec![PeerStatus {
+                    device_id: GrainId::random(),
+                    name: "phone".into(),
+                    node_id: String::new(),
+                    connected: false,
+                    last_seen: None,
+                    last_error: None,
+                }],
+                routes: vec![],
+                relays: vec![],
+            };
+            std::fs::write(
+                dir.status_json(),
+                serde_json::to_string_pretty(&stopped).unwrap(),
+            )
+            .unwrap();
+
+            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
+        })
+        .await;
+        assert_eq!(code, 0, "a stopped bridge still has a story worth telling");
+    }
+
+    #[tokio::test]
+    async fn status_without_a_bridge_or_a_snapshot_exits_non_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
+            BridgeDir::at(bridge).unwrap();
+            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
+        })
+        .await;
+        assert_eq!(code, 1, "nothing to report is nothing to report");
     }
 }
 
@@ -507,21 +691,16 @@ mod pairing_cli_tests {
     #[tokio::test]
     async fn joining_without_a_running_bridge_says_so_rather_than_starting_one() {
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: the test binary sets these before any other thread reads them.
-        unsafe {
-            std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp.path());
-            std::env::set_var(crate::dir::BRIDGE_DIR_ENV, tmp.path().join("bridge"));
-        }
-        let result = BridgeCommand::Workgroup(WorkgroupCommand::Join {
-            ticket: "sapphire:ABCDEF".into(),
-            device_name: Some("phone".into()),
+        let result = test_env::with_dirs(tmp.path(), |bridge| async move {
+            BridgeDir::at(bridge).unwrap();
+            BridgeCommand::Workgroup(WorkgroupCommand::Join {
+                ticket: "sapphire:ABCDEF".into(),
+                device_name: Some("phone".into()),
+            })
+            .dispatch("0.0.0")
+            .await
         })
-        .dispatch("0.0.0")
         .await;
-        unsafe {
-            std::env::remove_var("SAPPHIRE_RUNTIME_DIR");
-            std::env::remove_var(crate::dir::BRIDGE_DIR_ENV);
-        }
 
         match result {
             Ok(code) => assert_eq!(code, 1, "a missing bridge is a non-zero exit, not a panic"),

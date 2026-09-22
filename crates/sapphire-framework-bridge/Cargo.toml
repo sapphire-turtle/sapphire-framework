@@ -24,6 +24,7 @@ sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "0.
 sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.14.0", path = "../sapphire-framework-ipc" }
 sapphire-registry = { package = "sapphire-framework-registry", version = "0.14.0", path = "../sapphire-framework-registry" }
 sapphire-framework-session = { version = "0.14.0", path = "../sapphire-framework-session" }
+sapphire-framework-service = { version = "0.14.0", path = "../sapphire-framework-service" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.14.0", path = "../sapphire-framework-sync" }
 async-trait.workspace = true
 chrono.workspace = true

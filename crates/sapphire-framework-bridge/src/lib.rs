@@ -36,7 +36,9 @@ use grain_id::GrainId;
 use sapphire_bridge_api::{BRIDGE_DATA_NAME, BRIDGE_NAME, ManagedBy, WorkspaceRegistration};
 use sapphire_ipc::{Endpoint, ServerInfo};
 
-pub use command::BridgeCommand;
+pub use command::{BridgeCommand, bridge_service_spec};
+// The CLI's `service install | uninstall | status`: re-exported so the binary needs this
+// crate alone and the whole command surface sits in one place.
 pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
 pub use error::{Error, Result};
 pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
@@ -55,6 +57,7 @@ pub use peer::{LoopbackNetwork, LoopbackTransport};
 pub use relay::EmbeddedRelay;
 pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
 pub use routes::{Route, RouteTable};
+pub use sapphire_framework_service::{ServiceCommand, ServiceSpec};
 pub use status::{PeerStatus, STATUS_INTERVAL, StatusFile, StatusSource, StatusWriter};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;

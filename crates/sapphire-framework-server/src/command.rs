@@ -1,9 +1,10 @@
 //! The `server` subcommands an application flattens into its own CLI.
 
+use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
 use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig, ensure_server};
 
 use crate::AppServer;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::privilege::PrivilegeConfig;
 
 /// Subcommands for managing this application's server.
@@ -15,6 +16,9 @@ pub enum ServerCommand {
     Status,
     /// Ask a running server to exit.
     Stop,
+    /// Install, remove or report this application's operating-system service.
+    #[command(subcommand)]
+    Service(ServiceCommand),
 }
 
 /// Arguments of `server run`.
@@ -43,6 +47,15 @@ impl ServerCommand {
             }
             ServerCommand::Status => status(&Endpoint::for_app(app)?, app, version).await,
             ServerCommand::Stop => stop(&Endpoint::for_app(app)?, app, version).await,
+            // The command decides and prints; the spec is what this server described of
+            // itself, so an application never assembles one by hand. The environment is
+            // this machine as it is right now — `Environment::detect` reads it once.
+            ServerCommand::Service(command) => {
+                let spec = server.service_spec();
+                command
+                    .run(&spec, &Environment::detect(), &SystemManager)
+                    .map_err(Error::from)
+            }
         }
     }
 }
@@ -133,6 +146,19 @@ mod tests {
     }
 
     #[test]
+    fn the_service_subcommands_parse() {
+        for args in [
+            vec!["app", "service", "install"],
+            vec!["app", "service", "install", "--system"],
+            vec!["app", "service", "install", "--run-as", "alice"],
+            vec!["app", "service", "uninstall"],
+            vec!["app", "service", "status"],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
     fn run_takes_a_foreground_flag() {
         let parsed = Probe::try_parse_from(["app", "run", "--foreground"]).unwrap();
         match parsed.server {
@@ -201,6 +227,71 @@ mod spawn_policy_tests {
         assert!(
             err.to_string().contains("not allowed to start one"),
             "{err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod service_spec_tests {
+    use super::*;
+    use crate::privilege::{HelperSpec, PrivilegeConfig};
+    use sapphire_framework_service::RunAs;
+    use sapphire_workspace::AppContext;
+
+    static CTX: AppContext = AppContext::new("sapphire-servicetest");
+
+    /// The privilege configuration a privilege-separated application describes: a drop to
+    /// the human user, plus a helper under another one.
+    fn privileges_for(run_as: &str, helper: &str) -> PrivilegeConfig {
+        PrivilegeConfig {
+            run_as: run_as.parse().unwrap(),
+            helper: Some(HelperSpec {
+                user: helper.parse().unwrap(),
+                program: std::path::PathBuf::from("/usr/lib/sapphire-agent/tool-broker"),
+                args: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn the_generated_spec_runs_the_server_not_the_cli() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert_eq!(spec.args, vec!["server".to_owned(), "run".to_owned()]);
+    }
+
+    #[test]
+    fn the_generated_spec_carries_the_apps_privileges() {
+        let privileges = privileges_for("alice", "tools");
+        let spec = AppServer::new(&CTX, "0.0.0")
+            .privileges(privileges.clone())
+            .service_spec();
+        assert!(spec.privileges.is_some());
+    }
+
+    #[test]
+    fn the_generated_spec_names_this_application() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert_eq!(spec.app_name, CTX.app_name);
+    }
+
+    #[test]
+    fn the_generated_spec_describes_the_server() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert!(
+            spec.description.contains(CTX.app_name),
+            "the unit's description should name the application: {:?}",
+            spec.description
+        );
+        assert!(spec.description.contains("0.0.0"));
+    }
+
+    #[test]
+    fn the_generated_spec_runs_a_system_unit_as_the_invoking_user() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert!(
+            matches!(spec.system_run_as, RunAs::InvokingUser),
+            "a server started as root would create its cache, its data and its sockets \
+             under /root"
         );
     }
 }

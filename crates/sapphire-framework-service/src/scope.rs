@@ -40,6 +40,39 @@ pub struct Environment {
     pub os: Os,
 }
 
+impl Environment {
+    /// Read this machine's own facts: the effective uid, `SUDO_USER`, and the platform.
+    ///
+    /// The one place these are read from the world. Every rule in this module turns on the
+    /// value this returns, which is exactly why a test builds one itself instead: the table
+    /// above is testable because it is a function of values, not of the machine.
+    pub fn detect() -> Environment {
+        Environment {
+            euid: effective_uid(),
+            // An empty `SUDO_USER` names nobody; treat it as absent rather than as a user
+            // with an empty name.
+            sudo_user: std::env::var("SUDO_USER")
+                .ok()
+                .filter(|user| !user.is_empty()),
+            os: Os::current(),
+        }
+    }
+}
+
+/// The effective uid of this process.
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+/// Not zero: there is no root to report, and a zero would read as one — refusing the
+/// user-level install every Windows machine should be getting.
+#[cfg(not(unix))]
+fn effective_uid() -> u32 {
+    1
+}
+
 /// The platforms an install can run on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
@@ -49,6 +82,23 @@ pub enum Os {
     MacOs,
     /// Windows, with the Task Scheduler.
     Windows,
+}
+
+impl Os {
+    /// The platform this build runs on.
+    ///
+    /// A platform that is neither Linux nor Windows is treated as macOS, the most
+    /// restrictive of the three: it offers user-level units only, so an unknown platform is
+    /// refused a system-wide install rather than quietly given one.
+    pub const fn current() -> Os {
+        if cfg!(target_os = "linux") {
+            Os::Linux
+        } else if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::MacOs
+        }
+    }
 }
 
 /// What an application wants installed.
@@ -340,5 +390,33 @@ mod tests {
             message.contains("root"),
             "and why it matters: files would be owned by root: {message}"
         );
+    }
+
+    #[test]
+    fn a_detected_environment_describes_this_machine() {
+        let env = Environment::detect();
+        assert_eq!(env.os, Os::current(), "the platform is this build's own");
+        assert_eq!(
+            env.sudo_user,
+            std::env::var("SUDO_USER")
+                .ok()
+                .filter(|user| !user.is_empty()),
+            "the human behind a sudo invocation is read from the environment"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            env.euid,
+            // SAFETY: geteuid has no preconditions.
+            unsafe { libc::geteuid() },
+            "the effective uid is this process's own"
+        );
+    }
+
+    #[test]
+    fn a_detected_environment_is_not_root_where_there_is_no_root() {
+        // A platform without an effective uid must not report one that reads as root: the
+        // scope rule would refuse the user-level install it should be getting.
+        #[cfg(not(unix))]
+        assert_ne!(Environment::detect().euid, 0);
     }
 }

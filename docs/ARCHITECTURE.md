@@ -100,6 +100,7 @@ Cargo workspace（モノレポ）。既存済み ✅ / 予定 ⬜。
 | `sapphire-framework-bridge-api` | bridge 制御プレーンのプロトコルとクライアント（serde のみ・iroh 非依存） | ✅ |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス識別・workgroup 認可・交換台・iroh） | ✅ |
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） | ✅ |
+| `sapphire-framework-service` | OS のサービスマネージャへの登録（systemd user/system・LaunchAgent・タスクスケジューラ） | ✅ |
 | `apps/sapphire-bridge` | 上記のバイナリ | ✅ |
 | `sapphire-framework-mcp` | rmcp ベース MCP 骨格（`RecallServer` 汎用化 + stdio/http transport） | ⬜ |
 | `sapphire-framework-cache-wasm` | wasm 専用: IndexedDB/OPFS の track/entries + substring 検索 | ⬜ |

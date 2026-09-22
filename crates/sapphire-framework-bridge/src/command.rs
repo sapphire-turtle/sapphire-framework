@@ -16,6 +16,7 @@ use std::io::Write as _;
 use sapphire_bridge_api::{
     BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
+use sapphire_framework_service::{Environment, RunAs, ServiceCommand, ServiceSpec, SystemManager};
 use sapphire_ipc::{Endpoint, SpawnConfig};
 
 #[cfg(feature = "node")]
@@ -50,6 +51,31 @@ pub enum BridgeCommand {
     /// What the workgroup contains — read-only.
     #[command(subcommand)]
     Workspace(WorkspaceCommand),
+    /// Install, remove or report this host's bridge service.
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+/// The service this binary installs.
+///
+/// The unit runs the bare binary with `run`, so a service manager starts a bridge and nothing
+/// else. `system_run_as` is [`RunAs::InvokingUser`]: a bridge installed as a root system unit
+/// would put the bridge directory under `/root` and create synced files owned by root, and
+/// unlike an app that drops privileges itself, a bridge cannot come back from that.
+/// `privileges` is `None` for the same reason the bridge has no privilege separation — it
+/// owns no workspace, so it has no filesystem access to separate.
+///
+/// The description names `version`, so whoever reads the installed unit can tell which build
+/// it starts without inspecting the binary; the frame is what an app's own spec says too.
+pub fn bridge_service_spec(version: &str) -> ServiceSpec {
+    ServiceSpec {
+        app_name: "sapphire-bridge",
+        description: format!("Sapphire bridge daemon {version}"),
+        args: vec!["run".to_owned()],
+        system_run_as: RunAs::InvokingUser,
+        privileges: None,
+        post_install: None,
+    }
 }
 
 /// `device` subcommands.
@@ -138,6 +164,14 @@ impl BridgeCommand {
             BridgeCommand::Workspace(command) => match command {
                 WorkspaceCommand::List => workspace_list(version).await,
             },
+            // The service manager's own words, not the bridge's: `Environment::detect` reads
+            // this machine once, so the deciding is a function of a value the test can build.
+            BridgeCommand::Service(command) => {
+                let spec = bridge_service_spec(version);
+                command
+                    .run(&spec, &Environment::detect(), &SystemManager)
+                    .map_err(Error::from)
+            }
         }
     }
 }
@@ -776,5 +810,51 @@ mod pairing_cli_tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn the_bridge_service_subcommands_parse() {
+        for args in [
+            vec!["b", "service", "install"],
+            vec!["b", "service", "install", "--user"],
+            vec!["b", "service", "uninstall"],
+            vec!["b", "service", "status"],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_spec_tests {
+    use super::*;
+    use clap::Parser;
+    use sapphire_framework_service::RunAs;
+
+    #[derive(Parser)]
+    struct Probe {
+        #[command(subcommand)]
+        command: BridgeCommand,
+    }
+
+    #[test]
+    fn the_bridge_service_spec_runs_the_bridge() {
+        let spec = bridge_service_spec("0.0.0");
+        assert_eq!(spec.args, vec!["run".to_owned()]);
+        assert!(
+            matches!(spec.system_run_as, RunAs::InvokingUser),
+            "a root bridge would put the bridge directory under /root"
+        );
+    }
+
+    #[test]
+    fn the_bridge_service_spec_names_the_bridge() {
+        let spec = bridge_service_spec("0.0.0");
+        assert_eq!(spec.app_name, "sapphire-bridge");
+        assert!(
+            !spec.description.is_empty(),
+            "a unit with an empty Description= is a unit a reader cannot identify"
+        );
+        assert!(spec.privileges.is_none(), "the bridge separates nothing");
     }
 }

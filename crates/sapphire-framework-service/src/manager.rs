@@ -30,7 +30,7 @@ use crate::launchd::{agent_path, label, render_launch_agent};
 use crate::scope::{
     Environment, InstallContext, Os, Scope, ServiceSpec, resolve_scope, resolve_target_user,
 };
-use crate::systemd::{activation, render_unit, unit_path};
+use crate::systemd::{activation, linger_hint, render_unit, unit_path};
 use crate::windows::render_task;
 
 /// The commands a service manager is driven with.
@@ -308,6 +308,59 @@ pub struct InstallArgs {
     /// Leave the application's own post-install hook to the user.
     #[arg(long)]
     pub keep_helper: bool,
+}
+
+impl ServiceCommand {
+    /// Carry out the command against `manager`, returning the process exit code.
+    ///
+    /// `env` is the machine this runs on — read by an application's CLI with
+    /// [`Environment::detect`] — and `manager` is the real one there, while every test hands
+    /// in a [`RecordingManager`] instead. What the user is told is printed here, so
+    /// both the app servers' and the bridge's CLIs say the same thing about the same act.
+    ///
+    /// [`Environment::detect`]: crate::scope::Environment::detect
+    pub fn run(
+        &self,
+        spec: &ServiceSpec,
+        env: &Environment,
+        manager: &dyn ServiceManager,
+    ) -> Result<i32> {
+        match self {
+            ServiceCommand::Install(args) => {
+                let context = install(spec, args, env, manager)?;
+                println!(
+                    "installed the {} service ({})",
+                    spec.app_name,
+                    context.unit_path.display()
+                );
+                // A user unit dies with its login session; the hint to make it survive one
+                // is Linux's own (`loginctl`), so it is only offered there. A system unit
+                // runs regardless of logins, and says nothing.
+                if env.os == Os::Linux
+                    && let Some(hint) = linger_hint(context.scope, context.target_user.as_deref())
+                {
+                    println!("{hint}");
+                }
+                Ok(0)
+            }
+            ServiceCommand::Uninstall => {
+                // No scope flags: an uninstall of what a plain install made addresses the
+                // same unit that install did.
+                uninstall(spec, &InstallArgs::default(), env, manager)?;
+                println!("removed the {} service", spec.app_name);
+                Ok(0)
+            }
+            ServiceCommand::Status => {
+                let report = status(spec, &InstallArgs::default(), env, manager)?;
+                // Another tool's output, printed as it came: it is what the user asked for.
+                print!("{report}");
+                if !report.ends_with('\n') {
+                    println!();
+                }
+                Ok(0)
+            }
+        }
+    }
 }
 
 impl InstallArgs {
@@ -871,6 +924,63 @@ mod tests {
         assert!(
             !body.contains("\nUser="),
             "an app that drops privileges itself must start as root: {body}"
+        );
+    }
+
+    #[test]
+    fn running_an_install_command_activates_the_service() {
+        let manager = RecordingManager::default();
+        let code = ServiceCommand::Install(InstallArgs::default())
+            .run(&spec(), &linux_user(), &manager)
+            .unwrap();
+
+        assert_eq!(code, 0, "a successful install is a zero exit");
+        assert_eq!(manager.calls().units.len(), 1);
+    }
+
+    #[test]
+    fn running_an_uninstall_command_removes_the_unit() {
+        let manager = RecordingManager::default();
+        let code = ServiceCommand::Uninstall
+            .run(&spec(), &linux_user(), &manager)
+            .unwrap();
+
+        assert_eq!(code, 0);
+        assert_eq!(manager.calls().removed.len(), 1);
+    }
+
+    #[test]
+    fn running_a_status_command_reports_what_the_manager_said() {
+        let manager = RecordingManager::returning("active (running)");
+        let code = ServiceCommand::Status
+            .run(&spec(), &linux_user(), &manager)
+            .unwrap();
+        assert_eq!(code, 0, "a status that answered is a zero exit");
+    }
+
+    #[test]
+    fn a_failing_install_through_the_command_is_an_error() {
+        let manager = RecordingManager::failing_on("enable");
+        let err = ServiceCommand::Install(InstallArgs::default())
+            .run(&spec(), &linux_user(), &manager)
+            .unwrap_err();
+        assert!(err.to_string().contains("enable"), "{err}");
+    }
+
+    #[test]
+    fn the_command_installs_against_the_environment_it_is_given() {
+        // A root install of a command that asked for no scope: the scope rule reads the
+        // injected environment, which is what lets a test drive this without becoming root.
+        let manager = RecordingManager::default();
+        ServiceCommand::Install(InstallArgs::default())
+            .run(&spec(), &linux_root(), &manager)
+            .unwrap();
+
+        let unit = &manager.calls().units[0].0;
+        assert!(
+            unit.starts_with("/etc/systemd/system"),
+            "root gets a system unit: {}",
+            unit.display()
         );
     }
 }

@@ -5338,6 +5338,7 @@ dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
  "sapphire-framework-registry",
+ "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-sync",
  "serde",

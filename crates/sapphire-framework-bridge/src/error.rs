@@ -42,6 +42,13 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
+    /// Installing, removing or reporting the bridge's service failed.
+    ///
+    /// Carries the service crate's own message, which already says what to do about the
+    /// case at hand (`--run-as`, `--user`, or which platform offers what).
+    #[error(transparent)]
+    Service(#[from] sapphire_framework_service::Error),
+
     /// A peer sent something the data plane could not make sense of.
     #[error("{0}")]
     Protocol(String),

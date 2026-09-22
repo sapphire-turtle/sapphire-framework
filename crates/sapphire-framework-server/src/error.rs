@@ -68,6 +68,13 @@ pub enum Error {
     /// serve requests.
     #[error("privilege separation failed: {0}")]
     Privilege(String),
+
+    /// Installing, removing or reporting this application's service failed.
+    ///
+    /// Carries the service crate's own message, which already says what to do about the case
+    /// at hand (`--run-as`, `--user`, or which platform offers what).
+    #[error(transparent)]
+    Service(#[from] sapphire_framework_service::Error),
 }
 
 /// Convenience alias for server results.

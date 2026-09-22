@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
+use sapphire_framework_service::{RunAs, ServiceSpec};
 use sapphire_ipc::{Endpoint, ManagedBy, Router, ServerInfo, serve};
 use sapphire_workspace::AppContext;
 
@@ -68,6 +69,11 @@ pub struct AppServer {
     host: Arc<WorkspaceHost>,
     sync: Option<Arc<SyncRuntime>>,
     extend: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
+    /// What the service this application installs carries, when it separates privileges.
+    ///
+    /// Stored, never applied: [`privilege::apply`] is `main`'s job, because the drop has to
+    /// happen before the socket is bound and this builder is merely describing the server.
+    privileges: Option<PrivilegeConfig>,
 }
 
 impl AppServer {
@@ -87,6 +93,7 @@ impl AppServer {
             host: Arc::new(WorkspaceHost::new(ctx)),
             sync: None,
             extend: None,
+            privileges: None,
         }
     }
 
@@ -128,6 +135,36 @@ impl AppServer {
         runtime.set_host(Arc::clone(&self.host));
         self.sync = Some(runtime);
         self
+    }
+
+    /// The privilege separation this application runs under, when it has any.
+    ///
+    /// Stored for [`service_spec`](AppServer::service_spec) to describe the service with: an
+    /// installed unit carries the configuration in its environment, so the server it starts
+    /// knows whom to become. It is not applied here — that stays `privilege::apply`'s job in
+    /// `main`, which must run before the socket is bound (spec §3.1).
+    pub fn privileges(mut self, config: PrivilegeConfig) -> AppServer {
+        self.privileges = Some(config);
+        self
+    }
+
+    /// What this application's service is: the arguments a service manager starts it with,
+    /// and the privilege separation, if any, that the server it starts needs.
+    ///
+    /// `["server", "run"]`, not `["run"]`: a service manager starts the executable directly,
+    /// and the executable's `run` lives under the `server` subcommand. A CLI that wants its
+    /// service installed hands this to [`ServiceCommand`](sapphire_framework_service::ServiceCommand).
+    pub fn service_spec(&self) -> ServiceSpec {
+        ServiceSpec {
+            app_name: self.ctx.app_name,
+            description: format!("{} server {}", self.ctx.app_name, self.version),
+            args: vec!["server".to_owned(), "run".to_owned()],
+            // An app server's files belong to the human who uses it; one started as root
+            // would put the cache, the data and the sockets under `/root`.
+            system_run_as: RunAs::InvokingUser,
+            privileges: self.privileges.clone(),
+            post_install: None,
+        }
     }
 
     /// Add the application's own methods.

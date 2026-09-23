@@ -324,7 +324,16 @@ async fn answer_pairing(bridge: &Bridge, stream: BoxedStream) {
             return;
         }
     };
-    if let Err(err) = pairing::admit(stream, &mut invites, &workgroup).await {
+    let inviter = match workgroup.this_device(&bridge.transport().node_id()) {
+        Ok(device) => device,
+        Err(err) => {
+            tracing::warn!(
+                "a pairing attempt arrived, and this host's own record is unreadable: {err}"
+            );
+            return;
+        }
+    };
+    if let Err(err) = pairing::admit(stream, &mut invites, &workgroup, &inviter).await {
         tracing::warn!(error = %err, "a pairing attempt was not answered");
     }
 }

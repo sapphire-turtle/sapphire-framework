@@ -13,6 +13,34 @@ use crate::net::NetConfig;
 use crate::pairing::{self, JoinRequest, JoinResponse};
 use crate::peer::PeerTransport;
 
+/// The ignore file written into every workgroup root at `create` and `join`.
+///
+/// The workgroup's root is not a user's workspace — it is the workgroup's own state
+/// (`workgroup.toml`, `devices/`, `workspaces/`, `net.toml`), and every file in it has
+/// exactly one right answer at any moment: whatever device wrote it last. A retirement
+/// arriving over a device record this host had not yet seen is *meant* to overwrite it.
+/// Keeping the superseded version alive as a `devices/*.conflict-*.toml` copy would
+/// leave a file the ledger cannot open — a record's file name is a grain-id, and a
+/// conflict copy's name is not — and every authorization and every dial after that
+/// fails until a human intervenes. So the workgroup root bans conflict copies, and
+/// last-writer-wins is the whole story. Nothing is lost by it: both versions sit in
+/// every replica's store, and the winner is what every device converges on.
+///
+/// The ignore file is itself inside the synced root, so it replicates with the
+/// workgroup: a device that joined before this rule existed adopts it at its next
+/// session with any founder whose root already carries it.
+const IGNORE_BODY: &str = "*.conflict-*\n";
+
+/// Write [`IGNORE_BODY`] as the workgroup root's ignore file, unless it is already
+/// exactly that. A version a future change ships simply replaces what is there.
+fn write_ignore_file(root: &std::path::Path) -> Result<()> {
+    let file = root.join(sapphire_sync::IGNORE_FILE);
+    if std::fs::read_to_string(file.clone()).ok().as_deref() == Some(IGNORE_BODY) {
+        return Ok(());
+    }
+    std::fs::write(file, IGNORE_BODY).map_err(Error::Io)
+}
+
 /// The `workgroup.toml` inside a workgroup's root: what the workgroup says about itself.
 ///
 /// It lives in the workgroup's synced root, so every device of the workgroup sees the same
@@ -77,6 +105,7 @@ impl Workgroup {
         let wg_dir = dir.workgroup_dir(id);
         std::fs::create_dir_all(wg_dir.join("root"))?;
         std::fs::create_dir_all(dir.devices_dir(id))?;
+        write_ignore_file(&wg_dir.join("root"))?;
         let file = wg_dir.join("root").join("workgroup.toml");
         std::fs::write(
             &file,
@@ -190,13 +219,13 @@ impl Workgroup {
             node_id: node_id.clone(),
         };
         let response = pairing::join(stream, request).await?;
-        let (workgroup_id, workgroup_name, own) = match response {
+        let (workgroup_id, workgroup_name, own, inviter) = match response {
             JoinResponse::Admitted {
                 workgroup_id,
                 workgroup_name,
                 device,
-                ..
-            } => (workgroup_id, workgroup_name, device),
+                inviter,
+            } => (workgroup_id, workgroup_name, device, inviter),
             JoinResponse::Rejected(why) => {
                 return Err(Error::Unauthorized(format!(
                     "the invite was refused: {why}"
@@ -204,7 +233,7 @@ impl Workgroup {
             }
         };
 
-        match Workgroup::materialize(dir, workgroup_id, &workgroup_name, &own) {
+        match Workgroup::materialize(dir, workgroup_id, &workgroup_name, &own, &inviter) {
             Ok(workgroup) => Ok(workgroup),
             Err(err) => {
                 // Whatever half of it landed goes away again: a workgroup that was not
@@ -215,13 +244,29 @@ impl Workgroup {
         }
     }
 
-    /// Write a workgroup directory with `id` and `name`, and this host's record in it.
+    /// Write a workgroup directory with `id` and `name`, this host's record and the
+    /// inviter's.
     ///
-    /// The record is the one the inviter's ledger holds, byte for byte: the ledger is
+    /// Both records are the ones the inviter's ledger holds, byte for byte: the ledger is
     /// replicated, so a local lookalike that differed in anything — even the timestamp the
     /// joiner would have to invent — makes the replication see two competing versions of
     /// one device, and every device's ledger drowns in conflict copies.
-    fn materialize(dir: &BridgeDir, id: GrainId, name: &str, own: &Device) -> Result<Workgroup> {
+    ///
+    /// The inviter's record is what lets the pair meet without a third party: replication
+    /// runs over the ordinary connection path, which is authorized with this ledger, and
+    /// the ledger the join starts with names only its own device. Which side of a pair
+    /// dials is an id-ordering rule (see `wgsync`), and an id the chance of two random
+    /// grain-ids decides; on the wrong side of it, a joiner with no record but its own and
+    /// an inviter that dials only smaller ids would never open a stream to each other, and
+    /// the workgroup would grow only as far as the pairs whose ids happened to line up.
+    /// A member known on both sides at pair time needs no dial to be learned.
+    pub(crate) fn materialize(
+        dir: &BridgeDir,
+        id: GrainId,
+        name: &str,
+        own: &Device,
+        inviter: &Device,
+    ) -> Result<Workgroup> {
         let wg_dir = dir.workgroup_dir(id);
         // `join` only gets here when `open` reports no workgroup, so anything already
         // sitting under this id is a leftover of a crashed attempt — possibly with a
@@ -230,6 +275,7 @@ impl Workgroup {
         std::fs::remove_dir_all(&wg_dir).ok();
         std::fs::create_dir_all(wg_dir.join("root"))?;
         std::fs::create_dir_all(dir.devices_dir(id))?;
+        write_ignore_file(&wg_dir.join("root"))?;
         let file = wg_dir.join("root").join("workgroup.toml");
         std::fs::write(
             &file,
@@ -246,6 +292,12 @@ impl Workgroup {
             devices_dir: dir.devices_dir(id),
         };
         Devices::write_record(&workgroup.devices_dir, own)?;
+        // The inviter may be this device — a founder answering its own later `join` cannot
+        // happen (the node id is already a member, and is refused), so this only guards a
+        // test that reuses one record.
+        if inviter.id != own.id {
+            Devices::write_record(&workgroup.devices_dir, inviter)?;
+        }
         Ok(workgroup)
     }
 
@@ -418,6 +470,47 @@ mod tests {
     }
 
     #[test]
+    fn the_root_bans_conflict_copies() {
+        // The workgroup root's files are the workgroup's own state, where whatever device
+        // wrote last holds the one right answer. A conflict copy there — a retirement
+        // arriving over a device record this host had not yet seen is exactly such a
+        // race — would be a `devices/*.conflict-*.toml` file the ledger cannot open: its
+        // name is not a grain-id. So both `create` and `join` ship the ignore file that
+        // rules conflict copies out, and the replication carries it to every device.
+        let (_tmp, dir) = bridge_dir();
+        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
+        let ignore = wg.dir.join("root").join(".sapphireignore");
+        let body = std::fs::read_to_string(&ignore).unwrap();
+        // One basename rule: a conflict copy of *anything* in the root is out, wherever
+        // the sync core would put it.
+        assert!(body.contains("*.conflict-*"), "{body}");
+
+        // The filter agrees: the copy of a device record the sync core would otherwise
+        // write is not allowed.
+        let filter = sapphire_sync::SyncFilter::load(&wg.dir.join("root"), "bridge").unwrap();
+        let copy = "devices/0abcd3.conflict-abcdef01-7.toml";
+        assert!(
+            !filter.allows(copy, false),
+            "a conflict copy in the ledger must not take part in sync"
+        );
+
+        // `join` writes the same file, so a joiner's root is covered from birth.
+        let (_tb, dir_b) = bridge_dir();
+        let own = wg.this_device(NODE_A).unwrap();
+        Workgroup::materialize(&dir_b, wg.id, "home", &own, &own).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(
+                dir_b
+                    .workgroup_dir(wg.id)
+                    .join("root")
+                    .join(".sapphireignore")
+            )
+            .unwrap(),
+            body
+        );
+    }
+
+    #[test]
     fn a_known_node_is_authorized() {
         let (_tmp, dir) = bridge_dir();
         let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
@@ -531,11 +624,12 @@ mod tests {
         let transport = net.transport(NODE_A);
         let answering_dir = dir.clone();
         let answering_wg = wg.clone();
+        let inviter = wg.this_device(NODE_A).unwrap();
         tokio::spawn(async move {
             if let Ok((_from, stream)) = transport.accept_pairing().await {
                 let mut invites =
                     crate::invite::Invites::load(&answering_dir.root.join("invites.toml")).unwrap();
-                let _ = crate::pairing::admit(stream, &mut invites, &answering_wg).await;
+                let _ = crate::pairing::admit(stream, &mut invites, &answering_wg, &inviter).await;
             }
         });
 

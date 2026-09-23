@@ -33,6 +33,7 @@ data-encoding = "2"
 dirs.workspace = true
 getrandom.workspace = true
 grain-id.workspace = true
+notify = "8"
 postcard = { version = "1", features = ["use-std"] }
 subtle = "2"
 iroh = { version = "1.2", optional = true }

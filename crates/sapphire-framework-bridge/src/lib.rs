@@ -100,6 +100,9 @@ pub struct Bridge {
     /// The workgroup's own replica, once `run` has opened it. `None` until then, and for a
     /// host without a workgroup for ever.
     workgroup_replica: Mutex<Option<Arc<WorkgroupReplica>>>,
+    /// The task driving the workgroup's own workspace — scanning its root and dialing its
+    /// peers — while a replica is open. Aborted and replaced when the replica is.
+    workgroup_driver: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Bridge {
@@ -126,6 +129,7 @@ impl Bridge {
             tickets: Tickets::default(),
             wakes: Wakes::default(),
             workgroup_replica: Mutex::new(None),
+            workgroup_driver: Mutex::new(None),
         })
     }
 
@@ -179,7 +183,10 @@ impl Bridge {
         if let Some(workgroup) = self.workgroup()?
             && let Err(err) = self.serve_workgroup(&workgroup)
         {
-            tracing::warn!("the workgroup's own workspace will not sync: {err}");
+            // Error, not warn: the bridge stays up serving everything else, but nothing
+            // tells the user their device list stopped propagating. This log line is
+            // where a missing workgroup workspace is found.
+            tracing::error!("the workgroup's own workspace will not sync: {err}");
         }
         self.serve_loops(net).await
     }
@@ -214,6 +221,26 @@ impl Bridge {
         // recorded before the first session is served.
         if let Err(err) = replica.scan() {
             tracing::warn!("scanning the workgroup root failed: {err}");
+        }
+        // The driver takes over from here: it scans on every change under the root and
+        // sweeps the workgroup workspace on a timer, so a write this host makes — a
+        // pairing's admission, a retirement, a published workspace — reaches the running
+        // bridges of the workgroup on its own.
+        let driver = wgsync::spawn_driver(
+            Arc::clone(&self.transport),
+            workgroup.clone(),
+            Arc::clone(&replica),
+        )?;
+        // A re-opened replica replaces the previous one — a join rewrites the workgroup
+        // directory wholesale — so the task that drove it has to stop, or two drivers would
+        // scan, sweep and dial the same workspace at once.
+        if let Some(previous) = self
+            .workgroup_driver
+            .lock()
+            .expect("workgroup driver")
+            .replace(driver)
+        {
+            previous.abort();
         }
         *self.workgroup_replica.lock().expect("workgroup replica") = Some(replica);
         Ok(())
@@ -327,6 +354,13 @@ impl Bridge {
     /// Which app servers are connected right now.
     pub(crate) fn owners(&self) -> &Owners {
         &self.owners
+    }
+
+    /// Whether `app_name`'s server is connected right now. Test seam: the switchboard
+    /// asserts on what a failed or successful registration left behind.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_app_online(&self, app_name: &str) -> bool {
+        self.owners().is_online(app_name)
     }
 
     /// Inbound streams waiting for their owner.

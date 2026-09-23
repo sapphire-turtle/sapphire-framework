@@ -66,6 +66,14 @@ pub enum JoinResponse {
         workgroup_name: String,
         /// This device's own record, as the inviter's ledger now holds it.
         device: Device,
+        /// The inviting device's record, as the inviter's ledger holds it.
+        ///
+        /// The joiner's ledger starts from this record rather than nothing: a device that
+        /// joined under an id that sorts before the inviter's would otherwise know no peer
+        /// it may dial, and the inviter — knowing the joiner but dialing only smaller ids —
+        /// would never dial it either. Membership, and the first sync it needs, arrives
+        /// with the pair itself.
+        inviter: Box<Device>,
     },
     /// The invite was refused, and why — a message a user can act on.
     Rejected(String),
@@ -100,7 +108,12 @@ where
         .map_err(|e| Error::Protocol(format!("could not decode the pairing reply: {e}")))
 }
 
-/// Answer one join request, and get the device this host just admitted.
+/// Answer one join request, and get the device this host just admitted plus its own.
+///
+/// The inviter's own record rides the reply as `JoinResponse::Admitted::inviter`: the
+/// joiner seeds its ledger with it, so the two sides of a fresh pair know each other
+/// before any replication — the first session between them is then an ordinary delta
+/// exchange, not a search for someone to dial.
 ///
 /// In this order, and no other: redeem the secret (constant time, single use, expiry
 /// checked — [`Invites::redeem`]), then write the device record with the joiner's node id
@@ -118,7 +131,8 @@ pub async fn admit<S>(
     mut stream: S,
     invites: &mut Invites,
     workgroup: &Workgroup,
-) -> Result<Option<Device>>
+    inviter: &Device,
+) -> Result<Option<(Device, Device)>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -142,7 +156,7 @@ where
     // A rejection is the answer to this request, not a failure of the bridge: the joiner is
     // told why, and the inviter goes on to the next connection. Nothing has been written to
     // the ledger on any path through here — that starts with a redeemed invite.
-    async fn reject<S>(stream: &mut S, why: String) -> Result<Option<Device>>
+    async fn reject<S>(stream: &mut S, why: String) -> Result<Option<(Device, Device)>>
     where
         S: AsyncWrite + Unpin,
     {
@@ -197,10 +211,11 @@ where
             workgroup_id: workgroup.id,
             workgroup_name: workgroup.name.clone(),
             device: device.clone(),
+            inviter: Box::new(inviter.clone()),
         },
     )
     .await?;
-    Ok(Some(device))
+    Ok(Some((device, inviter.clone())))
 }
 
 /// Send one response frame.
@@ -240,10 +255,11 @@ mod tests {
         node: &str,
     ) -> (
         Result<JoinResponse>,
-        Result<Option<sapphire_registry::Device>>,
+        Result<Option<(sapphire_registry::Device, sapphire_registry::Device)>>,
     ) {
         let (left, right) = tokio::io::duplex(8 * 1024);
         let mut invites = Invites::load(&dir.root.join("invites.toml")).unwrap();
+        let inviter = wg.this_device(NODE_A).unwrap();
         tokio::join!(
             join(
                 left,
@@ -253,7 +269,7 @@ mod tests {
                     node_id: node.to_owned(),
                 },
             ),
-            admit(right, &mut invites, wg),
+            admit(right, &mut invites, wg, &inviter),
         )
     }
 

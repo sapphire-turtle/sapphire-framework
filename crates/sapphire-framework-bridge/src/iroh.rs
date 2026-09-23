@@ -332,6 +332,28 @@ impl PeerTransport for IrohTransport {
         self.node_id.clone()
     }
 
+    fn is_connected(&self, node_id: &str) -> bool {
+        // Whether a peer is reachable is the carrier's fact, and iroh's answer is the
+        // paths it is *actively* using to that endpoint right now. `remote_info` is a
+        // snapshot kept for a while after a peer goes away, so an `Inactive` entry alone
+        // proves nothing: only an active path — a QUIC path in use by at least one live
+        // connection, or the relay the endpoint is talking through — counts as connected.
+        // A peer that has never spoken to this host has no entry at all, and is not
+        // connected, which is also what the default says.
+        let Ok(id) = self.endpoint_id(node_id) else {
+            return false;
+        };
+        // The trait method is sync, and `remote_info` is async, but it is answered
+        // directly from the endpoint's actor state — no network round trip — so a
+        // blocking wait for the actor's one-shot is what "ask iroh" means here.
+        match self.info_of(id) {
+            None => false,
+            Some(info) => info
+                .addrs()
+                .any(|a| matches!(a.usage(), ::iroh::endpoint::TransportAddrUsage::Active)),
+        }
+    }
+
     fn ticket_addr(&self) -> Result<Vec<u8>> {
         // The whole `EndpointAddr`, not just the id: a ticket that named no address would
         // send the joiner to a discovery service it may not have (relays and discovery are
@@ -344,6 +366,48 @@ impl PeerTransport for IrohTransport {
         }
         postcard::to_stdvec(&addr)
             .map_err(|e| Error::Peer(format!("could not encode this host's address: {e}")))
+    }
+}
+
+impl IrohTransport {
+    /// The endpoint id behind `node_id`, if it is one.
+    fn endpoint_id(&self, node_id: &str) -> Result<::iroh::EndpointId> {
+        node_id
+            .parse()
+            .map_err(|e| Error::Peer(format!("{node_id}: not a node id: {e}")))
+    }
+
+    /// What iroh currently knows about `id`, fetched synchronously from its actor.
+    ///
+    /// `remote_info` is async because it asks the remote-state actor over a oneshot; the
+    /// answer is ready immediately — the actor holds it in memory — so a short block on
+    /// the calling thread is the cheapest way to serve a sync trait method. How that
+    /// block is done depends on the runtime this call runs on: a multi-thread runtime's
+    /// worker parks its task with [`tokio::task::block_in_place`], a current-thread
+    /// runtime cannot do that (the answer would never be driven), so its handle's own
+    /// `block_on` runs the future to completion, and a call from outside any runtime
+    /// builds a throwaway one. The one-shot is answered as soon as the actor is
+    /// scheduled, so every path here returns in microseconds; none of them waits on the
+    /// network.
+    fn info_of(&self, id: ::iroh::EndpointId) -> Option<::iroh::endpoint::RemoteInfo> {
+        let ask = async { self.endpoint.remote_info(id).await };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match handle.runtime_flavor() {
+                tokio::runtime::RuntimeFlavor::MultiThread => {
+                    tokio::task::block_in_place(|| handle.block_on(ask))
+                }
+                // `RuntimeFlavor` is `#[non_exhaustive]`; anything that is not the
+                // multi-thread runtime treats like the current-thread one.
+                _ => handle.block_on(ask),
+            },
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(ask)
+            }
+        }
     }
 }
 

@@ -67,6 +67,61 @@ async fn the_key_file_is_private() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_connected_peer_is_reported_connected_and_an_unknown_one_is_not() {
+    // The status surface (`bridge.peers`, `status.json`, `device list`) gets its
+    // connected answer from here, so the real transport must say who is up: iroh knows
+    // the paths it is actively using, and a peer nothing has been exchanged with has no
+    // entry at all.
+    let tmp = tempfile::tempdir().unwrap();
+    let a = transport(&tmp, "a.key", &offline()).await;
+    let b = transport(&tmp, "b.key", &offline()).await;
+    let b_node_id = b.node_id();
+    let b_addr = b.node_addr().await.unwrap();
+    a.add_known_address(&b_addr).unwrap();
+
+    // Before anything is dialed, nobody is connected.
+    assert!(
+        !a.is_connected(&b_node_id),
+        "a peer never dialed is not connected"
+    );
+
+    // One open in each direction — the shape every bridge conversation has — and B is up.
+    let ws = GrainId::random();
+    let accepting = tokio::spawn({
+        let b = std::sync::Arc::new(b);
+        async move { b.accept().await }
+    });
+    let opened = a.open(&b_node_id, ws).await.unwrap();
+    let inbound = tokio::time::timeout(Duration::from_secs(10), accepting)
+        .await
+        .expect("the far side to accept")
+        .unwrap()
+        .unwrap();
+    // The handshake is done on both ends: the connection exists, whatever becomes of the
+    // streams on it. Held until the assertion below has been made, so neither side's
+    // endpoint tears it down first.
+    let _keep = (opened, inbound);
+    // iroh's remote state settles when the path it is using is confirmed; the handshake
+    // has already done that, but the actor hears of it asynchronously.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if a.is_connected(&b_node_id) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a peer with an active path must be reported connected"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let stranger = grain_id::GrainId::random().to_string();
+    assert!(
+        !a.is_connected(&stranger),
+        "an unknown node id is not connected"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn two_endpoints_exchange_bytes() {
     let tmp = tempfile::tempdir().unwrap();
     let a = transport(&tmp, "a.key", &offline()).await;

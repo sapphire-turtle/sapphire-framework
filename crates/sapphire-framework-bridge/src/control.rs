@@ -47,7 +47,8 @@ impl Owners {
     }
 
     /// Is this app's server connected right now?
-    pub(crate) fn is_online(&self, app_name: &str) -> bool {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_online(&self, app_name: &str) -> bool {
         self.by_app.lock().expect("owners").contains_key(app_name)
     }
 
@@ -230,6 +231,20 @@ async fn register(
     let params: RegisterParams = serde_json::from_value(ctx.params)
         .map_err(|e| RpcError::invalid_params(format!("malformed registration: {e}")))?;
 
+    // The workgroup checks come first, before anything is changed: a registration that
+    // ends in an error must leave no route behind and no owner marked online. Reading
+    // these after `connect` would leave an app server announced as owning its workspaces
+    // while the reply tells it the registration failed — and its announce loop would keep
+    // speaking for a bridge that never accepted it.
+    let workgroup = bridge
+        .workgroup()
+        .map_err(failed)?
+        .ok_or(Error::NoWorkgroup)
+        .map_err(failed)?;
+    let me = workgroup
+        .this_device(&bridge.transport().node_id())
+        .map_err(failed)?;
+
     // A registration is the app server's complete current list, so this replaces whatever
     // this app owned before — and refuses a workspace another app already owns.
     bridge
@@ -265,14 +280,6 @@ async fn register(
     bridge.owners().connect(&params.app_name, ctx.peer.clone());
     session.record(&params.app_name);
 
-    let workgroup = bridge
-        .workgroup()
-        .map_err(failed)?
-        .ok_or(Error::NoWorkgroup)
-        .map_err(failed)?;
-    let me = workgroup
-        .this_device(&bridge.transport().node_id())
-        .map_err(failed)?;
     encode(RegisterResult {
         device_id: me.id,
         node_id: bridge.transport().node_id(),
@@ -365,7 +372,7 @@ pub(crate) fn route_statuses(bridge: &Bridge) -> Vec<RouteStatus> {
             workspace_id: route.workspace_id,
             app_name: route.app_name.clone(),
             root: route.root.clone(),
-            owner_online: bridge.owners().is_online(&route.app_name),
+            owner_online: bridge.owners().peer(&route.app_name).is_some(),
         })
         .collect()
 }

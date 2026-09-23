@@ -107,6 +107,46 @@ async fn a_peer_outside_the_workgroup_is_refused_before_any_app_server_hears_of_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_failed_registration_leaves_nothing_behind() {
+    // A registration is refused when this host holds no workgroup (or its own record is
+    // unreadable). The refusal must not have connected the app as an owner: the reply
+    // says the registration failed, so an announce loop it then starts must not find a
+    // bridge that accepted it — an owner a failed registration left behind would be
+    // notified of peers and could answer streams as if everything were well.
+    let net = LoopbackNetwork::new();
+    let a = start(&net, NODE_A, "host-a").await;
+    let client = connect(&a).await;
+
+    // The host has a workgroup but the app's workspace is published fine; to make the
+    // late verification fail, retire this host's own record out from under the bridge.
+    let wg = Workgroup::open(&a.dir).unwrap().unwrap();
+    let me = wg.this_device(&a.node_id).unwrap();
+    let mut devices = wg.devices().unwrap();
+    devices.purge(&me.name).unwrap();
+
+    let err = client
+        .register(RegisterParams {
+            app_name: "test-app".into(),
+            exe_path: "/bin/true".into(),
+            managed_by: ManagedBy::Service,
+            workspaces: vec![WorkspaceRegistration {
+                workspace_id: grain_id::GrainId::random(),
+                root: "/a".into(),
+            }],
+        })
+        .await
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+
+    // No owner was marked online: a peer stream for the workspace is dropped rather than
+    // announced, and the app is woken as a stranger, not spoken to as an owner.
+    assert!(
+        !a.bridge().is_app_online("test-app"),
+        "a refused registration must not leave an owner online"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_app_server_that_registers_twice_replaces_its_own_routes() {
     // Not in the brief, but it is the rule `replace_app` exists for, and the switchboard is
     // where an app server reaches it.

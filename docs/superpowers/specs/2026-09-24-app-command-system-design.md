@@ -40,6 +40,16 @@ Agreed during brainstorming on 2026-09-24:
    <app> device list|invite|retire
    ```
 
+   The `workspace` commands are served primarily over **the app's own server IPC**,
+   not the bridge: the ledger of an app's workspaces is the app's registry
+   (`WorkspaceRegistry`, embedded as `[workspace.<id>]` tables in the config that lives
+   in the workspace marker directory), and the process that owns that file is the app
+   server. `workspace init` therefore requires the app server to be running — it is
+   where the marker/sync-id creation and the registry entry are executed, so a
+   workspace created through the CLI or the GUI is one the server already knows.
+   Only `workspace list`'s second layer (the workgroup-wide list) and `workspace map`'s
+   name resolution consult the bridge ledger, as described in decision 6.
+
 2. **Flat merge via clap flatten, not double nesting.** The framework exposes a
    `FrameworkCommand` `#[derive(Subcommand)]` enum; app CLIs compose it as a second
    field next to their own `#[command(subcommand)]` enum, so app-specific commands
@@ -65,7 +75,11 @@ Agreed during brainstorming on 2026-09-24:
    spawn-on-demand machinery (`ensure_server` / `SpawnConfig` re-exec) are removed.
    Startup comes from the installed service; graceful shutdown comes from
    **SIGTERM/SIGINT handling in `run()`** (today the loop only watches the IPC stop
-   channel; signal handling is new work).
+   channel; signal handling is new work). Commands that need a running server
+   (`workspace init`, `workspace map`, `status` beyond liveness) therefore report
+   "no server is running" and exit 1 rather than starting one — there is no
+   start-on-demand to fall back on, and starting a daemon as a side effect of a
+   one-shot command is exactly what the removal is about.
 
 4. **`stop` is dropped.** Start/stop/restart of the daemon is the service manager's
    business (`systemctl --user stop <app>`). The framework CLI does not re-implement a
@@ -79,18 +93,33 @@ Agreed during brainstorming on 2026-09-24:
    typed **status report** the dispatch helper renders. The same structure is what the
    IPC status response carries, so CLI and (future) GUI render one shape.
 
-6. **Route: app CLI → bridge endpoint directly (path 1).** `workspace` / `workgroup` /
-   `device` from an app binary open `Endpoint::for_app("sapphire-bridge")` and call the
-   bridge's IPC methods directly; the app's own server is not a control-plane relay.
-   Consequence: these commands report clearly when the bridge is not running. The
-   bridge's existing method namespace (`bridge.register/unregister/peers/status/invite/
-   join/workspaces`) is the back-end, extended/renamed as the shared surface requires.
-   A thin shared IPC client for these methods ships with the framework (used by app
-   CLIs now, by GUIs later).
+6. **Control-plane routing follows ownership.** `workspace` commands talk to the
+   process that owns the state they touch: `workspace init` and `workspace map`'s
+   write go to **the app's server** (it owns the marker directory, the registry and the
+   sync ids); `workspace list` shows the local registry first and then the workgroup's
+   ledger; the workgroup-wide ledger (what exists in the workgroup, replicated into
+   `workgroups/<id>/root/workspaces/*.toml`) is read over the bridge endpoint —
+   `Endpoint::in_dir("sapphire-bridge", runtime_dir())`, the bridge's IPC methods
+   (`bridge.workspaces` for the list, `bridge.*` as `map`'s selector resolution back-end)
+   — directly, not relayed through the app server. `workgroup` and `device` commands are
+   the bridge's business end to end: they open the bridge endpoint and call the bridge's
+   IPC methods directly (path 1, unchanged). Every one of these commands reports clearly
+   when the process it needs is not running: no server, no start-on-demand, exit 1 with
+   a message naming the process. The bridge's existing method namespace
+   (`bridge.register/unregister/peers/status/invite/join/workspaces`) is the back-end,
+   extended/renamed as the shared surface requires. A thin shared IPC client for these
+   methods ships with the framework (used by app CLIs now, by GUIs later).
 
 7. **`workspace init` not `new`** — matches existing app verbs (`sapphire-journal init`)
    and the `git init` + `git clone` analogy: `init` creates the local (marker) home,
-   `map` ties it to a remote workspace.
+   `map` ties it to a remote workspace. `init` runs **on the app server over IPC**
+   (decision 1): the CLI connects, the server creates the marker and sync id and adds
+   the registry entry, so the workspace is immediately usable by the server and visible
+   to a GUI sharing the same registry. Without `--sync` the bridge ledger is untouched;
+   with `--sync` the server additionally runs its existing `sync.enable` path
+   (replica + `reregister()` → `bridge.register`), which is what publishes the
+   workspace into the workgroup ledger. `init` is idempotent: pointing it at an
+   initialised directory reports "already exists" and exits 0.
 
 8. **Bootstrap args de-hard-coded.** `service_spec()` emits `args: ["serve"]`; the
    `SpawnConfig` hard-coding disappears with the spawn machinery (decision 3). No
@@ -102,9 +131,10 @@ Agreed during brainstorming on 2026-09-24:
    follow-up in those repos.
 
 10. **Phasing.** Phase 1 (this issue #142): the framework-side command system, status
-    extension point, bridge-IPC client commands, spawn/idle removal, signal handling.
-    Phase 2 (separate issue): the bridge's own 860-line `command.rs` is re-homed onto
-    the shared foundation (keeping its `log` subcommand as bridge-specific).
+    extension point, the workspace/workgroup/device commands over their owning
+    processes' IPC, spawn/idle removal, signal handling. Phase 2 (separate issue): the
+    bridge's own 860-line `command.rs` is re-homed onto the shared foundation (keeping
+    its `log` subcommand as bridge-specific).
 
 ## Non-goals
 
@@ -118,10 +148,14 @@ Agreed during brainstorming on 2026-09-24:
 
 - Parse tests: `serve` / `status` / `service …` / `workspace …` / `workgroup …` /
   `device …` parse at top level **alongside** an app-specific subcommand through the
-  flatten composition.
+  flatten composition; `workspace init --sync` parses.
 - `status`: exit code 1 + message when no server; liveness fields + app extension rows
   when running; the same report shape over CLI and IPC.
 - `serve`: SIGTERM/SIGINT triggers graceful shutdown (socket removed, tasks aborted).
+- `workspace init`: with a running app server, creates the marker + registry entry and
+  the server knows the workspace afterwards; idempotent (second call: "already exists",
+  exit 0); without a running server: exit 1 + message, nothing started; `--sync`
+  additionally ends with the workspace present in the bridge ledger.
 - `service_spec().args == ["serve"]`; spawn machinery removal keeps existing service
   install tests green after update.
 - Migrate existing `command.rs` tests to the new shapes; no orphan tests left behind.

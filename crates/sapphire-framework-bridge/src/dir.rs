@@ -29,8 +29,7 @@ impl BridgeDir {
             Some(v) => PathBuf::from(v),
             None => dirs::data_dir()
                 .unwrap_or_else(std::env::temp_dir)
-                .join("sapphire")
-                .join("bridge"),
+                .join("sapphire-bridge"),
         };
         BridgeDir::at(root)
     }

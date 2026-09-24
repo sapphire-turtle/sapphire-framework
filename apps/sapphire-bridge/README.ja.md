@@ -47,15 +47,16 @@ $ sapphire-bridge device list
 
 ## 保存場所
 
-`<プラットフォームのデータルート>/sapphire/bridge/`（`SAPPHIRE_BRIDGE_DIR` で全体を上書き可）:
+`<プラットフォームのデータルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR` で全体を上書き可）:
 
 ```
-bridge/
+sapphire-bridge/
     format          # ディレクトリのフォーマットバージョン
     node.key        # iroh の秘密鍵 -> このデバイスの node id
     bridge.lock     # 単一インスタンス用のガード。役割選出ではない
     net.toml        # discovery・relay・wake_on_sync
     routes.toml     # workspace_id -> 所有するアプリサーバ
+    run/            # IPC ソケットと spawn lock（SAPPHIRE_RUNTIME_DIR で単体上書き可）
     workgroups/<workgroup-id>/
         root/       # デバイス台帳
         root/devices/<device-id>.toml

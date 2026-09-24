@@ -47,15 +47,16 @@ exits non-zero.
 
 ## Where it keeps things
 
-`<platform data root>/sapphire/bridge/`, overridden whole by `SAPPHIRE_BRIDGE_DIR`:
+`<platform data root>/sapphire-bridge/`, overridden whole by `SAPPHIRE_BRIDGE_DIR`:
 
 ```
-bridge/
+sapphire-bridge/
     format          # directory format version
     node.key        # iroh secret key -> this device's node id
     bridge.lock     # single-instance guard, not a role election
     net.toml        # discovery, relays, wake_on_sync
     routes.toml     # workspace_id -> the app server that owns it
+    run/            # IPC sockets and spawn locks (SAPPHIRE_RUNTIME_DIR overrides it)
     workgroups/<workgroup-id>/
         root/       # device ledger
         root/devices/<device-id>.toml

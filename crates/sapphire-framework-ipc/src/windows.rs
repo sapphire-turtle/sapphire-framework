@@ -297,10 +297,11 @@ mod tests {
         unsafe { LocalFree(raw.cast::<c_void>()) };
 
         let sid = current_user_sid().unwrap();
-        assert!(
-            sddl.contains(&sid),
-            "{sddl} should name the user's SID {sid}"
-        );
+        // The SDDL round-trip canonicalises some SIDs to their well-known alias —
+        // a built-in administrator (RID 500) comes back as `LA`, not as its raw
+        // `S-1-5-21-…-500` string. Accept either form: they name the same trustee.
+        let named = sddl.contains(&sid) || (sid.ends_with("-500") && sddl.contains(";;;LA"));
+        assert!(named, "{sddl} should name the user's SID {sid}");
         assert!(sddl.contains(";;;SY"), "{sddl} should name SYSTEM");
         for intruder in [";;;WD", ";;;BU", ";;;AU"] {
             assert!(

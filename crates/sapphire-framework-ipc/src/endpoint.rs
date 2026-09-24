@@ -42,7 +42,7 @@ pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The directory holding this user's sockets and spawn locks, created if absent.
+/// The directory holding this user's sockets, created if absent.
 pub fn runtime_dir() -> Result<PathBuf> {
     let dir = match std::env::var_os(RUNTIME_DIR_ENV).filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
@@ -96,11 +96,6 @@ impl Endpoint {
     /// machine get separate pipes.
     pub fn pipe_name(&self) -> String {
         format!(r"\\.\pipe\sapphire.{}.{}", user_scope(), self.name)
-    }
-
-    /// The lock file that serialises start-on-demand (spec §2.6 step 3a).
-    pub fn lock_path(&self) -> PathBuf {
-        self.dir.join(format!("{}.spawn.lock", self.name))
     }
 }
 
@@ -186,7 +181,6 @@ mod tests {
         let dir = std::env::temp_dir().join("sapphire-endpoint-test");
         let ep = Endpoint::in_dir("sapphire-journal", dir.clone());
         assert_eq!(ep.socket_path(), dir.join("sapphire-journal.sock"));
-        assert_eq!(ep.lock_path(), dir.join("sapphire-journal.spawn.lock"));
     }
 
     #[test]

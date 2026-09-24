@@ -64,6 +64,53 @@ pub struct AppServer {
     privileges: Option<PrivilegeConfig>,
 }
 
+/// The SIGTERM end of the server's select loop, in a shape every platform shares.
+///
+/// [`AppServer::run`]'s select arm awaits `recv()` on one of these, exactly as the
+/// plan writes it for Unix. Unix backs it with the `SignalKind::terminate()`
+/// stream; Windows has no SIGTERM, so there the future never resolves and the arm
+/// exists for the macro's sake and never fires. Without the common shape the arm
+/// would need a `#[cfg]` of its own, which tokio's `select!` rejects once the
+/// attribute removes the arm.
+#[cfg(unix)]
+struct Sigterm(tokio::signal::unix::Signal);
+
+/// The never-firing stand-in for the Unix `Sigterm` where there is no SIGTERM.
+#[cfg(not(unix))]
+struct Sigterm;
+
+#[cfg(unix)]
+impl Sigterm {
+    /// Register interest in SIGTERM.
+    ///
+    /// Called before the listener binds, so a signal arriving the instant the
+    /// socket is up is queued by tokio instead of killing the process with the
+    /// default handler.
+    fn new() -> Result<Self> {
+        Ok(Self(tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )?))
+    }
+
+    /// Wait for the next SIGTERM.
+    ///
+    /// Never returns `None`: the stream is infinite, as its documentation states.
+    async fn recv(&mut self) {
+        self.0.recv().await;
+    }
+}
+
+#[cfg(not(unix))]
+impl Sigterm {
+    /// A future that is never ready — the arm awaits it for the macro's sake only.
+    ///
+    /// There is no `new`: this platform has no SIGTERM to register interest in, so
+    /// the loop binds the unit value directly.
+    async fn recv(&mut self) {
+        std::future::pending::<()>().await
+    }
+}
+
 impl AppServer {
     /// A server for `ctx`'s application, reporting `version` in its handshake.
     pub fn new(ctx: &'static AppContext, version: &'static str) -> AppServer {
@@ -229,13 +276,10 @@ impl AppServer {
         // cannot fall through to the default handler and kill the process. SIGINT is
         // listened to only through `ctrl_c` (which swallows the default handler on both
         // platforms): a Unix `SignalKind::interrupt()` stream would double-fire for ^C.
-        // Windows has no SIGTERM; its arm's future is a future that is never ready, so the
-        // arm exists for the macro's sake and never fires.
         #[cfg(unix)]
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigterm = Sigterm::new()?;
         #[cfg(not(unix))]
-        let sigterm = std::future::pending::<()>();
+        let mut sigterm = Sigterm;
 
         #[cfg(unix)]
         let listener = sapphire_ipc::bind(&endpoint).await?;
@@ -301,15 +345,8 @@ impl AppServer {
                     break;
                 }
                 _ = sigterm.recv() => {
-                    #[cfg(unix)]
-                    {
-                        tracing::info!("terminated; shutting down");
-                        break;
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        std::future::pending::<()>().await
-                    }
+                    tracing::info!("terminated; shutting down");
+                    break;
                 }
                 accepted = listener.accept() => {
                     let conn = accepted?;

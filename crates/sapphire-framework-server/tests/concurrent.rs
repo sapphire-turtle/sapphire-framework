@@ -20,9 +20,10 @@ fn client_info() -> ClientInfo {
     }
 }
 
-/// One test server, started detached the way a service manager would, plus the endpoint
-/// it listens on and a workspace inside it. `state` names the server's state tree, so a
-/// test can stop the server by asking its process group to terminate.
+/// One test server, started the way `serve` or the service manager would run one, plus
+/// the endpoint it listens on and a workspace inside it. Nothing here starts a server on
+/// demand any more. The returned child is the test's to stop: kill it at the end, the
+/// way [`crate::ipc_backend`]'s fixtures do.
 fn fixture(tmp: &Path) -> (Endpoint, PathBuf, std::process::Child) {
     let runtime = tmp.join("run");
     let state = tmp.join("state");
@@ -86,7 +87,7 @@ fn first_pins_the_problem() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn eight_concurrent_clients_all_write_successfully() {
     let tmp = tempfile::tempdir().unwrap();
-    let (endpoint, ws, _child) = fixture(tmp.path());
+    let (endpoint, ws, mut server) = fixture(tmp.path());
     wait_until_listening(&endpoint).await;
 
     let mut tasks = Vec::new();
@@ -121,13 +122,15 @@ async fn eight_concurrent_clients_all_write_successfully() {
             "client {n}'s file is missing"
         );
     }
+
+    let _ = server.kill();
 }
 
 /// The original report: `journal add` while the stdio MCP server is running.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_lived_client_and_a_one_shot_client_coexist() {
     let tmp = tempfile::tempdir().unwrap();
-    let (endpoint, ws, _child) = fixture(tmp.path());
+    let (endpoint, ws, mut server) = fixture(tmp.path());
     wait_until_listening(&endpoint).await;
 
     // The MCP server: connects and stays.
@@ -178,4 +181,6 @@ async fn a_long_lived_client_and_a_one_shot_client_coexist() {
         .await
         .unwrap();
     assert_eq!(read.content, "human");
+
+    let _ = server.kill();
 }

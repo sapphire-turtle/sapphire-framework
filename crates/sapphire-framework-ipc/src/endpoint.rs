@@ -48,8 +48,7 @@ pub fn runtime_dir() -> Result<PathBuf> {
         Some(v) => PathBuf::from(v),
         None => dirs::data_dir()
             .unwrap_or_else(std::env::temp_dir)
-            .join("sapphire")
-            .join("run"),
+            .join("sapphire-bridge").join("run"),
     };
     ensure_private_dir(&dir)?;
     Ok(dir)

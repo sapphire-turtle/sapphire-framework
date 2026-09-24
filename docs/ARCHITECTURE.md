@@ -166,7 +166,7 @@ NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix
 
 ### bridge はホスト常駐の交換台（`apps/sapphire-bridge`）
 
-1 ユーザー 1 プロセスの独立バイナリ。`<データルート>/sapphire/bridge/`（`SAPPHIRE_BRIDGE_DIR`）に
+1 ユーザー 1 プロセスの独立バイナリ。`<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）に
 `node.key`、`routes.toml`（workspace_id → 所有サーバ）、workgroup 台帳、`status.json`
 （5 秒ごと＋変化時、アトミック）、`logs/node.log`（10 MiB × 3 ローテーション）を置く。
 ワークスペースの中身は見ない。役割:
@@ -243,8 +243,8 @@ re-export される（`sapphire_framework::{clap, serde, dirs}`）。ディレ�
 **環境変数名は統一規約**: カテゴリ別のオーバーライドは `SAPPHIRE_<APP>_<CATEGORY>_DIR`
 （`CATEGORY` は `CACHE` / `DATA` / `CONFIG`）。置換するのは**プラットフォームルートのみ**。
 ワークスペースルートは `SAPPHIRE_<APP>_DIR`。ワークスペース外の状態は per-app レイアウトの
-外に置く — bridge ディレクトリは `<データルート>/sapphire/bridge/`（`SAPPHIRE_BRIDGE_DIR`）、
-IPC ソケットは `<データルート>/sapphire/run/`（`SAPPHIRE_RUNTIME_DIR`）。ホスト = 1 デバイス
+外に置く — bridge ディレクトリは `<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）、
+IPC ソケットは `<データルート>/sapphire-bridge/run/`（`SAPPHIRE_RUNTIME_DIR`）。ホスト = 1 デバイス
 だから app 名も kind も持たない。
 
 **一回限りの移行**（`init` 内、冪等、削除なし）:

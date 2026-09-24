@@ -24,7 +24,7 @@ use sapphire_backend::protocol as proto;
 use sapphire_bridge_api::{BridgeClient, ManagedBy};
 use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig, Workgroup};
 use sapphire_framework_server::{AppServer, SyncRuntime};
-use sapphire_ipc::{Client, ClientInfo, Endpoint, SpawnConfig, ensure_server};
+use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::AppContext;
 
 /// The node id of the first host: 64 lowercase hex digits, as the ledger wants them.
@@ -168,14 +168,10 @@ async fn build(
     // The app server's connection to its own bridge. Built explicitly rather than through
     // `BridgeClient::connect`, which would look the bridge up in the process environment —
     // one value, two hosts.
-    let (control_client, _) = ensure_server(
-        &control,
-        "bridge",
-        client_info("test"),
-        &SpawnConfig::disabled(),
-    )
-    .await
-    .unwrap();
+    let (control_client, _) = connect_or_absent(&control, "bridge", client_info("test"))
+        .await
+        .unwrap()
+        .expect("the bridge is listening");
     let bridge_client = Arc::new(BridgeClient::from_client(
         Arc::new(control_client),
         runtime_dir.clone(),
@@ -187,24 +183,18 @@ async fn build(
         ctx,
         Arc::clone(&bridge_client),
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
-        ManagedBy::Spawned,
+        ManagedBy::Service,
     ));
     let server = AppServer::new(ctx, VERSION)
         .endpoint(endpoint.clone())
-        .managed_by(ManagedBy::Spawned)
-        .idle_exit(None)
         .sync(Arc::clone(&runtime));
     let server_task = tokio::spawn(async move { server.run().await });
     wait_until_listening(&endpoint, "the app server").await;
 
-    let (client, _) = ensure_server(
-        &endpoint,
-        ctx.app_name,
-        client_info("cli"),
-        &SpawnConfig::disabled(),
-    )
-    .await
-    .unwrap();
+    let (client, _) = connect_or_absent(&endpoint, ctx.app_name, client_info("cli"))
+        .await
+        .unwrap()
+        .expect("the app server is listening");
 
     Host {
         tmp: Some(tmp),

@@ -148,3 +148,71 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod service_spec_tests {
+    use super::*;
+    use crate::privilege::{HelperSpec, PrivilegeConfig};
+    use sapphire_framework_service::RunAs;
+    use sapphire_workspace::AppContext;
+
+    static CTX: AppContext = AppContext::new("sapphire-servicetest");
+
+    /// The privilege configuration a privilege-separated application describes: a drop to
+    /// the human user, plus a helper under another one.
+    fn privileges_for(run_as: &str, helper: &str) -> PrivilegeConfig {
+        PrivilegeConfig {
+            run_as: run_as.parse().unwrap(),
+            helper: Some(HelperSpec {
+                user: helper.parse().unwrap(),
+                program: std::path::PathBuf::from("/usr/lib/sapphire-agent/tool-broker"),
+                args: vec![],
+            }),
+        }
+    }
+
+    #[test]
+    fn the_generated_spec_runs_the_server_not_the_cli() {
+        // A service manager starts the executable directly, and the executable's bare
+        // invocation is `serve`: the unit's argv must be exactly that, so the server that
+        // starts has no CLI verbs on its command line to misparse.
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert_eq!(spec.args, vec!["serve".to_owned()]);
+    }
+
+    #[test]
+    fn the_generated_spec_carries_the_apps_privileges() {
+        let privileges = privileges_for("alice", "tools");
+        let spec = AppServer::new(&CTX, "0.0.0")
+            .privileges(privileges.clone())
+            .service_spec();
+        assert!(spec.privileges.is_some());
+    }
+
+    #[test]
+    fn the_generated_spec_names_this_application() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert_eq!(spec.app_name, CTX.app_name);
+    }
+
+    #[test]
+    fn the_generated_spec_describes_the_server() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert!(
+            spec.description.contains(CTX.app_name),
+            "the unit's description should name the application: {:?}",
+            spec.description
+        );
+        assert!(spec.description.contains("0.0.0"));
+    }
+
+    #[test]
+    fn the_generated_spec_runs_a_system_unit_as_the_invoking_user() {
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert!(
+            matches!(spec.system_run_as, RunAs::InvokingUser),
+            "a server started as root would create its cache, its data and its sockets \
+             under /root"
+        );
+    }
+}

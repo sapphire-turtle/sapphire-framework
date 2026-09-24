@@ -2,7 +2,7 @@
 //!
 //! An application builds one of these, adds its own methods, and runs it. Everything a
 //! sapphire app needs on the server side — owning the workspaces, answering `workspace.*`,
-//! pushing events, exiting when nobody is using it — is here.
+//! pushing events — is here.
 //!
 //! See `docs/superpowers/specs/2026-09-16-process-architecture-design.md` §4.
 //!
@@ -21,7 +21,6 @@
 #![warn(missing_docs)]
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -48,24 +47,13 @@ pub use host::{DEFAULT_IDLE, DEFAULT_MAX_OPEN, WorkspaceHost};
 pub use privilege::{HelperSpec, PrivilegeConfig, UserSpec};
 pub use sync::{SyncRuntime, SyncStatus, sync_router};
 
-/// How long a spawned server stays up with nothing to do.
-pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_secs(15 * 60);
-
-/// Longest gap between idle checks.
-///
-/// The actual interval is this or the idle limit, whichever is shorter, so a server asked to
-/// exit after 200 ms does not sit for ten seconds first. Tests depend on that.
-const IDLE_TICK: Duration = Duration::from_secs(10);
-
 /// An application's server.
 pub struct AppServer {
     ctx: &'static AppContext,
     version: &'static str,
     endpoint: Option<Endpoint>,
-    managed_by: ManagedBy,
     max_open: usize,
     workspace_idle: Duration,
-    idle_exit: Option<Duration>,
     host: Arc<WorkspaceHost>,
     sync: Option<Arc<SyncRuntime>>,
     extend: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
@@ -78,18 +66,13 @@ pub struct AppServer {
 
 impl AppServer {
     /// A server for `ctx`'s application, reporting `version` in its handshake.
-    ///
-    /// Pass `env!("CARGO_PKG_VERSION")`: a client compares it with its own and replaces a
-    /// spawned server that does not match (spec §2.6).
     pub fn new(ctx: &'static AppContext, version: &'static str) -> AppServer {
         AppServer {
             ctx,
             version,
             endpoint: None,
-            managed_by: ManagedBy::Spawned,
             max_open: DEFAULT_MAX_OPEN,
             workspace_idle: DEFAULT_IDLE,
-            idle_exit: Some(DEFAULT_IDLE_EXIT),
             host: Arc::new(WorkspaceHost::new(ctx)),
             sync: None,
             extend: None,
@@ -111,23 +94,11 @@ impl AppServer {
         self
     }
 
-    /// How this process was started. `Service` disables idle exit.
-    pub fn managed_by(mut self, managed_by: ManagedBy) -> AppServer {
-        self.managed_by = managed_by;
-        self
-    }
-
     /// How many workspaces to keep open, and how long a cold one may linger.
     pub fn limits(mut self, max_open: usize, idle: Duration) -> AppServer {
         self.max_open = max_open;
         self.workspace_idle = idle;
         self.host = Arc::new(WorkspaceHost::with_limits(self.ctx, max_open, idle));
-        self
-    }
-
-    /// How long to stay up with no connections. `None` never exits on its own.
-    pub fn idle_exit(mut self, after: Option<Duration>) -> AppServer {
-        self.idle_exit = after;
         self
     }
 
@@ -159,14 +130,16 @@ impl AppServer {
     /// What this application's service is: the arguments a service manager starts it with,
     /// and the privilege separation, if any, that the server it starts needs.
     ///
-    /// `["server", "run"]`, not `["run"]`: a service manager starts the executable directly,
-    /// and the executable's `run` lives under the `server` subcommand. A CLI that wants its
-    /// service installed hands this to [`ServiceCommand`](sapphire_framework_service::ServiceCommand).
+    /// `["serve"]`: a service manager starts the executable directly, and the executable's
+    /// bare invocation is `serve` — the subcommand-less default of
+    /// [`FrameworkCommand::Serve`](crate::FrameworkCommand::Serve). A CLI that wants its
+    /// service installed hands this to
+    /// [`ServiceCommand`](sapphire_framework_service::ServiceCommand).
     pub fn service_spec(&self) -> ServiceSpec {
         ServiceSpec {
             app_name: self.ctx.app_name,
             description: format!("{} server {}", self.ctx.app_name, self.version),
-            args: vec!["server".to_owned(), "run".to_owned()],
+            args: vec!["serve".to_owned()],
             // An app server's files belong to the human who uses it; one started as root
             // would put the cache, the data and the sockets under `/root`.
             system_run_as: RunAs::InvokingUser,
@@ -187,17 +160,15 @@ impl AppServer {
         &self.host
     }
 
-    /// Listen until told to stop, or until idle.
+    /// Listen until told to stop, or until a signal arrives.
     pub async fn run(self) -> Result<()> {
         let AppServer {
             ctx,
             version,
             endpoint,
-            managed_by,
             host,
             sync,
             extend,
-            idle_exit,
             ..
         } = self;
 
@@ -205,15 +176,17 @@ impl AppServer {
             Some(e) => e,
             None => Endpoint::for_app(ctx.app_name)?,
         };
+        // A server is always-on from here on: only `serve` and the service manager start
+        // one, and the service manager starts it for keeps. There is no spawned mode left
+        // to report.
         let info = ServerInfo {
             version: version.to_owned(),
             pid: std::process::id(),
-            managed_by,
+            managed_by: ManagedBy::Service,
         };
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
         let live = Arc::new(AtomicU64::new(0));
-        let last_activity = Arc::new(Mutex::new(std::time::Instant::now()));
 
         let mut router = subscribe_method(
             Arc::clone(&host),
@@ -252,6 +225,18 @@ impl AppServer {
         }
         let router = Arc::new(router);
 
+        // Registered before the bind, so a SIGTERM arriving the instant the socket is up
+        // cannot fall through to the default handler and kill the process. SIGINT is
+        // listened to only through `ctrl_c` (which swallows the default handler on both
+        // platforms): a Unix `SignalKind::interrupt()` stream would double-fire for ^C.
+        // Windows has no SIGTERM; its arm's future is a future that is never ready, so the
+        // arm exists for the macro's sake and never fires.
+        #[cfg(unix)]
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        #[cfg(not(unix))]
+        let sigterm = std::future::pending::<()>();
+
         #[cfg(unix)]
         let listener = sapphire_ipc::bind(&endpoint).await?;
         #[cfg(windows)]
@@ -289,34 +274,17 @@ impl AppServer {
             None => None,
         };
 
-        // Close cold workspaces, and stop when nothing has used us for a while.
+        // Close cold workspaces as their idle limit passes. The server itself no longer
+        // exits on idle — it is service-managed for keeps — but an open workspace still
+        // holds its cache's exclusive lock, so the LRU sweep stays.
         let ticker = {
             let host = Arc::clone(&host);
-            let live = Arc::clone(&live);
-            let last_activity = Arc::clone(&last_activity);
-            let stop_tx = stop_tx.clone();
             tokio::spawn(async move {
-                let tick = idle_exit
-                    .map_or(IDLE_TICK, |limit| limit.min(IDLE_TICK))
-                    .max(Duration::from_millis(50));
-                let mut interval = tokio::time::interval(tick);
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
                 interval.tick().await;
                 loop {
                     interval.tick().await;
                     host.close_idle();
-                    let Some(limit) = idle_exit else { continue };
-                    if managed_by == ManagedBy::Service {
-                        continue;
-                    }
-                    if live.load(Ordering::Relaxed) > 0 {
-                        continue;
-                    }
-                    let idle_for = last_activity.lock().expect("activity clock").elapsed();
-                    if idle_for >= limit {
-                        tracing::info!(?idle_for, "exiting after being idle");
-                        let _ = stop_tx.send(true);
-                        return;
-                    }
                 }
             })
         };
@@ -328,21 +296,31 @@ impl AppServer {
                         break;
                     }
                 }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("interrupted; shutting down");
+                    break;
+                }
+                _ = sigterm.recv() => {
+                    #[cfg(unix)]
+                    {
+                        tracing::info!("terminated; shutting down");
+                        break;
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        std::future::pending::<()>().await
+                    }
+                }
                 accepted = listener.accept() => {
                     let conn = accepted?;
-                    *last_activity.lock().expect("activity clock") =
-                        std::time::Instant::now();
                     live.fetch_add(1, Ordering::Relaxed);
                     let router = Arc::clone(&router);
                     let app = ctx.app_name;
                     let info = info.clone();
                     let live = Arc::clone(&live);
-                    let last_activity = Arc::clone(&last_activity);
                     tokio::spawn(async move {
                         let _ = serve(conn, router, app, info).await;
                         live.fetch_sub(1, Ordering::Relaxed);
-                        *last_activity.lock().expect("activity clock") =
-                            std::time::Instant::now();
                     });
                 }
             }
@@ -363,7 +341,7 @@ impl AppServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy, SpawnConfig, ensure_server};
+    use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy};
     use sapphire_workspace::{AppContext, AppKind};
     use std::ffi::OsString;
 
@@ -461,8 +439,8 @@ mod tests {
     /// Wait until something is listening on `endpoint`.
     ///
     /// `tokio::spawn(server.run())` only schedules the server; without this wait a fast
-    /// `ensure_server` probe can run before `run` has bound the socket, and with
-    /// `SpawnConfig::disabled` that single unlucky probe is the whole test failing.
+    /// `connect_or_absent` probe can run before `run` has bound the socket, and with
+    /// nothing listening that single unlucky probe is the whole test failing.
     async fn wait_until_listening(endpoint: &Endpoint) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while !sapphire_ipc::probe(endpoint).await.unwrap() {
@@ -475,6 +453,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_reports_itself_as_service_managed() {
+        let f = prepared();
+        let endpoint = f.endpoint.clone();
+        let server = AppServer::new(&CTX, "0.0.0").endpoint(endpoint.clone());
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
+
+        let (client, info) =
+            sapphire_ipc::connect_or_absent(&endpoint, CTX.app_name, client_info())
+                .await
+                .unwrap()
+                .expect("the server is listening");
+        assert_eq!(info.managed_by, ManagedBy::Service);
+
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_running_server_answers_server_info() {
         let f = prepared();
         let endpoint = f.endpoint.clone();
@@ -483,17 +483,17 @@ mod tests {
         let handle = tokio::spawn(async move { server.run().await });
         wait_until_listening(&endpoint).await;
 
-        let (client, info) = ensure_server(
+        let (client, info) = sapphire_ipc::connect_or_absent(
             &endpoint,
-            "sapphire-appservertest",
+            CTX.app_name,
             ClientInfo {
                 version: "1.2.3".into(),
                 ..client_info()
             },
-            &SpawnConfig::disabled(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect("the server is listening");
         assert_eq!(info.version, "1.2.3");
 
         let reported: sapphire_ipc::ServerInfo = client
@@ -521,14 +521,10 @@ mod tests {
         let handle = tokio::spawn(async move { server.run().await });
         wait_until_listening(&endpoint).await;
 
-        let (client, _) = ensure_server(
-            &endpoint,
-            "sapphire-appservertest",
-            client_info(),
-            &SpawnConfig::disabled(),
-        )
-        .await
-        .unwrap();
+        let (client, _) = sapphire_ipc::connect_or_absent(&endpoint, CTX.app_name, client_info())
+            .await
+            .unwrap()
+            .expect("the server is listening");
         let _: serde_json::Value = client
             .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
             .await
@@ -540,40 +536,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!sapphire_ipc::probe(&endpoint).await.unwrap());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_spawned_server_exits_when_it_goes_idle() {
-        let f = prepared();
-        let endpoint = f.endpoint.clone();
-
-        let server = AppServer::new(&CTX, "0.0.0")
-            .endpoint(endpoint.clone())
-            .managed_by(ManagedBy::Spawned)
-            .idle_exit(Some(Duration::from_millis(200)));
-        let handle = tokio::spawn(async move { server.run().await });
-
-        tokio::time::timeout(Duration::from_secs(10), handle)
-            .await
-            .expect("an idle spawned server must exit")
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_service_server_does_not_exit_when_idle() {
-        let f = prepared();
-        let endpoint = f.endpoint.clone();
-
-        let server = AppServer::new(&CTX, "0.0.0")
-            .endpoint(endpoint.clone())
-            .managed_by(ManagedBy::Service)
-            .idle_exit(Some(Duration::from_millis(100)));
-        let handle = tokio::spawn(async move { server.run().await });
-
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        assert!(!handle.is_finished(), "a service must stay up");
-        handle.abort();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -591,14 +553,10 @@ mod tests {
         let handle = tokio::spawn(async move { server.run().await });
         wait_until_listening(&endpoint).await;
 
-        let (client, _) = ensure_server(
-            &endpoint,
-            "sapphire-appservertest",
-            client_info(),
-            &SpawnConfig::disabled(),
-        )
-        .await
-        .unwrap();
+        let (client, _) = sapphire_ipc::connect_or_absent(&endpoint, CTX.app_name, client_info())
+            .await
+            .unwrap()
+            .expect("the server is listening");
         let greeting: String = client
             .call("sapphire-appservertest.greet", serde_json::json!({}))
             .await

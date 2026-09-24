@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use sapphire_ipc::{Client, ClientInfo, Endpoint, SpawnConfig, ensure_server};
+use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use tokio::sync::broadcast;
 
 use crate::{
@@ -24,12 +24,9 @@ pub struct BridgeClient {
 }
 
 impl BridgeClient {
-    /// Connect to the bridge, starting it if nothing is listening.
-    pub async fn connect(
-        kind: &str,
-        version: &str,
-        spawn: &SpawnConfig,
-    ) -> sapphire_ipc::Result<BridgeClient> {
+    /// Connect to the bridge. Nothing is started: the bridge runs as a service or from a
+    /// terminal, and a caller that finds nothing there reports "no bridge is running".
+    pub async fn connect(kind: &str, version: &str) -> sapphire_ipc::Result<BridgeClient> {
         let runtime_dir = sapphire_ipc::runtime_dir()?;
         let endpoint = Endpoint::in_dir(BRIDGE_NAME, runtime_dir.clone());
         let info = ClientInfo {
@@ -37,7 +34,15 @@ impl BridgeClient {
             version: version.to_owned(),
             pid: std::process::id(),
         };
-        let (client, _) = ensure_server(&endpoint, BRIDGE_NAME, info, spawn).await?;
+        let (client, _) = connect_or_absent(&endpoint, BRIDGE_NAME, info)
+            .await?
+            .ok_or_else(|| {
+                sapphire_ipc::Error::Spawn(
+                    "no bridge is running; start it with `sapphire-bridge run` \
+                     or install its service"
+                        .to_owned(),
+                )
+            })?;
         Ok(BridgeClient::from_client(Arc::new(client), runtime_dir))
     }
 

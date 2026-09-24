@@ -14,7 +14,7 @@ use std::time::Duration;
 use sapphire_backend::protocol as proto;
 use sapphire_framework_server::sync::testing::StubBridge;
 use sapphire_framework_server::{AppServer, SyncRuntime};
-use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy, SpawnConfig, ensure_server};
+use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy, connect_or_absent};
 use sapphire_workspace::{AppContext, AppKind};
 
 static CTX: AppContext = AppContext::new("sapphire-syncwiring");
@@ -121,28 +121,22 @@ impl Fixture {
             &CTX,
             bridge,
             "/bin/true".into(),
-            ManagedBy::Spawned,
+            ManagedBy::Service,
         ));
 
         let endpoint = Endpoint::in_dir("sapphire-syncwiring", tmp.path().to_path_buf());
         let server = tokio::spawn(
             AppServer::new(&CTX, "0.0.0")
                 .endpoint(endpoint.clone())
-                .managed_by(ManagedBy::Spawned)
-                .idle_exit(None)
                 .sync(runtime)
                 .run(),
         );
         wait_until_listening(&endpoint).await;
 
-        let (client, _) = ensure_server(
-            &endpoint,
-            "sapphire-syncwiring",
-            client_info(),
-            &SpawnConfig::disabled(),
-        )
-        .await
-        .unwrap();
+        let (client, _) = connect_or_absent(&endpoint, "sapphire-syncwiring", client_info())
+            .await
+            .unwrap()
+            .expect("the server is listening");
 
         Fixture {
             _tmp: tmp,
@@ -205,20 +199,14 @@ async fn a_server_without_sync_does_not_answer_sync_enable() {
     let server = tokio::spawn(
         AppServer::new(&CTX, "0.0.0")
             .endpoint(endpoint.clone())
-            .managed_by(ManagedBy::Spawned)
-            .idle_exit(None)
             .run(),
     );
     wait_until_listening(&endpoint).await;
 
-    let (client, _) = ensure_server(
-        &endpoint,
-        "sapphire-syncwiring",
-        client_info(),
-        &SpawnConfig::disabled(),
-    )
-    .await
-    .unwrap();
+    let (client, _) = connect_or_absent(&endpoint, "sapphire-syncwiring", client_info())
+        .await
+        .unwrap()
+        .expect("the server is listening");
 
     let err = client
         .call::<_, proto::SyncEnableResult>(

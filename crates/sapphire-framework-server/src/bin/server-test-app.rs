@@ -6,7 +6,7 @@
 //! the application's cache, data and config root.
 
 use sapphire_framework_server::AppServer;
-use sapphire_ipc::{Endpoint, ManagedBy};
+use sapphire_ipc::Endpoint;
 use sapphire_workspace::{AppContext, AppKind};
 
 static CTX: AppContext = AppContext::new("sapphire-servertest");
@@ -33,8 +33,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     AppServer::new(&CTX, env!("CARGO_PKG_VERSION"))
         .endpoint(Endpoint::in_dir("sapphire-servertest", runtime_dir.into()))
-        .managed_by(ManagedBy::Spawned)
-        .idle_exit(None)
         .run()
         .await?;
     Ok(())

@@ -118,7 +118,9 @@ pub mod prelude {
 
     // The app server skeleton: an application builds one of these, adds its own
     // methods, and runs it. `WorkspaceHost` is here for handlers that reach a
-    // workspace the same way the framework's own do.
+    // workspace the same way the framework's own do. `FrameworkCommand` is the
+    // flat command vocabulary an app flattens into its own CLI beside its own
+    // subcommands (issue #142).
     #[cfg(feature = "server")]
-    pub use sapphire_framework_server::{AppServer, ServerCommand, WorkspaceHost};
+    pub use sapphire_framework_server::{AppServer, FrameworkCommand, WorkspaceHost};
 }

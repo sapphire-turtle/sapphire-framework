@@ -40,7 +40,7 @@ pub mod sync;
 #[cfg(test)]
 mod test_support;
 
-pub use command::{RunArgs, ServerCommand, spawn_config_for};
+pub use command::FrameworkCommand;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::{workspace_router, workspace_router_with_sync};
@@ -95,6 +95,14 @@ impl AppServer {
             extend: None,
             privileges: None,
         }
+    }
+
+    /// The application this server serves, as its [`AppContext`] names it.
+    ///
+    /// [`FrameworkCommand`](crate::FrameworkCommand) reads it to build the CLI's endpoint,
+    /// so an application never passes its own name twice.
+    pub fn app_name(&self) -> &'static str {
+        self.ctx.app_name
     }
 
     /// Listen somewhere other than the application's default endpoint. Used by tests.

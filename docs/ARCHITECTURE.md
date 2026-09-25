@@ -183,9 +183,11 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
    同期変更として全デバイスに届く。これは bridge にしか決められない。
 3. **交換台** — control（`bridge.register` 等の JSON-RPC: 登録・peer 一覧・status）と
    data（`{workspace_id, device_id}` ヘッダ + バイト列の生ストリームを所有サーバへ splice）。
-   `net.wake_on_sync` が既定有効で、peer が来たとき停止中の所有サーバを起動する（この起動は
-   bridge だけが持つ — CLI の start-on-demand 廃止後も、bridge の交換台としての役割として
-   残る）。
+   `net.wake_on_sync` が既定有効で、peer が来たとき停止中の所有サーバを起動する。ただし
+   発火するのはレガシーな `ManagedBy::Spawned` 登録に対してのみで、start-on-demand 廃止後の
+   新規登録（`Service`）では起動しない（Service 所有者は root 実行のため bridge および CLI
+   では起動できず、オフライン報告になる）。spawn 機構自体の再設計は Phase 2 の後続 issue で
+   扱う。
 
 workgroup のメタ（デバイス台帳・ワークスペース一覧）はそれ自体が同期されるワークスペースなので、
 **bridge はそのアプリのサーバでもある**（アプリ名 `sapphire-bridge`、マーカー `.bridge/`）。

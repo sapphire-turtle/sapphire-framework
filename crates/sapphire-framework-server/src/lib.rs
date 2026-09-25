@@ -449,10 +449,11 @@ impl AppServer {
 /// the GUI is one this server already knows. What one call creates:
 ///
 /// - the marker directory `.<app_name>` under the requested root, idempotently;
-/// - the sync id inside it, minted on first use — a shared workspace's stable identity
-///   across devices, which `sync.enable` and `sync.map` both read;
 /// - the registry entry in the marker's `config.toml`, as the `[workspace.<id>]` table
 ///   the CLI and the GUI both read.
+///
+/// The marker's sync id is deliberately not minted here: it is the replica's to name, so
+/// `sync.enable` / `sync.map` mint it on first use.
 fn workspace_init_method(ctx: &'static AppContext, router: Router) -> Router {
     router.method(proto::WORKSPACE_INIT, move |req| {
         async move {
@@ -479,8 +480,8 @@ fn workspace_init_method(ctx: &'static AppContext, router: Router) -> Router {
     })
 }
 
-/// Create the workspace home at `dir`: the marker directory, the registry entry and the
-/// sync id, idempotently.
+/// Create the workspace home at `dir`: the marker directory and the registry entry,
+/// idempotently. The sync id is `sync.enable` / `sync.map`'s to mint, not this call's.
 ///
 /// A relative `dir` is resolved against the server's cwd — the CLI's `dir` argument names
 /// the same tree whatever process resolves it, and the server is the process that opens

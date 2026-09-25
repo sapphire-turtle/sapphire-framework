@@ -32,6 +32,14 @@ use sapphire_framework_service::{RunAs, ServiceSpec};
 use sapphire_ipc::{Endpoint, ManagedBy, Router, RpcError, ServerInfo, serve};
 use sapphire_workspace::{AppContext, Workspace};
 
+/// How long a server's shutdown waits for its open connections to wind down on their own.
+///
+/// The shutdown acknowledgement is one of those connections; a moment is all a well-behaved
+/// client needs. Whatever still holds on after this is cancelled, so a connection kept open
+/// past shutdown cannot pin the router — and through it the sync runtime's replica stores —
+/// after the server has answered its own shutdown call.
+const SERVE_GRACE: Duration = Duration::from_secs(2);
+
 mod command;
 mod error;
 mod events;
@@ -370,6 +378,7 @@ impl AppServer {
             })
         };
 
+        let mut connections = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 changed = stop_rx.changed() => {
@@ -392,7 +401,7 @@ impl AppServer {
                     let app = ctx.app_name;
                     let info = info.clone();
                     let live = Arc::clone(&live);
-                    tokio::spawn(async move {
+                    connections.spawn(async move {
                         let _ = serve(conn, router, app, info).await;
                         live.fetch_sub(1, Ordering::Relaxed);
                     });
@@ -406,8 +415,29 @@ impl AppServer {
             watching.abort();
             dialling.abort();
         }
+        if let Some(runtime) = &sync {
+            // Close every live sync session. A session's reader task holds the replica, and
+            // the session itself sits in the runtime's table until it is cleared, so leaving
+            // one open pins the runtime — and the redb replica stores in it — after the
+            // server is gone (spec §2.2: cancellation is disconnection).
+            runtime.drop_connections().await;
+        }
         host.close_all();
         drop(listener); // removes the socket file on Unix
+
+        // Reap the per-connection serve tasks. Each one pins the router, the router pins
+        // the sync runtime, and the runtime's replica stores are redb databases that stay
+        // locked until the last pin is dropped — a server that left them running would
+        // lock its own successor out of its state (spec §2.2: cancellation is
+        // disconnection). Connections get a grace period to wind down on their own — the
+        // shutdown acknowledgement among them — then the rest are cancelled: a client
+        // that keeps its connection open past shutdown is holding a server that is gone.
+        let _ = tokio::time::timeout(SERVE_GRACE, async {
+            while connections.join_next().await.is_some() {}
+        })
+        .await;
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
         Ok(())
     }
 }

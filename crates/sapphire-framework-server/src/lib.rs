@@ -39,7 +39,7 @@ pub mod sync;
 #[cfg(test)]
 mod test_support;
 
-pub use command::FrameworkCommand;
+pub use command::{FrameworkCommand, StatusReport, StatusRow};
 pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::{workspace_router, workspace_router_with_sync};
@@ -62,6 +62,9 @@ pub struct AppServer {
     /// Stored, never applied: [`privilege::apply`] is `main`'s job, because the drop has to
     /// happen before the socket is bound and this builder is merely describing the server.
     privileges: Option<PrivilegeConfig>,
+    /// The application's own status rows, shown after the framework's in `status` and in
+    /// the `server.info` report.
+    status_rows: Option<Arc<dyn Fn() -> Vec<StatusRow> + Send + Sync>>,
 }
 
 /// The SIGTERM end of the server's select loop, in a shape every platform shares.
@@ -124,6 +127,7 @@ impl AppServer {
             sync: None,
             extend: None,
             privileges: None,
+            status_rows: None,
         }
     }
 
@@ -174,6 +178,17 @@ impl AppServer {
         self
     }
 
+    /// The application's own rows for the status report: shown after the framework's
+    /// `running` / `version` / `pid` / `managed_by` lines.
+    ///
+    /// The closure is called once per report, so an application's rows may read live
+    /// state; the CLI's `status` and the IPC `server.info` method render the same call's
+    /// output.
+    pub fn status_rows(mut self, rows: Arc<dyn Fn() -> Vec<StatusRow> + Send + Sync>) -> AppServer {
+        self.status_rows = Some(rows);
+        self
+    }
+
     /// What this application's service is: the arguments a service manager starts it with,
     /// and the privilege separation, if any, that the server it starts needs.
     ///
@@ -216,6 +231,7 @@ impl AppServer {
             host,
             sync,
             extend,
+            status_rows,
             ..
         } = self;
 
@@ -245,13 +261,26 @@ impl AppServer {
             // `workspace.*` namespace is complete.
             router = sync_router(Arc::clone(runtime), router);
         }
+        // `server.info` answers the typed [`StatusReport`] — the same shape the CLI's
+        // `status` renders — so the CLI and a future GUI read one record. The rows come
+        // from the application's builder, called once per report.
         router = router
             .method(proto::SERVER_INFO, {
                 let info = info.clone();
+                let status_rows = status_rows.clone();
                 move |_| {
                     let info = info.clone();
+                    let status_rows = status_rows.clone();
                     async move {
-                        serde_json::to_value(info)
+                        let app = status_rows.as_ref().map(|rows| rows()).unwrap_or_default();
+                        let report = StatusReport {
+                            running: true,
+                            version: Some(info.version),
+                            pid: Some(info.pid),
+                            managed_by: Some(info.managed_by),
+                            app,
+                        };
+                        serde_json::to_value(report)
                             .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
                     }
                 }
@@ -533,14 +562,20 @@ mod tests {
         .expect("the server is listening");
         assert_eq!(info.version, "1.2.3");
 
-        let reported: sapphire_ipc::ServerInfo = client
+        // `server.info` answers the whole typed report, not the bare handshake record:
+        // the CLI reads one shape, and so would a GUI.
+        let report: StatusReport = client
             .call(
                 sapphire_backend::protocol::SERVER_INFO,
                 serde_json::json!({}),
             )
             .await
             .unwrap();
-        assert_eq!(reported.version, "1.2.3");
+        assert!(report.running);
+        assert_eq!(report.version.as_deref(), Some("1.2.3"));
+        assert_eq!(report.pid, Some(std::process::id()));
+        assert_eq!(report.managed_by, Some(ManagedBy::Service));
+        assert!(report.app.is_empty(), "no status rows were configured");
 
         let _: serde_json::Value = client
             .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
@@ -599,6 +634,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(greeting, "hello");
+
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn server_info_carries_the_app_rows() {
+        let f = prepared();
+        let endpoint = f.endpoint.clone();
+        let server = AppServer::new(&CTX, "0.0.0")
+            .endpoint(endpoint.clone())
+            .status_rows(std::sync::Arc::new(|| {
+                vec![StatusRow {
+                    name: "sync".into(),
+                    value: "enabled".into(),
+                }]
+            }));
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
+        let (client, _) = sapphire_ipc::connect_or_absent(&endpoint, CTX.app_name, client_info())
+            .await
+            .unwrap()
+            .unwrap();
+        let report: StatusReport = client
+            .call(
+                sapphire_backend::protocol::SERVER_INFO,
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap();
+        assert!(report.running);
+        assert_eq!(report.app.len(), 1);
+        assert_eq!(report.app[0].name, "sync");
 
         let _: serde_json::Value = client
             .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))

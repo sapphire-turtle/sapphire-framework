@@ -1,10 +1,43 @@
 //! The framework-provided half of an application's CLI.
 
+use std::fmt::Write as _;
+
 use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
-use sapphire_ipc::{ClientInfo, Endpoint};
+use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy};
+use serde::{Deserialize, Serialize};
 
 use crate::AppServer;
 use crate::error::{Error, Result};
+
+/// The typed answer to a status question, shared by the CLI and the IPC `server.info`
+/// response (spec decision 4).
+///
+/// When a server answers, the CLI prints the framework's fields and then the
+/// application's [rows](StatusReport::app) as `name: value` lines; a GUI could read the
+/// same serialised shape from the IPC method instead. When nothing is listening, the
+/// report is [`StatusReport::running`] = `false` and the app rows are skipped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusReport {
+    /// Whether a server is answering at all.
+    pub running: bool,
+    /// The server's version, when it is running.
+    pub version: Option<String>,
+    /// Its pid, when it is running.
+    pub pid: Option<u32>,
+    /// How the running server was started, when it is running.
+    pub managed_by: Option<ManagedBy>,
+    /// The application's own rows, rendered after the framework's.
+    pub app: Vec<StatusRow>,
+}
+
+/// One application-provided line of the status report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusRow {
+    /// The row's name, e.g. `sync`.
+    pub name: String,
+    /// The value shown beside it.
+    pub value: String,
+}
 
 /// The framework's commands, flattened into an application's CLI (spec decision 2).
 ///
@@ -45,33 +78,68 @@ impl FrameworkCommand {
     }
 }
 
-/// Report whether a server is running, and which version.
-///
-/// Task 1 stub: probe and fail fast, without the start-on-demand machinery. Task 3
-/// replaces it with the typed `StatusReport` over `connect_or_absent`.
+/// The status command's face: render and return the exit code, going to the process's
+/// standard output.
 async fn status(server: &AppServer, version: &str) -> Result<i32> {
     let endpoint = Endpoint::for_app(server.app_name())?;
-    if !sapphire_ipc::probe(&endpoint).await? {
-        println!("no {} server is running", server.app_name());
-        return Ok(1);
+    run_status(&endpoint, server.app_name(), version).await
+}
+
+/// Probe, handshake and call `SERVER_INFO` in one go, or report absence.
+///
+/// Every step the CLI needs — liveness and the version gate — is inside
+/// [`connect_or_absent`], so the command is that call plus one `SERVER_INFO` round trip.
+/// The version gate doubles as the liveness check here: a live server of another version
+/// is `ServiceVersionMismatch`, which names both versions and advises restarting the
+/// service. The report goes through [`run_status_into`] so tests can capture it.
+async fn run_status(endpoint: &Endpoint, app: &str, version: &str) -> Result<i32> {
+    let mut out = String::new();
+    let code = run_status_into(endpoint, app, version, &mut out).await?;
+    for line in out.lines() {
+        println!("{line}");
     }
-    let (_, info) = sapphire_ipc::Client::handshake(
-        sapphire_ipc::connect(&endpoint).await?,
-        server.app_name(),
-        ClientInfo {
-            kind: "cli".to_owned(),
-            version: version.to_owned(),
-            pid: std::process::id(),
-        },
-    )
-    .await?;
-    println!(
-        "{} server running: version {}, pid {}, started as {:?}",
-        server.app_name(),
-        info.version,
-        info.pid,
-        info.managed_by
-    );
+    Ok(code)
+}
+
+/// [`run_status`], writing the rendered lines into `out` instead of the process's
+/// standard output.
+async fn run_status_into(
+    endpoint: &Endpoint,
+    app: &str,
+    version: &str,
+    out: &mut String,
+) -> Result<i32> {
+    let client_info = ClientInfo {
+        kind: "cli".to_owned(),
+        version: version.to_owned(),
+        pid: std::process::id(),
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(endpoint, app, client_info).await?
+    else {
+        // Nothing is listening: the framework's half is only the one line, and the
+        // application's rows are skipped (there is no server to have configured them).
+        writeln!(out, "no {app} server is running").expect("writing to a String cannot fail");
+        return Ok(1);
+    };
+    let report: StatusReport = client
+        .call(
+            sapphire_backend::protocol::SERVER_INFO,
+            serde_json::json!({}),
+        )
+        .await?;
+    writeln!(out, "running: {}", report.running).expect("writing to a String cannot fail");
+    if let Some(version) = &report.version {
+        writeln!(out, "version: {version}").expect("writing to a String cannot fail");
+    }
+    if let Some(pid) = report.pid {
+        writeln!(out, "pid: {pid}").expect("writing to a String cannot fail");
+    }
+    if let Some(managed_by) = &report.managed_by {
+        writeln!(out, "managed_by: {managed_by:?}").expect("writing to a String cannot fail");
+    }
+    for row in &report.app {
+        writeln!(out, "{}: {}", row.name, row.value).expect("writing to a String cannot fail");
+    }
     Ok(0)
 }
 #[cfg(test)]
@@ -146,6 +214,82 @@ mod tests {
             FrameworkCommand::default(),
             FrameworkCommand::Serve
         ));
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use sapphire_workspace::AppContext;
+
+    static CTX: AppContext = AppContext::new("sapphire-statustest");
+
+    /// Wait until something is listening on `endpoint`.
+    ///
+    /// `tokio::spawn(server.run())` only schedules the server; without this wait a fast
+    /// `run_status` probe can run before `run` has bound the socket, and with nothing
+    /// listening that single unlucky probe is the whole test failing.
+    async fn wait_until_listening(endpoint: &Endpoint) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !sapphire_ipc::probe(endpoint).await.unwrap() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the server never started listening"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn status_reports_no_server_when_none_is_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
+        let code = run_status(&endpoint, "status-test", "0.0.0").await.unwrap();
+        assert_eq!(code, 1, "no server is a non-zero exit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_shows_the_extension_rows_of_a_running_server() {
+        let tmp = tempfile::tempdir().unwrap();
+        let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
+        let server = AppServer::new(&CTX, "0.0.0")
+            .endpoint(endpoint.clone())
+            .status_rows(std::sync::Arc::new(|| {
+                vec![StatusRow {
+                    name: "sync".into(),
+                    value: "on".into(),
+                }]
+            }));
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
+
+        // The report goes through the sink face so the rendering is asserted, not just
+        // the exit code.
+        let mut out = String::new();
+        let code = run_status_into(&endpoint, CTX.app_name, "0.0.0", &mut out)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+        assert!(out.contains("running: true"), "output was: {out}");
+        assert!(out.contains("sync: on"), "output was: {out}");
+
+        let (client, _) = sapphire_ipc::connect_or_absent(
+            &endpoint,
+            CTX.app_name,
+            sapphire_ipc::ClientInfo {
+                kind: "test".into(),
+                version: "0.0.0".into(),
+                pid: std::process::id(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("the server is listening");
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
     }
 }
 

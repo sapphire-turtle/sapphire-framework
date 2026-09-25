@@ -46,6 +46,22 @@ impl BridgeClient {
         Ok(BridgeClient::from_client(Arc::new(client), runtime_dir))
     }
 
+    /// Connect to the running bridge, or fail naming it.
+    ///
+    /// Like [`connect`](Self::connect), but absence is an error the command layer prints
+    /// as "no sapphire-bridge is running", rather than a `None` the caller turns into one.
+    /// Asking a question must not bring a daemon up, so nothing is started here either.
+    pub async fn connect_running(kind: &str, version: &str) -> sapphire_ipc::Result<BridgeClient> {
+        let runtime_dir = sapphire_ipc::runtime_dir()?;
+        let endpoint = Endpoint::in_dir(BRIDGE_NAME, runtime_dir.clone());
+        if !sapphire_ipc::probe(&endpoint).await? {
+            return Err(sapphire_ipc::Error::Spawn(
+                "no sapphire-bridge is running".to_owned(),
+            ));
+        }
+        Self::connect(kind, version).await
+    }
+
     /// Wrap an existing connection. Used by tests and by a caller that already has one.
     pub fn from_client(client: Arc<Client>, runtime_dir: std::path::PathBuf) -> BridgeClient {
         let (incoming, _) = broadcast::channel(INCOMING_CAPACITY);

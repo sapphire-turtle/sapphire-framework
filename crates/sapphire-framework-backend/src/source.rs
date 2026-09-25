@@ -117,6 +117,11 @@ impl WorkspaceRegistry {
         self.0.shift_remove(id)
     }
 
+    /// Whether no entries are registered.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Registered workspace ids, in insertion order.
     pub fn ids(&self) -> impl Iterator<Item = &String> {
         self.0.keys()

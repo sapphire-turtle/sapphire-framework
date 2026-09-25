@@ -1,9 +1,14 @@
 //! The framework-provided half of an application's CLI.
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
+use sapphire_backend::WorkspaceRegistry;
+use sapphire_backend::protocol as proto;
+use sapphire_bridge_api::{BridgeClient, InviteParams, JoinParams};
 use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
 use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy};
+use sapphire_workspace::{AppContext, Workspace};
 use serde::{Deserialize, Serialize};
 
 use crate::AppServer;
@@ -54,6 +59,15 @@ pub enum FrameworkCommand {
     /// Install, remove or report this application's operating-system service.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Create, list and map this application's workspaces.
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
+    /// Found, show or join the workgroup this device belongs to.
+    #[command(subcommand)]
+    Workgroup(WorkgroupCommand),
+    /// List the workgroup's devices, invite one or retire one.
+    #[command(subcommand)]
+    Device(DeviceCommand),
 }
 
 impl FrameworkCommand {
@@ -74,8 +88,413 @@ impl FrameworkCommand {
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
+            FrameworkCommand::Workspace(command) => {
+                command.dispatch(server.app_name(), version).await
+            }
+            FrameworkCommand::Workgroup(command) => command.dispatch(version).await,
+            FrameworkCommand::Device(command) => command.dispatch(version).await,
         }
     }
+}
+
+/// The `workspace` subcommands (spec decisions 1/6/7).
+///
+/// `init` and `map`'s write go to the app's server over IPC, because the server owns the
+/// marker directories, the registries and the sync ids; `list` reads the local registry
+/// the same way the server does and then asks the bridge for the workgroup's ledger;
+/// `map`'s selector resolution is the workgroup's word, so it goes to the bridge first.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkspaceCommand {
+    /// Create this app's workspace home in the given directory.
+    Init {
+        /// Where the workspace root goes. Defaults to the current directory.
+        dir: Option<PathBuf>,
+        /// Also start syncing it, which publishes it into the workgroup ledger.
+        #[arg(long)]
+        sync: bool,
+    },
+    /// List this app's workspaces: local rows first, then the workgroup's.
+    List,
+    /// Tie a local directory to a workspace the workgroup knows.
+    Map {
+        /// The workspace, by name or id, as the workgroup lists it.
+        selector: String,
+        /// The local directory to map it to. Defaults to the current one.
+        dir: Option<PathBuf>,
+    },
+}
+
+impl WorkspaceCommand {
+    /// Carry out the command, returning the process exit code.
+    ///
+    /// `app` names the endpoint to open (`Endpoint::for_app`); `version` is this
+    /// process's own, for the handshake.
+    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
+        match self {
+            WorkspaceCommand::Init { dir, sync } => workspace_init(app, version, dir, sync).await,
+            WorkspaceCommand::List => workspace_list(app, version).await,
+            WorkspaceCommand::Map { selector, dir } => {
+                workspace_map(app, version, &selector, dir).await
+            }
+        }
+    }
+}
+
+/// The `workgroup` subcommands.
+///
+/// The workgroup's ledger is the bridge's business end to end, so these go to the bridge's
+/// endpoint directly — except `create`, which the bridge's control plane has no method
+/// for: it works on the bridge's directory in the bridge's own CLI, and this command
+/// prints that CLI's name instead of pulling the bridge crate in here.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkgroupCommand {
+    /// Found a workgroup on this host.
+    Create {
+        /// The workgroup's name.
+        name: String,
+        /// This host's device name inside it.
+        #[arg(long)]
+        device_name: String,
+    },
+    /// Show the workgroup this host belongs to.
+    List,
+    /// Join the workgroup a ticket names.
+    Join {
+        /// The ticket the inviting device printed.
+        ticket: String,
+        /// The name this device will carry. Defaults to this host's name.
+        #[arg(long)]
+        device_name: Option<String>,
+    },
+}
+
+impl WorkgroupCommand {
+    /// Carry out the command, returning the process exit code.
+    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+        match self {
+            WorkgroupCommand::Create { name, device_name } => {
+                println!(
+                    "run: sapphire-bridge workgroup create --device-name {device_name} {name}"
+                );
+                Ok(1)
+            }
+            WorkgroupCommand::List => {
+                let client = connect_running(version).await?;
+                match client.status().await?.workgroup {
+                    Some(workgroup) => {
+                        println!("{} ({})", workgroup.name, workgroup.workgroup_id);
+                        Ok(0)
+                    }
+                    None => {
+                        println!("this host has not joined a workgroup");
+                        Ok(1)
+                    }
+                }
+            }
+            WorkgroupCommand::Join {
+                ticket,
+                device_name,
+            } => {
+                let client = connect_running(version).await?;
+                let joined = client
+                    .join(JoinParams {
+                        ticket,
+                        device_name,
+                    })
+                    .await?;
+                println!(
+                    "joined workgroup {} ({}); this device is {}",
+                    joined.workgroup_name, joined.workgroup_id, joined.device_id
+                );
+                Ok(0)
+            }
+        }
+    }
+}
+
+/// The `device` subcommands.
+///
+/// The ledger's word for taking a device out is `retire` — a device id is written into
+/// synced content and must keep resolving, so its record stays as a tombstone — and the
+/// bridge's control plane has no method for retiring one, so this command prints the
+/// bridge CLI's line instead.
+#[derive(Debug, clap::Subcommand)]
+pub enum DeviceCommand {
+    /// List the workgroup's devices, and which are reachable.
+    List,
+    /// Create an invite ticket for a device that is about to join.
+    Invite {
+        /// What the joining device will be called.
+        #[arg(long)]
+        name: String,
+        /// How long the invite stays good, in seconds.
+        #[arg(long)]
+        ttl: Option<u64>,
+        /// The workgroup to invite into, by name or id.
+        #[arg(long)]
+        workgroup: Option<String>,
+    },
+    /// Retire a device, so it may no longer connect.
+    Retire {
+        /// The device's name or id.
+        selector: String,
+    },
+}
+
+impl DeviceCommand {
+    /// Carry out the command, returning the process exit code.
+    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+        match self {
+            DeviceCommand::List => {
+                let client = connect_running(version).await?;
+                let peers = client.peers().await?;
+                if peers.peers.is_empty() {
+                    println!("no devices");
+                    return Ok(0);
+                }
+                for peer in peers.peers {
+                    println!(
+                        "{} {}{}",
+                        peer.name,
+                        peer.device_id,
+                        if peer.connected { " (online)" } else { "" }
+                    );
+                }
+                Ok(0)
+            }
+            DeviceCommand::Invite {
+                name,
+                ttl,
+                workgroup,
+            } => {
+                let client = connect_running(version).await?;
+                let invite = client
+                    .invite(InviteParams {
+                        name,
+                        ttl,
+                        workgroup,
+                    })
+                    .await?;
+                // The ticket on its own line, and nothing else on it: this is the one
+                // output a user pipes to the joining device.
+                println!("{}", invite.ticket);
+                Ok(0)
+            }
+            DeviceCommand::Retire { selector } => {
+                println!("run: sapphire-bridge device retire {selector}");
+                Ok(1)
+            }
+        }
+    }
+}
+
+/// Connect to the running bridge, or fail with the message the command layer prints.
+///
+/// One wrapper for every arm that talks to the bridge: the error's text is what the
+/// `main` prints, so the absence case reads "no sapphire-bridge is running" without each
+/// arm repeating it.
+async fn connect_running(version: &str) -> Result<BridgeClient> {
+    BridgeClient::connect_running("cli", version)
+        .await
+        .map_err(Error::from)
+}
+
+/// `workspace init`: the server does the creating, over IPC.
+///
+/// The server owns the marker, the registry and the sync ids, so a workspace created
+/// here is one the server already knows and a GUI sharing the registry sees. Nothing is
+/// listening → the one line and exit 1; nothing is ever started (Global Constraints).
+/// `--sync` rides the server's existing `sync.enable` path on the same connection, and
+/// its state is printed after, so an unjoined host's "no workgroup knows it yet" is
+/// plain.
+async fn workspace_init(
+    app: &'static str,
+    version: &'static str,
+    dir: Option<PathBuf>,
+    sync: bool,
+) -> Result<i32> {
+    let endpoint = Endpoint::for_app(app)?;
+    let client_info = ClientInfo {
+        kind: "cli".to_owned(),
+        version: version.to_owned(),
+        pid: std::process::id(),
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?
+    else {
+        println!("no {app} server is running");
+        return Ok(1);
+    };
+
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let result: proto::WorkspaceInitResult = client
+        .call(proto::WORKSPACE_INIT, proto::WorkspaceInitParams { dir })
+        .await?;
+    if result.created {
+        println!("initialized {app} workspace in {}", result.root.display());
+    } else {
+        println!(
+            "{} already exists (workspace {})",
+            result.root.display(),
+            result.workspace_id
+        );
+    }
+
+    if sync {
+        let enabled: proto::SyncEnableResult = client
+            .call(
+                proto::SYNC_ENABLE,
+                proto::WsParams {
+                    ws: result.root.clone(),
+                },
+            )
+            .await?;
+        // Never fails on account of the bridge: the workspace is synced either way, and
+        // the status is the user's word for what the workgroup does not know yet.
+        let status: proto::SyncStatusResult = client
+            .call(
+                proto::SYNC_STATUS,
+                proto::WsParams {
+                    ws: result.root.clone(),
+                },
+            )
+            .await
+            .unwrap_or(proto::SyncStatusResult {
+                enabled: true,
+                workspace_id: Some(enabled.workspace_id),
+                peers: 0,
+                paused: None,
+                last_error: None,
+                bridge_available: false,
+            });
+        println!(
+            "syncing as {} ({} peer{})",
+            enabled.workspace_id,
+            status.peers,
+            if status.peers == 1 { "" } else { "s" }
+        );
+    }
+    Ok(0)
+}
+
+/// `workspace list`: local rows from the registry, then the workgroup's ledger.
+///
+/// The registry lives in the workspace's marker `config.toml`, and the CLI is inside a
+/// workspace when it runs — the same upward walk `find_from` does. Rows print in the
+/// registry's order, as `id path`. The workgroup's ledger is the bridge's to answer, and
+/// the bridge being down is not the local half's failure: local rows still print, the
+/// ledger's absence is one line, and the exit is 0.
+async fn workspace_list(app: &'static str, version: &'static str) -> Result<i32> {
+    let _ = version;
+    // `Workspace` holds its context for `'static`, so the one-off context leaks — one
+    // small struct per `workspace list` run, and the process is about to exit anyway.
+    let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new(app)));
+    let workspace = match Workspace::find(ctx) {
+        Ok(workspace) => workspace,
+        Err(_) => {
+            println!("no {app} workspace contains the current directory");
+            return Ok(0);
+        }
+    };
+    let registry = workspace_registry(&workspace.config_path());
+    if registry.ids().next().is_none() {
+        println!(
+            "no workspaces are registered in {}",
+            workspace.config_path().display()
+        );
+    }
+    for id in registry.ids() {
+        let entry = registry.get(id);
+        let path = entry
+            .and_then(|e| e.path.clone())
+            .unwrap_or_else(|| "-".into());
+        println!("{id} {}", path.display());
+    }
+
+    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
+        println!("no sapphire-bridge is running");
+        return Ok(0);
+    };
+    let workspaces = client.workspaces().await.map_err(Error::from)?;
+    if !workspaces.workspaces.is_empty() {
+        println!();
+        for workspace in workspaces.workspaces {
+            println!(
+                "{} {} {}",
+                workspace.name, workspace.workspace_id, workspace.app_name
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// The registry a marker's `config.toml` holds, or an empty one.
+///
+/// The same read-modify-write-free read the server's `init` handler does; a config of
+/// another shape is an empty registry, because the marker is the app's own file.
+fn workspace_registry(path: &std::path::Path) -> WorkspaceRegistry {
+    #[derive(serde::Deserialize, Default)]
+    struct Config {
+        #[serde(default)]
+        workspace: WorkspaceRegistry,
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            toml::from_str::<Config>(&text)
+                .map(|config| config.workspace)
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+/// `workspace map`: the bridge resolves the selector, the server takes the write.
+///
+/// The resolution is the workgroup's word (which workspace, by what id), the write is the
+/// server's (`sync.map` places the id and starts the replica). The bridge is required —
+/// without it there is nothing to resolve against, so exit 1 — and so is the server,
+/// because the write and the replica are its.
+async fn workspace_map(
+    app: &'static str,
+    version: &'static str,
+    selector: &str,
+    dir: Option<PathBuf>,
+) -> Result<i32> {
+    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
+        println!("no sapphire-bridge is running");
+        return Ok(1);
+    };
+    let workspaces = client.workspaces().await.map_err(Error::from)?;
+    let wanted = workspaces
+        .workspaces
+        .iter()
+        // A name is the user-facing handle; the id is the exact one.
+        .find(|w| w.name == selector || w.workspace_id.to_string() == selector)
+        .ok_or_else(|| Error::UnknownWorkspaceName(selector.to_owned()))?;
+
+    let endpoint = Endpoint::for_app(app)?;
+    let client_info = ClientInfo {
+        kind: "cli".to_owned(),
+        version: version.to_owned(),
+        pid: std::process::id(),
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?
+    else {
+        println!("no {app} server is running");
+        return Ok(1);
+    };
+
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let mapped: proto::SyncEnableResult = client
+        .call(
+            proto::SYNC_MAP,
+            proto::SyncMapParams {
+                workspace: wanted.workspace_id.to_string(),
+                dir,
+            },
+        )
+        .await?;
+    println!("mapped {} as {}", wanted.name, mapped.workspace_id);
+    Ok(0)
 }
 
 /// The status command's face: render and return the exit code, going to the process's
@@ -193,6 +612,39 @@ mod tests {
             vec!["app", "service", "install", "--run-as", "alice"],
             vec!["app", "service", "uninstall"],
             vec!["app", "service", "status"],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_workspace_and_bridge_commands_parse() {
+        for args in [
+            vec!["app", "workspace", "init"],
+            vec!["app", "workspace", "init", "papers"],
+            vec!["app", "workspace", "init", "--sync"],
+            vec!["app", "workspace", "list"],
+            vec!["app", "workspace", "map", "papers", "papers-remote"],
+            vec![
+                "app",
+                "workgroup",
+                "create",
+                "--device-name",
+                "laptop",
+                "home",
+            ],
+            vec!["app", "workgroup", "list"],
+            vec![
+                "app",
+                "workgroup",
+                "join",
+                "--device-name",
+                "laptop",
+                "TICKET",
+            ],
+            vec!["app", "device", "list"],
+            vec!["app", "device", "invite", "--name", "phone"],
+            vec!["app", "device", "retire", "phone"],
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }

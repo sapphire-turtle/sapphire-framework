@@ -24,10 +24,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use std::path::Path;
+
 use sapphire_backend::protocol as proto;
+use sapphire_backend::{WorkspaceEntry, WorkspaceRegistry};
 use sapphire_framework_service::{RunAs, ServiceSpec};
-use sapphire_ipc::{Endpoint, ManagedBy, Router, ServerInfo, serve};
-use sapphire_workspace::AppContext;
+use sapphire_ipc::{Endpoint, ManagedBy, Router, RpcError, ServerInfo, serve};
+use sapphire_workspace::{AppContext, Workspace};
 
 mod command;
 mod error;
@@ -39,7 +42,9 @@ pub mod sync;
 #[cfg(test)]
 mod test_support;
 
-pub use command::{FrameworkCommand, StatusReport, StatusRow};
+pub use command::{
+    DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
+};
 pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::{workspace_router, workspace_router_with_sync};
@@ -253,7 +258,10 @@ impl AppServer {
 
         let mut router = subscribe_method(
             Arc::clone(&host),
-            workspace_router_with_sync(Arc::clone(&host), sync.clone()),
+            workspace_init_method(
+                ctx,
+                workspace_router_with_sync(Arc::clone(&host), sync.clone()),
+            ),
         );
         if let Some(runtime) = &sync {
             // `sync_router` is applied *under* the framework's own methods so a later
@@ -402,6 +410,149 @@ impl AppServer {
         drop(listener); // removes the socket file on Unix
         Ok(())
     }
+}
+
+/// Add [`WORKSPACE_INIT`] to `router`.
+///
+/// The CLI hands the request over IPC; the server does the creating (spec decision 1/7 of
+/// `2026-09-24-app-command-system-design.md`), so a workspace created through the CLI or
+/// the GUI is one this server already knows. What one call creates:
+///
+/// - the marker directory `.<app_name>` under the requested root, idempotently;
+/// - the sync id inside it, minted on first use — a shared workspace's stable identity
+///   across devices, which `sync.enable` and `sync.map` both read;
+/// - the registry entry in the marker's `config.toml`, as the `[workspace.<id>]` table
+///   the CLI and the GUI both read.
+fn workspace_init_method(ctx: &'static AppContext, router: Router) -> Router {
+    router.method(proto::WORKSPACE_INIT, move |req| {
+        async move {
+            let params: proto::WorkspaceInitParams = serde_json::from_value(req.params)
+                .map_err(|e| RpcError::invalid_params(format!("bad parameters: {e}")))?;
+            let result = init_workspace(ctx, &params.dir).map_err(|e| {
+                // The caller's mistake is the caller's to fix: a bad path is INVALID_PARAMS,
+                // anything else is the server's problem.
+                if matches!(
+                    e,
+                    Error::Workspace(
+                        sapphire_workspace::Error::MarkerDirMissing { .. }
+                            | sapphire_workspace::Error::MarkerNotFound { .. }
+                            | sapphire_workspace::Error::PathEscapesWorkspace { .. }
+                    )
+                ) {
+                    RpcError::invalid_params(e.to_string())
+                } else {
+                    RpcError::internal(e.to_string())
+                }
+            })?;
+            serde_json::to_value(result).map_err(|e| RpcError::internal(e.to_string()))
+        }
+    })
+}
+
+/// Create the workspace home at `dir`: the marker directory, the registry entry and the
+/// sync id, idempotently.
+///
+/// A relative `dir` is resolved against the server's cwd — the CLI's `dir` argument names
+/// the same tree whatever process resolves it, and the server is the process that opens
+/// the workspace afterwards. The registry entry's id is the root's directory name,
+/// slugified; `created` is `false` when the marker was already there, and an already
+/// registered root keeps its entry as it is.
+fn init_workspace(ctx: &'static AppContext, dir: &Path) -> Result<proto::WorkspaceInitResult> {
+    let root = std::env::current_dir()
+        .map_err(Error::Io)?
+        .join(dir)
+        .canonicalize()
+        .map_err(Error::Io)?;
+    let marker = root.join(format!(".{}", ctx.app_name));
+    let created = !marker.is_dir();
+    if created {
+        std::fs::create_dir(&marker).map_err(Error::Io)?;
+    }
+
+    // Reads the marker's `config.toml`, keyed the way the apps' CLIs key their
+    // `--workspace` selectors. The registry lives in the marker, so it travels with the
+    // workspace when it syncs.
+    let workspace = Workspace::from_root(ctx, &root)?;
+    let id = workspace_id_for(&root);
+    let config_path = workspace.config_path();
+    let registry = read_registry(&config_path)?;
+    if registry.get(&id).is_none() {
+        let mut registry = registry;
+        registry.insert(id.clone(), WorkspaceEntry::local(&root));
+        write_registry(&config_path, &registry)?;
+    }
+
+    Ok(proto::WorkspaceInitResult {
+        root,
+        workspace_id: id,
+        created,
+    })
+}
+
+/// The registry id a workspace root carries: its directory name, slugified.
+///
+/// Uniqueness comes from the directory itself — a second `init` of one directory is the
+/// idempotent path — so the slug is not uniquified against the rest of the registry the
+/// way the GUI's manager is.
+fn workspace_id_for(root: &Path) -> String {
+    let base: String = root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspace".to_owned())
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let base = base.trim_matches('-').to_owned();
+    if base.is_empty() {
+        "workspace".to_owned()
+    } else {
+        base
+    }
+}
+
+/// The registry as the marker's `config.toml` holds it, or an empty one.
+///
+/// A file another application wrote without a `[workspace]` table is an empty registry,
+/// not an error: the marker's config is the app's own file, and a workspace created
+/// before this table existed is a workspace with no entries.
+fn read_registry(path: &Path) -> Result<WorkspaceRegistry> {
+    #[derive(serde::Deserialize, Default)]
+    struct Config {
+        #[serde(default)]
+        workspace: WorkspaceRegistry,
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let config: Config = toml::from_str(&text).map_err(|e| Error::SyncId(e.to_string()))?;
+            Ok(config.workspace)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(WorkspaceRegistry::default()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+/// Write the registry back into the marker's `config.toml`, keeping the rest of the file.
+///
+/// The read-modify-write is what the plan's risk note asks for: the marker's config is the
+/// app's own document, and a rewrite that dropped the rest of it would eat an
+/// application's settings.
+fn write_registry(path: &Path, registry: &WorkspaceRegistry) -> Result<()> {
+    #[derive(serde::Deserialize, serde::Serialize, Default)]
+    struct Config {
+        #[serde(default, skip_serializing_if = "WorkspaceRegistry::is_empty")]
+        workspace: WorkspaceRegistry,
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let mut config: Config = toml::from_str(&text).unwrap_or_default();
+    config.workspace = registry.clone();
+    let out = toml::to_string_pretty(&config).map_err(|e| Error::SyncId(e.to_string()))?;
+    std::fs::write(path, out).map_err(Error::Io)
 }
 
 #[cfg(test)]
@@ -634,6 +785,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(greeting, "hello");
+
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_init_creates_the_marker_and_tells_the_registry() {
+        let f = prepared();
+        let endpoint = f.endpoint.clone();
+        let server = AppServer::new(&CTX, "0.0.0").endpoint(endpoint.clone());
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
+        let (client, _) = sapphire_ipc::connect_or_absent(&endpoint, CTX.app_name, client_info())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let result: proto::WorkspaceInitResult = client
+            .call(
+                proto::WORKSPACE_INIT,
+                proto::WorkspaceInitParams {
+                    dir: dir.path().to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(result.created);
+        assert!(dir.path().join(format!(".{}", CTX.app_name)).is_dir());
+
+        // Idempotent: the second init is a success that did not create.
+        let again: proto::WorkspaceInitResult = client
+            .call(
+                proto::WORKSPACE_INIT,
+                proto::WorkspaceInitParams {
+                    dir: dir.path().to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!again.created);
 
         let _: serde_json::Value = client
             .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))

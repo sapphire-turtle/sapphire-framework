@@ -34,6 +34,28 @@ pub const LIST_DIR: &str = "workspace.list_dir";
 pub const REINDEX: &str = "workspace.reindex";
 /// Start receiving [`EVENT`] notifications for a workspace.
 pub const SUBSCRIBE: &str = "workspace.subscribe";
+/// Create this app's workspace home in a directory: the marker, a registry entry and a
+/// sync id.
+pub const WORKSPACE_INIT: &str = "workspace.init";
+
+/// Parameters of [`WORKSPACE_INIT`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceInitParams {
+    /// Where the workspace root goes, relative to nothing: absolute, or relative
+    /// to the process's cwd, resolved by the server.
+    pub dir: PathBuf,
+}
+
+/// Result of [`WORKSPACE_INIT`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceInitResult {
+    /// The workspace's canonical root.
+    pub root: PathBuf,
+    /// Its stable id, as the registry keys it.
+    pub workspace_id: String,
+    /// `false` when the workspace already existed (exit 0 either way).
+    pub created: bool,
+}
 /// Notification carrying one [`BackendEvent`].
 pub const EVENT: &str = "workspace.event";
 /// What the server knows about itself.
@@ -229,6 +251,25 @@ mod tests {
     }
 
     #[test]
+    fn workspace_init_params_and_result_round_trip() {
+        let params = WorkspaceInitParams {
+            dir: PathBuf::from("/home/me/papers"),
+        };
+        let back = round_trip(&params);
+        assert_eq!(back.dir, params.dir);
+
+        let result = WorkspaceInitResult {
+            root: PathBuf::from("/home/me/papers"),
+            workspace_id: "g123".into(),
+            created: true,
+        };
+        let back = round_trip(&result);
+        assert_eq!(back.root, result.root);
+        assert_eq!(back.workspace_id, result.workspace_id);
+        assert!(back.created);
+    }
+
+    #[test]
     fn method_names_are_namespaced() {
         for name in [
             SEARCH,
@@ -239,6 +280,7 @@ mod tests {
             LIST_DIR,
             REINDEX,
             SUBSCRIBE,
+            WORKSPACE_INIT,
         ] {
             assert!(name.starts_with("workspace."), "{name}");
         }

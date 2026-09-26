@@ -21,7 +21,6 @@
 #![warn(missing_docs)]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use std::path::Path;
@@ -262,7 +261,6 @@ impl AppServer {
         };
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-        let live = Arc::new(AtomicU64::new(0));
 
         let mut router = subscribe_method(
             Arc::clone(&host),
@@ -396,14 +394,11 @@ impl AppServer {
                 }
                 accepted = listener.accept() => {
                     let conn = accepted?;
-                    live.fetch_add(1, Ordering::Relaxed);
                     let router = Arc::clone(&router);
                     let app = ctx.app_name;
                     let info = info.clone();
-                    let live = Arc::clone(&live);
                     connections.spawn(async move {
                         let _ = serve(conn, router, app, info).await;
-                        live.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
             }

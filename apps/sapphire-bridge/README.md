@@ -17,7 +17,7 @@ It never looks inside a workspace: it routes *to* the app server that owns one, 
 ## Running it
 
 ```console
-$ sapphire-bridge            # same as `sapphire-bridge run`
+$ sapphire-bridge            # same as `sapphire-bridge serve`
 $ sapphire-bridge status
 $ sapphire-bridge workgroup create home --device-name laptop
 $ sapphire-bridge device list
@@ -25,8 +25,11 @@ $ sapphire-bridge device list
 
 With no subcommand at all, the bridge starts and stays in the foreground. Every other
 subcommand is a one-shot command against a running bridge — except `workgroup create` and
-`device forget`, which work directly on the bridge directory because there is nothing to ask
-yet (or, for `forget`, no control-plane method).
+`device retire`, which work directly on the bridge directory because there is nothing to ask
+yet (or, for `retire`, no control-plane method).
+
+> an OS service unit installed by an older build still names `run`; run
+> `sapphire-bridge service install` again after upgrading, so the unit names `serve`.
 
 Starting a second bridge is not an error: it reports the pid of the one already running and
 exits non-zero.
@@ -35,10 +38,10 @@ exits non-zero.
 
 | Command | What it does |
 |---|---|
-| `run` (default) | Run the bridge in the foreground |
+| `serve` (default) | Run the bridge in the foreground |
 | `status` | Report the running bridge's version, node id, workgroup and registered workspaces |
 | `device list` | List the workgroup's devices, and which are reachable |
-| `device forget <selector>` | Retire a device by name or id |
+| `device retire <selector>` | Retire a device by name or id |
 | `workgroup create <name> --device-name <name>` | Found a workgroup, recording this host as its first device |
 | `workgroup list` | Show the workgroup this host belongs to |
 | `workspace list` | List the workspaces this host serves (read-only) |

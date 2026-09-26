@@ -37,8 +37,8 @@ impl BridgeClient {
         let (client, _) = connect_or_absent(&endpoint, BRIDGE_NAME, info)
             .await?
             .ok_or_else(|| {
-                sapphire_ipc::Error::Spawn(
-                    "no bridge is running; start it with `sapphire-bridge run` \
+                sapphire_ipc::Error::NotRunning(
+                    "no bridge is running; start it with `sapphire-bridge serve` \
                      or install its service"
                         .to_owned(),
                 )
@@ -55,7 +55,7 @@ impl BridgeClient {
         let runtime_dir = sapphire_ipc::runtime_dir()?;
         let endpoint = Endpoint::in_dir(BRIDGE_NAME, runtime_dir.clone());
         if !sapphire_ipc::probe(&endpoint).await? {
-            return Err(sapphire_ipc::Error::Spawn(
+            return Err(sapphire_ipc::Error::NotRunning(
                 "no sapphire-bridge is running".to_owned(),
             ));
         }

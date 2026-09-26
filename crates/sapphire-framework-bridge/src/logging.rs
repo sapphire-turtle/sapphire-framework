@@ -37,7 +37,7 @@ pub const LOG_KEEP: usize = 3;
 
 /// The log filter a bridge applies when the environment asks for nothing specific.
 ///
-/// The same default the bridge's console output uses, so `bridge run` and a one-shot
+/// The same default the bridge's console output uses, so `bridge serve` and a one-shot
 /// command agree on what is worth printing without `RUST_LOG` being set.
 pub const DEFAULT_LOG_FILTER: &str = "sapphire_framework_bridge=info";
 

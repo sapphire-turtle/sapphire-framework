@@ -17,7 +17,7 @@ bridge はワークスペースの中身を一切見ません。所有してい�
 ## 動かす
 
 ```console
-$ sapphire-bridge            # `sapphire-bridge run` と同じ
+$ sapphire-bridge            # `sapphire-bridge serve` と同じ
 $ sapphire-bridge status
 $ sapphire-bridge workgroup create home --device-name laptop
 $ sapphire-bridge device list
@@ -25,8 +25,11 @@ $ sapphire-bridge device list
 
 サブコマンドを付けずに実行すると、bridge はフォアグラウンドで起動し続けます。それ以外の
 サブコマンドは起動中の bridge に対する単発コマンドです。例外は `workgroup create` と
-`device forget` で、これらは bridge ディレクトリを直接操作します（前者はまだ問い合わせる先が
+`device retire` で、これらは bridge ディレクトリを直接操作します（前者はまだ問い合わせる先が
 無いため、後者は制御プレーンにメソッドが無いため）。
+
+> 旧ビルドでインストールした OS サービスユニットはいまだ `run` を指定しています。アップグレード後にもう一度
+> `sapphire-bridge service install` を実行し、ユニットに `serve` を指定させてください。
 
 2 つ目の bridge を起動してもエラーにはなりません。すでに動いているものの pid を報告し、
 非ゼロで終了します。
@@ -35,10 +38,10 @@ $ sapphire-bridge device list
 
 | コマンド | 内容 |
 |---|---|
-| `run`（デフォルト） | bridge をフォアグラウンドで実行 |
+| `serve`（デフォルト） | bridge をフォアグラウンドで実行 |
 | `status` | 起動中の bridge のバージョン・node id・workgroup・登録済みワークスペースを表示 |
 | `device list` | workgroup のデバイス一覧と、到達可能かどうかを表示 |
-| `device forget <selector>` | 名前または id でデバイスを退役させる |
+| `device retire <selector>` | 名前または id でデバイスを退役させる |
 | `workgroup create <name> --device-name <name>` | workgroup を作成し、このホストを最初のデバイスとして記録 |
 | `workgroup list` | このホストが属する workgroup を表示 |
 | `workspace list` | このホストが提供するワークスペース一覧（読み取り専用） |

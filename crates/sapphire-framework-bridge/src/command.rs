@@ -1,10 +1,12 @@
 //! The `sapphire-bridge` command line.
 //!
-//! Running it with no subcommand starts the bridge; every other subcommand is a one-shot
-//! command against a running one. Two of them work directly on the bridge directory instead —
-//! [`WorkgroupCommand::Create`], because there is nothing to ask about a workgroup that does
-//! not exist yet, and [`DeviceCommand::Forget`], because the control plane has no method for
-//! it. Both then see their effect immediately: the ledger is re-read on every authorization.
+//! The same flat vocabulary every sapphire CLI speaks (2026-09-24 spec decisions 1/2), with
+//! this bridge's own `log` beside it. Running it with no subcommand starts the bridge; every
+//! other subcommand is a one-shot command against a running one. Two of them work directly on
+//! the bridge directory instead — [`WorkgroupCommand::Create`], because there is nothing to
+//! ask about a workgroup that does not exist yet, and [`DeviceCommand::Retire`], because the
+//! control plane has no method for it. Both then see their effect immediately: the ledger is
+//! re-read on every authorization.
 
 // The transport is only assembled behind the `node` feature; the imports that build it are
 // gated with it so a build without the feature stays warning-free.
@@ -26,14 +28,25 @@ use crate::status::StatusFile;
 use crate::workgroup::Workgroup;
 use crate::{Bridge, BridgeDir, InstanceLock};
 
-/// The bridge daemon's subcommands.
-#[derive(Debug, clap::Subcommand)]
+/// The bridge daemon's commands.
+///
+/// The same flat vocabulary every sapphire CLI speaks (2026-09-24 spec decisions
+/// 1/2), with this bridge's own `log` beside it. The bridge keeps its own enum
+/// rather than reusing the app side's `FrameworkCommand`: that dispatcher takes an
+/// `AppServer`, and this crate is the switchboard *above* app servers — it must not
+/// depend on the `-server` crate. Two verbs work directly on the bridge directory
+/// instead of over IPC: `workgroup create`, because there is nothing to ask about a
+/// workgroup that does not exist yet, and `device retire`, because the control
+/// plane has no method for it. Both see their effect at once: the ledger is
+/// re-read on every authorization.
+#[derive(Debug, Default, clap::Subcommand)]
 pub enum BridgeCommand {
-    /// Run the bridge in this process.
-    Run,
-    /// Report whether a bridge is running, and what it knows.
+    /// Run the bridge in this process (the bare invocation).
+    #[default]
+    Serve,
+    /// Report what the bridge knows — live, or from the last snapshot it wrote.
     Status,
-    /// Show the bridge's log.
+    /// Show the bridge's log. Bridge-specific: only this process writes one.
     Log {
         /// Keep printing as the log grows, as `tail -f` does.
         #[arg(long)]
@@ -42,23 +55,23 @@ pub enum BridgeCommand {
         #[arg(long, default_value = "20")]
         lines: usize,
     },
-    /// The workgroup's devices.
-    #[command(subcommand)]
-    Device(DeviceCommand),
-    /// This host's workgroup.
-    #[command(subcommand)]
-    Workgroup(WorkgroupCommand),
-    /// What the workgroup contains — read-only.
-    #[command(subcommand)]
-    Workspace(WorkspaceCommand),
     /// Install, remove or report this host's bridge service.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// What the workgroup contains — read-only.
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
+    /// This host's workgroup.
+    #[command(subcommand)]
+    Workgroup(WorkgroupCommand),
+    /// The workgroup's devices.
+    #[command(subcommand)]
+    Device(DeviceCommand),
 }
 
 /// The service this binary installs.
 ///
-/// The unit runs the bare binary with `run`, so a service manager starts a bridge and nothing
+/// The unit runs the bare binary with `serve`, so a service manager starts a bridge and nothing
 /// else. `system_run_as` is [`RunAs::InvokingUser`]: a bridge installed as a root system unit
 /// would put the bridge directory under `/root` and create synced files owned by root, and
 /// unlike an app that drops privileges itself, a bridge cannot come back from that.
@@ -71,7 +84,7 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
     ServiceSpec {
         app_name: "sapphire-bridge",
         description: format!("Sapphire bridge daemon {version}"),
-        args: vec!["run".to_owned()],
+        args: vec!["serve".to_owned()],
         system_run_as: RunAs::InvokingUser,
         privileges: None,
         post_install: None,
@@ -99,7 +112,7 @@ pub enum DeviceCommand {
     ///
     /// The record stays as a tombstone: a device id is written into synced content and must
     /// keep resolving.
-    Forget {
+    Retire {
         /// The device's name or id.
         selector: String,
     },
@@ -139,9 +152,28 @@ impl BridgeCommand {
     /// Carry out the command, returning the process exit code.
     pub async fn dispatch(self, version: &'static str) -> Result<i32> {
         match self {
-            BridgeCommand::Run => run(version).await,
+            BridgeCommand::Serve => run(version).await,
             BridgeCommand::Status => status(version).await,
             BridgeCommand::Log { follow, lines } => log_command(follow, lines),
+            BridgeCommand::Service(command) => {
+                let spec = bridge_service_spec(version);
+                command
+                    .run(&spec, &Environment::detect(), &SystemManager)
+                    .map_err(Error::from)
+            }
+            BridgeCommand::Workspace(command) => match command {
+                WorkspaceCommand::List => workspace_list(version).await,
+            },
+            BridgeCommand::Workgroup(command) => match command {
+                WorkgroupCommand::Create { name, device_name } => {
+                    workgroup_create(&name, &device_name)
+                }
+                WorkgroupCommand::List => workgroup_list(),
+                WorkgroupCommand::Join {
+                    ticket,
+                    device_name,
+                } => workgroup_join(version, ticket, device_name).await,
+            },
             BridgeCommand::Device(command) => match command {
                 DeviceCommand::List => device_list(version).await,
                 DeviceCommand::Invite {
@@ -149,36 +181,19 @@ impl BridgeCommand {
                     ttl,
                     workgroup,
                 } => device_invite(version, name, ttl, workgroup).await,
-                DeviceCommand::Forget { selector } => device_forget(&selector),
+                DeviceCommand::Retire { selector } => device_retire(&selector),
             },
-            BridgeCommand::Workgroup(command) => match command {
-                WorkgroupCommand::Create { name, device_name } => {
-                    workgroup_create(&name, &device_name)
-                }
-                WorkgroupCommand::Join {
-                    ticket,
-                    device_name,
-                } => workgroup_join(version, ticket, device_name).await,
-                WorkgroupCommand::List => workgroup_list(),
-            },
-            BridgeCommand::Workspace(command) => match command {
-                WorkspaceCommand::List => workspace_list(version).await,
-            },
-            // The service manager's own words, not the bridge's: `Environment::detect` reads
-            // this machine once, so the deciding is a function of a value the test can build.
-            BridgeCommand::Service(command) => {
-                let spec = bridge_service_spec(version);
-                command
-                    .run(&spec, &Environment::detect(), &SystemManager)
-                    .map_err(Error::from)
-            }
         }
     }
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
 
-/// Start the bridge, or report the one already running.
+/// Run the bridge in this process — what the bare invocation, and `serve`, mean.
+///
+/// The bare invocation is the same thing as `serve`; the enum's default is [`BridgeCommand::Serve`].
+/// A second start is a normal thing to do by accident, so "already running" is a reported
+/// outcome, not an error.
 async fn run(version: &'static str) -> Result<i32> {
     let dir = BridgeDir::open()?;
     // Held for as long as the bridge runs; dropping it frees the next start. The lock is
@@ -240,7 +255,7 @@ async fn build_bridge(_dir: BridgeDir, _version: &'static str) -> Result<Bridge>
 
 // ── one-shot commands ───────────────────────────────────────────────────────
 
-/// Connect to the running bridge, or `None` when none is listening.
+/// Connect to the running bridge, or `None` when no sapphire-bridge is running.
 ///
 /// Never starts one: asking a question about the bridge must not bring a daemon up.
 async fn connect(version: &str) -> Result<Option<BridgeClient>> {
@@ -266,7 +281,7 @@ async fn status(version: &str) -> Result<i32> {
         None => read_status_report()?,
     };
     let Some(report) = report else {
-        println!("no bridge is running");
+        println!("no sapphire-bridge is running");
         return Ok(1);
     };
 
@@ -391,7 +406,7 @@ fn log_command(follow: bool, lines: usize) -> Result<i32> {
 /// List the workgroup's devices, as the running bridge sees them.
 async fn device_list(version: &str) -> Result<i32> {
     let Some(client) = connect(version).await? else {
-        println!("no bridge is running");
+        println!("no sapphire-bridge is running");
         return Ok(1);
     };
     let peers = client.peers().await?;
@@ -427,7 +442,7 @@ async fn device_invite(
     workgroup: Option<String>,
 ) -> Result<i32> {
     let Some(client) = connect(version).await? else {
-        println!("no bridge is running");
+        println!("no sapphire-bridge is running");
         return Ok(1);
     };
     let invite = client
@@ -451,7 +466,7 @@ async fn device_invite(
 /// not start a bridge, so a host with none running is reported, not started.
 async fn workgroup_join(version: &str, ticket: String, device_name: Option<String>) -> Result<i32> {
     let Some(client) = connect(version).await? else {
-        println!("no bridge is running");
+        println!("no sapphire-bridge is running");
         return Ok(1);
     };
     let joined = client
@@ -470,10 +485,10 @@ async fn workgroup_join(version: &str, ticket: String, device_name: Option<Strin
 
 /// Retire a device in the ledger.
 ///
-/// Works directly on the bridge directory: the control plane has no `forget` method, and the
+/// Works directly on the bridge directory: the control plane has no `retire` method, and the
 /// ledger is a directory this user already owns. Retirement takes effect at once because the
 /// bridge re-reads the ledger on every authorization.
-fn device_forget(selector: &str) -> Result<i32> {
+fn device_retire(selector: &str) -> Result<i32> {
     let dir = BridgeDir::open()?;
     let Some(workgroup) = Workgroup::open(&dir)? else {
         println!("this host has not joined a workgroup");
@@ -527,7 +542,7 @@ fn workgroup_list() -> Result<i32> {
 /// workspace itself; until then this is what the bridge's routing table holds.
 async fn workspace_list(version: &str) -> Result<i32> {
     let Some(client) = connect(version).await? else {
-        println!("no bridge is running");
+        println!("no sapphire-bridge is running");
         return Ok(1);
     };
     let status = client.status().await?;
@@ -620,10 +635,10 @@ mod tests {
     #[test]
     fn the_subcommands_parse() {
         for args in [
-            vec!["b", "run"],
+            vec!["b", "serve"],
             vec!["b", "status"],
             vec!["b", "device", "list"],
-            vec!["b", "device", "forget", "phone"],
+            vec!["b", "device", "retire", "phone"],
             vec![
                 "b",
                 "workgroup",
@@ -634,9 +649,51 @@ mod tests {
             ],
             vec!["b", "workgroup", "list"],
             vec!["b", "workspace", "list"],
+            vec!["b", "service", "install"],
+            vec!["b", "log", "--lines", "50"],
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn bare_invocation_defaults_to_serve() {
+        // `sapphire-bridge` with no subcommand is `sapphire-bridge serve` (2026-09-24
+        // spec decision 1, bridge edition) — main.rs expresses it with
+        // `unwrap_or(BridgeCommand::Serve)`, and the default pins that.
+        #[derive(Parser)]
+        struct Bare {
+            #[command(subcommand)]
+            command: Option<BridgeCommand>,
+        }
+        let bare = Bare::try_parse_from(["b"]).unwrap();
+        assert!(bare.command.is_none());
+        assert!(matches!(BridgeCommand::default(), BridgeCommand::Serve));
+    }
+
+    #[test]
+    fn the_renamed_commands_have_no_aliases() {
+        // Decision 9: cut over, no aliases. `run` and `forget` are gone as spellings.
+        assert!(Probe::try_parse_from(["b", "run"]).is_err());
+        assert!(Probe::try_parse_from(["b", "device", "forget", "phone"]).is_err());
+    }
+
+    #[test]
+    fn there_is_no_way_to_place_a_workspace_from_here() {
+        // Placing a workspace on this host is the owning application's business (spec §1).
+        for args in [
+            vec!["b", "workspace", "map", "notes", "/tmp/x"],
+            vec!["b", "workspace", "init"],
+            vec!["b", "workspace", "init", "--sync"],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn there_is_no_stop_command() {
+        // Decision 4: starting and stopping the daemon is the service manager's business.
+        assert!(Probe::try_parse_from(["b", "stop"]).is_err());
     }
 
     #[test]
@@ -644,12 +701,6 @@ mod tests {
         assert!(Probe::try_parse_from(["b", "log"]).is_ok());
         assert!(Probe::try_parse_from(["b", "log", "--follow"]).is_ok());
         assert!(Probe::try_parse_from(["b", "log", "--lines", "50"]).is_ok());
-    }
-
-    #[test]
-    fn there_is_no_way_to_map_a_workspace_from_here() {
-        // Placing a workspace on this host is the owning application's business (spec §1).
-        assert!(Probe::try_parse_from(["b", "workspace", "map", "notes", "/tmp/x"]).is_err());
     }
 
     #[test]
@@ -769,12 +820,6 @@ mod pairing_cli_tests {
         assert!(Probe::try_parse_from(["b", "workgroup", "join"]).is_err());
     }
 
-    #[test]
-    fn mapping_a_workspace_is_still_not_a_bridge_command() {
-        // Placing a workspace on this host is the owning application's business.
-        assert!(Probe::try_parse_from(["b", "workspace", "map", "notes", "/tmp/x"]).is_err());
-    }
-
     #[tokio::test]
     async fn joining_without_a_running_bridge_says_so_rather_than_starting_one() {
         let tmp = tempfile::tempdir().unwrap();
@@ -838,7 +883,7 @@ mod service_spec_tests {
     #[test]
     fn the_bridge_service_spec_runs_the_bridge() {
         let spec = bridge_service_spec("0.0.0");
-        assert_eq!(spec.args, vec!["run".to_owned()]);
+        assert_eq!(spec.args, vec!["serve".to_owned()]);
         assert!(
             matches!(spec.system_run_as, RunAs::InvokingUser),
             "a root bridge would put the bridge directory under /root"

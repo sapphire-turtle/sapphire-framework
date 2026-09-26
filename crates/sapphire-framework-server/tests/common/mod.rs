@@ -507,3 +507,39 @@ pub async fn settle(hosts: &[&Host]) {
 pub fn frames_sent(host: &Host) -> u64 {
     host.net.frames_sent(host.node_id())
 }
+
+/// Wait until every listed host has gone `quiet_for` without writing onto a loopback
+/// stream, and return each one's counter as it was during that window — a stable baseline
+/// to compare later counters against.
+///
+/// This is [`settle`]'s idea applied to silence: poll with a deadline instead of sleeping a
+/// fixed span and trusting it. "Has this host stopped talking" is a claim about the storm
+/// rules, but the fixed-sleep-then-compare form of it was also a claim about the machine —
+/// the counter counts buffer writes ([`LoopbackNetwork::frames_sent`]), and on a loaded CI
+/// runner a write belonging to an earlier round can land inside the window and read as a
+/// loop. Waiting *for* quiet makes the window start when the talking stops, so stragglers
+/// delay the measurement rather than corrupt it.
+///
+/// Panics once `deadline` passes without the counters holding still, which is what a real
+/// loop looks like: a host that never stops.
+pub async fn quiet(hosts: &[&Host], quiet_for: Duration, deadline: Duration) -> Vec<u64> {
+    let deadline = Instant::now() + deadline;
+    let mut last: Vec<u64> = hosts.iter().map(|host| frames_sent(host)).collect();
+    let mut unchanged_since = Instant::now();
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the hosts never went quiet: their counters sat at {last:?} while writes kept arriving"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let current: Vec<u64> = hosts.iter().map(|host| frames_sent(host)).collect();
+        if current != last {
+            last = current;
+            unchanged_since = Instant::now();
+            continue;
+        }
+        if unchanged_since.elapsed() >= quiet_for {
+            return last;
+        }
+    }
+}

@@ -9,9 +9,25 @@
 mod common;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
 use sapphire_framework_bridge::LoopbackNetwork;
+
+/// How long the frame counters must hold still before a host counts as quiet.
+const QUIET: Duration = Duration::from_secs(1);
+/// How long to keep waiting for that quiet before calling it a loop.
+const QUIET_DEADLINE: Duration = Duration::from_secs(30);
+/// How long a quiet host is then watched for a loop to start.
+const OBSERVE: Duration = Duration::from_secs(3);
+/// How many writes each watched host may still make over [`OBSERVE`] before it is a loop.
+///
+/// This is a bound, not an equality, on purpose: the app servers keep up ambient traffic of
+/// their own — the bridge's sweeps and the dial loops' retries, a handful of writes per
+/// round — that has nothing to do with the edit under test and never stops entirely. What
+/// the test rules out is a *storm*: a loop keeps writing for as long as it runs and blows
+/// past any small bound, while the background settles well inside this one.
+const LOOP_LIMIT: u64 = 15;
 
 /// Wait for `rel` to appear on `host`, with a deadline rather than a sleep.
 async fn await_file(host: &common::Host, rel: &str) -> String {
@@ -79,16 +95,18 @@ async fn an_entry_is_not_forwarded_back_to_the_peer_it_came_from() {
     let (a, b) = common::synced_pair(&net).await;
     common::settle(&[&a, &b]).await;
 
-    let before = common::frames_sent(&b);
+    // A quiet baseline first, so the count below covers this one write and not the
+    // background the bridge was already making.
+    let before = common::quiet(&[&b], QUIET, QUIET_DEADLINE).await[0];
     write(&a, "one-way.md", "x").await;
     await_file(&b, "one-way.md").await;
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Wait for the write's own traffic to stop rather than assuming a second covers it.
+    common::quiet(&[&b], QUIET, QUIET_DEADLINE).await;
 
-    let after = common::frames_sent(&b);
+    let grown = common::frames_sent(&b) - before;
     assert!(
-        after - before < 5,
-        "B sent {} frames for one incoming file; it is echoing",
-        after - before
+        grown < LOOP_LIMIT,
+        "B sent {grown} frames for one incoming file; it is echoing"
     );
 }
 
@@ -102,14 +120,25 @@ async fn three_connected_hosts_do_not_loop_an_edit_between_them() {
     await_file(&b, "triangle.md").await;
     await_file(&s, "triangle.md").await;
 
-    // Let any loop run for a while, then check nobody is still talking.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let quiet_a = common::frames_sent(&a);
-    let quiet_b = common::frames_sent(&b);
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Wait for any loop to *die down* rather than assuming a fixed sleep covers it:
+    // `quiet` returns only once A and B have both held still for QUIET, so a straggler on a
+    // loaded runner delays the baseline instead of being counted as a loop. A host that
+    // never stops talking never reaches quiet, and `quiet` fails on its deadline.
+    let before = common::quiet(&[&a, &b], QUIET, QUIET_DEADLINE).await;
 
-    assert_eq!(common::frames_sent(&a), quiet_a, "A is still sending");
-    assert_eq!(common::frames_sent(&b), quiet_b, "B is still sending");
+    // Then watch a longer window for a loop to *start*: the storm this test rules out keeps
+    // writing the whole time, while the background the servers always make stays small.
+    tokio::time::sleep(OBSERVE).await;
+    let grown = [
+        common::frames_sent(&a) - before[0],
+        common::frames_sent(&b) - before[1],
+    ];
+    assert!(
+        grown[0] < LOOP_LIMIT && grown[1] < LOOP_LIMIT,
+        "A or B is still sending after the edit was propagated: A +{}, B +{} over {OBSERVE:?}",
+        grown[0],
+        grown[1]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

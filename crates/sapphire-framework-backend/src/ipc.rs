@@ -47,7 +47,7 @@ impl IpcBackend {
         let (client, _) = connect_or_absent(endpoint, app, info)
             .await?
             .ok_or_else(|| {
-                sapphire_ipc::Error::Spawn(format!(
+                sapphire_ipc::Error::NotRunning(format!(
                     "no {app} server is running; start it with `{app} serve` \
                      or install its service"
                 ))

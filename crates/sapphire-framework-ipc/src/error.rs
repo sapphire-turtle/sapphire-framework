@@ -52,9 +52,14 @@ pub enum Error {
     #[error("timed out waiting for {0}")]
     Timeout(&'static str),
 
-    /// The server could not be started.
-    #[error("could not start the server: {0}")]
-    Spawn(String),
+    /// The process this caller meant to talk to is not running.
+    ///
+    /// The payload is the sentence a caller prints or wraps: it names the process and,
+    /// where starting one is the answer, the command that starts it (`serve`, or the
+    /// service manager). Start-on-demand is gone (2026-09-24 spec decision 3), so
+    /// nothing in this crate — and nothing behind this error — starts a process.
+    #[error("{0}")]
+    NotRunning(String),
 
     /// A running server speaks a different version and cannot be replaced because it is
     /// managed by the OS service manager.

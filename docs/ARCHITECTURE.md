@@ -91,8 +91,8 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-retrieve` | 検索。`RetrieveStore` + `RedbStore`（redb+tantivy）のみ |
 | `sapphire-framework-sync` | 転送非依存のレプリケーションコア（wire 型・`ReplicaStore`(redb)・merge・HLC・コンフリクトコピー・フィルタ・外部編集検知） |
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
-| `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、サーバの起動） |
-| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・アイドル終了・`ServerCommand`・同期ランタイム・**特権分離**） |
+| `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム・**特権分離**） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンのプロトコルとクライアント（serde のみ・iroh 非依存） |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh） |
 | `apps/sapphire-bridge` | 上記のバイナリと CLI（`status` / `log` / `device` / `workgroup` / `workspace list`） |
@@ -159,10 +159,16 @@ redb のキャッシュは排他ロックで 1 プロセスしか開けない。
 つまり各アプリの **サーバ** がワークスペースを所有する。CLI・stdio MCP・desktop は
 `sapphire-framework-ipc` 経由でサーバに接続する（UDS / named pipe / プロセス内チャネル上の
 NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix はピア uid を検査して切断する）。
-1 アプリ 1 サーバで複数ワークスペースを多重管理（LRU / アイドル終了）。CLI はサーバが無ければ
-`current_exe()` から起動する（spawn lock があるので N プロセスの同時起動でもサーバは 1 つ）。
+1 アプリ 1 サーバで複数ワークスペースを多重管理（LRU 閉じ）。サーバは SIGTERM/SIGINT
+まで常駐し、OS サービス（systemd / LaunchAgent / タスクスケジューラ）として走る。CLI は
+サーバを起動しない — サーバが無ければそれを報告して exit 1（start-on-demand と
+`SpawnConfig` / idle-exit は廃止。起動するのは `serve` とサービスマネージャだけ）。
 骨格は `AppServer`（`workspace.*` 名前空間は framework 所有、アプリは `<app>.<method>` を追加）。
-詳細はプロセス構成仕様 §2, §4。
+CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / `workspace` / `workgroup` /
+`device` を `FrameworkCommand` として自分のサブコマンドの隣に flatten する（issue #142）。
+制御面の路由は所有権に従う: `workspace` コマンドはアプリのサーバへ、`workgroup` / `device`
+コマンドは bridge へ直接。`status` の報告書は CLI と IPC `server.info` が同じ
+`StatusReport` 型を共有する。詳細はプロセス構成仕様 §2, §4。
 
 ### bridge はホスト常駐の交換台（`apps/sapphire-bridge`）
 
@@ -177,11 +183,17 @@ NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix
    同期変更として全デバイスに届く。これは bridge にしか決められない。
 3. **交換台** — control（`bridge.register` 等の JSON-RPC: 登録・peer 一覧・status）と
    data（`{workspace_id, device_id}` ヘッダ + バイト列の生ストリームを所有サーバへ splice）。
-   `net.wake_on_sync` が既定有効で、peer が来たとき停止中の所有サーバを起動する。
+   `net.wake_on_sync` が既定有効で、peer が来たとき停止中の所有サーバを起動する。ただし
+   発火するのはレガシーな `ManagedBy::Spawned` 登録に対してのみで、start-on-demand 廃止後の
+   新規登録（`Service`）では起動しない（Service 所有者は root 実行のため bridge および CLI
+   では起動できず、オフライン報告になる）。spawn 機構自体の再設計は Phase 2 の後続 issue で
+   扱う。
 
 workgroup のメタ（デバイス台帳・ワークスペース一覧）はそれ自体が同期されるワークスペースなので、
 **bridge はそのアプリのサーバでもある**（アプリ名 `sapphire-bridge`、マーカー `.bridge/`）。
-CLI は `sapphire-bridge`（`status`, `log [--follow]`, `device …`, `workgroup …`, `workspace list`）。
+CLI は `sapphire-bridge`（`status`, `log [--follow]`, `device …`, `workgroup …`,
+`workspace list`）。Phase 2（後続 issue）でこの CLI も `FrameworkCommand` のフラット語彙へ
+載せ替える — 現時点では bridge の CLI はそのまま動く。
 詳細はプロセス構成仕様 §5。
 
 ### セッションはエンドツーエンド
@@ -267,7 +279,7 @@ clap alias として受け付ける。解決順序は `Workspace::resolve` が�
 
 - **完了**: sync core（型・redb ストア・merge・HLC・コンフリクトコピー・フィルタ・外部編集検知 —
   sync 仕様 §2 / §6.1 が今も権威）、registry（users 撤去・1 デバイス 1 ファイル・`node_id`）、
-  `-ipc`、アプリサーバ骨格（`workspace.*`・多重管理・`ServerCommand` — **元の問題 = CLI と
+  `-ipc`、アプリサーバ骨格（`workspace.*`・多重管理・`FrameworkCommand` — **元の問題 = CLI と
   stdio MCP のキャッシュ衝突がここで解決**）、特権分離（**Unix のみ** — CI は root の
   コンテナジョブ）、bridge 基本部（ディレクトリ・単一インスタンス・制御面・データ面・iroh）、
   サーバの同期ランタイム（watcher・`Replica`・`sync.enable`）、ペアリングと workgroup、
@@ -288,7 +300,8 @@ clap alias として受け付ける。解決順序は `Workspace::resolve` が�
    プラットフォーム差（UDS / named pipe / チャネル、systemd / LaunchAgent / タスクスケジューラ、
    特権分離は Unix のみ）は各層が吸収する。
 4. tantivy trigram FTS の挙動同等性（BM25・prefix フィルタ・短いクエリ<3文字は無マッチ＝FTS5同等）。
-5. サーバを格上げした代償（プロセス構成仕様 §12）: 1 回きりの CLI 起動はサーバの起動待ちで
-   遅くなる（受け入れた）。**ディレクトリの 2 度目の一括移行**（#129 の直後に unsplit）。
-   NFS ホームでは UDS が使えない。混雑したホストでは bridge + アプリごとのサーバが並ぶ。
+5. サーバを格上げした代償（プロセス構成仕様 §12）: サーバが無いときの 1 回きりの CLI コマンドは
+   「サーバが走っていない」報告で終わり、起動待ちは発生しない（start-on-demand 廃止に伴う
+   見直し。元の「起動待ちで遅くなる」は受け入れて廃止）。**ディレクトリの 2 度目の一括移行**
+   （#129 の直後に unsplit）。NFS ホームでは UDS が使えない。混雑したホストでは bridge + アプリごとのサーバが並ぶ。
 6. storage backend の将来差替（Postgres+S3）。`OriginStore` trait を切る。content-addressed hash の GC は後続。

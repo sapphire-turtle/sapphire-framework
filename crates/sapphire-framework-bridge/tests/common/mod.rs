@@ -17,7 +17,7 @@ use sapphire_framework_bridge::{
     Bridge, BridgeDir, LoopbackNetwork, NetConfig, PeerTransport, Ticket, Workgroup,
     WorkgroupReplica, adopt_workgroup,
 };
-use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig};
+use sapphire_ipc::{ClientInfo, Endpoint};
 
 /// The node id of the first host: 64 lowercase hex digits, as the ledger wants them.
 pub const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
@@ -234,14 +234,10 @@ pub fn client_info() -> ClientInfo {
 
 /// Connect to a host's bridge.
 pub async fn connect(host: &Host) -> BridgeClient {
-    let (client, _) = sapphire_ipc::ensure_server(
-        &host.control,
-        "bridge",
-        client_info(),
-        &SpawnConfig::disabled(),
-    )
-    .await
-    .unwrap();
+    let (client, _) = sapphire_ipc::connect_or_absent(&host.control, "bridge", client_info())
+        .await
+        .unwrap()
+        .expect("the bridge is listening");
     BridgeClient::from_client(Arc::new(client), host.runtime.clone())
 }
 

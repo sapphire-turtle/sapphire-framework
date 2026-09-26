@@ -3,11 +3,14 @@
 //! This is the problem the process architecture exists to solve: a redb database takes an
 //! exclusive file lock, so two processes that open an app's cache directly cannot both run.
 //! `first_pins_the_problem` states that; the rest show it gone.
+//!
+//! A server started by `serve` or the service manager serves them all; the tests run
+//! `server-test-app` as that server and connect eight clients to it.
 
 use std::path::{Path, PathBuf};
 
 use sapphire_backend::protocol as proto;
-use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig, ensure_server};
+use sapphire_ipc::{ClientInfo, Endpoint, connect_or_absent};
 
 fn client_info() -> ClientInfo {
     ClientInfo {
@@ -17,7 +20,11 @@ fn client_info() -> ClientInfo {
     }
 }
 
-fn fixture(tmp: &Path) -> (Endpoint, PathBuf, SpawnConfig) {
+/// One test server, started the way `serve` or the service manager would run one, plus
+/// the endpoint it listens on and a workspace inside it. Nothing here starts a server on
+/// demand any more. The returned child is the test's to stop: kill it at the end, the
+/// way [`crate::ipc_backend`]'s fixtures do.
+fn fixture(tmp: &Path) -> (Endpoint, PathBuf, std::process::Child) {
     let runtime = tmp.join("run");
     let state = tmp.join("state");
     std::fs::create_dir_all(&runtime).unwrap();
@@ -28,12 +35,25 @@ fn fixture(tmp: &Path) -> (Endpoint, PathBuf, SpawnConfig) {
     let root = root.canonicalize().unwrap();
 
     let endpoint = Endpoint::in_dir("sapphire-servertest", runtime.clone());
-    let spawn = SpawnConfig {
-        exe: env!("CARGO_BIN_EXE_server-test-app").into(),
-        args: vec![runtime.display().to_string(), state.display().to_string()],
-        ..SpawnConfig::default()
-    };
-    (endpoint, root, spawn)
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_server-test-app"))
+        .args([runtime.display().to_string(), state.display().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("the test server");
+    (endpoint, root, child)
+}
+
+/// Wait until the server is listening on `endpoint`.
+async fn wait_until_listening(endpoint: &Endpoint) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !sapphire_ipc::probe(endpoint).await.unwrap() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never started listening"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 /// The behaviour that forced this design: a second direct open of the cache fails.
@@ -67,16 +87,18 @@ fn first_pins_the_problem() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn eight_concurrent_clients_all_write_successfully() {
     let tmp = tempfile::tempdir().unwrap();
-    let (endpoint, ws, spawn) = fixture(tmp.path());
+    let (endpoint, ws, mut server) = fixture(tmp.path());
+    wait_until_listening(&endpoint).await;
 
     let mut tasks = Vec::new();
     for n in 0..8u32 {
-        let (endpoint, ws, spawn) = (endpoint.clone(), ws.clone(), spawn.clone());
+        let endpoint = endpoint.clone();
+        let ws = ws.clone();
         tasks.push(tokio::spawn(async move {
-            let (client, _) =
-                ensure_server(&endpoint, "sapphire-servertest", client_info(), &spawn)
-                    .await
-                    .expect("a server");
+            let (client, _) = connect_or_absent(&endpoint, "sapphire-servertest", client_info())
+                .await
+                .expect("the probe")
+                .expect("a server listening");
             let _: proto::Ack = client
                 .call(
                     proto::WRITE_FILE,
@@ -100,18 +122,22 @@ async fn eight_concurrent_clients_all_write_successfully() {
             "client {n}'s file is missing"
         );
     }
+
+    let _ = server.kill();
 }
 
 /// The original report: `journal add` while the stdio MCP server is running.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_lived_client_and_a_one_shot_client_coexist() {
     let tmp = tempfile::tempdir().unwrap();
-    let (endpoint, ws, spawn) = fixture(tmp.path());
+    let (endpoint, ws, mut server) = fixture(tmp.path());
+    wait_until_listening(&endpoint).await;
 
     // The MCP server: connects and stays.
-    let (long_lived, _) = ensure_server(&endpoint, "sapphire-servertest", client_info(), &spawn)
+    let (long_lived, _) = connect_or_absent(&endpoint, "sapphire-servertest", client_info())
         .await
-        .unwrap();
+        .unwrap()
+        .expect("a server listening");
     let _: proto::Ack = long_lived
         .call(
             proto::WRITE_FILE,
@@ -126,9 +152,10 @@ async fn a_long_lived_client_and_a_one_shot_client_coexist() {
 
     // The CLI: connects, writes, goes away.
     {
-        let (one_shot, _) = ensure_server(&endpoint, "sapphire-servertest", client_info(), &spawn)
+        let (one_shot, _) = connect_or_absent(&endpoint, "sapphire-servertest", client_info())
             .await
-            .unwrap();
+            .unwrap()
+            .expect("a server listening");
         let _: proto::Ack = one_shot
             .call(
                 proto::WRITE_FILE,
@@ -154,4 +181,6 @@ async fn a_long_lived_client_and_a_one_shot_client_coexist() {
         .await
         .unwrap();
     assert_eq!(read.content, "human");
+
+    let _ = server.kill();
 }

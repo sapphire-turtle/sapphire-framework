@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use sapphire_ipc::{Client, ClientInfo, Endpoint, SpawnConfig, ensure_server};
+use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use tokio::sync::broadcast;
 
 use crate::protocol as proto;
@@ -27,13 +27,16 @@ pub struct IpcBackend {
 }
 
 impl IpcBackend {
-    /// Connect to `app`'s server, starting it if necessary, and bind to one workspace.
+    /// Connect to `app`'s server, and bind to one workspace.
+    ///
+    /// Nothing is started here: a server runs under `serve` or the OS service manager,
+    /// and this only finds it. Nothing listening is an error — the caller decides whether
+    /// to start one.
     pub async fn connect(
         endpoint: &Endpoint,
         app: &str,
         kind: &str,
         version: &str,
-        spawn: &SpawnConfig,
         ws: PathBuf,
     ) -> Result<IpcBackend> {
         let info = ClientInfo {
@@ -41,7 +44,14 @@ impl IpcBackend {
             version: version.to_owned(),
             pid: std::process::id(),
         };
-        let (client, _) = ensure_server(endpoint, app, info, spawn).await?;
+        let (client, _) = connect_or_absent(endpoint, app, info)
+            .await?
+            .ok_or_else(|| {
+                sapphire_ipc::Error::Spawn(format!(
+                    "no {app} server is running; start it with `{app} serve` \
+                     or install its service"
+                ))
+            })?;
         Ok(IpcBackend::from_client(Arc::new(client), ws))
     }
 

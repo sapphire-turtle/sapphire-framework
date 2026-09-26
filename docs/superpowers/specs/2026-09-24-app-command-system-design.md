@@ -101,7 +101,10 @@ Agreed during brainstorming on 2026-09-24:
    `workgroups/<id>/root/workspaces/*.toml`) is read over the bridge endpoint —
    `Endpoint::in_dir("sapphire-bridge", runtime_dir())`, the bridge's IPC methods
    (`bridge.workspaces` for the list, `bridge.*` as `map`'s selector resolution back-end)
-   — directly, not relayed through the app server. `workgroup` and `device` commands are
+   — directly, not relayed through the app server. In Phase 1 the *local* layer of
+   `workspace list` is read by the CLI directly from the marker's `config.toml` (it needs
+   no server process and stays useful when one is not running); whether to move that read
+   behind the app server's IPC in Phase 2 is open. `workgroup` and `device` commands are
    the bridge's business end to end: they open the bridge endpoint and call the bridge's
    IPC methods directly (path 1, unchanged). Every one of these commands reports clearly
    when the process it needs is not running: no server, no start-on-demand, exit 1 with

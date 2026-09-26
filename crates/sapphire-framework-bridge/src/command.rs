@@ -17,7 +17,7 @@ use sapphire_bridge_api::{
     BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
 use sapphire_framework_service::{Environment, RunAs, ServiceCommand, ServiceSpec, SystemManager};
-use sapphire_ipc::{Endpoint, SpawnConfig};
+use sapphire_ipc::Endpoint;
 
 #[cfg(feature = "node")]
 use crate::NetConfig;
@@ -248,9 +248,7 @@ async fn connect(version: &str) -> Result<Option<BridgeClient>> {
     if !sapphire_ipc::probe(&endpoint).await? {
         return Ok(None);
     }
-    Ok(Some(
-        BridgeClient::connect("cli", version, &SpawnConfig::disabled()).await?,
-    ))
+    Ok(Some(BridgeClient::connect("cli", version).await?))
 }
 
 /// Report what the running bridge knows about itself.

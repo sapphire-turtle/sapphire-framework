@@ -34,9 +34,7 @@ pub use handshake::{ClientInfo, Hello, ManagedBy, ServerInfo, Welcome};
 pub use message::{Message, Notification, Request, Response, ResponsePayload, RpcError, codes};
 pub use raw::{RawIo, RawStream};
 pub use router::{HANDSHAKE_METHOD, HandlerFuture, PeerHandle, RequestCtx, Router, serve};
-pub use spawn::{
-    SHUTDOWN_METHOD, STALE_LOCK_AGE, SpawnConfig, connect, connect_raw, ensure_server, probe,
-};
+pub use spawn::{SHUTDOWN_METHOD, connect, connect_or_absent, connect_raw, probe};
 #[cfg(unix)]
 pub use unix::{UnixListenerHandle, bind, peer_uid};
 #[cfg(windows)]

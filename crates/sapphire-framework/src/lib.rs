@@ -118,7 +118,42 @@ pub mod prelude {
 
     // The app server skeleton: an application builds one of these, adds its own
     // methods, and runs it. `WorkspaceHost` is here for handlers that reach a
-    // workspace the same way the framework's own do.
+    // workspace the same way the framework's own do. `FrameworkCommand` is the
+    // flat command vocabulary an app flattens into its own CLI beside its own
+    // subcommands (issue #142); the sub-enums and the typed status report come
+    // with it, so an app never needs the `server` module to build its CLI.
     #[cfg(feature = "server")]
-    pub use sapphire_framework_server::{AppServer, ServerCommand, WorkspaceHost};
+    pub use sapphire_framework_server::{
+        AppServer, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
+        WorkspaceCommand, WorkspaceHost,
+    };
+}
+
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    //! Pin the prelude's server-side surface (issue #142, plan Task 5).
+
+    use super::prelude::*;
+
+    #[test]
+    fn the_prelude_exports_the_whole_framework_command_surface() {
+        // The flat command vocabulary an app flattens beside its own verbs.
+        let _serve: FrameworkCommand = FrameworkCommand::Serve;
+        let _status: FrameworkCommand = FrameworkCommand::Status;
+        let _workspace: FrameworkCommand = FrameworkCommand::Workspace(WorkspaceCommand::List);
+        let _workgroup: FrameworkCommand = FrameworkCommand::Workgroup(WorkgroupCommand::List);
+        let _device: FrameworkCommand = FrameworkCommand::Device(DeviceCommand::List);
+
+        // The typed status report shared by the CLI and the IPC `server.info`.
+        let _report = StatusReport {
+            running: false,
+            version: None,
+            pid: None,
+            managed_by: None,
+            app: vec![StatusRow {
+                name: "sync".to_owned(),
+                value: "enabled".to_owned(),
+            }],
+        };
+    }
 }

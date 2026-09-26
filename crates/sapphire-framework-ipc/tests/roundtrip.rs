@@ -254,3 +254,34 @@ async fn a_call_made_after_the_server_has_gone_fails_rather_than_hanging() {
         "got {err:?}"
     );
 }
+
+/// A server of another version cannot be connected to and cannot be replaced, so the
+/// handshake answers with [`Error::ServiceVersionMismatch`], whose advice is to restart
+/// the service — this crate no longer retires anything, and a version mismatch is the
+/// caller's to resolve by restarting (migrated from the deleted `race.rs`).
+#[tokio::test]
+async fn a_server_of_another_version_is_reported_not_replaced() {
+    let (client_conn, server_conn) = Connection::pair();
+    let wrong = ServerInfo {
+        version: "9.9.9".into(),
+        ..server_info()
+    };
+    tokio::spawn(async move {
+        let _ = serve(server_conn, router(), "test-app", wrong).await;
+    });
+
+    let err = Client::handshake(client_conn, "test-app", client_info())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sapphire_framework_ipc::Error::ServiceVersionMismatch { .. }
+        ),
+        "got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("restart the service"),
+        "the error must carry the advice: {err}"
+    );
+}

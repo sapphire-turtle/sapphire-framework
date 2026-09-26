@@ -300,6 +300,27 @@ mod tests {
     }
 
     #[test]
+    fn invite_params_carry_the_cli_arguments() {
+        let params = InviteParams {
+            name: "phone".into(),
+            ttl: Some(600),
+            workgroup: None,
+        };
+        // Serialisation shape is the contract with the bridge's handler; pin it.
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(json["name"], "phone");
+        assert_eq!(json["ttl"], 600);
+        assert!(json.get("workgroup").is_none());
+    }
+
+    #[test]
+    fn workspaces_result_round_trips() {
+        let raw = serde_json::json!({ "workspaces": [] });
+        let parsed: WorkspacesResult = serde_json::from_value(raw).unwrap();
+        assert!(parsed.workspaces.is_empty());
+    }
+
+    #[test]
     fn an_open_header_round_trips_and_is_tagged() {
         let header = DataHeader::Open {
             workspace_id: id(),

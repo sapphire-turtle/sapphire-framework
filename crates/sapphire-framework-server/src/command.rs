@@ -1,147 +1,606 @@
-//! The `server` subcommands an application flattens into its own CLI.
+//! The framework-provided half of an application's CLI.
 
+use std::fmt::Write as _;
+use std::path::PathBuf;
+
+use sapphire_backend::WorkspaceRegistry;
+use sapphire_backend::protocol as proto;
+use sapphire_bridge_api::{BridgeClient, InviteParams, JoinParams};
 use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
-use sapphire_ipc::{ClientInfo, Endpoint, SpawnConfig, ensure_server};
+use sapphire_ipc::{ClientInfo, Endpoint, ManagedBy};
+use sapphire_workspace::{AppContext, Workspace};
+use serde::{Deserialize, Serialize};
 
 use crate::AppServer;
 use crate::error::{Error, Result};
-use crate::privilege::PrivilegeConfig;
 
-/// Subcommands for managing this application's server.
-#[derive(Debug, clap::Subcommand)]
-pub enum ServerCommand {
-    /// Run the server in this process.
-    Run(RunArgs),
+/// The typed answer to a status question, shared by the CLI and the IPC `server.info`
+/// response (spec decision 4).
+///
+/// When a server answers, the CLI prints the framework's fields and then the
+/// application's [rows](StatusReport::app) as `name: value` lines; a GUI could read the
+/// same serialised shape from the IPC method instead. When nothing is listening, the
+/// report is [`StatusReport::running`] = `false` and the app rows are skipped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusReport {
+    /// Whether a server is answering at all.
+    pub running: bool,
+    /// The server's version, when it is running.
+    pub version: Option<String>,
+    /// Its pid, when it is running.
+    pub pid: Option<u32>,
+    /// How the running server was started, when it is running.
+    pub managed_by: Option<ManagedBy>,
+    /// The application's own rows, rendered after the framework's.
+    pub app: Vec<StatusRow>,
+}
+
+/// One application-provided line of the status report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusRow {
+    /// The row's name, e.g. `sync`.
+    pub name: String,
+    /// The value shown beside it.
+    pub value: String,
+}
+
+/// The framework's commands, flattened into an application's CLI (spec decision 2).
+///
+/// An application composes these beside its own verbs by giving its subcommand enum a
+/// `#[command(flatten)] Framework(FrameworkCommand)` variant, so every verb — the app's and
+/// the framework's — sits at the same top level. The parse tests below pin that shape.
+#[derive(Debug, Default, clap::Subcommand)]
+pub enum FrameworkCommand {
+    /// Run the server in this process until SIGTERM or SIGINT (the bare invocation).
+    #[default]
+    Serve,
     /// Report whether a server is running, and which version.
     Status,
-    /// Ask a running server to exit.
-    Stop,
     /// Install, remove or report this application's operating-system service.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Create, list and map this application's workspaces.
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
+    /// Found, show or join the workgroup this device belongs to.
+    #[command(subcommand)]
+    Workgroup(WorkgroupCommand),
+    /// List the workgroup's devices, invite one or retire one.
+    #[command(subcommand)]
+    Device(DeviceCommand),
 }
 
-/// Arguments of `server run`.
-#[derive(Debug, clap::Args)]
-pub struct RunArgs {
-    /// Stay in the foreground and never exit on idle.
-    ///
-    /// Without it the server exits once nothing has used it for a while, which is what a
-    /// server started on demand by a CLI should do.
-    #[arg(long)]
-    pub foreground: bool,
-}
-
-impl ServerCommand {
+impl FrameworkCommand {
     /// Carry out the command, returning the process exit code.
-    pub async fn dispatch(self, server: AppServer, app: &str, version: &str) -> Result<i32> {
+    ///
+    /// The application matches its own variants first, then hands the framework's here;
+    /// the app name and the service spec come from `server` itself.
+    pub async fn dispatch(self, server: AppServer, version: &'static str) -> Result<i32> {
         match self {
-            ServerCommand::Run(args) => {
-                let server = if args.foreground {
-                    server.idle_exit(None)
-                } else {
-                    server
-                };
+            FrameworkCommand::Serve => {
                 server.run().await?;
                 Ok(0)
             }
-            ServerCommand::Status => status(&Endpoint::for_app(app)?, app, version).await,
-            ServerCommand::Stop => stop(&Endpoint::for_app(app)?, app, version).await,
-            // The command decides and prints; the spec is what this server described of
-            // itself, so an application never assembles one by hand. The environment is
-            // this machine as it is right now — `Environment::detect` reads it once.
-            ServerCommand::Service(command) => {
+            FrameworkCommand::Status => crate::command::status(&server, version).await,
+            FrameworkCommand::Service(command) => {
                 let spec = server.service_spec();
                 command
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
+            FrameworkCommand::Workspace(command) => {
+                command.dispatch(server.app_name(), version).await
+            }
+            FrameworkCommand::Workgroup(command) => command.dispatch(version).await,
+            FrameworkCommand::Device(command) => command.dispatch(version).await,
         }
     }
 }
 
-/// The [`SpawnConfig`] an application's CLI should use.
+/// The `workspace` subcommands (spec decisions 1/6/7).
 ///
-/// An application configured for privilege separation runs its server as root, and a CLI
-/// running as the human user cannot start one (spec §2.6, §3). Saying so up front is much
-/// clearer than letting the spawn fail somewhere inside the service manager's territory.
-pub fn spawn_config_for(privileges: Option<&PrivilegeConfig>) -> SpawnConfig {
-    match privileges {
-        Some(_) => SpawnConfig::disabled(),
-        None => SpawnConfig::default(),
+/// `init` and `map`'s write go to the app's server over IPC, because the server owns the
+/// marker directories, the registries and the sync ids; `list` reads the local registry
+/// the same way the server does and then asks the bridge for the workgroup's ledger;
+/// `map`'s selector resolution is the workgroup's word, so it goes to the bridge first.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkspaceCommand {
+    /// Create this app's workspace home in the given directory.
+    Init {
+        /// Where the workspace root goes. Defaults to the current directory.
+        dir: Option<PathBuf>,
+        /// Also start syncing it, which publishes it into the workgroup ledger.
+        #[arg(long)]
+        sync: bool,
+    },
+    /// List this app's workspaces: local rows first, then the workgroup's.
+    List,
+    /// Tie a local directory to a workspace the workgroup knows.
+    Map {
+        /// The workspace, by name or id, as the workgroup lists it.
+        selector: String,
+        /// The local directory to map it to. Defaults to the current one.
+        dir: Option<PathBuf>,
+    },
+}
+
+impl WorkspaceCommand {
+    /// Carry out the command, returning the process exit code.
+    ///
+    /// `app` names the endpoint to open (`Endpoint::for_app`); `version` is this
+    /// process's own, for the handshake.
+    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
+        match self {
+            WorkspaceCommand::Init { dir, sync } => workspace_init(app, version, dir, sync).await,
+            WorkspaceCommand::List => workspace_list(app, version).await,
+            WorkspaceCommand::Map { selector, dir } => {
+                workspace_map(app, version, &selector, dir).await
+            }
+        }
     }
 }
 
-fn client_info(version: &str) -> ClientInfo {
-    ClientInfo {
+/// The `workgroup` subcommands.
+///
+/// The workgroup's ledger is the bridge's business end to end, so these go to the bridge's
+/// endpoint directly — except `create`, which the bridge's control plane has no method
+/// for: it works on the bridge's directory in the bridge's own CLI, and this command
+/// prints that CLI's name instead of pulling the bridge crate in here.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkgroupCommand {
+    /// Found a workgroup on this host.
+    Create {
+        /// The workgroup's name.
+        name: String,
+        /// This host's device name inside it.
+        #[arg(long)]
+        device_name: String,
+    },
+    /// Show the workgroup this host belongs to.
+    List,
+    /// Join the workgroup a ticket names.
+    Join {
+        /// The ticket the inviting device printed.
+        ticket: String,
+        /// The name this device will carry. Defaults to this host's name.
+        #[arg(long)]
+        device_name: Option<String>,
+    },
+}
+
+impl WorkgroupCommand {
+    /// Carry out the command, returning the process exit code.
+    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+        match self {
+            WorkgroupCommand::Create { name, device_name } => {
+                println!(
+                    "run: sapphire-bridge workgroup create --device-name {device_name} {name}"
+                );
+                Ok(1)
+            }
+            WorkgroupCommand::List => {
+                let client = connect_running(version).await?;
+                match client.status().await?.workgroup {
+                    Some(workgroup) => {
+                        println!("{} ({})", workgroup.name, workgroup.workgroup_id);
+                        Ok(0)
+                    }
+                    None => {
+                        println!("this host has not joined a workgroup");
+                        Ok(1)
+                    }
+                }
+            }
+            WorkgroupCommand::Join {
+                ticket,
+                device_name,
+            } => {
+                let client = connect_running(version).await?;
+                let joined = client
+                    .join(JoinParams {
+                        ticket,
+                        device_name,
+                    })
+                    .await?;
+                println!(
+                    "joined workgroup {} ({}); this device is {}",
+                    joined.workgroup_name, joined.workgroup_id, joined.device_id
+                );
+                Ok(0)
+            }
+        }
+    }
+}
+
+/// The `device` subcommands.
+///
+/// The ledger's word for taking a device out is `retire` — a device id is written into
+/// synced content and must keep resolving, so its record stays as a tombstone — and the
+/// bridge's control plane has no method for retiring one, so this command prints the
+/// bridge CLI's line instead.
+#[derive(Debug, clap::Subcommand)]
+pub enum DeviceCommand {
+    /// List the workgroup's devices, and which are reachable.
+    List,
+    /// Create an invite ticket for a device that is about to join.
+    Invite {
+        /// What the joining device will be called.
+        #[arg(long)]
+        name: String,
+        /// How long the invite stays good, in seconds.
+        #[arg(long)]
+        ttl: Option<u64>,
+        /// The workgroup to invite into, by name or id.
+        #[arg(long)]
+        workgroup: Option<String>,
+    },
+    /// Retire a device, so it may no longer connect.
+    Retire {
+        /// The device's name or id.
+        selector: String,
+    },
+}
+
+impl DeviceCommand {
+    /// Carry out the command, returning the process exit code.
+    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+        match self {
+            DeviceCommand::List => {
+                let client = connect_running(version).await?;
+                let peers = client.peers().await?;
+                if peers.peers.is_empty() {
+                    println!("no devices");
+                    return Ok(0);
+                }
+                for peer in peers.peers {
+                    println!(
+                        "{} {}{}",
+                        peer.name,
+                        peer.device_id,
+                        if peer.connected { " (online)" } else { "" }
+                    );
+                }
+                Ok(0)
+            }
+            DeviceCommand::Invite {
+                name,
+                ttl,
+                workgroup,
+            } => {
+                let client = connect_running(version).await?;
+                let invite = client
+                    .invite(InviteParams {
+                        name,
+                        ttl,
+                        workgroup,
+                    })
+                    .await?;
+                // The ticket on its own line, and nothing else on it: this is the one
+                // output a user pipes to the joining device.
+                println!("{}", invite.ticket);
+                Ok(0)
+            }
+            DeviceCommand::Retire { selector } => {
+                println!("run: sapphire-bridge device retire {selector}");
+                Ok(1)
+            }
+        }
+    }
+}
+
+/// Connect to the running bridge, or fail with the message the command layer prints.
+///
+/// One wrapper for every arm that talks to the bridge: the error's text is what the
+/// `main` prints, so the absence case reads "no sapphire-bridge is running" without each
+/// arm repeating it.
+async fn connect_running(version: &str) -> Result<BridgeClient> {
+    BridgeClient::connect_running("cli", version)
+        .await
+        .map_err(Error::from)
+}
+
+/// `workspace init`: the server does the creating, over IPC.
+///
+/// The server owns the marker, the registry and the sync ids, so a workspace created
+/// here is one the server already knows and a GUI sharing the registry sees. Nothing is
+/// listening → the one line and exit 1; nothing is ever started (Global Constraints).
+/// `--sync` rides the server's existing `sync.enable` path on the same connection, and
+/// its state is printed after, so an unjoined host's "no workgroup knows it yet" is
+/// plain.
+async fn workspace_init(
+    app: &'static str,
+    version: &'static str,
+    dir: Option<PathBuf>,
+    sync: bool,
+) -> Result<i32> {
+    let endpoint = Endpoint::for_app(app)?;
+    let client_info = ClientInfo {
         kind: "cli".to_owned(),
         version: version.to_owned(),
         pid: std::process::id(),
-    }
-}
-
-async fn status(endpoint: &Endpoint, app: &str, version: &str) -> Result<i32> {
-    if !sapphire_ipc::probe(endpoint).await? {
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?
+    else {
         println!("no {app} server is running");
         return Ok(1);
-    }
-    let (_, info) = ensure_server(
-        endpoint,
-        app,
-        client_info(version),
-        &SpawnConfig::disabled(),
-    )
-    .await?;
-    println!(
-        "{app} server running: version {}, pid {}, started as {:?}",
-        info.version, info.pid, info.managed_by
-    );
-    Ok(0)
-}
+    };
 
-async fn stop(endpoint: &Endpoint, app: &str, version: &str) -> Result<i32> {
-    if !sapphire_ipc::probe(endpoint).await? {
-        println!("no {app} server is running");
-        return Ok(1);
-    }
-    let (client, info) = ensure_server(
-        endpoint,
-        app,
-        client_info(version),
-        &SpawnConfig::disabled(),
-    )
-    .await?;
-    let _: serde_json::Value = client
-        .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let result: proto::WorkspaceInitResult = client
+        .call(proto::WORKSPACE_INIT, proto::WorkspaceInitParams { dir })
         .await?;
-    println!("asked the {app} server (pid {}) to exit", info.pid);
+    if result.created {
+        println!("initialized {app} workspace in {}", result.root.display());
+    } else {
+        println!(
+            "{} already exists (workspace {})",
+            result.root.display(),
+            result.workspace_id
+        );
+    }
+
+    if sync {
+        let enabled: proto::SyncEnableResult = client
+            .call(
+                proto::SYNC_ENABLE,
+                proto::WsParams {
+                    ws: result.root.clone(),
+                },
+            )
+            .await?;
+        // Never fails on account of the bridge: the workspace is synced either way, and
+        // the status is the user's word for what the workgroup does not know yet.
+        let status: proto::SyncStatusResult = client
+            .call(
+                proto::SYNC_STATUS,
+                proto::WsParams {
+                    ws: result.root.clone(),
+                },
+            )
+            .await
+            .unwrap_or(proto::SyncStatusResult {
+                enabled: true,
+                workspace_id: Some(enabled.workspace_id),
+                peers: 0,
+                paused: None,
+                last_error: None,
+                bridge_available: false,
+            });
+        println!(
+            "syncing as {} ({} peer{})",
+            enabled.workspace_id,
+            status.peers,
+            if status.peers == 1 { "" } else { "s" }
+        );
+    }
     Ok(0)
 }
 
+/// `workspace list`: local rows from the registry, then the workgroup's ledger.
+///
+/// The registry lives in the workspace's marker `config.toml`, and the CLI is inside a
+/// workspace when it runs — the same upward walk `find_from` does. Rows print in the
+/// registry's order, as `id path`. The workgroup's ledger is the bridge's to answer, and
+/// the bridge being down is not the local half's failure: local rows still print, the
+/// ledger's absence is one line, and the exit is 0.
+async fn workspace_list(app: &'static str, version: &'static str) -> Result<i32> {
+    let _ = version;
+    // `Workspace` holds its context for `'static`, so the one-off context leaks — one
+    // small struct per `workspace list` run, and the process is about to exit anyway.
+    let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new(app)));
+    let workspace = match Workspace::find(ctx) {
+        Ok(workspace) => workspace,
+        Err(_) => {
+            println!("no {app} workspace contains the current directory");
+            return Ok(0);
+        }
+    };
+    let registry = workspace_registry(&workspace.config_path());
+    if registry.ids().next().is_none() {
+        println!(
+            "no workspaces are registered in {}",
+            workspace.config_path().display()
+        );
+    }
+    for id in registry.ids() {
+        let entry = registry.get(id);
+        let path = entry
+            .and_then(|e| e.path.clone())
+            .unwrap_or_else(|| "-".into());
+        println!("{id} {}", path.display());
+    }
+
+    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
+        println!("no sapphire-bridge is running");
+        return Ok(0);
+    };
+    let workspaces = client.workspaces().await.map_err(Error::from)?;
+    if !workspaces.workspaces.is_empty() {
+        println!();
+        for workspace in workspaces.workspaces {
+            println!(
+                "{} {} {}",
+                workspace.name, workspace.workspace_id, workspace.app_name
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// The registry a marker's `config.toml` holds, or an empty one.
+///
+/// The same read-modify-write-free read the server's `init` handler does; a config of
+/// another shape is an empty registry, because the marker is the app's own file.
+fn workspace_registry(path: &std::path::Path) -> WorkspaceRegistry {
+    #[derive(serde::Deserialize, Default)]
+    struct Config {
+        #[serde(default)]
+        workspace: WorkspaceRegistry,
+    }
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            toml::from_str::<Config>(&text)
+                .map(|config| config.workspace)
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+/// `workspace map`: the bridge resolves the selector, the server takes the write.
+///
+/// The resolution is the workgroup's word (which workspace, by what id), the write is the
+/// server's (`sync.map` places the id and starts the replica). The bridge is required —
+/// without it there is nothing to resolve against, so exit 1 — and so is the server,
+/// because the write and the replica are its.
+async fn workspace_map(
+    app: &'static str,
+    version: &'static str,
+    selector: &str,
+    dir: Option<PathBuf>,
+) -> Result<i32> {
+    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
+        println!("no sapphire-bridge is running");
+        return Ok(1);
+    };
+    let workspaces = client.workspaces().await.map_err(Error::from)?;
+    let wanted = workspaces
+        .workspaces
+        .iter()
+        // A name is the user-facing handle; the id is the exact one.
+        .find(|w| w.name == selector || w.workspace_id.to_string() == selector)
+        .ok_or_else(|| Error::UnknownWorkspaceName(selector.to_owned()))?;
+
+    let endpoint = Endpoint::for_app(app)?;
+    let client_info = ClientInfo {
+        kind: "cli".to_owned(),
+        version: version.to_owned(),
+        pid: std::process::id(),
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?
+    else {
+        println!("no {app} server is running");
+        return Ok(1);
+    };
+
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let mapped: proto::SyncEnableResult = client
+        .call(
+            proto::SYNC_MAP,
+            proto::SyncMapParams {
+                workspace: wanted.workspace_id.to_string(),
+                dir,
+            },
+        )
+        .await?;
+    println!("mapped {} as {}", wanted.name, mapped.workspace_id);
+    Ok(0)
+}
+
+/// The status command's face: render and return the exit code, going to the process's
+/// standard output.
+async fn status(server: &AppServer, version: &str) -> Result<i32> {
+    let endpoint = Endpoint::for_app(server.app_name())?;
+    run_status(&endpoint, server.app_name(), version).await
+}
+
+/// Probe, handshake and call `SERVER_INFO` in one go, or report absence.
+///
+/// Every step the CLI needs — liveness and the version gate — is inside
+/// [`connect_or_absent`], so the command is that call plus one `SERVER_INFO` round trip.
+/// The version gate doubles as the liveness check here: a live server of another version
+/// is `ServiceVersionMismatch`, which names both versions and advises restarting the
+/// service. The report goes through [`run_status_into`] so tests can capture it.
+async fn run_status(endpoint: &Endpoint, app: &str, version: &str) -> Result<i32> {
+    let mut out = String::new();
+    let code = run_status_into(endpoint, app, version, &mut out).await?;
+    for line in out.lines() {
+        println!("{line}");
+    }
+    Ok(code)
+}
+
+/// [`run_status`], writing the rendered lines into `out` instead of the process's
+/// standard output.
+async fn run_status_into(
+    endpoint: &Endpoint,
+    app: &str,
+    version: &str,
+    out: &mut String,
+) -> Result<i32> {
+    let client_info = ClientInfo {
+        kind: "cli".to_owned(),
+        version: version.to_owned(),
+        pid: std::process::id(),
+    };
+    let Some((client, _)) = sapphire_ipc::connect_or_absent(endpoint, app, client_info).await?
+    else {
+        // Nothing is listening: the framework's half is only the one line, and the
+        // application's rows are skipped (there is no server to have configured them).
+        writeln!(out, "no {app} server is running").expect("writing to a String cannot fail");
+        return Ok(1);
+    };
+    let report: StatusReport = client
+        .call(
+            sapphire_backend::protocol::SERVER_INFO,
+            serde_json::json!({}),
+        )
+        .await?;
+    writeln!(out, "running: {}", report.running).expect("writing to a String cannot fail");
+    if let Some(version) = &report.version {
+        writeln!(out, "version: {version}").expect("writing to a String cannot fail");
+    }
+    if let Some(pid) = report.pid {
+        writeln!(out, "pid: {pid}").expect("writing to a String cannot fail");
+    }
+    if let Some(managed_by) = &report.managed_by {
+        writeln!(out, "managed_by: {managed_by:?}").expect("writing to a String cannot fail");
+    }
+    for row in &report.app {
+        writeln!(out, "{}: {}", row.name, row.value).expect("writing to a String cannot fail");
+    }
+    Ok(0)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
 
+    /// The composition every app binary uses: an app-owned subcommand enum whose framework
+    /// verbs ride in on a flattened variant (spec decision 2).
+    ///
+    /// clap 4 rejects `#[command(flatten)]` on a struct field beside a
+    /// `#[command(subcommand)]` field — two subcommand enums cannot share one level, and a
+    /// flattened field must implement `clap::Args`, which the `Subcommand` derive does not
+    /// provide. The plan's Risks section names this probe as the decision, and the flat
+    /// fallback is what it decided: one subcommand enum, every verb at the top level.
     #[derive(Parser)]
     struct Probe {
         #[command(subcommand)]
-        server: ServerCommand,
+        command: Command,
+    }
+
+    #[derive(Debug, clap::Subcommand)]
+    enum Command {
+        /// An app-specific verb that must parse beside the framework's.
+        Greet,
+        #[command(flatten)]
+        Framework(FrameworkCommand),
     }
 
     #[test]
-    fn the_subcommands_parse() {
+    fn app_and_framework_commands_parse_side_by_side() {
+        let probe = Probe::try_parse_from(["app", "greet"]).unwrap();
+        assert!(matches!(probe.command, Command::Greet));
+        let probe = Probe::try_parse_from(["app", "serve"]).unwrap();
         assert!(matches!(
-            Probe::try_parse_from(["app", "run"]).unwrap().server,
-            ServerCommand::Run(_)
+            probe.command,
+            Command::Framework(FrameworkCommand::Serve)
         ));
+        let probe = Probe::try_parse_from(["app", "status"]).unwrap();
         assert!(matches!(
-            Probe::try_parse_from(["app", "status"]).unwrap().server,
-            ServerCommand::Status
-        ));
-        assert!(matches!(
-            Probe::try_parse_from(["app", "stop"]).unwrap().server,
-            ServerCommand::Stop
+            probe.command,
+            Command::Framework(FrameworkCommand::Status)
         ));
     }
 
@@ -159,11 +618,77 @@ mod tests {
     }
 
     #[test]
-    fn run_takes_a_foreground_flag() {
-        let parsed = Probe::try_parse_from(["app", "run", "--foreground"]).unwrap();
-        match parsed.server {
-            ServerCommand::Run(args) => assert!(args.foreground),
-            other => panic!("{other:?}"),
+    fn the_workspace_and_bridge_commands_parse() {
+        for args in [
+            vec!["app", "workspace", "init"],
+            vec!["app", "workspace", "init", "papers"],
+            vec!["app", "workspace", "init", "--sync"],
+            vec!["app", "workspace", "list"],
+            vec!["app", "workspace", "map", "papers", "papers-remote"],
+            vec![
+                "app",
+                "workgroup",
+                "create",
+                "--device-name",
+                "laptop",
+                "home",
+            ],
+            vec!["app", "workgroup", "list"],
+            vec![
+                "app",
+                "workgroup",
+                "join",
+                "--device-name",
+                "laptop",
+                "TICKET",
+            ],
+            vec!["app", "device", "list"],
+            vec!["app", "device", "invite", "--name", "phone"],
+            vec!["app", "device", "retire", "phone"],
+        ] {
+            assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn bare_invocation_defaults_to_serve() {
+        // <app> with no subcommand at all means serve (spec decision 1). An app CLI
+        // achieves it by `Option<Command>` and handing the framework's default here; this
+        // probe pins the framework half.
+        #[derive(Parser)]
+        struct Bare {
+            #[command(subcommand)]
+            command: Option<Command>,
+        }
+        let bare = Bare::try_parse_from(["app"]).unwrap();
+        assert!(bare.command.is_none());
+        assert!(matches!(
+            FrameworkCommand::default(),
+            FrameworkCommand::Serve
+        ));
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use sapphire_workspace::AppContext;
+
+    static CTX: AppContext = AppContext::new("sapphire-statustest");
+
+    /// Wait until something is listening on `endpoint`.
+    ///
+    /// `tokio::spawn(server.run())` only schedules the server; without this wait a fast
+    /// `run_status` probe can run before `run` has bound the socket, and with nothing
+    /// listening that single unlucky probe is the whole test failing.
+    async fn wait_until_listening(endpoint: &Endpoint) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !sapphire_ipc::probe(endpoint).await.unwrap() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the server never started listening"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -171,63 +696,52 @@ mod tests {
     async fn status_reports_no_server_when_none_is_running() {
         let tmp = tempfile::tempdir().unwrap();
         let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
-        let code = status(&endpoint, "status-test", "0.0.0").await.unwrap();
+        let code = run_status(&endpoint, "status-test", "0.0.0").await.unwrap();
         assert_eq!(code, 1, "no server is a non-zero exit");
     }
 
-    #[tokio::test]
-    async fn stop_reports_no_server_when_none_is_running() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_shows_the_extension_rows_of_a_running_server() {
         let tmp = tempfile::tempdir().unwrap();
-        let endpoint = sapphire_ipc::Endpoint::in_dir("stop-test", tmp.path().to_path_buf());
-        let code = stop(&endpoint, "stop-test", "0.0.0").await.unwrap();
-        assert_eq!(code, 1);
-    }
-}
+        let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
+        let server = AppServer::new(&CTX, "0.0.0")
+            .endpoint(endpoint.clone())
+            .status_rows(std::sync::Arc::new(|| {
+                vec![StatusRow {
+                    name: "sync".into(),
+                    value: "on".into(),
+                }]
+            }));
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
 
-#[cfg(test)]
-mod spawn_policy_tests {
-    use super::*;
-    use crate::privilege::{PrivilegeConfig, UserSpec};
+        // The report goes through the sink face so the rendering is asserted, not just
+        // the exit code.
+        let mut out = String::new();
+        let code = run_status_into(&endpoint, CTX.app_name, "0.0.0", &mut out)
+            .await
+            .unwrap();
+        assert_eq!(code, 0);
+        assert!(out.contains("running: true"), "output was: {out}");
+        assert!(out.contains("sync: on"), "output was: {out}");
 
-    #[test]
-    fn an_ordinary_app_may_start_its_own_server() {
-        assert!(spawn_config_for(None).allow_spawn);
-    }
-
-    #[test]
-    fn a_privilege_separated_app_may_not() {
-        let config = PrivilegeConfig {
-            run_as: UserSpec::Name("alice".into()),
-            helper: None,
-        };
-        assert!(!spawn_config_for(Some(&config)).allow_spawn);
-    }
-
-    #[tokio::test]
-    async fn the_error_says_to_start_the_service() {
-        let tmp = tempfile::tempdir().unwrap();
-        let endpoint = sapphire_ipc::Endpoint::in_dir("privsep-cli-test", tmp.path().to_path_buf());
-        let config = PrivilegeConfig {
-            run_as: UserSpec::Name("alice".into()),
-            helper: None,
-        };
-
-        let err = sapphire_ipc::ensure_server(
+        let (client, _) = sapphire_ipc::connect_or_absent(
             &endpoint,
-            "privsep-cli-test",
+            CTX.app_name,
             sapphire_ipc::ClientInfo {
-                kind: "cli".into(),
+                kind: "test".into(),
                 version: "0.0.0".into(),
                 pid: std::process::id(),
             },
-            &spawn_config_for(Some(&config)),
         )
         .await
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("not allowed to start one"),
-            "{err}"
-        );
+        .unwrap()
+        .expect("the server is listening");
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
     }
 }
 
@@ -255,8 +769,11 @@ mod service_spec_tests {
 
     #[test]
     fn the_generated_spec_runs_the_server_not_the_cli() {
+        // A service manager starts the executable directly, and the executable's bare
+        // invocation is `serve`: the unit's argv must be exactly that, so the server that
+        // starts has no CLI verbs on its command line to misparse.
         let spec = AppServer::new(&CTX, "0.0.0").service_spec();
-        assert_eq!(spec.args, vec!["server".to_owned(), "run".to_owned()]);
+        assert_eq!(spec.args, vec!["serve".to_owned()]);
     }
 
     #[test]

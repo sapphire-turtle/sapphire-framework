@@ -99,6 +99,9 @@ impl Client {
         app: &str,
         client: ClientInfo,
     ) -> Result<(Client, ServerInfo)> {
+        // Remembered here so the version gate below can name both sides; the moved-out
+        // `client` goes into the hello.
+        let ours = client.version.clone();
         let sender = conn.sender();
         let hello = Hello {
             protocol: crate::PROTOCOL_VERSION,
@@ -129,6 +132,16 @@ impl Client {
             return Err(Error::VersionMismatch {
                 ours: crate::PROTOCOL_VERSION,
                 theirs: welcome.protocol,
+            });
+        }
+
+        // The crate-version gate. Nothing replaces a server any more, so every mismatch
+        // is an error; the message's advice (restart the service) is written for the only
+        // kind of server that survives one, the service-managed kind.
+        if welcome.server.version != ours {
+            return Err(Error::ServiceVersionMismatch {
+                running: welcome.server.version,
+                ours,
             });
         }
 

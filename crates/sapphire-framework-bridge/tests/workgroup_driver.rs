@@ -37,7 +37,7 @@ async fn eventually(what: &str, cond: impl Fn() -> bool) {
 /// the retiring host is the *smaller* device id — the side the dial rule would normally
 /// have left silent, because only greater ids dial. This is the regression the probes
 /// chased: the tombstone must ride the dialing exception for retired members, or a
-/// `device forget` on the founder never lands anywhere.
+/// `device retire` on the founder never lands anywhere.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retirement_from_the_smaller_id_reaches_the_greater_one() {
     let (_net, a, b) = paired().await;
@@ -54,7 +54,7 @@ async fn a_retirement_from_the_smaller_id_reaches_the_greater_one() {
     })
     .await;
 
-    // A retires the phone — the exact write `device forget` makes — whatever side of the
+    // A retires the phone — the exact write `device retire` makes — whatever side of the
     // id order the joiner landed on. The dialing exception for retired members is
     // symmetric (drive dials a retired member on either side of the id rule), so both
     // orders exercise the same code path; the id assertion the probes used is gone,

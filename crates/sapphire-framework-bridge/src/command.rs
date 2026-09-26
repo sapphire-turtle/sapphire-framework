@@ -155,6 +155,8 @@ impl BridgeCommand {
             BridgeCommand::Serve => run(version).await,
             BridgeCommand::Status => status(version).await,
             BridgeCommand::Log { follow, lines } => log_command(follow, lines),
+            // The service manager's own words, not the bridge's: `Environment::detect` reads
+            // this machine once, so the deciding is a function of a value the test can build.
             BridgeCommand::Service(command) => {
                 let spec = bridge_service_spec(version);
                 command

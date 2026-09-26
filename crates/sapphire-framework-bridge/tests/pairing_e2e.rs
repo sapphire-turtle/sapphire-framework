@@ -150,7 +150,7 @@ async fn a_ticket_that_was_already_used_does_not_admit_a_second_device() {
 /// retirement; this proves the running bridges carry it themselves. Nothing here scans or
 /// dials on a peer's behalf: both hosts run `Bridge::run_shared`, which is where the
 /// propagation a user gets must come from. This is the regression test for the review
-/// finding that a `device forget` stayed a local write until some fixture dialed.
+/// finding that a `device retire` stayed a local write until some fixture dialed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_retirement_reaches_a_running_bridge_without_a_fixture_dialing() {
     let net = LoopbackNetwork::new();
@@ -186,7 +186,7 @@ async fn a_retirement_reaches_a_running_bridge_without_a_fixture_dialing() {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 
-    // A retires the phone — the exact write `device forget` makes — and B's *running*
+    // A retires the phone — the exact write `device retire` makes — and B's *running*
     // bridge must refuse it afterwards, with nothing scanning or dialing for B.
     let wg_a = Workgroup::open(&BridgeDir::at(a.tmp.path().join("bridge")).unwrap())
         .unwrap()

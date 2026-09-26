@@ -95,7 +95,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム・**特権分離**） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンのプロトコルとクライアント（serde のみ・iroh 非依存） |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh） |
-| `apps/sapphire-bridge` | 上記のバイナリと CLI（`status` / `log` / `device` / `workgroup` / `workspace list`） |
+| `apps/sapphire-bridge` | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device`） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
 | `sapphire-framework-keys` | `KeyStore` / `AuthConfig` / `protect`。**非同期 HTTP エンドポイント**の認証用 |
 | `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec` + `run_as` / `helper_as`・systemd user/system・LaunchAgent・タスクスケジューラ） |
@@ -191,9 +191,13 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
 
 workgroup のメタ（デバイス台帳・ワークスペース一覧）はそれ自体が同期されるワークスペースなので、
 **bridge はそのアプリのサーバでもある**（アプリ名 `sapphire-bridge`、マーカー `.bridge/`）。
-CLI は `sapphire-bridge`（`status`, `log [--follow]`, `device …`, `workgroup …`,
-`workspace list`）。Phase 2（後続 issue）でこの CLI も `FrameworkCommand` のフラット語彙へ
-載せ替える — 現時点では bridge の CLI はそのまま動く。
+CLI は `sapphire-bridge`（`serve` / `status` / `service` / `workspace` / `workgroup` /
+`device`）。この CLI もアプリ側と同じフラット語彙を話す — bridge 独自の `BridgeCommand`
+（共有語彙を bridge 側で実行するもの）として、bridge 固有の `log` と並べて構成される。
+`workgroup create` と `device retire` は bridge ディレクトリに直接書き込むため、
+アプリ CLI 側の Phase 1 の同名ディレクティブも実在するコマンドを指すようになった。
+`workspace` は読み取り専用の `list` のみ — ワークスペースを workgroup に置くのは
+それを所有するアプリの仕事だからである（仕様 §1）。
 詳細はプロセス構成仕様 §5。
 
 ### セッションはエンドツーエンド

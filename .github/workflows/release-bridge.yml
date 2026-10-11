@@ -1,0 +1,83 @@
+name: Release sapphire-bridge binaries
+
+# Builds the cross-platform sapphire-bridge binaries and uploads them as
+# assets onto an existing GitHub release.
+#
+# Called from release-plz.yml right after the `v{version}` tag and release
+# are created, plus workflow_dispatch for retroactive uploads and manual
+# recovery.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+        description: 'Existing release tag to attach binaries to (e.g. v0.16.0).'
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        type: string
+        description: 'Existing release tag to attach binaries to (e.g. v0.16.0).'
+
+jobs:
+  build:
+    # macOS and Windows are not built by CI on every pull request, so a
+    # failure there must not keep the Linux binaries from being uploaded.
+    continue-on-error: ${{ matrix.continue-on-error }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary: sapphire-bridge
+            asset_name: sapphire-bridge-linux-x86_64
+            continue-on-error: false
+          - os: ubuntu-24.04-arm
+            binary: sapphire-bridge
+            asset_name: sapphire-bridge-linux-aarch64
+            continue-on-error: false
+          - os: macos-latest
+            binary: sapphire-bridge
+            asset_name: sapphire-bridge-macos-aarch64
+            continue-on-error: true
+          - os: windows-latest
+            binary: sapphire-bridge.exe
+            asset_name: sapphire-bridge-windows-x86_64.exe
+            continue-on-error: true
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      # Toolchain comes from rust-toolchain.toml; rustup installs it on first use.
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # grain-id needs protoc (prost-build); native-tls needs OpenSSL on Linux only.
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev pkg-config
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc
+
+      - run: cargo build --release --locked --package sapphire-bridge
+
+      - name: Rename binary
+        shell: bash
+        run: cp target/release/${{ matrix.binary }} ${{ matrix.asset_name }}
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: ${{ matrix.asset_name }}

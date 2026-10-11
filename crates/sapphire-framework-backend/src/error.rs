@@ -26,6 +26,8 @@ pub enum Error {
 
     /// The current directory is inside another workspace than the one the server serves
     /// (#215): acting would write where the user is not looking.
+    ///
+    /// Only returned by the deprecated `IpcBackend::check_cwd`.
     #[error(
         "the current directory is inside the workspace {cwd_workspace}, but the server serves \
          {current}; run `workspace select {cwd_workspace}` to switch"

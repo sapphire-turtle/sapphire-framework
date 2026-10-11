@@ -26,12 +26,13 @@ sapphire-workspace = "0.10"
 ### Initialise a workspace
 
 ```rust
+use std::path::Path;
 use sapphire_workspace::{AppContext, Workspace};
 
 let ctx = AppContext::new("my-app");
 
-// Walk up from cwd until a `.my-app` marker directory is found.
-let ws = Workspace::find_with_ctx(ctx, std::env::current_dir()?)?;
+// Open a known root that holds a `.my-app` marker directory.
+let ws = Workspace::from_root(ctx, Path::new("/path/to/workspace"))?;
 println!("root: {}", ws.root.display());
 println!("uuid: {}", ws.uuid);
 println!("cache: {}", ws.ctx.cache_dir().display());
@@ -40,11 +41,12 @@ println!("cache: {}", ws.ctx.cache_dir().display());
 ### Open and index
 
 ```rust
+use std::path::Path;
 use sapphire_workspace::{AppContext, Workspace, WorkspaceState};
 
 let ctx = AppContext::new("my-app");
-let ws = Workspace::find_with_ctx(ctx.clone(), std::env::current_dir()?)?;
-let state = WorkspaceState::open(ws, ctx)?;
+let ws = Workspace::from_root(ctx, Path::new("/path/to/workspace"))?;
+let state = WorkspaceState::open(ws)?;
 
 // Incrementally sync all Markdown / JSON / JSONL files into the retrieve DB.
 let (upserted, removed) = state.sync()?;
@@ -86,10 +88,12 @@ state.write_file(Path::new("notes/hello.md"), "# Hello\n\nworld")?;
 state.delete_file(Path::new("notes/old.md"))?;
 ```
 
-## Workspace discovery
+## Workspace marker
 
-A workspace root is detected by walking up the directory tree until a
-marker directory is found.  Pass an `AppContext` to every construction
+A workspace root is a directory holding a `.{app_name}` marker directory.
+The server serves exactly one workspace, so a client never discovers one by
+walking up from its current directory (`Workspace::find` / `find_from` are
+deprecated); open the root with `Workspace::from_root`.  Pass an `AppContext` to every construction
 method to set the `app_name` so that marker directories and XDG caches
 use the host application's namespace.  Initialise the context once at
 startup with `init(AppKind::…)`; it resolves the cache / data / config

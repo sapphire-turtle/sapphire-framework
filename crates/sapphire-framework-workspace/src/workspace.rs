@@ -31,6 +31,13 @@ impl Workspace {
     // ── marker-based discovery ────────────────────────────────────────────────
 
     /// Walk up from `start` until a directory containing `.{ctx.app_name}` is found.
+    ///
+    /// Deprecated: the server serves exactly one workspace, so a client never picks
+    /// one by its current directory. Open a known root with
+    /// [`from_root`](Self::from_root) instead.
+    #[deprecated(
+        note = "the server serves one workspace; open a known root with `Workspace::from_root`"
+    )]
     pub fn find_from(ctx: &'static AppContext, start: &Path) -> Result<Self> {
         let start = start.canonicalize().map_err(|e| Error::Access {
             path: start.to_owned(),
@@ -59,6 +66,12 @@ impl Workspace {
     }
 
     /// Walk up from the current working directory using `.{ctx.app_name}` as the marker.
+    ///
+    /// Deprecated for the same reason as [`find_from`](Self::find_from).
+    #[deprecated(
+        note = "the server serves one workspace; open a known root with `Workspace::from_root`"
+    )]
+    #[allow(deprecated)]
     pub fn find(ctx: &'static AppContext) -> Result<Self> {
         Self::find_from(ctx, &std::env::current_dir()?)
     }

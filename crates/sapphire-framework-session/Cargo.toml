@@ -21,6 +21,6 @@ tokio = { workspace = true, features = ["io-util", "rt", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]
-sapphire-sync = { package = "sapphire-framework-sync", version = "0.15.0", path = "../sapphire-framework-sync", features = ["test-util"] }
+sapphire-sync = { package = "sapphire-framework-sync", path = "../sapphire-framework-sync", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "time", "test-util"] }
 tempfile = "3"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Sapphire agent server
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sapphire-agent server run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

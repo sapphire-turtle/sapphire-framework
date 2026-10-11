@@ -74,8 +74,11 @@ pub struct Replica {
     fault: Option<crate::testing::FaultPoint>,
     /// Fires once after the next path a scan reconciles. Lets a test change the
     /// filesystem in the middle of a scan.
+    ///
+    /// `Send` so that a replica held across a `tokio::spawn` still is: the app server keeps
+    /// one behind a mutex and moves it into a task per session.
     #[cfg(any(test, feature = "test-util"))]
-    reconcile_hook: Option<Box<dyn FnOnce()>>,
+    reconcile_hook: Option<Box<dyn FnOnce() + Send>>,
 }
 
 fn now_ns() -> i64 {
@@ -490,6 +493,9 @@ impl Replica {
     }
 
     /// Compare one path's file with its state: record an edit, or settle the state.
+    /// A file holding a version the store already knows is settled, not recorded: a
+    /// watcher-driven scan of content a live session just materialized must not re-record it
+    /// as a local edit (issue #157).
     fn reconcile_path(
         &mut self,
         rel: &str,
@@ -548,6 +554,51 @@ impl Replica {
         if file_hash == disk.hash {
             if let Some(mut state) = state {
                 if file_hash.is_some() && (stamp != (disk.mtime_ns, disk.len) || is_racy(&disk)) {
+                    state.disk.mtime_ns = stamp.0;
+                    state.disk.len = stamp.1;
+                    state.disk.checked_ns = now_ns();
+                    self.commit_state(rel, &state, index)?;
+                }
+                self.ensure_conflict_copies(rel, &state, filter, source, index, report)?;
+                self.settle(rel, state, filter, source, index, report)?;
+            }
+            return Ok(());
+        }
+
+        // A watcher-driven scan can fire after a live session has already committed a peer's
+        // version to the store and written its bytes to disk. The file then holds content the
+        // store already knows, but `disk.hash` still names the file the commit replaced, so
+        // `file_hash != disk.hash`. Recording it here would invent a fresh own dot, sibling to
+        // the version just received: a spurious conflict copy, and a delete context polluted
+        // enough to stop a later delete from propagating (issue #157). Content the store
+        // already knows is a materialization to settle, not a local edit to record.
+        //
+        // Matched against the *winner* specifically, not any sibling (issue #161). A path in
+        // conflict keeps every loser's bytes alive too — as a conflict copy next to it — so a
+        // local write can land on a loser's content without having materialized anything: a
+        // deliberate edit that merely coincides with a version already present elsewhere in
+        // the conflict set, not a re-appearance of what this scan's own disk state already
+        // reflects. The winner is the one version this branch's premise actually describes
+        // (disk already *is* this content, only the bookkeeping is stale), and it is also
+        // `settle`'s own criterion for "nothing to do" once `disk.hash` is refreshed below —
+        // matching any sibling let a write that changes which content wins slip through
+        // silently, destroying the winner's only copy (the file) with nothing recording that
+        // anything superseded it, and no conflict copy to fall back on (conflict copies exist
+        // for losers, never for the winner).
+        if let Some(hash) = file_hash
+            && state
+                .as_ref()
+                .is_some_and(|s| s.winner().content.hash() == Some(hash))
+        {
+            if let Some(mut state) = state {
+                // The on-disk file now holds `file_hash`, but the stored `disk` still
+                // describes the file the commit replaced; refresh it so `settle` sees the
+                // disk as already matching the known version instead of re-materializing it.
+                if state.disk.hash != file_hash
+                    || stamp != (disk.mtime_ns, disk.len)
+                    || is_racy(&disk)
+                {
+                    state.disk.hash = file_hash;
                     state.disk.mtime_ns = stamp.0;
                     state.disk.len = stamp.1;
                     state.disk.checked_ns = now_ns();
@@ -943,7 +994,7 @@ impl Replica {
     }
 
     /// Run `hook` once after the next path a scan reconciles, then clear it.
-    pub fn inject_after_reconcile(&mut self, hook: Box<dyn FnOnce()>) {
+    pub fn inject_after_reconcile(&mut self, hook: Box<dyn FnOnce() + Send>) {
         self.reconcile_hook = Some(hook);
     }
 

@@ -8,7 +8,7 @@
 //! on one name.
 //!
 //! ```toml
-//! # A native app that indexes a local workspace and talks to a remote server:
+//! # A native app that indexes a local workspace and talks to its app server:
 //! sapphire-framework = { version = "0.1", features = ["native", "redb-store"] }
 //! ```
 //!
@@ -26,12 +26,16 @@
 //! | `retrieve` | [`retrieve`] | `sapphire-framework-retrieve` |
 //! | `track` | [`track`] | `sapphire-framework-track` |
 //! | `sync` | [`sync`] | `sapphire-framework-sync` |
-//! | `rpc` | [`rpc`] | `sapphire-framework-rpc` |
+//! | `session` | [`session`] | `sapphire-framework-session` |
+//! | `ipc` | [`ipc`] | `sapphire-framework-ipc` |
+//! | `server` | [`server`] | `sapphire-framework-server` |
+//! | `keys` | [`keys`] | `sapphire-framework-keys` |
 //! | `registry` | [`registry`] | `sapphire-framework-registry` |
-//! | `blob` | [`blob`] | `sapphire-framework-blob` |
+//! | `bridge` | [`bridge`] | `sapphire-framework-bridge` |
+//! | `bridge-embed` | [`bridge_embed`] | `sapphire-framework-bridge-embed` (for apps that embed the bridge in-process, e.g. mobile; not in `native`) |
 //! | `backend` | [`backend`] | `sapphire-framework-backend` |
-//! | `remote-client` | [`remote_client`] | `sapphire-framework-remote-client` |
-//! | `remote-server` | [`remote_server`] | `sapphire-framework-remote-server` |
+//! | `gui` | [`gui`] | `sapphire-framework-gui` |
+//! | `service` | [`service`] | `sapphire-framework-service` |
 
 #[cfg(feature = "workspace")]
 pub use sapphire_framework_workspace as workspace;
@@ -52,26 +56,35 @@ pub use sapphire_framework_track as track;
 #[cfg(feature = "sync")]
 pub use sapphire_framework_sync as sync;
 
-#[cfg(feature = "rpc")]
-pub use sapphire_framework_rpc as rpc;
+#[cfg(feature = "session")]
+pub use sapphire_framework_session as session;
+
+#[cfg(feature = "ipc")]
+pub use sapphire_framework_ipc as ipc;
+
+#[cfg(feature = "server")]
+pub use sapphire_framework_server as server;
+
+#[cfg(feature = "keys")]
+pub use sapphire_framework_keys as keys;
 
 #[cfg(feature = "registry")]
 pub use sapphire_framework_registry as registry;
 
-#[cfg(feature = "blob")]
-pub use sapphire_framework_blob as blob;
+#[cfg(feature = "bridge")]
+pub use sapphire_framework_bridge as bridge;
+
+#[cfg(feature = "bridge-embed")]
+pub use sapphire_framework_bridge_embed as bridge_embed;
 
 #[cfg(feature = "backend")]
-pub use sapphire_framework_backend as backend;
+pub use sapphire_backend as backend;
 
 #[cfg(feature = "gui")]
 pub use sapphire_framework_gui as gui;
 
-#[cfg(feature = "remote-client")]
-pub use sapphire_framework_remote_client as remote_client;
-
-#[cfg(feature = "remote-server")]
-pub use sapphire_framework_remote_server as remote_server;
+#[cfg(feature = "service")]
+pub use sapphire_framework_service as service;
 
 /// Commonly-used types, re-exported for `use sapphire_framework::prelude::*;`.
 ///
@@ -85,30 +98,66 @@ pub mod prelude {
 
     #[cfg(feature = "backend")]
     pub use crate::backend::{
-        BackendEvent, LocalBackend, RemoteBackend, RemoteClient, SyncSummary, WorkspaceBackend,
-        WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection, WorkspaceSource,
+        BackendEvent, LocalBackend, SyncSummary, WorkspaceBackend, WorkspaceEntry,
+        WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection, WorkspaceSource,
     };
 
-    // `backend` already re-exports `RemoteClient`; only pull it from the client
-    // crate when the backend module isn't present, to avoid a duplicate name.
-    #[cfg(all(feature = "remote-client", not(feature = "backend")))]
-    pub use crate::remote_client::RemoteClient;
+    // A UI leaves the cache to the app server: `IpcBackend` implements
+    // `WorkspaceBackend` over IPC, and `protocol` names the `workspace.*`
+    // methods and their types for both sides of the connection.
+    #[cfg(feature = "backend")]
+    pub use crate::backend::{IpcBackend, protocol};
 
-    // An application hosting its own routes alongside `/rpc` needs more than
-    // `router`/`serve`: `KeyStore` to build the state, `WsStoreConfig` for the
-    // resolver hook, and `protect`/`Authenticated` to put the same key on its
-    // own routes.
-    #[cfg(feature = "remote-server")]
-    pub use crate::remote_server::{
-        Authenticated, KeyStore, ServerState, Uuid, WsStore, WsStoreConfig, protect, router, serve,
+    // Bearer-token authentication against the workgroup's external devices (#199); the
+    // `keys` feature chains the crate's `axum` feature in, so an application hosting its own
+    // authenticated routes gets `protect` and `BridgeVerifier` from here.
+    #[cfg(feature = "keys")]
+    pub use crate::keys::{AuthConfig, Authenticated, BridgeVerifier, Verdict, Verifier, protect};
+
+    // `registry` and `keys` both expose the same `GrainId` (`Authenticated::id`). Re-exporting
+    // both would collide, so take it from `registry` when that feature is on, and from `keys`
+    // only when it is not.
+    #[cfg(all(feature = "keys", not(feature = "registry")))]
+    pub use crate::keys::GrainId;
+
+    // The app server skeleton: an application builds one of these, adds its own
+    // methods, and runs it. `WorkspaceHost` is here for handlers that reach a
+    // workspace the same way the framework's own do. `FrameworkCommand` is the
+    // flat command vocabulary an app flattens into its own CLI beside its own
+    // subcommands (issue #142); the sub-enums and the typed status report come
+    // with it, so an app never needs the `server` module to build its CLI.
+    #[cfg(feature = "server")]
+    pub use sapphire_framework_server::{
+        AppServer, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
+        WorkspaceCommand, WorkspaceHost,
     };
+}
 
-    #[cfg(feature = "registry")]
-    pub use crate::registry::{Device, Devices, GrainId, MigrationReport, migrate_single_file};
+#[cfg(all(test, feature = "server"))]
+mod tests {
+    //! Pin the prelude's server-side surface (issue #142, plan Task 5).
 
-    // `registry` and `remote-server` both expose the same `GrainId`. Re-exporting
-    // both would collide, so take it from `registry` when that feature is on, and
-    // from `remote-server` only when it is not (the same trick as `RemoteClient`).
-    #[cfg(all(feature = "remote-server", not(feature = "registry")))]
-    pub use crate::remote_server::GrainId;
+    use super::prelude::*;
+
+    #[test]
+    fn the_prelude_exports_the_whole_framework_command_surface() {
+        // The flat command vocabulary an app flattens beside its own verbs.
+        let _serve: FrameworkCommand = FrameworkCommand::Serve;
+        let _status: FrameworkCommand = FrameworkCommand::Status;
+        let _workspace: FrameworkCommand = FrameworkCommand::Workspace(WorkspaceCommand::Show);
+        let _workgroup: FrameworkCommand = FrameworkCommand::Workgroup(WorkgroupCommand::List);
+        let _device: FrameworkCommand = FrameworkCommand::Device(DeviceCommand::List);
+
+        // The typed status report shared by the CLI and the IPC `server.info`.
+        let _report = StatusReport {
+            running: false,
+            version: None,
+            pid: None,
+            managed_by: None,
+            app: vec![StatusRow {
+                name: "sync".to_owned(),
+                value: "enabled".to_owned(),
+            }],
+        };
+    }
 }

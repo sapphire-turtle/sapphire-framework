@@ -1,0 +1,995 @@
+# Review package: 86d3a26..fb340f8
+
+## Commits
+fb340f8 feat(bridge): write a log any process can read, and add bridge log
+0e38bd8 docs(sdd): step 9 ledger through Task 5
+
+## Files changed
+ Cargo.lock                                         |  21 +
+ Cargo.toml                                         |   1 +
+ apps/sapphire-bridge/src/main.rs                   |  10 +-
+ crates/sapphire-framework-bridge/Cargo.toml        |   4 +
+ crates/sapphire-framework-bridge/src/command.rs    |  48 ++
+ crates/sapphire-framework-bridge/src/lib.rs        |   5 +
+ crates/sapphire-framework-bridge/src/logging.rs    | 549 +++++++++++++++++++++
+ .../2026-09-16-server-features-plan/progress.md    |  31 ++
+ 8 files changed, 663 insertions(+), 6 deletions(-)
+
+## Diff
+diff --git a/Cargo.lock b/Cargo.lock
+index 19a657b..133b681 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -5340,20 +5340,22 @@ dependencies = [
+  "sapphire-framework-session",
+  "sapphire-framework-sync",
+  "serde",
+  "serde_json",
+  "subtle",
+  "tempfile",
+  "thiserror 2.0.20",
+  "tokio",
+  "toml",
+  "tracing",
++ "tracing-appender",
++ "tracing-subscriber",
+  "url",
+  "windows-sys 0.59.0",
+ ]
+ 
+ [[package]]
+ name = "sapphire-framework-bridge-api"
+ version = "0.14.0"
+ dependencies = [
+  "grain-id",
+  "sapphire-framework-ipc",
+@@ -5968,20 +5970,26 @@ dependencies = [
+  "quote",
+  "syn 2.0.119",
+ ]
+ 
+ [[package]]
+ name = "subtle"
+ version = "2.6.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+ 
++[[package]]
++name = "symlink"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
++
+ [[package]]
+ name = "syn"
+ version = "2.0.119"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+  "unicode-ident",
+ ]
+@@ -6596,20 +6604,33 @@ name = "tracing"
+ version = "0.1.44"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+ dependencies = [
+  "log",
+  "pin-project-lite",
+  "tracing-attributes",
+  "tracing-core",
+ ]
+ 
++[[package]]
++name = "tracing-appender"
++version = "0.2.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
++dependencies = [
++ "crossbeam-channel",
++ "symlink",
++ "thiserror 2.0.20",
++ "time",
++ "tracing-subscriber",
++]
++
+ [[package]]
+ name = "tracing-attributes"
+ version = "0.1.31"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+  "syn 2.0.119",
+ ]
+diff --git a/Cargo.toml b/Cargo.toml
+index 52fe893..70bfa9c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -34,20 +34,21 @@ chrono = { version = "0.4", features = ["serde"] }
+ clap = { version = "4", features = ["derive", "env"] }
+ indexmap = { version = "2", features = ["serde"] }
+ rmcp = { version = "1.2", features = ["server", "transport-io"] }
+ schemars = "1.0"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ thiserror = "2"
+ tokio = { version = "1" }
+ toml = "1.1"
+ tracing = "0.1"
++tracing-appender = "0.2"
+ tracing-subscriber = "0.3"
+ uuid = { version = "1", features = ["v4", "v7", "serde"] }
+ dirs = "6"
+ getrandom = "0.4"
+ async-trait = "0.1"
+ axum = "0.8"
+ base64 = "0.23"
+ reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+ sha2 = "0.11"
+ redb = "4"
+diff --git a/apps/sapphire-bridge/src/main.rs b/apps/sapphire-bridge/src/main.rs
+index 68282e3..971e29b 100644
+--- a/apps/sapphire-bridge/src/main.rs
++++ b/apps/sapphire-bridge/src/main.rs
+@@ -8,26 +8,24 @@ use sapphire_bridge::BridgeCommand;
+ 
+ #[derive(Parser)]
+ #[command(name = "sapphire-bridge", version, about)]
+ struct Cli {
+     #[command(subcommand)]
+     command: Option<BridgeCommand>,
+ }
+ 
+ #[tokio::main]
+ async fn main() -> std::process::ExitCode {
+-    tracing_subscriber::fmt()
+-        .with_env_filter(
+-            tracing_subscriber::EnvFilter::try_from_default_env()
+-                .unwrap_or_else(|_| "sapphire_framework_bridge=info".into()),
+-        )
+-        .init();
++    // The bridge's own subscriber: the console, and — once `run` installs the log — the
++    // file layer. `tracing` allows one global subscriber per process, so the binary does
++    // not install its own and the bridge's file layer is not shut out.
++    sapphire_bridge::install_console();
+ 
+     let cli = Cli::parse();
+     let command = cli.command.unwrap_or(BridgeCommand::Run);
+     match command.dispatch(env!("CARGO_PKG_VERSION")).await {
+         Ok(code) => std::process::ExitCode::from(code as u8),
+         Err(err) => {
+             eprintln!("sapphire-bridge: {err}");
+             std::process::ExitCode::FAILURE
+         }
+     }
+diff --git a/crates/sapphire-framework-bridge/Cargo.toml b/crates/sapphire-framework-bridge/Cargo.toml
+index cb59809..e8e5914 100644
+--- a/crates/sapphire-framework-bridge/Cargo.toml
++++ b/crates/sapphire-framework-bridge/Cargo.toml
+@@ -42,20 +42,24 @@ iroh = { version = "1.2", optional = true }
+ iroh-relay = { version = "1.2", default-features = false, features = ["server"], optional = true }
+ # The relay server takes a ready [`rustls::ServerConfig`] for manually supplied
+ # certificates, which is what a self-hosted relay has.
+ rustls = { version = "0.23", optional = true }
+ serde.workspace = true
+ serde_json.workspace = true
+ thiserror.workspace = true
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
+ toml.workspace = true
+ tracing.workspace = true
++tracing-appender.workspace = true
++# The registry and the filters are what turn a writer into a layer: `registry` is what
++# `LayeredSubscriber` needs, `env-filter` is what `EnvFilter` exists behind.
++tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
+ url = "2"
+ 
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.59", features = [
+     "Win32_Foundation",
+     "Win32_System_Threading",
+ ] }
+diff --git a/crates/sapphire-framework-bridge/src/command.rs b/crates/sapphire-framework-bridge/src/command.rs
+index df5c4ed..2e53e96 100644
+--- a/crates/sapphire-framework-bridge/src/command.rs
++++ b/crates/sapphire-framework-bridge/src/command.rs
+@@ -4,39 +4,50 @@
+ //! command against a running one. Two of them work directly on the bridge directory instead —
+ //! [`WorkgroupCommand::Create`], because there is nothing to ask about a workgroup that does
+ //! not exist yet, and [`DeviceCommand::Forget`], because the control plane has no method for
+ //! it. Both then see their effect immediately: the ledger is re-read on every authorization.
+ 
+ // The transport is only assembled behind the `node` feature; the imports that build it are
+ // gated with it so a build without the feature stays warning-free.
+ #[cfg(feature = "node")]
+ use std::sync::Arc;
+ 
++use std::io::Write as _;
++
+ use sapphire_bridge_api::{
+     BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
+ };
+ use sapphire_ipc::{Endpoint, SpawnConfig};
+ 
+ #[cfg(feature = "node")]
+ use crate::NetConfig;
+ use crate::error::{Error, Result};
+ use crate::status::StatusFile;
+ use crate::workgroup::Workgroup;
+ use crate::{Bridge, BridgeDir, InstanceLock};
+ 
+ /// The bridge daemon's subcommands.
+ #[derive(Debug, clap::Subcommand)]
+ pub enum BridgeCommand {
+     /// Run the bridge in this process.
+     Run,
+     /// Report whether a bridge is running, and what it knows.
+     Status,
++    /// Show the bridge's log.
++    Log {
++        /// Keep printing as the log grows, as `tail -f` does.
++        #[arg(long)]
++        follow: bool,
++        /// How many lines of the log's end to show.
++        #[arg(long, default_value = "20")]
++        lines: usize,
++    },
+     /// The workgroup's devices.
+     #[command(subcommand)]
+     Device(DeviceCommand),
+     /// This host's workgroup.
+     #[command(subcommand)]
+     Workgroup(WorkgroupCommand),
+     /// What the workgroup contains — read-only.
+     #[command(subcommand)]
+     Workspace(WorkspaceCommand),
+ }
+@@ -97,20 +108,21 @@ pub enum WorkspaceCommand {
+     /// List the workspaces this host serves.
+     List,
+ }
+ 
+ impl BridgeCommand {
+     /// Carry out the command, returning the process exit code.
+     pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+         match self {
+             BridgeCommand::Run => run(version).await,
+             BridgeCommand::Status => status(version).await,
++            BridgeCommand::Log { follow, lines } => log_command(follow, lines),
+             BridgeCommand::Device(command) => match command {
+                 DeviceCommand::List => device_list(version).await,
+                 DeviceCommand::Invite {
+                     name,
+                     ttl,
+                     workgroup,
+                 } => device_invite(version, name, ttl, workgroup).await,
+                 DeviceCommand::Forget { selector } => device_forget(&selector),
+             },
+             BridgeCommand::Workgroup(command) => match command {
+@@ -142,20 +154,30 @@ async fn run(version: &'static str) -> Result<i32> {
+         Ok(lock) => lock,
+         // Not an error: starting the bridge twice is a normal thing to do by accident, and
+         // the answer is the pid of the one that is already there.
+         Err(Error::AlreadyRunning(pid)) => {
+             println!("the bridge is already running (pid {pid})");
+             return Ok(1);
+         }
+         Err(err) => return Err(err),
+     };
+ 
++    // One writer, guaranteed by the lock above: the log file is this bridge's alone for
++    // as long as it runs, and the guard keeps the writer thread alive until the run ends.
++    let _log = crate::logging::install(&dir)?;
++    // The record's first line names the run, so a log read across restarts shows where one
++    // bridge's story ended and the next began.
++    tracing::info!(
++        target: crate::logging::BRIDGE_TARGET,
++        "sapphire-bridge {version} starting (pid {})",
++        std::process::id()
++    );
+     let bridge = build_bridge(dir, version).await?;
+     bridge.run().await?;
+     Ok(0)
+ }
+ 
+ /// The bridge this host should run: the iroh transport, over the directory's configuration.
+ #[cfg(feature = "node")]
+ async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {
+     // Read once, and hand the same configuration to the bridge: it would otherwise read
+     // `net.toml` again when it starts its loops, and the two reads could disagree.
+@@ -301,20 +323,46 @@ fn read_status_report() -> Result<Option<StatusReport>> {
+                 version: snapshot.version,
+                 node_id: snapshot.node_id,
+                 workgroup: snapshot.workgroup,
+                 routes: snapshot.routes,
+             },
+             stale: true,
+         })),
+     }
+ }
+ 
++/// Show the end of the bridge's log, and with `--follow` keep showing it.
++///
++/// Works directly on the bridge directory: the log is a file this user already owns, and
++/// asking to read it must not bring a daemon up. A bridge that has never run here has no
++/// log, which is reported rather than failed.
++fn log_command(follow: bool, lines: usize) -> Result<i32> {
++    let dir = BridgeDir::open()?;
++    if !follow {
++        let lines = crate::logging::tail(&dir, lines)?;
++        if lines.is_empty() {
++            println!("the bridge has not written a log yet");
++            return Ok(1);
++        }
++        let mut out = std::io::stdout().lock();
++        for line in &lines {
++            writeln!(out, "{line}").map_err(Error::Io)?;
++        }
++        return Ok(0);
++    }
++    // Following never returns on its own; the process is interrupted instead, exactly as
++    // `tail -f` ends.
++    let mut out = std::io::stdout().lock();
++    crate::logging::follow(&dir, lines, &mut out, || false)?;
++    Ok(0)
++}
++
+ /// List the workgroup's devices, as the running bridge sees them.
+ async fn device_list(version: &str) -> Result<i32> {
+     let Some(client) = connect(version).await? else {
+         println!("no bridge is running");
+         return Ok(1);
+     };
+     let peers = client.peers().await?;
+     if peers.peers.is_empty() {
+         println!("no devices");
+         return Ok(0);
+diff --git a/crates/sapphire-framework-bridge/src/lib.rs b/crates/sapphire-framework-bridge/src/lib.rs
+index 1136b14..02ed043 100644
+--- a/crates/sapphire-framework-bridge/src/lib.rs
++++ b/crates/sapphire-framework-bridge/src/lib.rs
+@@ -10,20 +10,21 @@
+ #![warn(missing_docs)]
+ 
+ mod command;
+ mod control;
+ mod data;
+ mod dir;
+ mod error;
+ mod invite;
+ #[cfg(feature = "node")]
+ mod iroh;
++mod logging;
+ mod net;
+ mod pairing;
+ mod peer;
+ mod relay;
+ mod routes;
+ mod status;
+ #[cfg(any(test, feature = "test-util"))]
+ mod testing;
+ mod wgsync;
+ mod workgroup;
+@@ -34,20 +35,24 @@ use std::sync::{Arc, Mutex};
+ use grain_id::GrainId;
+ use sapphire_bridge_api::{BRIDGE_DATA_NAME, BRIDGE_NAME, ManagedBy, WorkspaceRegistration};
+ use sapphire_ipc::{Endpoint, ServerInfo};
+ 
+ pub use command::BridgeCommand;
+ pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
+ pub use error::{Error, Result};
+ pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
+ #[cfg(feature = "node")]
+ pub use iroh::{IrohTransport, NodeAddr};
++pub use logging::{
++    BRIDGE_TARGET, DEFAULT_LOG_FILTER, LOG_FILE, LOG_KEEP, LOG_MAX_BYTES, LogGuard, install,
++    install_console, install_with_limit, tail,
++};
+ pub use net::NetConfig;
+ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
+ pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use peer::{LoopbackNetwork, LoopbackTransport};
+ #[cfg(feature = "embedded-relay")]
+ pub use relay::EmbeddedRelay;
+ pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
+ pub use routes::{Route, RouteTable};
+ pub use status::{PeerStatus, STATUS_INTERVAL, StatusFile, StatusSource, StatusWriter};
+diff --git a/crates/sapphire-framework-bridge/src/logging.rs b/crates/sapphire-framework-bridge/src/logging.rs
+new file mode 100644
+index 0000000..7541113
+--- /dev/null
++++ b/crates/sapphire-framework-bridge/src/logging.rs
+@@ -0,0 +1,549 @@
++//! The bridge's log: a file any process on this host can read.
++//!
++//! The bridge installs a `tracing` layer that writes its own targets to
++//! `<bridge dir>/logs/node.log`, on top of whatever the process already prints. One process
++//! writes — the single-instance lock guarantees it — so the file is a continuous record
++//! across restarts rather than an interleaving. The file rotates at [`LOG_MAX_BYTES`], and
++//! [`LOG_KEEP`] rotated files are kept.
++//!
++//! `bridge log` reads the file back: [`tail`] prints its last lines, and [`follow`] keeps
++//! printing as it grows, in the manner of `tail -f`.
++//!
++//! See `docs/superpowers/specs/2026-09-16-process-architecture-design.md` §5.
++
++use std::io::{Read, Seek, SeekFrom, Write};
++use std::path::Path;
++use std::sync::{Arc, Mutex, OnceLock, RwLock};
++use std::time::Duration;
++
++use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
++use tracing_subscriber::Layer;
++use tracing_subscriber::filter::Targets;
++use tracing_subscriber::fmt::writer::MakeWriter;
++use tracing_subscriber::layer::SubscriberExt;
++use tracing_subscriber::util::SubscriberInitExt;
++
++use crate::dir::BridgeDir;
++use crate::error::Result;
++
++/// The log file's name, inside the bridge directory's log directory.
++pub const LOG_FILE: &str = "node.log";
++
++/// The current log file is rotated once it holds this many bytes.
++pub const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
++
++/// How many rotated files are kept, in addition to the current one.
++pub const LOG_KEEP: usize = 3;
++
++/// The log filter a bridge applies when the environment asks for nothing specific.
++///
++/// The same default the bridge's console output uses, so `bridge run` and a one-shot
++/// command agree on what is worth printing without `RUST_LOG` being set.
++pub const DEFAULT_LOG_FILTER: &str = "sapphire_framework_bridge=info";
++
++/// The target prefix whose events the log file keeps.
++///
++/// The bridge's own modules; anything else the process logs — iroh, its dependencies —
++/// stays on the console only, so the file answers "what did the bridge do". A caller that
++/// wants its line in the file too names this target.
++pub const BRIDGE_TARGET: &str = "sapphire_framework_bridge";
++
++/// How often a following `bridge log` looks for more lines.
++const FOLLOW_POLL: Duration = Duration::from_millis(250);
++
++/// Where the file layer's events go right now.
++///
++/// `tracing` installs a global subscriber once per process and never replaces it, but a
++/// bridge may be installed twice in one process's lifetime — a restart inside a supervisor,
++/// and the tests. So the subscriber is built once, around this wire, and every [`install`]
++/// swaps which writer the wire feeds. `None` means no bridge holds the log, and file events
++/// go nowhere while the console layer keeps printing.
++type Wire = Arc<RwLock<Option<Arc<NonBlocking>>>>;
++
++/// Where the file layer's events go right now.
++static WIRE: OnceLock<Wire> = OnceLock::new();
++
++/// The process's subscriber: the console as the bridge already prints it, plus the file
++/// layer behind [`WIRE`].
++///
++/// Called by the binary before dispatching, so every subcommand prints what it always
++/// printed. If a global subscriber got set first — an embedding application's choice — the
++/// attempt is given up quietly and the file layer simply never hears an event; the wire
++/// still exists, so [`install`] keeps working for a caller that wants a writer anyway.
++pub fn install_console() {
++    WIRE.get_or_init(build_subscriber);
++}
++
++/// Install the bridge's log writer for `dir`, rotating at [`LOG_MAX_BYTES`].
++///
++/// What installing means:
++/// - the file `<bridge dir>/logs/node.log` receives every event of the bridge's own
++///   targets, in addition to whatever the process prints;
++/// - the file is opened for appending, so a restarted bridge continues the same record;
++/// - events reach the file through a writer thread, and the returned [`LogGuard`] flushes
++///   it when dropped. Keep the guard for as long as the bridge serves.
++///
++/// Installing a second time — a bridge restarting inside this process — re-routes the file
++/// layer to the new writer; the subscriber itself is built once. The single-instance lock
++/// must be held by the caller: the log's one-writer property is the lock's, not this
++/// function's.
++pub fn install(dir: &BridgeDir) -> Result<LogGuard> {
++    install_with_limit(dir, LOG_MAX_BYTES)
++}
++
++/// As [`install`], rotating at `limit` bytes rather than [`LOG_MAX_BYTES`].
++///
++/// A file that passes the limit is renamed aside — `node.log.1`, `node.log.2` and so on —
++/// keeping [`LOG_KEEP`] rotated files and starting a fresh current one. Rotation is
++/// approximate: a file may overshoot `limit` by as much as one event.
++pub fn install_with_limit(dir: &BridgeDir, limit: u64) -> Result<LogGuard> {
++    // Build the subscriber once; every later install only re-routes the file layer. A
++    // caller that never ran `install_console` gets the subscriber here.
++    let wire = WIRE.get_or_init(build_subscriber);
++
++    let rotating = Rotating::open(dir.log_dir().join(LOG_FILE), limit, LOG_KEEP);
++    let (writer, worker) = tracing_appender::non_blocking(rotating);
++    let writer = Arc::new(writer);
++
++    *wire
++        .write()
++        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&writer));
++    Ok(LogGuard {
++        wire: Arc::clone(wire),
++        writer,
++        _worker: worker,
++    })
++}
++
++/// Build the subscriber the bridge prints through: the console layer, and the file layer
++/// routing through `wire`.
++fn build_subscriber() -> Wire {
++    let wire: Wire = Arc::new(RwLock::new(None));
++
++    // The console layer is rebuilt here rather than left to the caller: this subscriber is
++    // the one the process prints through, and a bridge run must not lose the console output
++    // it would have had.
++    let console = tracing_subscriber::fmt::layer()
++        .with_writer(std::io::stdout)
++        .with_filter(
++            tracing_subscriber::EnvFilter::try_from_default_env()
++                .unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),
++        );
++    let file = tracing_subscriber::fmt::layer()
++        // A file any process reads wants text, not terminal escapes.
++        .with_ansi(false)
++        .with_writer(FileLayer {
++            wire: Arc::clone(&wire),
++        })
++        .with_filter(
++            Targets::new().with_target(BRIDGE_TARGET, tracing::level_filters::LevelFilter::TRACE),
++        );
++
++    let _ = tracing_subscriber::registry()
++        .with(console)
++        .with(file)
++        .try_init();
++    wire
++}
++
++/// The file layer's writer: whatever [`install`] last routed through [`WIRE`].
++#[derive(Clone, Debug)]
++struct FileLayer {
++    wire: Wire,
++}
++
++impl<'a> MakeWriter<'a> for FileLayer {
++    type Writer = RoutedWriter;
++
++    fn make_writer(&'a self) -> Self::Writer {
++        let current = self
++            .wire
++            .read()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .clone();
++        RoutedWriter {
++            writer: current.map(|routed| (*routed).clone()),
++        }
++    }
++}
++
++/// A writer holding the log writer that was current when the event was made.
++#[derive(Debug)]
++struct RoutedWriter {
++    writer: Option<NonBlocking>,
++}
++
++impl Write for RoutedWriter {
++    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
++        match &mut self.writer {
++            Some(writer) => writer.write(buf),
++            // No bridge holds the log: the event was never meant for a file.
++            None => Ok(buf.len()),
++        }
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        match &mut self.writer {
++            Some(writer) => writer.flush(),
++            None => Ok(()),
++        }
++    }
++}
++
++/// Keeps the log's writer thread alive, and flushes it when dropped.
++///
++/// Dropping it unhooks the wire first — so later events no longer queue into a worker that
++/// is about to stop — and then shuts the worker down, flushing everything queued. A guard
++/// is meant to bracket a bridge's lifetime: a newer [`install`] re-routes the wire, and an
++/// older guard's drop leaves that routing alone.
++#[derive(Debug)]
++pub struct LogGuard {
++    wire: Wire,
++    writer: Arc<NonBlocking>,
++    _worker: WorkerGuard,
++}
++
++impl Drop for LogGuard {
++    fn drop(&mut self) {
++        let mut wire = self
++            .wire
++            .write()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        // A newer install may have re-routed the wire already; only unhook our own.
++        if wire
++            .as_ref()
++            .is_some_and(|current| Arc::ptr_eq(current, &self.writer))
++        {
++            *wire = None;
++        }
++    }
++}
++
++/// The last `lines` lines of the log, in order.
++///
++/// A log that is not there yet is an empty tail rather than an error: the bridge has never
++/// run on this host, which is a normal thing for `bridge log` to report. Only the current
++/// file is read — lines an earlier rotation moved into `node.log.1` are the rotated files'
++/// business.
++pub fn tail(dir: &BridgeDir, lines: usize) -> Result<Vec<String>> {
++    let bytes = match std::fs::read(dir.log_dir().join(LOG_FILE)) {
++        Ok(bytes) => bytes,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
++        Err(e) => return Err(e.into()),
++    };
++    Ok(last_lines(&bytes, lines))
++}
++
++/// Print the log's tail, then keep printing as the file grows, until `stop` is true.
++///
++/// `tail -f`, spelled out: the last `lines` lines go out at once, then each poll prints what
++/// appeared since. A file that shrank — rotated or truncated under us — is read from its
++/// start again, so following a rotating log keeps printing rather than stalling. Returns
++/// once `stop` is true, after anything that appeared has been printed; the CLI never passes
++/// a `stop` that fires, and ends the way `tail -f` does, by being interrupted.
++pub(crate) fn follow(
++    dir: &BridgeDir,
++    lines: usize,
++    out: &mut impl Write,
++    stop: impl Fn() -> bool,
++) -> Result<()> {
++    let path = dir.log_dir().join(LOG_FILE);
++    // The tail first, then continue from where it ended: the offset is the length of what
++    // was read, so nothing between the read and the follow is printed twice.
++    let mut offset = match std::fs::read(&path) {
++        Ok(bytes) => {
++            for line in last_lines(&bytes, lines) {
++                writeln!(out, "{line}")?;
++            }
++            out.flush()?;
++            bytes.len() as u64
++        }
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
++        Err(e) => return Err(e.into()),
++    };
++
++    loop {
++        print_growth(&path, &mut offset, out)?;
++        // Checked only after the drain, so a stop set while lines were landing still
++        // prints them rather than ending one poll early.
++        if stop() {
++            return Ok(());
++        }
++        std::thread::sleep(FOLLOW_POLL);
++    }
++}
++
++/// Print the bytes that appeared past `offset`, and leave `offset` at the new end.
++fn print_growth(path: &Path, offset: &mut u64, out: &mut impl Write) -> Result<()> {
++    let len = match std::fs::metadata(path) {
++        Ok(meta) => meta.len(),
++        // The file is being rotated, or was removed: the next poll finds whatever took its
++        // place, and the record to follow starts over from its first byte.
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
++            *offset = 0;
++            return Ok(());
++        }
++        Err(e) => return Err(e.into()),
++    };
++    // The file shrank: it was rotated or truncated. Whatever we had read is gone from this
++    // name, and the record to follow starts over.
++    if len < *offset {
++        *offset = 0;
++    }
++    if len == *offset {
++        return Ok(());
++    }
++    let mut file = std::fs::File::open(path)?;
++    file.seek(SeekFrom::Start(*offset))?;
++    let mut bytes = Vec::new();
++    file.read_to_end(&mut bytes)?;
++    *offset = len;
++    out.write_all(&bytes)?;
++    out.flush()?;
++    Ok(())
++}
++
++/// The last `lines` lines of `bytes`, in order, without their newlines.
++///
++/// Bytes after the last newline are a line still being written and are reported: a tail
++/// that swallows them would hide what the bridge is saying right now.
++fn last_lines(bytes: &[u8], lines: usize) -> Vec<String> {
++    if lines == 0 {
++        return Vec::new();
++    }
++    let text = String::from_utf8_lossy(bytes);
++    let collected: Vec<&str> = text.lines().collect();
++    let start = collected.len().saturating_sub(lines);
++    collected[start..]
++        .iter()
++        .map(|line| (*line).to_owned())
++        .collect()
++}
++
++/// A log file that rotates itself once it passes a size limit.
++///
++/// Only the bridge writes this file — the single-instance lock sees to it — so the writer
++/// needs no locking against a second process, only against its own rotation. The count of
++/// bytes written travels with the open file, so no write has to ask the filesystem how big
++/// the file is. The writer thread of `tracing-appender` is this file's only caller.
++struct Rotating {
++    path: std::path::PathBuf,
++    limit: u64,
++    keep: usize,
++    state: Mutex<Option<Open>>,
++}
++
++/// One open log file, and how much it already holds.
++struct Open {
++    file: std::fs::File,
++    written: u64,
++}
++
++impl Rotating {
++    /// Open (or create) the log at `path`, rotating at `limit` and keeping `keep` rotated
++    /// files.
++    fn open(path: std::path::PathBuf, limit: u64, keep: usize) -> Rotating {
++        Rotating {
++            path,
++            limit,
++            keep,
++            state: Mutex::new(None),
++        }
++    }
++
++    /// Retire the oldest rotated file, shift the rest up, and open a fresh current file.
++    fn rotate(&self, state: &mut Option<Open>) -> std::io::Result<()> {
++        // The open file's name is about to change under it: drop the handle first, shift
++        // the rotated names up, and open fresh, so the next bytes land in the new file.
++        *state = None;
++        let rotated = |n: usize| self.path.with_extension(format!("log.{n}"));
++        for n in (1..self.keep).rev() {
++            rename_away(&rotated(n), &rotated(n + 1))?;
++        }
++        rename_away(&self.path, &rotated(1))?;
++        *state = Some(Open {
++            file: open_append(&self.path)?,
++            written: 0,
++        });
++        Ok(())
++    }
++}
++
++/// Rename `from` to `to`, ignoring a `from` that is not there.
++fn rename_away(from: &Path, to: &Path) -> std::io::Result<()> {
++    match std::fs::rename(from, to) {
++        Ok(()) => Ok(()),
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
++        Err(e) => Err(e),
++    }
++}
++
++/// Open `path` for appending, creating it if absent.
++///
++/// Appending is what makes a restart continue the same record: no truncate, no rewrite.
++fn open_append(path: &Path) -> std::io::Result<std::fs::File> {
++    std::fs::OpenOptions::new()
++        .append(true)
++        .create(true)
++        .open(path)
++}
++
++impl Write for Rotating {
++    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
++        let mut state = self.state.lock().expect("rotating log state");
++        if state.is_none() {
++            // The file may already hold a record from earlier runs; the first write of a
++            // restart continues it, which is why the count starts at what is on disk.
++            let written = std::fs::metadata(&self.path).map_or(0, |m| m.len());
++            let file = open_append(&self.path)?;
++            *state = Some(Open { file, written });
++        }
++        let full = state
++            .as_ref()
++            .is_some_and(|open| open.written + buf.len() as u64 > self.limit);
++        if full {
++            self.rotate(&mut state)?;
++        }
++        let open = state.as_mut().expect("rotation left no file open");
++        open.file.write_all(buf)?;
++        open.written += buf.len() as u64;
++        Ok(buf.len())
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        let mut state = self.state.lock().expect("rotating log state");
++        if let Some(open) = state.as_mut() {
++            open.file.flush()?;
++        }
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::dir::BridgeDir;
++    use std::sync::atomic::{AtomicBool, Ordering};
++
++    /// The logging tests install the process's one global subscriber, and `cargo test`
++    /// runs a binary's tests in parallel threads: one lock takes them turns, so one
++    /// test's events never land in another test's file.
++    static INSTALL_LOCK: Mutex<()> = Mutex::new(());
++
++    #[test]
++    fn installing_creates_the_log_file() {
++        let _turn = INSTALL_LOCK.lock().unwrap();
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        let guard = install(&dir).unwrap();
++        tracing::info!(target: "sapphire_framework_bridge", "hello from the test");
++        drop(guard);
++
++        let text = std::fs::read_to_string(dir.log_dir().join(LOG_FILE)).unwrap();
++        assert!(text.contains("hello from the test"), "{text}");
++    }
++
++    #[test]
++    fn the_log_rotates_at_its_size_limit() {
++        let _turn = INSTALL_LOCK.lock().unwrap();
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        let guard = install_with_limit(&dir, 4096).unwrap();
++        for n in 0..2000 {
++            tracing::info!(target: "sapphire_framework_bridge", "line {n} padded {}", "x".repeat(64));
++        }
++        drop(guard);
++
++        let files: Vec<String> = std::fs::read_dir(dir.log_dir())
++            .unwrap()
++            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
++            .collect();
++        assert!(files.len() > 1, "the log never rotated: {files:?}");
++        assert!(files.len() <= LOG_KEEP + 1, "too many kept: {files:?}");
++    }
++
++    #[test]
++    fn a_restart_continues_the_same_file() {
++        let _turn = INSTALL_LOCK.lock().unwrap();
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++
++        let guard = install(&dir).unwrap();
++        tracing::info!(target: "sapphire_framework_bridge", "first run");
++        drop(guard);
++
++        let guard = install(&dir).unwrap();
++        tracing::info!(target: "sapphire_framework_bridge", "second run");
++        drop(guard);
++
++        let text = std::fs::read_to_string(dir.log_dir().join(LOG_FILE)).unwrap();
++        assert!(
++            text.contains("first run") && text.contains("second run"),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn reading_the_tail_of_a_missing_log_is_not_an_error() {
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        assert!(tail(&dir, 20).unwrap().is_empty());
++    }
++
++    #[test]
++    fn the_tail_returns_the_last_lines_in_order() {
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        std::fs::create_dir_all(dir.log_dir()).unwrap();
++        std::fs::write(
++            dir.log_dir().join(LOG_FILE),
++            (0..100).map(|n| format!("line {n}\n")).collect::<String>(),
++        )
++        .unwrap();
++
++        let lines = tail(&dir, 3).unwrap();
++        assert_eq!(lines, vec!["line 97", "line 98", "line 99"]);
++    }
++
++    #[test]
++    fn following_prints_the_lines_that_arrive() {
++        let tmp = tempfile::tempdir().unwrap();
++        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
++        let log = dir.log_dir().join(LOG_FILE);
++        std::fs::write(&log, "line 0\nline 1\nline 2\n").unwrap();
++
++        // Append more lines a moment later, then raise the flag that ends the follow.
++        let arrived = Arc::new(AtomicBool::new(false));
++        let flag = Arc::clone(&arrived);
++        let path = log.clone();
++        let writer = std::thread::spawn(move || {
++            std::thread::sleep(Duration::from_millis(200));
++            let mut file = std::fs::OpenOptions::new()
++                .append(true)
++                .open(&path)
++                .unwrap();
++            file.write_all(b"line 3\nline 4\n").unwrap();
++            flag.store(true, Ordering::SeqCst);
++        });
++
++        // A deadline keeps a failed append from hanging the test: the stop fires either
++        // way, and the assertions below tell which.
++        let deadline = std::time::Instant::now() + Duration::from_secs(10);
++        let flag = Arc::clone(&arrived);
++        let stop = move || flag.load(Ordering::SeqCst) || std::time::Instant::now() > deadline;
++
++        let mut out: Vec<u8> = Vec::new();
++        follow(&dir, 10, &mut out, stop).unwrap();
++        writer.join().unwrap();
++
++        let text = String::from_utf8(out).unwrap();
++        for line in ["line 0", "line 1", "line 2", "line 3", "line 4"] {
++            assert!(text.contains(line), "missing {line}: {text}");
++        }
++        let (first, last) = (text.find("line 0").unwrap(), text.find("line 4").unwrap());
++        assert!(
++            first < last,
++            "the tail and the growth came out of order: {text}"
++        );
++    }
++}
+diff --git a/docs/superpowers/plans/2026-09-16-server-features-plan/progress.md b/docs/superpowers/plans/2026-09-16-server-features-plan/progress.md
+new file mode 100644
+index 0000000..88e3fd0
+--- /dev/null
++++ b/docs/superpowers/plans/2026-09-16-server-features-plan/progress.md
+@@ -0,0 +1,31 @@
++# Task 2 — live propagation in the app server (2026-09-16)
++
++Status: implementation complete, verification green, commit pending terminal
++availability (session shell slots saturated by earlier test loops at report
++time; commit + final parallel-suite re-run are the only outstanding steps).
++
++Root cause of the flaky settle (30 s timeout at tests/common/mod.rs:500):
++`open_live_session` holds the replica mutex across the whole exchange; when
++two hosts dial each other simultaneously (dial loop + watcher-triggered
++sync_now racing), each dialler waits for the peer's hello while holding its
++own lock — circular wait. Fixed by dialing in one direction only: a host
++dials only peers with a greater device id (rule applied in both `dial_loop`
++and `sync_now`). Waits-for graph is now a DAG (low-id → high-id); the
++tie-break (`LivePeers::insert`, keep the stream initiated by the lower
++device id) remains as the safety net. `sync_now` also switched from one-shot
++`run_session` (closed the stream, killing inbound sessions) to
++`sync_one` → `adopt_live_session`.
++
++Verification at last full run: live 6/6 (8 consecutive runs incl. full
++parallelism, ~5 s each), bridge 101 pass, fmt --check clean, clippy
++--workspace --all-targets --all-features -D warnings clean. Full workspace
++suite green in repeated runs; two pre-existing fixture races surfaced only
++while several cargo suites ran concurrently (`converge` redb "Database
++already open" restart race; `host::tests::reopening_after_eviction_works`
++tantivy lock) — not reproducible on a quiet machine, out of scope, noted in
++task-2-report.md.
++
++Report: .superpowers/sdd/2026-09-16-server-features-plan/task-2-report.mdUpdate (final): committed as 852dc21 on feat/p2p-sync-iroh (7 files,
+++1162/−60). Full workspace suite --locked: 59/59 result lines ok, zero
++failures. live 6/6 in 5.0 s; fmt --check clean; clippy -D warnings clean.
++Report updated with the commit and final evidence.
+\ No newline at end of file

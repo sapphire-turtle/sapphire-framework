@@ -14,8 +14,9 @@ use crate::{
     embed::Embedder,
     error::Result,
     retrieve_store::{
-        ChunkHit, Document, FileSearchResult, FtsQuery, HybridQuery, RetrieveStore, VectorQuery,
+        Document, FileSearchResult, FtsQuery, HybridQuery, RetrieveStore, VectorQuery,
     },
+    snippet::leading,
     vector_store::VecInfo,
 };
 
@@ -92,12 +93,7 @@ impl RetrieveStore for InMemoryStore {
                 id: doc.id,
                 path: doc.path.clone(),
                 score: 0.0,
-                chunks: vec![ChunkHit {
-                    line_start: 0,
-                    line_end: 0,
-                    text: String::new(),
-                    score: 0.0,
-                }],
+                snippet: leading(&doc.body),
             })
             .collect();
         results.sort_by(|a, b| a.path.cmp(&b.path));
@@ -122,6 +118,7 @@ impl RetrieveStore for InMemoryStore {
     fn embed_pending(
         &self,
         _embedder: &dyn Embedder,
+        _source: &dyn crate::retrieve_store::VectorSource,
         _on_progress: &dyn Fn(usize, usize),
     ) -> Result<usize> {
         Ok(0)
@@ -199,14 +196,28 @@ impl RetrieveDb {
     }
 
     /// Initialise the pure-Rust redb backend with vector search enabled.
+    ///
+    /// An open redb store is switched on in place rather than opened a second
+    /// time, so handles from [`Self::shared`] keep pointing at the same store.
     #[cfg(feature = "redb-store")]
     pub fn init_redb_vec(&self, embedding_dim: u32) -> Result<()> {
         let mut guard = self.backend.lock().unwrap();
         if guard.needs_init() {
-            let store = RedbStore::open(&redb_dir_for(&self.db_path), Some(embedding_dim))?;
-            *guard = BackendState::Redb(Arc::new(store));
+            match &*guard {
+                BackendState::Redb(s) => s.set_dim(embedding_dim)?,
+                BackendState::InMemory(_) => {
+                    let store = RedbStore::open(&redb_dir_for(&self.db_path), Some(embedding_dim))?;
+                    *guard = BackendState::Redb(Arc::new(store));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Make the store hold vectors from `model` with `dim` values; see
+    /// [`RetrieveStore::configure_vectors`].
+    pub fn configure_vectors(&self, model: &str, dim: u32) -> Result<()> {
+        self.store().configure_vectors(model, dim)
     }
 
     fn store(&self) -> Arc<dyn RetrieveStore> {
@@ -215,7 +226,7 @@ impl RetrieveDb {
 
     /// バックエンドへの共有ハンドル。
     ///
-    /// 同じプロセスの別コンポーネント（例: remote-server の `WsStore`）に、
+    /// 同じプロセスの別コンポーネント（例: app server の別ワークスペース処理）に、
     /// このデータベースと**同じ**インデックスを使わせるためのもの。別に開くと
     /// 同じファイル群に対してインデックスが二重にできる。
     pub fn shared(&self) -> Arc<dyn RetrieveStore + Send + Sync> {
@@ -255,9 +266,10 @@ impl RetrieveDb {
     pub fn embed_pending(
         &self,
         embedder: &dyn Embedder,
+        source: &dyn crate::retrieve_store::VectorSource,
         on_progress: impl Fn(usize, usize),
     ) -> Result<usize> {
-        self.store().embed_pending(embedder, &on_progress)
+        self.store().embed_pending(embedder, source, &on_progress)
     }
 
     pub fn vec_info(&self) -> Result<VecInfo> {
@@ -277,9 +289,11 @@ impl RetrieveDb {
 
 /// Merge FTS and semantic file-level results via Reciprocal Rank Fusion.
 ///
-/// `score(d) = w_fts / (k + rank_fts) + w_sem / (k + rank_sem)`.  Chunks from
-/// both inputs are merged (deduplicated by `(line_start, line_end)`, keeping
-/// the best per-chunk score).  Output is sorted by descending RRF score.
+/// `score(d) = w_fts / (k + rank_fts) + w_sem / (k + rank_sem)`.  Output is
+/// sorted by descending RRF score.
+///
+/// FTS results are inserted first, so a file found by both searches keeps its
+/// FTS snippet (the fragment around the match) rather than the leading text.
 pub fn merge_rrf_files(
     fts: &[FileSearchResult],
     sem: &[FileSearchResult],
@@ -299,10 +313,7 @@ pub fn merge_rrf_files(
     for (rank, file) in sem.iter().enumerate() {
         let rrf = w_sem / (k + (rank + 1) as f64);
         acc.entry(file.path.clone())
-            .and_modify(|(existing, s)| {
-                *s += rrf;
-                merge_chunk_hits(&mut existing.chunks, &file.chunks);
-            })
+            .and_modify(|(_, s)| *s += rrf)
             .or_insert_with(|| (file.clone(), rrf));
     }
 
@@ -317,24 +328,6 @@ pub fn merge_rrf_files(
             file
         })
         .collect()
-}
-
-/// Merge `incoming` into `existing`, deduplicating by `(line_start, line_end)`.
-///
-/// When a chunk exists in both lists, the one from `existing` is kept (so FTS
-/// scores win over vector scores on the same chunk, which matches the order
-/// `merge_rrf_files` calls this).
-fn merge_chunk_hits(existing: &mut Vec<ChunkHit>, incoming: &[ChunkHit]) {
-    use std::collections::HashSet;
-    let seen: HashSet<(usize, usize)> = existing
-        .iter()
-        .map(|c| (c.line_start, c.line_end))
-        .collect();
-    for c in incoming {
-        if !seen.contains(&(c.line_start, c.line_end)) {
-            existing.push(c.clone());
-        }
-    }
 }
 
 /// Default hybrid search implementation used by [`RetrieveStore::search_hybrid`].
@@ -411,11 +404,59 @@ mod tests {
             id: 1,
             body: "hello".to_owned(),
             path: "a.md".to_owned(),
-            chunks: None,
         })
         .unwrap();
 
         // 同じバックエンドを指しているので、共有ハンドル側からも見える。
         assert_eq!(shared.document_count().unwrap(), 1);
+    }
+
+    #[cfg(feature = "redb-store")]
+    #[test]
+    fn turning_vectors_on_keeps_the_shared_store() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = RetrieveDb::open(&tmp.path().join("retrieve.db")).unwrap();
+        let shared = db.shared();
+
+        db.init_redb_vec(3).unwrap();
+        assert_eq!(shared.vec_info().unwrap().embedding_dim, 3);
+
+        db.configure_vectors("m", 4).unwrap();
+        assert_eq!(shared.vec_info().unwrap().embedding_dim, 4);
+    }
+
+    #[test]
+    fn hybrid_merge_keeps_the_fts_snippet_and_sums_scores() {
+        let f = |id, snip: &str, score| FileSearchResult {
+            id,
+            path: format!("/w/{id}.md"),
+            score,
+            snippet: snip.into(),
+        };
+        let merged = merge_rrf_files(
+            &[f(1, "fts", 1.0)],
+            &[f(1, "lead", 0.5), f(2, "lead2", 0.7)],
+            60.0,
+            0.5,
+            0.5,
+            10,
+        );
+        assert_eq!(merged[0].id, 1);
+        assert_eq!(merged[0].snippet, "fts");
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn in_memory_fts_returns_a_snippet() {
+        let store = InMemoryStore::new();
+        store
+            .upsert_document(&Document {
+                id: 1,
+                body: "hello world".into(),
+                path: "/w/a.md".into(),
+            })
+            .unwrap();
+        let hits = store.search_fts(&FtsQuery::new("world").limit(5)).unwrap();
+        assert_eq!(hits[0].snippet, "hello world");
     }
 }

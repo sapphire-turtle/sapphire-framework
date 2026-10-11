@@ -1,0 +1,30 @@
+[package]
+name = "sapphire-bridge"
+version.workspace = true
+edition.workspace = true
+description = "Host-wide sapphire daemon: device identity, workgroup authorization and sync routing"
+license.workspace = true
+repository.workspace = true
+keywords = ["sync", "p2p", "daemon", "local-first"]
+categories = ["command-line-utilities"]
+
+[features]
+default = []
+# Run a relay for this host's workgroup from inside the bridge. Off by default, like the
+# bridge's own feature: a relay needs a publicly reachable address and a certificate.
+embedded-relay = ["sapphire-bridge/embedded-relay"]
+
+[dependencies]
+sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.15.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
+clap.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing.workspace = true
+# The `env-filter` feature is what makes `EnvFilter` exist at all; it is not a default.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.3.0", path = "../../crates/sapphire-framework-bridge-api" }
+sapphire-framework-bridge-embed = { version = "0.15.0", path = "../../crates/sapphire-framework-bridge-embed" }
+async-trait.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

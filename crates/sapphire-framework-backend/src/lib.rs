@@ -8,10 +8,10 @@
 //!
 //! - [`LocalBackend`] wraps a local [`WorkspaceState`] and runs its blocking
 //!   operations on the tokio blocking pool.
-//! - [`RemoteBackend`] talks to a `sapphire-framework-remote-server` over
-//!   JSON-RPC (search + differential sync).
+//! - [`IpcBackend`] forwards every call to the application's server, which is
+//!   the only process that may open the cache.
 //!
-//! Both emit [`BackendEvent`]s over a broadcast channel so a UI can refresh
+//! All emit [`BackendEvent`]s over a broadcast channel so a UI can refresh
 //! reactively (see [`WorkspaceBackend::subscribe`]).
 //!
 //! The trait is `Send`/`Sync` and its futures are `Send`, which fits a native
@@ -25,60 +25,34 @@ use async_trait::async_trait;
 use tokio::sync::broadcast;
 
 mod error;
+mod ipc;
 mod local;
-mod remote;
 mod source;
 
+/// The methods every app server serves and their types, from
+/// `sapphire-framework-server-api`, which carries the API version in its own version.
+pub use sapphire_server_api as protocol;
+pub use sapphire_server_api::{BackendEvent, FileSearchResult, SearchMode};
+
 pub use error::{Error, Result};
+pub use ipc::IpcBackend;
 pub use local::LocalBackend;
-pub use remote::RemoteBackend;
 pub use source::{
-    DEFAULT_ID, DEFAULT_WS, WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry,
-    WorkspaceSelection, WorkspaceSource,
+    DEFAULT_ID, WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection,
+    WorkspaceSource,
 };
 
-// Re-export the search mode + result types (and the underlying state, which the
-// factory needs) so callers depend only on this crate.
-pub use sapphire_workspace::{FileSearchResult, SearchMode, WorkspaceState};
-
-// Re-export the remote client so callers can build a `WorkspaceSource::Remote`
-// without a separate dependency.
-pub use sapphire_remote_client::RemoteClient;
+// Re-export the underlying state, which the factory needs, so callers depend only on
+// this crate.
+pub use sapphire_workspace::WorkspaceState;
 
 /// Result of a sync cycle.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SyncSummary {
     /// Number of documents added or updated.
     pub upserted: usize,
     /// Number of documents removed.
     pub removed: usize,
-}
-
-/// Events published by a backend so a UI can react without polling.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BackendEvent {
-    /// A sync cycle finished.
-    Synced {
-        /// Documents added/updated.
-        upserted: usize,
-        /// Documents removed.
-        removed: usize,
-    },
-    /// A single file changed through this backend.
-    FileChanged {
-        /// The affected path.
-        path: PathBuf,
-    },
-    /// A single file was removed through this backend.
-    FileRemoved {
-        /// The affected path.
-        path: PathBuf,
-    },
-    /// A background operation failed. Carries a human-readable message.
-    Error {
-        /// Failure description.
-        message: String,
-    },
 }
 
 /// Async facade over a workspace's document operations, search and sync.

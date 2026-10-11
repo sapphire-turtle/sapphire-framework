@@ -1,0 +1,1220 @@
+# Review package: 779fd37..86d3a26
+
+## Commits
+86d3a26 feat(bridge): publish status.json atomically
+
+## Files changed
+ crates/sapphire-framework-bridge/src/command.rs    | 231 +++++++++--
+ crates/sapphire-framework-bridge/src/control.rs    |  75 ++--
+ crates/sapphire-framework-bridge/src/lib.rs        |  20 +-
+ crates/sapphire-framework-bridge/src/status.rs     | 434 +++++++++++++++++++++
+ .../sapphire-framework-bridge/tests/status_file.rs | 170 ++++++++
+ 5 files changed, 871 insertions(+), 59 deletions(-)
+
+## Diff
+diff --git a/crates/sapphire-framework-bridge/src/command.rs b/crates/sapphire-framework-bridge/src/command.rs
+index 6429344..df5c4ed 100644
+--- a/crates/sapphire-framework-bridge/src/command.rs
++++ b/crates/sapphire-framework-bridge/src/command.rs
+@@ -4,26 +4,29 @@
+ //! command against a running one. Two of them work directly on the bridge directory instead —
+ //! [`WorkgroupCommand::Create`], because there is nothing to ask about a workgroup that does
+ //! not exist yet, and [`DeviceCommand::Forget`], because the control plane has no method for
+ //! it. Both then see their effect immediately: the ledger is re-read on every authorization.
+ 
+ // The transport is only assembled behind the `node` feature; the imports that build it are
+ // gated with it so a build without the feature stays warning-free.
+ #[cfg(feature = "node")]
+ use std::sync::Arc;
+ 
+-use sapphire_bridge_api::{BRIDGE_NAME, BridgeClient, InviteParams, JoinParams};
++use sapphire_bridge_api::{
++    BRIDGE_NAME, BridgeClient, InviteParams, JoinParams, PeerInfo, StatusResult,
++};
+ use sapphire_ipc::{Endpoint, SpawnConfig};
+ 
+ #[cfg(feature = "node")]
+ use crate::NetConfig;
+ use crate::error::{Error, Result};
++use crate::status::StatusFile;
+ use crate::workgroup::Workgroup;
+ use crate::{Bridge, BridgeDir, InstanceLock};
+ 
+ /// The bridge daemon's subcommands.
+ #[derive(Debug, clap::Subcommand)]
+ pub enum BridgeCommand {
+     /// Run the bridge in this process.
+     Run,
+     /// Report whether a bridge is running, and what it knows.
+     Status,
+@@ -188,52 +191,130 @@ async fn connect(version: &str) -> Result<Option<BridgeClient>> {
+     let endpoint = Endpoint::in_dir(BRIDGE_NAME, sapphire_ipc::runtime_dir()?);
+     if !sapphire_ipc::probe(&endpoint).await? {
+         return Ok(None);
+     }
+     Ok(Some(
+         BridgeClient::connect("cli", version, &SpawnConfig::disabled()).await?,
+     ))
+ }
+ 
+ /// Report what the running bridge knows about itself.
++///
++/// A live bridge answers on the control plane, where every fact is current. A bridge that
++/// has stopped still has a story worth telling — which app servers were connected, what the
++/// workgroup looked like — so when nothing answers, the last snapshot of `status.json` is
++/// reported instead, printed the same way so nobody has to learn two formats.
+ async fn status(version: &str) -> Result<i32> {
+-    let Some(client) = connect(version).await? else {
++    let report = match connect(version).await? {
++        Some(client) => Some(StatusReport::live(
++            client.status().await?,
++            client.peers().await?.peers,
++        )?),
++        None => read_status_report()?,
++    };
++    let Some(report) = report else {
+         println!("no bridge is running");
+         return Ok(1);
+     };
+-    let status = client.status().await?;
+ 
+     println!(
+-        "sapphire-bridge {} (node {}, {} workspace(s))",
+-        status.version,
+-        status.node_id,
+-        status.routes.len()
++        "sapphire-bridge {} (node {}, {} workspace(s)){}",
++        report.status.version,
++        report.status.node_id,
++        report.status.routes.len(),
++        if report.stale {
++            " — last seen before the bridge stopped"
++        } else {
++            ""
++        }
+     );
+-    match status.workgroup {
++    match report.status.workgroup {
+         Some(workgroup) => println!(
+             "workgroup {} ({}), {} device(s)",
+             workgroup.name, workgroup.workgroup_id, workgroup.devices
+         ),
+         None => println!("no workgroup"),
+     }
+-    for route in status.routes {
++    for peer in report.peers {
++        println!(
++            "  {} {} {}{}",
++            peer.name,
++            peer.device_id,
++            if peer.node_id.is_empty() {
++                "-".to_owned()
++            } else {
++                peer.node_id
++            },
++            if peer.connected { " (online)" } else { "" }
++        );
++    }
++    for route in report.status.routes {
+         println!(
+             "  {} {} {}{}",
+             route.workspace_id,
+             route.app_name,
+             route.root.display(),
+             if route.owner_online { " (online)" } else { "" }
+         );
+     }
+     Ok(0)
+ }
+ 
++/// What `bridge status` prints: the control plane's answer, or the last snapshot.
++struct StatusReport {
++    status: StatusResult,
++    peers: Vec<PeerInfo>,
++    /// Whether this came from the file a stopped bridge left behind.
++    stale: bool,
++}
++
++impl StatusReport {
++    /// A live answer: the control plane's own status and device list.
++    fn live(status: StatusResult, peers: Vec<PeerInfo>) -> Result<StatusReport> {
++        Ok(StatusReport {
++            status,
++            peers,
++            stale: false,
++        })
++    }
++}
++
++/// The last snapshot `status.json` holds, as a report.
++///
++/// `None` when the bridge has never run here; an unreadable snapshot is an error rather
++/// than something to guess at.
++fn read_status_report() -> Result<Option<StatusReport>> {
++    let dir = BridgeDir::open()?;
++    match StatusFile::load(&dir.status_json())? {
++        None => Ok(None),
++        Some(snapshot) => Ok(Some(StatusReport {
++            peers: snapshot
++                .peers
++                .iter()
++                .map(|p| PeerInfo {
++                    device_id: p.device_id,
++                    name: p.name.clone(),
++                    node_id: p.node_id.clone(),
++                    connected: p.connected,
++                })
++                .collect(),
++            status: StatusResult {
++                version: snapshot.version,
++                node_id: snapshot.node_id,
++                workgroup: snapshot.workgroup,
++                routes: snapshot.routes,
++            },
++            stale: true,
++        })),
++    }
++}
++
+ /// List the workgroup's devices, as the running bridge sees them.
+ async fn device_list(version: &str) -> Result<i32> {
+     let Some(client) = connect(version).await? else {
+         println!("no bridge is running");
+         return Ok(1);
+     };
+     let peers = client.peers().await?;
+     if peers.peers.is_empty() {
+         println!("no devices");
+         return Ok(0);
+@@ -394,20 +475,64 @@ fn this_node_id(dir: &BridgeDir) -> Result<String> {
+ 
+ /// Without the `node` feature there is no key to derive a node id from.
+ #[cfg(not(feature = "node"))]
+ fn this_node_id(_dir: &BridgeDir) -> Result<String> {
+     Err(Error::Config(
+         "this build has no peer transport; rebuild sapphire-bridge with the `node` feature"
+             .to_owned(),
+     ))
+ }
+ 
++/// A controlled environment for the CLI tests that read or set one.
++#[cfg(test)]
++pub(crate) mod test_env {
++    use std::sync::atomic::{AtomicU32, Ordering};
++
++    /// The environment variables these tests set are process-global, and `cargo test`
++    /// runs a binary's tests in parallel: two tests setting them would race, and one
++    /// reading another test's directory would pass by luck until it does not. One lock
++    /// serializes every test that touches them.
++    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
++    /// Distinguishes the directories two concurrent tests may set, so a set after this
++    /// test's window is never confused with this test's.
++    static COUNTER: AtomicU32 = AtomicU32::new(0);
++
++    /// Run `body` with both directories pointed inside `tmp`, and alone.
++    ///
++    /// Returns what `body` returned. The directories stay set until the body ends, and no
++    /// other env-touching test can run while it does.
++    pub(crate) async fn with_dirs<T, F>(
++        tmp: &std::path::Path,
++        body: impl FnOnce(std::path::PathBuf) -> F,
++    ) -> T
++    where
++        F: std::future::Future<Output = T>,
++    {
++        let _guard = ENV_LOCK.lock().await;
++        let token = COUNTER.fetch_add(1, Ordering::Relaxed);
++        // SAFETY: no other thread reads the environment while the lock is held.
++        unsafe {
++            std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp);
++            std::env::set_var(
++                crate::dir::BRIDGE_DIR_ENV,
++                tmp.join(format!("bridge-{token}")),
++            );
++        }
++        let value = body(tmp.join(format!("bridge-{token}"))).await;
++        unsafe {
++            std::env::remove_var("SAPPHIRE_RUNTIME_DIR");
++            std::env::remove_var(crate::dir::BRIDGE_DIR_ENV);
++        }
++        value
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use clap::Parser;
+ 
+     #[derive(Parser)]
+     struct Probe {
+         #[command(subcommand)]
+         command: BridgeCommand,
+     }
+@@ -443,28 +568,87 @@ mod tests {
+     #[test]
+     fn there_is_no_separate_pair_command() {
+         // Pairing is `device invite` and `workgroup join`; a `pair` tree would be a second
+         // spelling of the same two commands.
+         assert!(Probe::try_parse_from(["b", "pair", "create"]).is_err());
+     }
+ 
+     #[tokio::test]
+     async fn status_against_no_bridge_exits_non_zero() {
+         let tmp = tempfile::tempdir().unwrap();
+-        // SAFETY: set before any other thread reads the environment in this test binary.
+-        unsafe { std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp.path()) };
+-        let code = BridgeCommand::Status.dispatch("0.0.0").await.unwrap();
+-        unsafe { std::env::remove_var("SAPPHIRE_RUNTIME_DIR") };
++        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
++            BridgeDir::at(bridge).unwrap();
++            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
++        })
++        .await;
+         assert_eq!(code, 1);
+     }
+ }
+ 
++#[cfg(test)]
++mod status_fallback_tests {
++    use super::*;
++    use crate::status::PeerStatus;
++    use chrono::Utc;
++    use grain_id::GrainId;
++
++    #[tokio::test]
++    async fn status_without_a_bridge_reports_the_last_snapshot() {
++        let tmp = tempfile::tempdir().unwrap();
++        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
++            let dir = BridgeDir::at(bridge).unwrap();
++            // The bridge stopped after writing this.
++            let stopped = crate::status::StatusFile {
++                version: "0.14.0".into(),
++                pid: std::process::id(),
++                started_at: Utc::now(),
++                node_id: "aaaa".into(),
++                workgroup: Some(sapphire_bridge_api::WorkgroupStatus {
++                    workgroup_id: GrainId::random(),
++                    name: "home".into(),
++                    devices: 1,
++                }),
++                peers: vec![PeerStatus {
++                    device_id: GrainId::random(),
++                    name: "phone".into(),
++                    node_id: String::new(),
++                    connected: false,
++                    last_seen: None,
++                    last_error: None,
++                }],
++                routes: vec![],
++                relays: vec![],
++            };
++            std::fs::write(
++                dir.status_json(),
++                serde_json::to_string_pretty(&stopped).unwrap(),
++            )
++            .unwrap();
++
++            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
++        })
++        .await;
++        assert_eq!(code, 0, "a stopped bridge still has a story worth telling");
++    }
++
++    #[tokio::test]
++    async fn status_without_a_bridge_or_a_snapshot_exits_non_zero() {
++        let tmp = tempfile::tempdir().unwrap();
++        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
++            BridgeDir::at(bridge).unwrap();
++            BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
++        })
++        .await;
++        assert_eq!(code, 1, "nothing to report is nothing to report");
++    }
++}
++
+ #[cfg(test)]
+ mod pairing_cli_tests {
+     use super::*;
+     use clap::Parser;
+ 
+     #[derive(Parser)]
+     struct Probe {
+         #[command(subcommand)]
+         command: BridgeCommand,
+     }
+@@ -500,35 +684,30 @@ mod pairing_cli_tests {
+ 
+     #[test]
+     fn mapping_a_workspace_is_still_not_a_bridge_command() {
+         // Placing a workspace on this host is the owning application's business.
+         assert!(Probe::try_parse_from(["b", "workspace", "map", "notes", "/tmp/x"]).is_err());
+     }
+ 
+     #[tokio::test]
+     async fn joining_without_a_running_bridge_says_so_rather_than_starting_one() {
+         let tmp = tempfile::tempdir().unwrap();
+-        // SAFETY: the test binary sets these before any other thread reads them.
+-        unsafe {
+-            std::env::set_var("SAPPHIRE_RUNTIME_DIR", tmp.path());
+-            std::env::set_var(crate::dir::BRIDGE_DIR_ENV, tmp.path().join("bridge"));
+-        }
+-        let result = BridgeCommand::Workgroup(WorkgroupCommand::Join {
+-            ticket: "sapphire:ABCDEF".into(),
+-            device_name: Some("phone".into()),
++        let result = test_env::with_dirs(tmp.path(), |bridge| async move {
++            BridgeDir::at(bridge).unwrap();
++            BridgeCommand::Workgroup(WorkgroupCommand::Join {
++                ticket: "sapphire:ABCDEF".into(),
++                device_name: Some("phone".into()),
++            })
++            .dispatch("0.0.0")
++            .await
+         })
+-        .dispatch("0.0.0")
+         .await;
+-        unsafe {
+-            std::env::remove_var("SAPPHIRE_RUNTIME_DIR");
+-            std::env::remove_var(crate::dir::BRIDGE_DIR_ENV);
+-        }
+ 
+         match result {
+             Ok(code) => assert_eq!(code, 1, "a missing bridge is a non-zero exit, not a panic"),
+             Err(err) => assert!(
+                 !err.to_string().contains("panic"),
+                 "it must fail with a message, not a panic: {err}"
+             ),
+         }
+     }
+ 
+diff --git a/crates/sapphire-framework-bridge/src/control.rs b/crates/sapphire-framework-bridge/src/control.rs
+index 0a1f21f..31d6a77 100644
+--- a/crates/sapphire-framework-bridge/src/control.rs
++++ b/crates/sapphire-framework-bridge/src/control.rs
+@@ -292,76 +292,89 @@ async fn unregister(bridge: &Bridge, ctx: RequestCtx) -> std::result::Result<Val
+             workspace = %params.workspace_id,
+             "an app server unregistered a workspace this host did not have"
+         );
+     }
+     encode(Ack {})
+ }
+ 
+ /// `bridge.peers` — the workgroup's devices, and which are reachable.
+ fn peers(bridge: &Bridge) -> Result<PeersResult> {
+     let workgroup = bridge.workgroup()?.ok_or(Error::NoWorkgroup)?;
++    Ok(PeersResult {
++        peers: peer_infos(bridge, &workgroup)?,
++    })
++}
++
++/// Every non-retired device of `workgroup`, and which are reachable.
++///
++/// Shared with `status.json`, which reports the same devices without a control-plane
++/// caller to ask it first.
++pub(crate) fn peer_infos(bridge: &Bridge, workgroup: &Workgroup) -> Result<Vec<PeerInfo>> {
+     let devices = workgroup.devices()?;
+-    let peers = devices
++    Ok(devices
+         .entries()
+         .iter()
+         .filter(|d| !d.is_retired())
+         .map(|d| {
+-            // A device that has never announced itself has no node id; `PeerInfo` reports that
+-            // as an empty string rather than a made-up one.
++            // A device that has never announced itself has no node id; `PeerInfo` reports
++            // that as an empty string rather than a made-up one.
+             let node_id = d.node_id.clone().unwrap_or_default();
+             PeerInfo {
+                 device_id: d.id,
+                 name: d.name.clone(),
+                 connected: !node_id.is_empty() && bridge.transport().is_connected(&node_id),
+                 node_id,
+             }
+         })
+-        .collect();
+-    Ok(PeersResult { peers })
++        .collect())
+ }
+ 
+ /// `bridge.status` — what this bridge knows about itself.
+ fn status(bridge: &Bridge) -> Result<StatusResult> {
+-    let routes = bridge
++    let workgroup = bridge.workgroup()?;
++    Ok(StatusResult {
++        version: bridge.version().to_owned(),
++        node_id: bridge.transport().node_id(),
++        workgroup: workgroup.as_ref().map(workgroup_status).transpose()?,
++        routes: route_statuses(bridge),
++    })
++}
++
++/// What `workgroup` says about itself, as [`WorkgroupStatus`] carries it.
++///
++/// Shared with `status.json`, which reports the same fact without a caller to ask it first.
++pub(crate) fn workgroup_status(workgroup: &Workgroup) -> Result<WorkgroupStatus> {
++    let devices = workgroup
++        .devices()?
++        .entries()
++        .iter()
++        .filter(|d| !d.is_retired())
++        .count();
++    Ok(WorkgroupStatus {
++        workgroup_id: workgroup.id,
++        name: workgroup.name.clone(),
++        devices,
++    })
++}
++
++/// The routing table, saying of each row whether its owner is connected right now.
++pub(crate) fn route_statuses(bridge: &Bridge) -> Vec<RouteStatus> {
++    bridge
+         .route_entries()
+         .iter()
+         .map(|route| RouteStatus {
+             workspace_id: route.workspace_id,
+             app_name: route.app_name.clone(),
+             root: route.root.clone(),
+             owner_online: bridge.owners().is_online(&route.app_name),
+         })
+-        .collect();
+-
+-    let workgroup = match bridge.workgroup()? {
+-        Some(workgroup) => {
+-            let devices = workgroup
+-                .devices()?
+-                .entries()
+-                .iter()
+-                .filter(|d| !d.is_retired())
+-                .count();
+-            Some(WorkgroupStatus {
+-                workgroup_id: workgroup.id,
+-                name: workgroup.name.clone(),
+-                devices,
+-            })
+-        }
+-        None => None,
+-    };
+-
+-    Ok(StatusResult {
+-        version: bridge.version().to_owned(),
+-        node_id: bridge.transport().node_id(),
+-        workgroup,
+-        routes,
+-    })
++        .collect()
+ }
+ 
+ /// `bridge.invite` — create an invite, and hand back the ticket.
+ ///
+ /// The bridge composes the ticket because the ticket names the address a joiner must dial,
+ /// and only the process holding the bound endpoint knows it. Writing the invite is a local
+ /// write to `invites.toml`: any process holding the lock may issue one, and the one that
+ /// answers the pairing is not necessarily the one that created it.
+ fn invite(bridge: &Bridge, ctx: RequestCtx) -> Result<InviteResult> {
+     let params: InviteParams = serde_json::from_value(ctx.params)
+diff --git a/crates/sapphire-framework-bridge/src/lib.rs b/crates/sapphire-framework-bridge/src/lib.rs
+index af65859..1136b14 100644
+--- a/crates/sapphire-framework-bridge/src/lib.rs
++++ b/crates/sapphire-framework-bridge/src/lib.rs
+@@ -15,20 +15,21 @@ mod data;
+ mod dir;
+ mod error;
+ mod invite;
+ #[cfg(feature = "node")]
+ mod iroh;
+ mod net;
+ mod pairing;
+ mod peer;
+ mod relay;
+ mod routes;
++mod status;
+ #[cfg(any(test, feature = "test-util"))]
+ mod testing;
+ mod wgsync;
+ mod workgroup;
+ 
+ use std::path::PathBuf;
+ use std::sync::{Arc, Mutex};
+ 
+ use grain_id::GrainId;
+ use sapphire_bridge_api::{BRIDGE_DATA_NAME, BRIDGE_NAME, ManagedBy, WorkspaceRegistration};
+@@ -42,20 +43,21 @@ pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
+ pub use iroh::{IrohTransport, NodeAddr};
+ pub use net::NetConfig;
+ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
+ pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use peer::{LoopbackNetwork, LoopbackTransport};
+ #[cfg(feature = "embedded-relay")]
+ pub use relay::EmbeddedRelay;
+ pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
+ pub use routes::{Route, RouteTable};
++pub use status::{PeerStatus, STATUS_INTERVAL, StatusFile, StatusSource, StatusWriter};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use testing::adopt_workgroup;
+ pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
+ pub use workgroup::{Workgroup, WorkgroupWorkspace};
+ 
+ use crate::control::{Owners, Wakes};
+ use crate::data::Tickets;
+ 
+ /// The switchboard: one control plane, one data plane, and the tables they share.
+ ///
+@@ -215,25 +217,39 @@ impl Bridge {
+         let bridge = self;
+         let info = ServerInfo {
+             version: bridge.version.to_owned(),
+             pid: std::process::id(),
+             // The bridge is not installed as a service yet; it is started on demand. A
+             // client that finds a mismatched version may therefore replace it, which is the
+             // right answer for something this process started.
+             managed_by: ManagedBy::Spawned,
+         };
+ 
+-        tokio::select! {
++        // Keep `status.json` current for exactly as long as the bridge serves: the writer's
++        // handle is dropped when the loops end, which stops it and leaves the last snapshot
++        // on disk. It needs the resolved `net`, which only this function still holds.
++        let status = status::StatusWriter::start(
++            bridge.dir.status_json(),
++            Arc::new(status::BridgeSource::new(
++                Arc::clone(&bridge),
++                net.clone(),
++                chrono::Utc::now(),
++            )),
++        );
++
++        let result = tokio::select! {
+             result = control::listen(Arc::clone(&bridge), control_endpoint, info) => result,
+             result = data::listen(Arc::clone(&bridge), data_endpoint) => result,
+             result = data::inbound(bridge, net) => result,
+-        }
++        };
++        drop(status);
++        result
+     }
+ 
+     // ── what the loops share ────────────────────────────────────────────────
+ 
+     /// How this host reaches other devices.
+     pub(crate) fn transport(&self) -> &dyn PeerTransport {
+         self.transport.as_ref()
+     }
+ 
+     /// The version this bridge reports.
+diff --git a/crates/sapphire-framework-bridge/src/status.rs b/crates/sapphire-framework-bridge/src/status.rs
+new file mode 100644
+index 0000000..1682cfc
+--- /dev/null
++++ b/crates/sapphire-framework-bridge/src/status.rs
+@@ -0,0 +1,434 @@
++//! `status.json`: what the bridge is doing, for anyone on this host to read.
++//!
++//! The file is rewritten every [`STATUS_INTERVAL`] and promptly when its content changes,
++//! atomically: through a temporary file and a rename. A reader that caught a half-written
++//! `status.json` would report nonsense at exactly the moment someone is trying to find out
++//! what is wrong. When the bridge stops, the last snapshot stays in place — which is how
++//! `sapphire-bridge status` tells you what the bridge was doing before it stopped.
++//!
++//! See `docs/superpowers/specs/2026-09-16-process-architecture-design.md` §5.
++
++use std::path::{Path, PathBuf};
++use std::sync::Arc;
++use std::time::{Duration, Instant};
++
++use chrono::{DateTime, Utc};
++use grain_id::GrainId;
++use sapphire_bridge_api::{RouteStatus, WorkgroupStatus};
++use serde::{Deserialize, Serialize};
++
++use crate::error::{Error, Result};
++use crate::net::NetConfig;
++
++/// How often `status.json` is rewritten even when nothing changed.
++pub const STATUS_INTERVAL: Duration = Duration::from_secs(5);
++
++/// How often the source is polled for a change between rewrites.
++///
++/// A change is therefore visible in the file within this long, without rewriting the file
++/// on every poll when nothing did change.
++const POLL_INTERVAL: Duration = Duration::from_secs(1);
++
++/// What the bridge knows, in the form `status.json` carries it.
++///
++/// A superset of the control plane's [`sapphire_bridge_api::StatusResult`]: a reader of the
++/// file cannot call `bridge.peers`, so the devices, the relays and when this bridge started
++/// travel in the file instead.
++#[derive(Clone, Debug, Deserialize, Serialize)]
++pub struct StatusFile {
++    /// The bridge's version.
++    pub version: String,
++    /// The bridge process's id.
++    pub pid: u32,
++    /// When this bridge started.
++    pub started_at: DateTime<Utc>,
++    /// This host's iroh node id.
++    pub node_id: String,
++    /// The workgroup this host belongs to, if any.
++    pub workgroup: Option<WorkgroupStatus>,
++    /// Every non-retired device of the workgroup.
++    pub peers: Vec<PeerStatus>,
++    /// Every workspace an app server of this host owns.
++    pub routes: Vec<RouteStatus>,
++    /// The relay URLs this host's endpoint uses.
++    pub relays: Vec<String>,
++}
++
++impl StatusFile {
++    /// Read the last snapshot, if the bridge has written one yet.
++    ///
++    /// A missing file is `None` rather than an error: the bridge has never run here, which
++    /// is a normal state for `sapphire-bridge status` to report. A file that is there but
++    /// unreadable is an error — guessing at what a broken snapshot meant is worse than
++    /// reporting it.
++    pub fn load(path: &Path) -> Result<Option<StatusFile>> {
++        let text = match std::fs::read_to_string(path) {
++            Ok(text) => text,
++            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
++            Err(e) => return Err(Error::Io(e)),
++        };
++        serde_json::from_str(&text)
++            .map(Some)
++            .map_err(|e| Error::Config(format!("{}: {e}", path.display())))
++    }
++}
++
++/// One device of the workgroup, as the status file reports it.
++#[derive(Clone, Debug, Deserialize, Serialize)]
++pub struct PeerStatus {
++    /// Its device id.
++    pub device_id: GrainId,
++    /// Its name.
++    pub name: String,
++    /// Its iroh node id; empty when the device has never announced one.
++    pub node_id: String,
++    /// Whether the bridge currently holds a connection to it.
++    pub connected: bool,
++    /// When the bridge last heard from it.
++    ///
++    /// The bridge does not track that yet; the field is there for when it does.
++    pub last_seen: Option<DateTime<Utc>>,
++    /// What the last exchange with it failed with.
++    ///
++    /// The bridge does not track that yet; the field is there for when it does.
++    pub last_error: Option<String>,
++}
++
++/// Where the data in `status.json` comes from.
++///
++/// The bridge implements this against its live tables; tests answer from a fixed snapshot.
++/// A snapshot must be cheap: the writer polls it every [`POLL_INTERVAL`].
++pub trait StatusSource: Send + Sync + 'static {
++    /// What the bridge knows right now.
++    fn snapshot(&self) -> StatusFile;
++}
++
++/// The running bridge, as a [`StatusSource`].
++///
++/// Built when the bridge's loops start. It holds the resolved network configuration, which
++/// the bridge itself no longer keeps once it has handed it to the loops, and the moment the
++/// bridge started.
++pub(crate) struct BridgeSource {
++    bridge: std::sync::Arc<crate::Bridge>,
++    net: NetConfig,
++    started_at: DateTime<Utc>,
++}
++
++impl BridgeSource {
++    /// A source reporting `bridge`'s state, served with `net`.
++    pub(crate) fn new(
++        bridge: std::sync::Arc<crate::Bridge>,
++        net: NetConfig,
++        started_at: DateTime<Utc>,
++    ) -> BridgeSource {
++        BridgeSource {
++            bridge,
++            net,
++            started_at,
++        }
++    }
++}
++
++impl StatusSource for BridgeSource {
++    fn snapshot(&self) -> StatusFile {
++        // Every block degrades on its own: a ledger that cannot be read right now costs the
++        // file its device list, not the whole file. The status file exists to answer "what
++        // is the bridge doing", and half an answer still answers more than no file.
++        let workgroup = match self.bridge.workgroup() {
++            Ok(workgroup) => workgroup,
++            Err(err) => {
++                tracing::warn!("status.json will not name a workgroup: {err}");
++                None
++            }
++        };
++        let workgroup_status = match &workgroup {
++            Some(workgroup) => match crate::control::workgroup_status(workgroup) {
++                Ok(status) => Some(status),
++                Err(err) => {
++                    tracing::warn!("status.json will not name a workgroup: {err}");
++                    None
++                }
++            },
++            None => None,
++        };
++        let peers = match &workgroup {
++            Some(workgroup) => match crate::control::peer_infos(&self.bridge, workgroup) {
++                Ok(peers) => peers
++                    .into_iter()
++                    .map(|peer| PeerStatus {
++                        device_id: peer.device_id,
++                        name: peer.name,
++                        node_id: peer.node_id,
++                        connected: peer.connected,
++                        // The bridge does not track when it last heard from a device, or
++                        // what the last exchange failed with; the fields are there for when
++                        // it does.
++                        last_seen: None,
++                        last_error: None,
++                    })
++                    .collect(),
++                Err(err) => {
++                    tracing::warn!("status.json will list no devices: {err}");
++                    Vec::new()
++                }
++            },
++            None => Vec::new(),
++        };
++        let relays = match crate::relay::relays(&self.net, workgroup.as_ref()) {
++            Ok(config) => config.urls,
++            Err(err) => {
++                tracing::warn!("status.json will name no relays: {err}");
++                Vec::new()
++            }
++        };
++
++        StatusFile {
++            version: self.bridge.version().to_owned(),
++            pid: std::process::id(),
++            started_at: self.started_at,
++            node_id: self.bridge.transport().node_id(),
++            workgroup: workgroup_status,
++            peers,
++            routes: crate::control::route_statuses(&self.bridge),
++            relays,
++        }
++    }
++}
++
++/// Rewrites `status.json` as the bridge's state changes.
++///
++/// [`StatusWriter::start`] writes the first snapshot at once and keeps the file current
++/// afterwards: it re-snapshots the source every [`POLL_INTERVAL`], writing when the content
++/// changed or [`STATUS_INTERVAL`] has passed since the last write. Every write is atomic —
++/// through a temporary file and a rename — so a reader never catches a half-written file.
++///
++/// Stopping the writer leaves the last snapshot in place, which is how
++/// `sapphire-bridge status` reports what a stopped bridge was doing.
++pub struct StatusWriter {
++    /// Dropping it closes the channel, which ends the writer task.
++    _stop: tokio::sync::mpsc::Sender<()>,
++}
++
++impl StatusWriter {
++    /// Start writing `path` from `source` on the current tokio runtime, and return the
++    /// handle that stops it.
++    ///
++    /// The writer runs until the handle is dropped, so a bridge keeps its status current for
++    /// exactly as long as it keeps the writer.
++    pub fn start(path: PathBuf, source: Arc<dyn StatusSource>) -> StatusWriter {
++        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel::<()>(1);
++        tokio::spawn(async move {
++            let mut last_body: Option<String> = None;
++            let mut last_write: Option<Instant> = None;
++            loop {
++                match serde_json::to_string_pretty(&source.snapshot()) {
++                    Ok(body) => {
++                        // The first write is due at once, so the file appears as soon as the
++                        // bridge is up rather than at the first tick.
++                        let due = last_write.is_none_or(|at| at.elapsed() >= STATUS_INTERVAL);
++                        if last_body.as_deref() != Some(body.as_str()) || due {
++                            // The empty header keeps `write_atomic` from prefixing anything
++                            // to the JSON; JSON has no comment form to spend a header on.
++                            match crate::routes::write_atomic(&path, "", &body) {
++                                Ok(()) => {
++                                    last_write = Some(Instant::now());
++                                    last_body = Some(body);
++                                }
++                                // A failed write is retried at the next poll: the file is
++                                // stale for a moment, which a reader survives.
++                                Err(err) => {
++                                    tracing::warn!("could not write status.json: {err}");
++                                }
++                            }
++                        }
++                    }
++                    Err(err) => tracing::warn!("could not encode status.json: {err}"),
++                }
++                tokio::select! {
++                    _ = tokio::time::sleep(POLL_INTERVAL) => {}
++                    // Fires on a stop *and* when the handle is dropped; either way, done.
++                    _ = stop_rx.recv() => break,
++                }
++            }
++        });
++        StatusWriter { _stop: stop_tx }
++    }
++
++    /// Stop rewriting, leaving the last snapshot in place.
++    ///
++    /// The task ends between writes, so a stop never interrupts one: no half-written
++    /// temporary file is left behind, and a reader keeps seeing the last complete snapshot.
++    pub fn stop(self) {}
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    struct Fixed(StatusFile);
++
++    impl StatusSource for Fixed {
++        fn snapshot(&self) -> StatusFile {
++            self.0.clone()
++        }
++    }
++
++    fn sample() -> StatusFile {
++        StatusFile {
++            version: "0.0.0".into(),
++            pid: std::process::id(),
++            started_at: chrono::Utc::now(),
++            node_id: "abc".into(),
++            workgroup: None,
++            peers: vec![],
++            routes: vec![],
++            relays: vec![],
++        }
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn the_file_appears_promptly_and_parses() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        let writer = StatusWriter::start(path.clone(), Arc::new(Fixed(sample())));
++
++        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
++        while !path.exists() {
++            assert!(
++                std::time::Instant::now() < deadline,
++                "no status.json was written"
++            );
++            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++        }
++        let text = std::fs::read_to_string(&path).unwrap();
++        let parsed: StatusFile = serde_json::from_str(&text).unwrap();
++        assert_eq!(parsed.node_id, "abc");
++        writer.stop();
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn a_reader_never_sees_a_half_written_file() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        let mut big = sample();
++        big.peers = (0..2000)
++            .map(|n| PeerStatus {
++                device_id: grain_id::GrainId::random(),
++                name: format!("device-{n}"),
++                node_id: "x".repeat(64),
++                connected: true,
++                last_seen: Some(chrono::Utc::now()),
++                last_error: None,
++            })
++            .collect();
++        let writer = StatusWriter::start(path.clone(), Arc::new(Fixed(big)));
++
++        // Read repeatedly while it is being rewritten; every read must parse.
++        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++        let mut reads = 0;
++        while std::time::Instant::now() < deadline {
++            if let Ok(text) = std::fs::read_to_string(&path) {
++                serde_json::from_str::<StatusFile>(&text)
++                    .expect("a partially written status.json reached a reader");
++                reads += 1;
++            }
++            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++        }
++        assert!(reads > 10, "the test did not actually read anything");
++        writer.stop();
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn stopping_the_writer_leaves_the_last_snapshot_in_place() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        let writer = StatusWriter::start(path.clone(), Arc::new(Fixed(sample())));
++        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
++        writer.stop();
++        assert!(
++            path.exists(),
++            "the last status is useful after a clean stop"
++        );
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn no_temporary_files_are_left_behind() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        let writer = StatusWriter::start(path.clone(), Arc::new(Fixed(sample())));
++        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
++        writer.stop();
++        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
++
++        let leftovers: Vec<String> = std::fs::read_dir(tmp.path())
++            .unwrap()
++            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
++            .filter(|n| n != "status.json")
++            .collect();
++        assert!(leftovers.is_empty(), "left behind {leftovers:?}");
++    }
++
++    /// A source whose answer changes once a flag is set.
++    struct Flipping(Arc<std::sync::atomic::AtomicBool>);
++
++    impl StatusSource for Flipping {
++        fn snapshot(&self) -> StatusFile {
++            let mut status = sample();
++            if self.0.load(std::sync::atomic::Ordering::Relaxed) {
++                status.node_id = "def".into();
++            }
++            status
++        }
++    }
++
++    #[tokio::test(flavor = "multi_thread")]
++    async fn a_change_is_written_without_waiting_for_the_interval() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
++        let writer = StatusWriter::start(path.clone(), Arc::new(Flipping(Arc::clone(&flag))));
++
++        let wait_for = |node: &'static str| {
++            let path = path.clone();
++            async move {
++                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++                loop {
++                    if let Ok(text) = std::fs::read_to_string(&path)
++                        && let Ok(parsed) = serde_json::from_str::<StatusFile>(&text)
++                        && parsed.node_id == node
++                    {
++                        return;
++                    }
++                    assert!(
++                        std::time::Instant::now() < deadline,
++                        "status.json never reported node {node}"
++                    );
++                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
++                }
++            }
++        };
++
++        wait_for("abc").await;
++        flag.store(true, std::sync::atomic::Ordering::Relaxed);
++        wait_for("def").await;
++        writer.stop();
++    }
++
++    #[test]
++    fn a_missing_file_is_no_snapshot_and_not_an_error() {
++        let tmp = tempfile::tempdir().unwrap();
++        assert!(
++            StatusFile::load(&tmp.path().join("status.json"))
++                .unwrap()
++                .is_none()
++        );
++    }
++
++    #[test]
++    fn an_unreadable_snapshot_is_an_error_not_a_guess() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("status.json");
++        std::fs::write(&path, "{ not json").unwrap();
++        assert!(StatusFile::load(&path).is_err());
++    }
++}
+diff --git a/crates/sapphire-framework-bridge/tests/status_file.rs b/crates/sapphire-framework-bridge/tests/status_file.rs
+new file mode 100644
+index 0000000..1bc6663
+--- /dev/null
++++ b/crates/sapphire-framework-bridge/tests/status_file.rs
+@@ -0,0 +1,170 @@
++//! The running bridge keeps `status.json` current.
++//!
++//! Unit tests in `status.rs` pin the file's mechanics against a fixed source; this test
++//! wires the writer the way production does and checks the file reports the facts a real
++//! bridge has — devices, routes, workgroup.
++
++mod common;
++
++use common::*;
++use grain_id::GrainId;
++use sapphire_bridge_api::{ManagedBy, RegisterParams, WorkspaceRegistration};
++use sapphire_framework_bridge::{LoopbackNetwork, STATUS_INTERVAL, StatusFile};
++use std::sync::Arc;
++
++/// A fixed snapshot as the source, so the test drives the writer exactly as the bridge
++/// will: through [`StatusWriter::start`].
++struct Fixed(StatusFile);
++
++impl sapphire_framework_bridge::StatusSource for Fixed {
++    fn snapshot(&self) -> StatusFile {
++        self.0.clone()
++    }
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_running_bridge_writes_its_status_file() {
++    let net = LoopbackNetwork::new();
++    let a = start(&net, NODE_A, "host-a").await;
++
++    // The bridge is running (`start` waits for its control endpoint), so the file must be
++    // there with this host's facts in it.
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
++    let path = a.dir.status_json();
++    while !path.exists() {
++        assert!(
++            std::time::Instant::now() < deadline,
++            "a running bridge never wrote status.json"
++        );
++        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
++    }
++
++    let snapshot = sapphire_framework_bridge::StatusFile::load(&path)
++        .unwrap()
++        .expect("the file it just wrote");
++    assert_eq!(snapshot.node_id, NODE_A);
++    assert_eq!(snapshot.pid, std::process::id());
++    assert_eq!(
++        snapshot.workgroup.expect("a workgroup").devices,
++        1,
++        "the workgroup's one device"
++    );
++    assert_eq!(snapshot.peers.len(), 1, "the one device, as a peer");
++    assert_eq!(snapshot.version, "0.0.0");
++
++    // Repeated snapshots must all parse: every write is atomic.
++    for _ in 0..3 {
++        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
++        let snapshot = sapphire_framework_bridge::StatusFile::load(&path)
++            .unwrap()
++            .expect("the snapshot stays");
++        assert_eq!(snapshot.node_id, NODE_A);
++    }
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn registering_a_workspace_reaches_the_status_file() {
++    let net = LoopbackNetwork::new();
++    let a = start(&net, NODE_A, "host-a").await;
++    let client = connect(&a).await;
++    let ws = GrainId::random();
++    client
++        .register(RegisterParams {
++            app_name: APP.into(),
++            exe_path: std::env::current_exe().unwrap(),
++            managed_by: ManagedBy::Spawned,
++            workspaces: vec![WorkspaceRegistration {
++                workspace_id: ws,
++                root: "/workspace".into(),
++            }],
++        })
++        .await
++        .unwrap();
++
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    loop {
++        let snapshot = sapphire_framework_bridge::StatusFile::load(&a.dir.status_json())
++            .unwrap()
++            .expect("a running bridge wrote status.json");
++        if snapshot.routes.iter().any(|r| r.workspace_id == ws) {
++            break;
++        }
++        assert!(
++            std::time::Instant::now() < deadline,
++            "a registration never reached status.json"
++        );
++        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
++    }
++}
++
++/// A registration that reaches the file must reach it by way of a change, not the interval:
++/// the poll is one second, so a forced wait of the full interval would make the test pass
++/// even if the writer only ever wrote on the tick.
++#[tokio::test(flavor = "multi_thread")]
++async fn a_registration_reaches_the_status_file_faster_than_the_tick() {
++    let net = LoopbackNetwork::new();
++    let a = start(&net, NODE_A, "host-a").await;
++    let client = connect(&a).await;
++    let ws = GrainId::random();
++    client
++        .register(RegisterParams {
++            app_name: APP.into(),
++            exe_path: std::env::current_exe().unwrap(),
++            managed_by: ManagedBy::Spawned,
++            workspaces: vec![WorkspaceRegistration {
++                workspace_id: ws,
++                root: "/workspace".into(),
++            }],
++        })
++        .await
++        .unwrap();
++
++    let began = std::time::Instant::now();
++    let deadline = std::time::Duration::from_millis(STATUS_INTERVAL.as_millis() as u64);
++    loop {
++        let snapshot = sapphire_framework_bridge::StatusFile::load(&a.dir.status_json())
++            .unwrap()
++            .expect("a running bridge wrote status.json");
++        if snapshot.routes.iter().any(|r| r.workspace_id == ws) {
++            break;
++        }
++        assert!(
++            began.elapsed() < deadline,
++            "the registration took longer than a full interval; the change path may not be the one writing"
++        );
++        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
++    }
++    client.unregister(ws).await.unwrap();
++}
++
++/// The writer is also usable directly, as `test-util` consumers will.
++#[tokio::test(flavor = "multi_thread")]
++async fn the_writer_writes_to_the_bridge_directory_it_is_handed() {
++    let tmp = tempfile::tempdir().unwrap();
++    let path = tmp.path().join("status.json");
++    let snapshot = StatusFile {
++        version: "9.9.9".into(),
++        pid: 42,
++        started_at: chrono::Utc::now(),
++        node_id: "abc".repeat(21),
++        workgroup: None,
++        peers: vec![],
++        routes: vec![],
++        relays: vec!["https://relay.example".into()],
++    };
++    let writer =
++        sapphire_framework_bridge::StatusWriter::start(path.clone(), Arc::new(Fixed(snapshot)));
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
++    while !path.exists() {
++        assert!(
++            std::time::Instant::now() < deadline,
++            "no status.json was written"
++        );
++        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
++    }
++    let parsed = sapphire_framework_bridge::StatusFile::load(&path)
++        .unwrap()
++        .expect("the file was just written");
++    assert_eq!(parsed.relays, vec!["https://relay.example".to_owned()]);
++    writer.stop();
++}

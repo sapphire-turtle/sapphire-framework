@@ -1,6 +1,4 @@
-# sapphire-framework アーキテクチャ
-
-> project-sapphire（`sapphire-journal` / `sapphire-agent` / `sapphire-ledger` と基盤 `sapphire-framework`）
+> project-sapphire（`sapphire-journal` / `sapphire-agent` / `sapphire-ledger` / `sapphire-timer` と基盤 `sapphire-framework`）
 > のローカルファースト基盤の設計ドキュメント。このリポジトリは旧 `sapphire-workspace` の履歴を
 > 引き継いでおり、将来 `sapphire-workspace` リモートを `sapphire-framework` にリネームする前提。
 
@@ -11,28 +9,42 @@
 
 1. **git 同期はタイムラグがあり共同編集に不便** → Patroni による Postgres 分散を活かした中央集権型の
    *リモートワークスペース* を選択肢に追加する。ただし **サーバもクライアントと対称**（ファイル原本＋DBキャッシュ）にし、
-   低レイテンシは git ではなく「サーバ仲介の change_log + 差分同期」で得る。
+   低レイテンシは git ではなく「サーバ仲介の change_log + 差分同期」で得る。（この中央サーバ方式はのちに p2p 同期へ置き換わった — 下記「ワークスペース同期」節）
 2. **職場でネイティブアプリのインストールに懸念** → 環境を汚さない **WASM 版 journal**。
    ローカルキャッシュ(IndexedDB/OPFS)を持ち、リモートとのやり取りを「差分同期だけ」に絞る。
-3. 共通機能は「workspace」の枠を超えるため、新リポジトリ **`sapphire-framework`**（全crate `sapphire-framework-*` プレフィクス）に集約する。
+3. 共通機能は「workspace」の枠を超えるため、新リポジトリ **`sapphire-framework`**（全crate `sapphire-framework-*` プレフィクス）に集約する。（**WASM はのちに目標から外れた** — sync 仕様 決定 7）
 
 ## 確定した方針（ユーザー合意済み）
 
-- **framework 移行を土台**にし、remote/WASM はその上の実装として後続フェーズ。
-- `sapphire-workspace` は **framework に吸収し廃止**。全crateは **`sapphire-framework-*`** プレフィクス
+- **framework 移行を土台**にする。`sapphire-workspace` は **framework に吸収し廃止**。全crateは **`sapphire-framework-*`** プレフィクス
   （`sapphire-*` 一般名前空間を占有しないため意図的に長くする）。crates.io では新規crate名で publish。
   移行時のコード改変を最小化するため、依存宣言で Cargo の `package = "..."` エイリアスを使い、
   **コード内の extern 名（`sapphire_retrieve` 等）はそのまま維持**している。
-- **キャッシュは純Rust製にして SQLite 依存を排除**（後述）。matrix-sdk の rusqlite ピンに縛られないため。
-- remote 通信は **JSON-RPC 2.0 over HTTP**（MCP と同系＝統一感）。
-- サーバも「ファイル原本＋DBキャッシュ」で対称化（**Model B**）。storage backend を抽象化し、
-  v1=ファイル原本+SQLite/redb+FSブロブ、将来=Postgres原本+S3ブロブ に差し替え可能に。
-- **ベクター索引は同期対象外**。リモート/ローカルが各自保持し、オフライン=軽量モデル、オンライン=サーバ大モデル。
-  差分同期が運ぶのは**ドキュメント本体（テキスト+メタ+バイナリブロブ参照）のみ**。
-- native も WASM も「**ローカルキャッシュ＋リモート差分同期**」という同一構造（`RemoteBackend` + `RemoteClient`）。
-- **同期は中央サーバの差分同期に一本化**（#90）。framework 組込みのローカル自動同期（git 自動 commit/pull/push・
-  `SyncBackend`/`ChangeSource` 抽象）は撤去した。ファイルを原本として扱う設計は維持し、git は**ユーザーが手動**で
-  併用する（CLI/server は git を組込まない）。GUI 統合 git は将来ゼロベースで再構築（#91）。
+- **キャッシュは純Rust製にして SQLite 依存を排除**（redb + tantivy。Cargo は feature が無効な
+  optional 依存もバージョン解決して `links` の一意性を検査するため、SQLite 系は optional 化でなく
+  削除 — 詳細はこの文書の「キャッシュバックエンド」節、記録は 2026-07-15 と 2026-08-28 の履歴）。
+- **同期は中央サーバの JSON-RPC に一本化した #90 の方針は、p2p 同期で置き換えた**。
+  framework 組込みの git 自動同期（`SyncBackend`/`ChangeSource` 抽象）の撤去自体はそのまま維持。
+  git は**ユーザーが手動**で併用する。GUI 統合 git は将来ゼロベースで再構築（#91）。
+- 同期は **iroh（QUIC）の上で 2 台の app server が直接セッションを張る p2p**（下の「ワークスペース
+  同期」節）。sync 用の HTTP JSON-RPC と API キーは廃止した。キーで入るのは、同期に参加しない
+  **external device**（下の節）が HTTP エンドポイント（agent の `/acp` や `/audio/ingest` など）に
+  来るときだけ。
+- サーバも「ファイル原本＋DBキャッシュ」で対称（**Model B**）という対称性は p2p 設計の出発点として
+  残る。全デバイスが同一構造を持ち、「常時稼働のピア」がサーバ役を担う（sync 仕様 §1）。
+- **ベクター索引（redb）は同期対象外だが、ベクター自体はファイルとして同期する**（#187）。
+  `<root>/.<app>/embedded/<profile>/<sha256>.vec`（JSON ヘッダ 1 行 + f16 LE）に、内容ハッシュ
+  （同期層と同じ SHA-256）ごと・モデルのプロファイル（モデル・リビジョン・次元・トークン上限・
+  テンプレート版）ごとに 1 つ置く。同じパスの 2 つは同じ入力から計算されたものなので、
+  `embedded/` 配下ではコンフリクトコピーを作らず後勝ちにする（同期フィルタに組み込み）。
+  ベクターのないファイルを埋め込むのは、勝った版を書いたデバイスと代表デバイスだけで、他の
+  デバイスは届いたファイルを索引に読み込む。代表デバイスは、他デバイスの版が 10 分経ってから
+  補完し、スキャン・セッション後に加えて 10 分ごとにも自分から確認する（#188）。サーバーの
+  埋め込みは 1 要求 4 件に絞り、bridge の 1 本のワーカーで検索クエリが待たされないようにする。
+  進み具合は `sync.status` の `embedding` に出る。どのファイルにも対応しない古いベクターは、
+  代表デバイスが 1 日経ってから消す。使っていないプロファイルは自動では消さない（#206）。
+  セッションが運ぶのは**ファイル内容そのもの**（既定上限 64 MiB・hash でアドレス指定）。
+  オフライン時の検索はローカル索引で行う。設計は `superpowers/specs/2026-10-10-synced-vectors-design.md`。
 
 ## キャッシュバックエンド: SQLite 脱却（redb + tantivy）
 
@@ -62,159 +74,353 @@ arrow の更新がこちらの都合では進められない状態だった。`l
 **構成**（`sapphire-framework-retrieve`）:
 
 - **`RetrieveStore` trait**（同期）が統一インターフェース（`upsert_document`/`remove_document`/`rebuild_fts`/
-  `document_ids`/`document_count`/`embed_pending`/`vec_info`/`search_fts`/`search_similar`/`search_hybrid`）。
+  `document_ids`/`document_count`/`configure_vectors`/`embed_pending`/`vec_info`/`search_fts`/`search_similar`/`search_hybrid`）。
   mtime 追跡は責務外（`sapphire-framework-track` の `TrackStore` が持つ）。
 - **唯一の永続実装 = `RedbStore`（redb + tantivy + brute-force vectors）**。C依存ゼロ・純Rust。
   `redb-store` を切ると揮発する in-memory ストアにフォールバックするだけなので、
   **各アプリは `redb-store` を既定に入れること**。
-  - **redb** = 正本レコード保管。`documents: doc_id -> {path, chunks}`、`vectors: (doc_id,line_start) -> f32[]`、`meta`。
+  - **redb** = 正本レコード保管。`documents: doc_id -> {path, text}`、`vectors: doc_id -> f32[]`（1 ファイル = 1 ドキュメント = 1 ベクトル。長い入力は切り詰め）、`meta`（`schema_version` を保持。現在 2 で、不一致なら初回オープン時に一度だけキャッシュを作り直す）。検索結果は一致箇所の `snippet` を返す。
   - **tantivy** = redb から作る転置インデックス。**trigram トークナイザ**（`NgramTokenizer(3,3)`）で
     旧 FTS5 `trigram` 相当（substring・CJK 対応）。BM25 ランキング。索引は redb から再構築可能。
   - **ベクトル検索は brute-force**（redb 上の全ベクトルを L2 距離でスキャン）。数万件までミリ秒未満で厳密。
     規模が要求したら HNSW（`instant-distance` 等の純Rust）に差し替え可能。
-  - **VectorStore を別 trait に切らず redb に統合**（vectors は同期対象外。非同期性は sync 層＝Change がドキュメントのみ運ぶことで担保）。
-- **feature**: `redb-store`（既定）/ `fastembed-embed`。`sqlite-store` / `lancedb-store` は削除済み（上記参照）。
+  - **VectorStore を別 trait に切らず redb に統合**（redb の vectors 表は同期対象外。同期するのは
+    `.<app>/embedded/` のベクターファイルで、`embed_pending` は `VectorSource` を通じてそれを先に読む）。
+- **埋め込み器は bridge から来る**。この crate が持つのは `Embedder` trait だけで、実装（ローカル推論・
+  OpenAI 互換 REST）は bridge の埋め込みコンポーネント（`sapphire-framework-bridge-embed`）にある。
+  `configure_vectors(model, dim)` は「このストアは `model` の `dim` 次元ベクトルを持つ」と宣言する:
+  `meta` の `embedding_model` / `embedding_dim` に記録し、model か dim が変われば既存ベクトルを全部
+  捨てて全ドキュメントを pending に戻す（冪等）。#195 の「次元を変えて開き直す」旧挙動を置き換える。
+- **`RetrieveConfig`** は `db` と `hybrid` だけを残す（`embedding`、`EmbeddingConfig`、`build_embedder` は
+  撤去。アプリは埋め込みを設定しない — `WorkspaceState::load_embedder()` が bridge に聞き、返ってきた
+  model / dimension で `configure_vectors` する。アプリは `VectorDb` の種別だけを
+  `WorkspaceState::set_vector_db(RetrieveConfig.db)` で渡す）。
+- **feature**: `redb-store`（既定）。`fastembed-embed` / `sqlite-store` / `lancedb-store` は削除済み
+  （埋め込みの実装は bridge 側の `sapphire-framework-bridge-embed` に移った）。
   `VectorDb` config enum は `None` / `Redb`（既定のブルートフォース）。
 
-ストア分離の共有ヘルパー（`ChunkRow` / `group_by_file` / `vec_serialize` / `vec_deserialize` / `l2_distance`）は
+ストア分離の共有ヘルパー（`vec_serialize` / `vec_deserialize` / `l2_distance`）は
 `vector_store.rs` に集約し、sqlite / redb 両バックエンドで共用。
 
-## crate 構成（目標）
+## crate 構成
 
-Cargo workspace（モノレポ）。既存済み ✅ / 予定 ⬜。
+Cargo workspace（モノレポ）。削除済みの crate も削除線で残す — 検索で引っかかったときの説明用。
 
-| crate | 役割 | 状態 |
-|---|---|---|
-| `sapphire-framework` | **単一依存ファサード**（bevy 方式・feature で各モジュール re-export）。骨格導入済（#95） | ✅ 骨格 |
-| `sapphire-framework-track` | mtime 変更検知 `TrackStore`（redb） | ✅ 移設済 |
-| `sapphire-framework-retrieve` | 検索。`RetrieveStore` + `RedbStore`(redb+tantivy) のみ | ✅ 移設+redb実装済 |
-| `sapphire-framework-workspace` | `AppContext`/`Workspace`/`WorkspaceState`/`IndexHook`（旧ルートlib） | ✅ 移設済（#90 で git/自動同期/device を撤去） |
-| `sapphire-framework-rpc` | client/server 共有 JSON-RPC 型/メソッド定義（serde-only・wasm-safe） | ✅ |
-| `sapphire-framework-remote-client` | JSON-RPC 差分同期クライアント（reqwest, `RemoteClient`） | ✅ |
-| `sapphire-framework-remote-server` | axum JSON-RPC 同期/検索サーバ（v1=ファイル原本+redb cache+change_log） | ✅ |
-| `sapphire-framework-blob` | バイナリブロブ抽象 `BlobStore`（`FsBlobStore`／将来 OPFS/S3） | ✅ |
-| `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） | ✅ |
-| `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + Local/Remote 実装、`BackendEvent` | ✅（MVP） |
-| `sapphire-framework-mcp` | rmcp ベース MCP 骨格（`RecallServer` 汎用化 + stdio/http transport） | ⬜ |
-| `sapphire-framework-cache-wasm` | wasm 専用: IndexedDB/OPFS の track/entries + substring 検索 | ⬜ |
+| crate | 役割 |
+|---|---|
+| `sapphire-framework` | **単一依存ファサード**（bevy 方式・feature で各モジュール re-export）。既定 feature = `workspace` + `redb-store` |
+| `sapphire-framework-workspace` | `AppContext` / `Workspace` / `WorkspaceState` / `AppKind` / ディレクトリ解決・移行（旧ルート lib。#90 で git/自動同期/device を撤去） |
+| `sapphire-framework-track` | mtime 変更検知 `TrackStore`（redb） |
+| `sapphire-framework-retrieve` | 検索。`RetrieveStore` + `RedbStore`（redb+tantivy）のみ |
+| `sapphire-framework-sync` | 転送非依存のレプリケーションコア（wire 型・`ReplicaStore`(redb)・merge・HLC・コンフリクトコピー・フィルタ・外部編集検知） |
+| `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
+| `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
+| `sapphire-framework-server-api` | アプリサーバ共通 API の wire 型（`workspace.*` / `sync.*` / `server.info` のメソッド名・引数・結果、`BackendEvent`・`SearchMode`・`FileSearchResult`）。serde と grain-id のみに依存。**単独でバージョン管理**（4.0.0 — メジャー == `API_VERSION`）。各アプリの API crate はこれに依存する |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム） |
+| `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
+| `sapphire-framework-bridge-client` | bridge 制御プレーンの型付きクライアント `BridgeClient` とデータプレーンの `handshake_data`（ipc 上）。framework と同じバージョンで動く |
+| `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh）。埋め込みは `EmbedProvider` フック越しに受け取り、この crate 自体は埋め込みコンポーネントに依存しない |
+| `sapphire-framework-bridge-embed` | bridge の埋め込みコンポーネント（ローカル Qwen3-VL-Embedding-2B を candle で、または OpenAI 互換 REST）。ファサード feature は `bridge-embed`（既定ではなく `native` にも入らない — fastembed / candle が重いため）。**bridge をプロセス内に持つモバイルアプリがあるため framework crate に残す** |
+| `apps/sapphire-bridge` | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device`） |
+| `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
+| `sapphire-framework-keys` | `protect` / `AuthConfig` / `BridgeVerifier`。HTTP エンドポイントで external device の Bearer トークンを bridge に確かめる（#199） |
+| `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec`・systemd user unit・LaunchAgent・タスクスケジューラ） |
+| `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + `IpcBackend` / `LocalBackend`。`protocol` は `sapphire-framework-server-api` の re-export |
+| `sapphire-framework-gui` | app 非依存の egui `WorkspaceManager` / `WorkspaceRegistry` と同期 GUI 部品（下記「GUI 部品」） |
+| ~~`sapphire-framework-rpc`~~ / ~~`-remote-client`~~ / ~~`-remote-server`~~ / ~~`-blob`~~ | **削除**（HTTP 同期スタック。表面テスト `tests/surface.rs` で存在を封じる。内容はファイル原本から直接供給される — sync 仕様 §2.3） |
+
+**`-sync` と `-session` は `-workspace` / `-retrieve` に依存しない**（転送非依存の中核として。
+`sapphire-sync` がこれを検証する）。**`-server` は iroh を引き込まない**（bridge 側の依存の軽い
+`client` feature 経由で制御面だけを使う — プロセス構成仕様 §6）。
+
+> **bridge の可視化**: `<bridge dir>/status.json`（5 秒ごと + 変化時、アトミック書き込み）と
+> `<bridge dir>/logs/node.log`（10 MiB × 3 でローテーション）。書き手は単一インスタンスロックが
+> 保証する 1 プロセスのみなので、ログは再起動をまたいで連続する。`sapphire-bridge status` は
+> 稼働中の bridge に問い合わせ、応答が無ければ `status.json` を読む。
+
+## GUI 部品（`sapphire-framework-gui`）
+
+デスクトップの同期 GUI が共有する部品。2 層に分かれる。GUI は**サーバも bridge も自プロセス内で
+起動しない** — 不在はエラーではなく「表示される状態」。
+
+- **データ層（egui 非依存）**: `client::FrameworkClient` が app server と bridge に非同期で問い合わせ、
+  1 回の更新で現況のスナップショット（サーバ・bridge・workgroup・デバイス・ワークスペース）を作る。
+  コマンド（workgroup 作成・invite・参加・デバイス退避・ワークスペースの有効化/無効化/忘却）も
+  同じクライアントが発行する。更新は 5 秒、コマンドは 30 秒（参加のみ 90 秒）で打ち切る
+  （`ClientConfig::{fetch_timeout, command_timeout}` で変更可）— 相手が応答しなくても UI は固まらない。
+  `views::*` はスナップショットから表示用の行・文言を作る**純関数**で、egui なしでテストできる。
+- **表示層**: `SyncPanel` が上記を egui で描く（workgroup / デバイス / ワークスペースの管理）。
+  invite チケットは画面にのみ出し、`tracing` には渡さない。`pub use egui` で利用側は egui の版を
+  合わせられる。
+- **フォント**: `fonts::system_cjk_font()` / `add_system_cjk_fallback(&mut FontDefinitions)` /
+  `install_system_cjk_fallback(&egui::Context)` が OS 付属の CJK フォント（Windows / macOS / Linux）を
+  フォールバックに足す。フォントファイルは同梱しない。
 
 ## GUI 向け 非同期 Backend trait
 
 **framework 側は実装済み**（`sapphire-framework-backend`）: `#[async_trait]` の `WorkspaceBackend`
 （`search`/`read_file`/`write_file`/`append_file`/`delete_file`/`list_dir`/`sync`/`subscribe`）+
-`BackendEvent`（`tokio::sync::broadcast`）+ `LocalBackend`（同期 `WorkspaceState` を `spawn_blocking` で包む）/
-`RemoteBackend`。native の Send フューチャ前提（egui は具象型保持で `runtime.spawn`）。
+`BackendEvent`（`tokio::sync::broadcast`）。実装は **`LocalBackend`**（同期 `WorkspaceState` を
+`spawn_blocking` で包む）と **`IpcBackend`**（アプリサーバへの JSON-RPC。CLI・stdio MCP・desktop
+が共有する経路）の 2 つ。native の Send フューチャ前提（egui は具象型保持で `runtime.spawn`）。
+旧 `RemoteBackend`（中央サーバへ差分同期する GUI クライアント）は HTTP 同期スタックの削除とともに
+廃止 — 同期そのものが p2p のサーバ側処理になったため、GUI は `IpcBackend` でサーバに依頼する。
 
-**`RemoteBackend` はリモートWSをローカルキャッシュ（`WorkspaceState`）に鏡写しにする**（issue #86 Step A・実装済み）:
-read/list/search はキャッシュから（オフライン可・ローカル FTS）、write は「キャッシュへ適用→サーバへ push」、
-`sync` は cursor 以降の変更を pull してキャッシュへ適用。テキストのみ対象（バイナリは #87）。
-local/remote は `WorkspaceLocator`（path か `http(s)://…#ws`）→ `WorkspaceSource::into_backend()` で
-`Box<dyn WorkspaceBackend>` に統一して開ける。
-
-**journal 側は後続 PR**: 現在 GUI が直接呼ぶ `ops::*` と `JournalState::*` を、GUI 依存の
+**journal 側は後続 PR**（別リポジトリ・別仕様 — `2026-09-15-sapphire-sync-design.md` §5.3）:
+現在 GUI が直接呼ぶ `ops::*` と `JournalState::*` を、GUI 依存の
 `JournalBackend`（entries 粒度: `list_entries`/`get_entry`/`create_entry`/`update_entry`/`remove_entry`…）へ集約し、
-`WorkspaceBackend`/`RemoteBackend` の上に載せる。WASM は `?Send` 版を frontend で定義。
+`WorkspaceBackend` の上に載せる。
 
 - **`LocalJournalBackend`**（native）= 既存同期 `JournalState`/`ops` を `spawn_blocking` で包む。純粋ロジックは残置。
-- **`RemoteJournalBackend`**（remote/WASM 共通）= JSON-RPC 差分同期でローカルキャッシュ（native=redb / wasm=IndexedDB）を更新。
-- egui は `dyn` を跨スレッド送信せず具象型を保持して `runtime.spawn`（既存 app.rs パターン）。WASM は `spawn_local`。
+- **サーバ経由** = `IpcBackend` 経由でアプリサーバに問い合わせる（sync の適用もサーバが行う）。
+- egui は `dyn` を跨スレッド送信せず具象型を保持して `runtime.spawn`（既存 app.rs パターン）。
 
-## remote 同期 API（JSON-RPC・実装済み）
+## ワークスペース同期（iroh・2 仕様）
 
-サーバ v1 = ファイル原本 + redb キャッシュ + `change_log`（`seq` 単調増加・tombstone）。cursor = 最後に取り込んだ `seq`。
-型は `sapphire-framework-rpc`（serde-only）、実装は `sapphire-framework-remote-server`（axum・単一 `POST /rpc`）。
-**認証は必須**。`Authorization: Bearer <token>` を `KeyStore`（ラベル付き平文の鍵ファイル）に対して
-検証する tower レイヤで、JSON-RPC のディスパッチより手前に立つ。したがって**認証失敗は HTTP 401**
-であって JSON-RPC エラーではない（`error_codes::UNAUTHORIZED` はクライアント側が 401 から合成する
-コードで、サーバは出さない）。鍵ストア未設定のまま `serve` を呼べば起動を拒否し、`protect` で
-組んだルータは全リクエストを HTTP 503 で拒否する。素通しになる経路は無い。
+同期は中央サーバの JSON-RPC ではない。2 台のレプリカが iroh (QUIC) の上で直接セッションを張り、
+バージョンベクトルで差分を交換する。設計は 2 つの仕様に分かれている:
 
-`generation` は change log の世代 ID（UUIDv7・log の作成時に採番）。クライアントが名乗ってきた
-`generation` がサーバの現在値と食い違えば `GENERATION_MISMATCH`(-32003) を返す — サーバ側の log が
-作り直されて `seq` が巻き戻っている状態なので、クライアントは `workspace.snapshot` から取り直す。
-名乗らない（`generation` 省略）クライアントは当面そのまま通す。
+- `docs/superpowers/specs/2026-09-15-p2p-sync-iroh-design.md`（「sync 仕様」）— レプリケーション本体。
+  §2（型・redb ストア・merge・HLC）と §6.1（そのテスト）は実装済みで**今も権威**。
+  §3–§5 と §6.2–§6.3 は後述のプロセス構成仕様が置き換えたが、**破棄されず本文に残してある** —
+  冒頭の置換表（ノード→bridge、follower 廃止、`SyncNode`→app server、`-net` の分割）に従って読むこと。
+  決定 8 / 13（ホスト 1 ノードの lock 選挙、`sapphire-sync` を常駐 peer に）も superseded。
+- `docs/superpowers/specs/2026-09-16-process-architecture-design.md` — プロセス構成。
+  「誰が状態を所有するか」を 1 つの模型に統一し、実装順（sync 仕様 §5.6）は §9 が置き換えた。
 
-```
-workspace.snapshot  {ws}                                     -> {cursor, generation, docs[]}  tombstone 畳み込み後
-changes.pull        {ws, since, limit, generation?}          -> {cursor, changes[], more}     textメタ+blob参照
-changes.push        {ws, base_cursor, changes[], generation?}-> {cursor, conflicts[]}         LWW(updated_at)
-blob.get/put        {ws, hash | bytes_base64}                -> content-addressed バイナリ
-search.fts          {ws, q, limit}                           -> {hits[]}（tantivy trigram FTS）
-search.semantic     {ws, q, limit}                           -> 当面 fts フォールバック（server embedder は後続）
-```
+### 所有者は 1 プロセス
 
-`blob.get` の `hash` は 64 桁の小文字 hex（= 内容の SHA-256）でなければならない。それ以外は
-`INVALID_PARAMS` で弾く — アドレスは内容から導かれるものなので、形の違うものはパスとして
-解釈させる試みでしかない。
+redb のキャッシュは排他ロックで 1 プロセスしか開けない。だから全設計を貫くルールは
+「**すべての状態には書き手がちょうど 1 つ**」:
 
-クライアントは `RemoteClient`（`sapphire-framework-remote-client`）でこれらを直接呼び、`RemoteBackend` が
-ローカルキャッシュへ pull/apply・push する。競合は MVP で LWW(`updated_at`)+tombstone+`conflicts`再pull。CRDT は後続。
-（旧 `ChangeSource`/`SyncBackend` 抽象は #90 で撤去。同期は中央サーバに一本化した。）
+| 状態 | 所有するプロセス |
+|---|---|
+| ワークスペースのファイル | そのアプリのサーバ |
+| retrieve / track / アプリ固有のキャッシュ | 同じ |
+| レプリカストア（`sync.redb`） | 同じ |
+| デバイスの同一性（`node.key`）・workgroup 台帳・ペアリング | bridge |
+
+つまり各アプリの **サーバ** がワークスペースを所有する。CLI・stdio MCP・desktop は
+`sapphire-framework-ipc` 経由でサーバに接続する（UDS / named pipe / プロセス内チャネル上の
+NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix はピア uid を検査して切断する）。
+1 アプリ 1 サーバ、**1 サーバ 1 ワークスペース**（#215）。サーバは SIGTERM/SIGINT
+まで常駐し、OS サービス（systemd / LaunchAgent / タスクスケジューラ）として走る。CLI は
+サーバを起動しない — サーバが無ければそれを報告して exit 1（start-on-demand と
+`SpawnConfig` / idle-exit は廃止。起動するのは `serve` とサービスマネージャだけ）。
+骨格は `AppServer`（`workspace.*` 名前空間は framework 所有、アプリは `<app>.<method>` を追加）。
+CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / `workspace` / `workgroup` /
+`device` を `FrameworkCommand` として自分のサブコマンドの隣に flatten する（issue #142）。
+制御面の路由は所有権に従う: `workspace` コマンドはアプリのサーバへ、`workgroup` / `device`
+コマンドは bridge へ直接。`status` の報告書は CLI と IPC `server.info` が同じ
+`StatusReport` 型を共有する（`sapphire-framework-server-api` にあり、`backend::protocol` として
+re-export）。
+
+**API のバージョン**: 公開 API（クライアントとサーバが合意すべきもの）は wire 型だけの crate に
+切り出し、crate のメジャーをそのまま `API_VERSION` にする — bridge 制御面は
+`sapphire-framework-bridge-api`、アプリサーバ共通は `sapphire-framework-server-api`。framework の
+リリースはこれらを動かさないので、API が変わらない限りサービスの再起動も不要。API crate は
+ipc にも framework の他の crate にも依存しない（0.x の framework crate に依存すると、framework の
+リリースのたびに API crate も出し直しになるため）。ハンドシェイク（`sapphire-framework-ipc` の
+`ClientInfo` / `ServerInfo`）は 2 本立て: `api` が共通 API、`app_api` がアプリ独自 API
+（アプリの API crate のメジャー。`AppServer::app_api` で報告し、アプリのメソッドを呼ぶ
+クライアントが `ClientInfo.app_api` で要求する）。どちらかが食い違えば接続を拒否する。
+どのワークスペースを提供するかはサーバが持つ（`<config dir>/workspace.toml` に `root` と
+`sync`）。クライアント（CLI・GUI・MCP/ACP）はワークスペースを指定しない — `workspace.*` /
+`sync.*` は常に現在のワークスペースに対して働く。切り替えは `workspace.select`（`init` と
+`sync.map` も切り替える）で、プロセスは再起動せず、開けなければ元のまま。選択時、sync id を持つ
+ワークスペースなら同期がオンになる。同期するのは現在のワークスペースだけで、bridge にもそれだけを
+登録する。CLI はカレントディレクトリに従わず、別のワークスペースの中で実行されたらエラーにする
+（`IpcBackend::check_cwd`）。`serve` は起動時に `workspace.toml` のワークスペースとその同期を
+復元する。詳細はプロセス構成仕様 §2, §4 と[1 サーバ 1 ワークスペース仕様](superpowers/specs/2026-10-11-single-workspace-server-design.md)。
+
+### bridge はホスト常駐の交換台（`apps/sapphire-bridge`）
+
+1 ユーザー 1 プロセスの独立バイナリ。`<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）に
+`node.key`、`routes.toml`（workspace_id → 所有サーバ）、workgroup 台帳、`status.json`
+（5 秒ごと＋変化時、アトミック）、`logs/node.log`（10 MiB × 3 ローテーション）を置く。
+ワークスペースの中身は見ない。役割:
+
+1. **同一性とペアリング** — `node.key` / NodeId。workgroup への参加は 1 回限りの invite
+   チケット（`sapphire:…`、postcard + base32、既定 TTL 10 分）で `sapphire/pair/1` 上に行う。
+2. **認可** — 接続相手の NodeId が共通 workgroup の非退避デバイスか。退避（retire）は台帳への
+   同期変更として全デバイスに届く。これは bridge にしか決められない。
+3. **交換台** — control（`bridge.register` 等の JSON-RPC: 登録・peer 一覧・status）と
+   data（`{workspace_id, device_id}` ヘッダ + バイト列の生ストリームを所有サーバへ splice）。
+   `net.wake_on_sync` が既定有効で、peer が来たとき停止中の所有サーバを起動する。ただし
+   発火するのはレガシーな `ManagedBy::Spawned` 登録に対してのみで、start-on-demand 廃止後の
+   新規登録（`Service`）では起動しない — Service 管理の所有者は自身の service manager が
+   起動するもので、bridge も CLI もその manager ではない。よってオフライン報告になる。
+   spawn 機構自体の再設計は Phase 2 の後続 issue で扱う。
+4. **埋め込み** — ホストに 1 つだけモデルを持つ。制御面の `embed.info` / `embed.embed` で
+   bridge の埋め込みコンポーネント（`sapphire-framework-bridge-embed`、Qwen3-VL-Embedding-2B を
+   CPU で、または OpenAI 互換 REST）がベクトルを作る。設定は持ち主ごとに 3 か所（#186）:
+   モデルは workgroup で共通 — ローカル 1 つとリモート 1 つの枠を `<workgroup root>/embedding.toml`
+   に置き、同期する。デバイスごと（同期しない）には枠ごとの on/off（未設定は自動: ローカルは
+   AVX2 が無ければ off、リモートは on）とキャッシュ置き場を `<bridge dir>/embedding.toml` に、
+   リモートの API キーを `<bridge dir>/embedding.key`（0600）に置く。使うのはリモートが on なら
+   リモート、でなければローカル。設定は `embedding` コマンド（bridge とアプリの CLI）、
+   SyncPanel の Embedding 画面、制御面の `embed.settings` / `embed.model_set` /
+   `embed.device_set` / `embed.key_set` / `embed.key_clear` で変える。bridge は設定が変わると
+   その場でプロバイダを作り直し（設定の呼び出し後と、ステータス周期 5 秒ごと — 他デバイスが
+   変えたモデルは同期された workgroup root から届く）、アプリは `sync_and_embed` のたびに
+   `embed.info` を聞き直してベクトルの保存先を合わせる。ワーカーは 1 本で、最初の要求でモデルを
+   ロードし、10 分間要求が無ければアンロードする。埋め込みが無効・モデルのロード失敗・bridge 停止はいずれも異常ではなく、
+   アプリは FTS のみで検索する。**bridge ライブラリ（`sapphire-framework-bridge`）はこの
+   コンポーネントに依存しない** — 定義するのは `EmbedProvider` フックだけで、実装を注入するのは
+   bridge バイナリか、bridge をプロセス内に持つアプリである。プロバイダ無しの bridge は
+   `embed.info` に `enabled: false` を返す。
+5. **選出** — Hello を交換し、ワークスペースごとに代表 / 予備デバイスを選ぶ。
+
+workgroup のメタ（デバイス台帳・ワークスペース一覧）はそれ自体が同期されるワークスペースなので、
+**bridge はそのアプリのサーバでもある**（アプリ名 `sapphire-bridge`、マーカー `.bridge/`）。
+CLI は `sapphire-bridge`（`serve` / `status` / `service` / `workspace` / `workgroup` /
+`device`）。この CLI もアプリ側と同じフラット語彙を話す — bridge 独自の `BridgeCommand`
+（共有語彙を bridge 側で実行するもの）として、bridge 固有の `log` と並べて構成される。
+`workgroup create` と `device retire` は、bridge 稼働中は制御面の `bridge.workgroup_create` /
+`bridge.device_retire`（GUI も同じ口）を使い、停止中は bridge ディレクトリに直接書き込むため、
+アプリ CLI 側の Phase 1 の同名ディレクティブも実在するコマンドを指すようになった。
+`workspace` は読み取り専用の `list` のみ — ワークスペースを workgroup に置くのは
+それを所有するアプリの仕事だからである（仕様 §1）。
+詳細はプロセス構成仕様 §5。
+
+### external device（#199）
+
+同期に参加しない（できない）クライアント — 録音ペンダント、同期していないマシンからの ACP
+クライアント、Webhook など — は **external device** として workgroup の台帳
+`<workgroup root>/external_devices/<grain-id>.toml` に 1 件 1 ファイルで載る。台帳は同期されるので、
+どのホストのアプリサーバーでも同じキーが通る。レコードは使えるアプリの一覧（`apps`）を持ち、
+1 つの external device が複数のアプリを使える（空ならどれも使えない）。トークン
+（`sapphire-ed-…`）は `add` と `rotate` で一度だけ表示し、台帳には SHA-256 だけを置く。retire
+（行は残す）・restore・rotate（id は維持）がある。アプリの HTTP 層は `protect` で Bearer
+トークンを受け、bridge の `external_device.authenticate` に自分のアプリ名と一緒に確かめる（成功は
+30 秒キャッシュ。bridge に聞けなければ 503）。管理は `sapphire-bridge external-device …`、各アプリの
+`external-device …`（`add` は既定でそのアプリ）、SyncPanel の External devices 画面。サーバーごとの
+`KeyStore`（生トークンの `keys.toml`）は廃止した。設計は
+`superpowers/specs/2026-10-11-external-devices-design.md`。
+
+### 代表デバイスとスター型同期（#182）
+
+ワークスペースごとに、代表（primary）デバイスと予備（secondary）デバイスが 1 台ずつ選ばれる。
+決め手は 2 つ: デバイス台帳の priority（手動。0 なら選出に参加しない）と、bridge 同士が
+`sapphire/hello/1` で交換する Hello（10 秒間隔、40 秒で到達不能とみなす）。選出は
+ワークスペースごとに非先取り（non-preemptive）で、すでに役割を持つデバイスは、あとから来た
+上位デバイスに奪われない。役割は合意（consensus）ではない — 分断中は両側がそれぞれ代表を選ぶ
+ので、代表デバイスが行う作業は冪等でなければならない。代表が選ばれた時点で、同期は代表と予備を
+軸にしたスター型になり、それ以外のデバイス同士は直接つながない。候補（priority 1 以上のデバイス）
+が 1 台だけでも代表は選ばれ、priority 0 の他のデバイスはその代表を介してのみ同期する。代表が
+選ばれない場合（候補がいない＝全員 priority 0、旧版の bridge だけ、など）や、起動直後でまだ誰も
+代表を名乗っていない間は、従来どおりのフルメッシュになる。
+priority が同じ候補の間では、可用性（#190）の高いデバイスが上位になる。bridge は 1 分ごとに
+自分が動いていた時間を `<bridge dir>/availability.toml` に日ごとに記録し（直近 7 日、スリープ中は
+数えない）、稼働率を段階（99 % 以上 → 3、95 % → 2、80 % → 1、それ未満 → 0。履歴が 7 日未満なら
+1 段階下げる）に丸めて Hello で伝える。段階は台帳には書かない。
+詳細は[設計仕様](superpowers/specs/2026-10-08-primary-device-design.md)。
+
+### セッションはエンドツーエンド
+
+`sapphire-framework-sync`（転送非依存のレプリケーションコア）と `sapphire-framework-session`
+（セッション交換そのもの）が、bridge が splice したストリームの上で **2 台の app server 間で
+直接** 走る。bridge は経路を作るだけでセッションには関与しない。
+
+- `Hello`（形式・ワークスペース・replica id・vv）→ `PathUpdate` のページ → `Done`/`Settled`。
+  形式不一致や別ワークスペースは `Refused`。64 KiB 以下の内容はインライン、それ以上は hash で
+  `Want` → blob（受信側は SHA-256 を検証してから配置）。framing は tag + 4 バイト長。
+- 外部編集検知は全ノードのフレームワーク動作（mtime+size のプリフィルタ → hash 比較）。
+  行方不明のルート（未マウント等）ではレプリカを**停止**する（全ファイル消失と誤認して
+  tombstone を撒くのを防ぐ — sync 仕様 §2.5）。
+- 同時編集は DVV-set join で勝者を決め、敗者は
+  `<stem>.conflict-<replicaのgrain-id>-<counter>.<ext>` という**コンフリクトコピー**として残す。
+  内容が同一ならコピーは絶対に作らない。`.sapphireignore` が拒む名前や OS が表現できない名前は
+  例外（sync 仕様 §2.4）。
+- 同期するのはファイル内容のみ。mtime・権限は同期しない。ベクター索引は各ノードのローカル財産。
+  サイズ上限は既定 64 MiB（チャンク分割・tombstone GC は後続 — sync 仕様 §2.8）。
+- アプリ固有の修復（journal の重複 id 等）は content-deterministic・冪等・収束の契約のもとで
+  アプリ自身が行う（sync 仕様 §5.1）。
+
+ワークスペースを workgroup に置くのはアプリの CLI（`journal sync enable` /
+`journal sync map <name|id> <dir>`）。同期の同一性はパス導出の uuid ではなく、マーカー内
+`.<app>/sync-id` の grain-id（同期されるので全デバイスで一致）。
+
+### 特権分離（撤去済み — issue #145）
+
+特権分離は **撤去済み**（issue #145）。全ノード同一の権限管理は Windows 等で困難で、1ノードの
+漏れが穴を再び開くため、機構ではなく運用（shell / fs ツールは管理者デバイス・管理者ルームのみ許可）で
+対応する。`service install` は常にユーザーレベルの unit をインストールし、アプリはインストールした
+ユーザーとして走る。framework の作るファイルとディレクトリはすべて `0700` / `0600`（これは維持）。
+詳細はプロセス構成仕様 §3。
 
 ## アプリディレクトリ構成と CLI 規約（#128 / #129）
 
-これまでの「**dirs 非依存**（プラットフォームディレクトリの解決はアプリ側の注入に
-任せる）」方針は**撤去**した。`dirs` は `sapphire-framework-workspace` の通常依存となり、
-`clap` / `serde` とともにファサードから re-export される
-（`sapphire_framework::{clap, serde, dirs}`）。ディレクトリ解決は framework 側の
-`AppContext::init(AppKind)` が吸収する（first-writer-wins は従来どおり）。
+`dirs` は `sapphire-framework-workspace` の通常依存で、`clap` / `serde` とともにファサードから
+re-export される（`sapphire_framework::{clap, serde, dirs}`）。ディレクトリ解決は framework 側の
+`AppContext::init(AppKind)` が吸収する。
 
-**レイアウト（option B）**：cache / data / config の3階層とも
-`<プラットフォームルート>/<app-name>/<kind>/`（`kind` = `cli` / `server` / `desktop`）。
-プラットフォームルート（`dirs::cache_dir()` 等）が解決できない場合は
-`std::env::temp_dir()` にフォールバックする。`cache_dir_for(root)` の意味は不変で、
-結果としてキャッシュは `<app>/<kind>/<uuid>/` になる。
+**レイアウト**: cache / data / config はどのカテゴリも `<プラットフォームルート>/<app-name>/`
+直下（ワークスペースごとの内容は `<app>/<uuid>/`）。**per-kind の階層は無い**。
+プラットフォームルート（`dirs::cache_dir()` 等）が解決できない場合は `std::env::temp_dir()` に
+フォールバックする。`AppKind`（`cli` / `server` / `desktop`）はプロセスの種別として残るが、
+**パスには現れない**。
 
-**環境変数名は統一規約**：カテゴリ別のオーバーライドは
-`SAPPHIRE_<APP>_<CATEGORY>_DIR`（`CATEGORY` は `CACHE` / `DATA` / `CONFIG`）。
-env var が置換するのは**プラットフォームルートのみ**で、`<app>/<kind>` の階層は常に
-framework 側で適用される。ワークスペースルートは `SAPPHIRE_<APP>_DIR`。
-旧名（`SAPPHIRE_JOURNAL_SERVER_DIR` / `SAPPHIRE_LEDGER_SERVER_DIR` 等の `*_SERVER_*`）は
-1リリースサイクル `warn!` 付きで受け付ける（撤去は後続コミット）。
+> **`<app>/server/` をディスクで見つけたら**: #129 が一時的に導入した per-kind 分割
+> （`<app>/<kind>/<uuid>/`）の残骸。desktop と server が 1 つの DB を取り合わないようにする
+> ためのものだったが、プロセス構成の変更で「DB を開くのはサーバだけ」になり、さらに分割は
+> 効いてくるべきケース（CLI と stdio MCP が同じ `cli` に解決して衝突する）を最初から覆って
+> いなかったので、この一連の変更で撤去した。`init` が 2 回目の冪等移行（削除なし、server の
+> コピー優先、競合は warn して残置）で `<app>/<kind>/…` を `<app>/…` へ戻す。空になった
+> `<kind>/` ディレクトリは削除してよい。中身が残っていたら（= 複数 kind が同じワークスペースの
+> キャッシュを書いていた）、各自で確認してから削除すること。
 
-**一回限りの移行**（`init` 内で実行・冪等・削除なし）:
+**環境変数名は統一規約**: カテゴリ別のオーバーライドは `SAPPHIRE_<APP>_<CATEGORY>_DIR`
+（`CATEGORY` は `CACHE` / `DATA` / `CONFIG`）。置換するのは**プラットフォームルートのみ**。
+ワークスペースルートは `SAPPHIRE_<APP>_DIR`。ワークスペース外の状態は per-app レイアウトの
+外に置く — bridge ディレクトリは `<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）、
+IPC ソケットは `<データルート>/sapphire-bridge/run/`（`SAPPHIRE_RUNTIME_DIR`）。ホスト = 1 デバイス
+だから app 名も kind も持たない。
 
-- **option A → B**（agent）: `<app>-<kind>` ディレクトリを `<app>/<kind>/` へ rename
-  （同一FSの `std::fs::rename` 優先。EXDEV 等の場合は copy + delete にフォールバック）。
-- **共有 → per-kind**（journal / ledger）: `<app>/` 直下の UUID 名ディレクトリを
-  `<kind>/` 直下へ移動。最初に起動した kind が移行し、以後の kind は空の独自ディレクトリを
-  作るだけ（キャッシュは再構築）。
-- **`keys.toml` は cache ツリーから data ツリーへ**（秘密情報であり再構築可能なキャッシュでは
-  ないため）。移行は最初に起動した kind の data ツリー `<app>/<kind>/<uuid>/keys.toml` へ
-  1回だけ行う（UUID 単位のガードで移行済みデータの上書きはしないため、アプリ全体で
-  コピーは常に1つだけ）。data ディレクトリ自体は per-kind なので、キーファイルの検索は
-  アプリ側が kind 非依存で行う（ワークスペース UUID の `keys.toml` を per-kind の
-  data ディレクトリから探す。この検索規約はアプリ移行 PR 側で実装する）。
+**一回限りの移行**（`init` 内、冪等、削除なし）:
 
-**CLI 引数の統一**：共通引数 `WorkspaceArgs`（clap の `Args`。アプリは
-`#[command(flatten)]` で組み込む）の正規名は `--workspace-dir`。旧名
-（`--journal-dir` / `--ledger-dir` / `--data-dir`）は clap alias として1サイクル受け付ける。
-解決順序は `Workspace::resolve` が担い、**明示引数 → `SAPPHIRE_<APP>_DIR` →
-撤去予定の `SAPPHIRE_WORKSPACE_DIR`（warn 付き）→ カレントディレクトリ** の順。
+- `keys.toml` は秘密情報なのでキャッシュツリーから data ツリーへ（UUID 単位の 1 回だけガード
+  つき）。per-kind 時代のレイアウトを読むので、unsplit より先に走る。
+- unsplit: `<app>/<kind>/…` → `<app>/…`（上記の blockquote 参照。競合時は server のコピーが勝ち）。
 
-## 実装フェーズ
+**CLI 引数の統一**: 共通引数 `WorkspaceArgs`（clap の `Args`。`#[command(flatten)]` で組み込む）
+の正規名は `--workspace-dir`。旧名（`--journal-dir` / `--ledger-dir` / `--data-dir`）は
+clap alias として受け付ける。解決順序は `Workspace::resolve` が担い、**明示引数 →
+`SAPPHIRE_<APP>_DIR` → `SAPPHIRE_WORKSPACE_DIR`（warn 付き。deprecated のまま残る唯一の旧名）→
+カレントディレクトリ** の順。
 
-- **Phase 0**（scaffold）✅: 履歴保持で crate 移設・`sapphire-framework-*` リネーム。
-- **Phase 0c**（キャッシュ SQLite 脱却）✅: `RedbStore`(redb+tantivy+brute-force) を既定に。**sqlite-store は削除済み**。
-- **Phase 1** 🟡（進行中）: リモートのリネーム ✅・`.gitmodules` 更新 ✅・journal ✅ / agent ✅ の依存差し替え。
-  残: **ledger の framework 初依存**、**journal `cache.rs`（entries/tags）の redb 化**（grain-id の `rusqlite` feature も要除去）、
-  crates.io への publish（現状アプリは git 依存なので publish 不可）。
-- **Phase 2** 🟡: framework 側 `sapphire-framework-backend`（非同期 `WorkspaceBackend` + `BackendEvent`
-  + `LocalBackend`/`RemoteBackend`）✅。`RemoteBackend` はローカルキャッシュ＋差分同期で local と挙動統一済み
-  （issue #86 Step A）+ `WorkspaceLocator`/`WorkspaceSource` ファクトリ。
-  **残: journal desktop GUI を `JournalBackend` 経由へリファクタ（別リポジトリ・別 PR）**。
-- **Phase 3** ✅（framework 側・動作する最小実装）: `sapphire-framework-{rpc,blob,remote-server,remote-client}`。
-  server は snapshot/changes.pull/push/blob.get,put/search.fts を実装し
-  結合テスト緑（`remote-server/tests/rpc.rs`・`remote-client/tests/roundtrip.rs`）。
-  **後続: CRDT・semantic online 委譲・認証のデバイス単位トークン運用。**
-- **Phase 4** ⬜: WASM cache（IndexedDB/OPFS）+ WASM journal frontend。
+## 実装の現在地
+
+実装順は `docs/superpowers/specs/2026-09-16-process-architecture-design.md` の §9 が権威
+（sync 仕様 §5.6 の順序を置き換えた）。同節のステップは番号が振り直されているので、そちらの
+番号で読むこと。現在地:
+
+- **完了**: sync core（型・redb ストア・merge・HLC・コンフリクトコピー・フィルタ・外部編集検知 —
+  sync 仕様 §2 / §6.1 が今も権威）、registry（users 撤去・1 デバイス 1 ファイル・`node_id`）、
+  `-ipc`、アプリサーバ骨格（`workspace.*`・多重管理・`FrameworkCommand` — **元の問題 = CLI と
+  stdio MCP のキャッシュ衝突がここで解決**）、bridge 基本部（ディレクトリ・単一インスタンス・制御面・データ面・iroh）、
+  サーバの同期ランタイム（watcher・`Replica`・`sync.enable`）、ペアリングと workgroup、
+  サーバ機能（組込み relay・`wake_on_sync`）、`-service`（特権分離は撤去済み — issue #145）。
+- **進行中**: 後片付け — `-keys` の抽出、`-rpc` / `-remote-client` / `-remote-server` / `-blob`
+  の削除、per-kind ディレクトリ分割の撤去、ファサード feature の組替え、**この文書の書き直し**。
+- **後続**（§9 の外の計画レベルの項目）: 各アプリの移行（journal / ledger / timer / agent —
+  各自のリポジトリと仕様）、`sapphire-sync` を「1 アプリ」として作ること、crates.io への
+  publish（アプリが git 依存をやめるまで不可）。
+- **対象外**: **WASM**。journal 等のブラウザ版は目標から外れた（sync 仕様 決定 7。
+  #86 steps D–F も対象外）。indexeddb/OPFS キャッシュも組みません。
 
 ## 既知のリスク / 難所
 
 1. 同期→非同期の波及は Backend trait のみ async 化で封じる（`ops::update_entry(&Connection,...)` の `&Connection` を trait から外す破壊的変更）。
 2. egui native の async: `?Send` により `dyn` は跨スレッド不可 → 具象型保持 + `runtime.spawn`。
-3. WASM 非互換（rusqlite・git2・fastembed・sqlx-postgres・tantivy/redb）は `cfg(not(wasm32))` / 独立バイナリで隔離。
-   共有型は serde-only の `sapphire-framework-rpc` に。
-4. `GrainId`/uuid v7 の wasm 時刻: `SystemTime::now()` trap → `getrandom/js` + `js_sys::Date::now()`。要検証。
-5. tantivy trigram FTS の挙動同等性（BM25・prefix フィルタ・短いクエリ<3文字は無マッチ＝FTS5同等）。
-6. storage backend の将来差替（Postgres+S3）。`OriginStore`/`BlobStore` trait を切る。content-addressed hash の GC は後続。
+3. 非互換 crate（git2・sqlx-postgres・tantivy/redb・iroh）は native 専用バイナリで隔離。fastembed / candle は
+   bridge の埋め込みコンポーネント（`sapphire-framework-bridge-embed`、ファサード feature `bridge-embed`）に
+   隔離し、ORT を動的ロードにして AVX 非対応 CPU でも `cargo test --workspace` が走るようにした。
+   プラットフォーム差（UDS / named pipe / チャネル、systemd / LaunchAgent / タスクスケジューラ）
+   は各層が吸収する。
+4. tantivy trigram FTS の挙動同等性（BM25・prefix フィルタ・短いクエリ<3文字は無マッチ＝FTS5同等）。
+5. サーバを格上げした代償（プロセス構成仕様 §12）: サーバが無いときの 1 回きりの CLI コマンドは
+   「サーバが走っていない」報告で終わり、起動待ちは発生しない（start-on-demand 廃止に伴う
+   見直し。元の「起動待ちで遅くなる」は受け入れて廃止）。**ディレクトリの 2 度目の一括移行**
+   （#129 の直後に unsplit）。NFS ホームでは UDS が使えない。混雑したホストでは bridge + アプリごとのサーバが並ぶ。
+6. storage backend の将来差替（Postgres+S3）。`OriginStore` trait を切る。content-addressed hash の GC は後続。

@@ -1,0 +1,1660 @@
+# Review package: fbd2baa..779fd37
+
+## Commits
+779fd37 feat(bridge): optionally run a relay for a workgroup
+
+## Files changed
+ Cargo.lock                                         | 256 +++++++++++++++
+ apps/sapphire-bridge/Cargo.toml                    |   6 +
+ crates/sapphire-framework-bridge/Cargo.toml        |  13 +-
+ crates/sapphire-framework-bridge/src/iroh.rs       |  46 +++
+ crates/sapphire-framework-bridge/src/lib.rs        |   4 +-
+ crates/sapphire-framework-bridge/src/net.rs        |   9 +
+ crates/sapphire-framework-bridge/src/relay.rs      | 345 +++++++++++++++++++++
+ .../tests/embedded_relay.rs                        | 167 ++++++++++
+ .../tests/iroh_transport.rs                        |   1 +
+ .../sapphire-framework-server/tests/common/mod.rs  |   1 +
+ 10 files changed, 846 insertions(+), 2 deletions(-)
+
+## Diff
+diff --git a/Cargo.lock b/Cargo.lock
+index 932ef62..19a657b 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -198,20 +198,59 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+ 
+ [[package]]
+ name = "as-slice"
+ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "516b6b4f0e40d50dcda9365d53964ec74560ad4284da2e7fc97122cd83174516"
+ dependencies = [
+  "stable_deref_trait",
+ ]
+ 
++[[package]]
++name = "asn1-rs"
++version = "0.7.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
++dependencies = [
++ "asn1-rs-derive",
++ "asn1-rs-impl",
++ "displaydoc",
++ "nom 7.1.3",
++ "num-traits",
++ "rusticata-macros",
++ "thiserror 2.0.20",
++ "time",
++]
++
++[[package]]
++name = "asn1-rs-derive"
++version = "0.6.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++ "synstructure",
++]
++
++[[package]]
++name = "asn1-rs-impl"
++version = "0.2.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.119",
++]
++
+ [[package]]
+ name = "async-trait"
+ version = "0.1.92"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+  "syn 3.0.5",
+ ]
+@@ -1089,20 +1128,34 @@ dependencies = [
+ 
+ [[package]]
+ name = "dary_heap"
+ version = "0.3.9"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8b1e3a325bc115f096c8b77bbf027a7c2592230e70be2d985be950d3d5e60ebe"
+ dependencies = [
+  "serde",
+ ]
+ 
++[[package]]
++name = "dashmap"
++version = "6.2.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
++dependencies = [
++ "cfg-if",
++ "crossbeam-utils",
++ "hashbrown 0.14.5",
++ "lock_api",
++ "once_cell",
++ "parking_lot_core",
++]
++
+ [[package]]
+ name = "data-encoding"
+ version = "2.11.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
+ 
+ [[package]]
+ name = "data-encoding-macro"
+ version = "0.1.21"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -1132,20 +1185,34 @@ checksum = "c286de4e81ea2590afc24d754e0f83810c566f50a1388fa75ebd57928c0d9745"
+ name = "der"
+ version = "0.8.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
+ dependencies = [
+  "const-oid",
+  "pem-rfc7468",
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "der-parser"
++version = "10.0.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
++dependencies = [
++ "asn1-rs",
++ "displaydoc",
++ "nom 7.1.3",
++ "num-bigint",
++ "num-traits",
++ "rusticata-macros",
++]
++
+ [[package]]
+ name = "deranged"
+ version = "0.5.8"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+ dependencies = [
+  "serde_core",
+ ]
+ 
+ [[package]]
+@@ -1990,20 +2057,26 @@ dependencies = [
+ 
+ [[package]]
+ name = "hash32"
+ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+ dependencies = [
+  "byteorder",
+ ]
+ 
++[[package]]
++name = "hashbrown"
++version = "0.14.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
++
+ [[package]]
+ name = "hashbrown"
+ version = "0.15.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+ dependencies = [
+  "foldhash 0.1.5",
+ ]
+ 
+ [[package]]
+@@ -2615,26 +2688,34 @@ dependencies = [
+  "tracing",
+  "url",
+ ]
+ 
+ [[package]]
+ name = "iroh-metrics"
+ version = "1.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "291065721ad7c477b972e581bbc528df031dc8eb5e39fe1ff3300ae5dfb157ef"
+ dependencies = [
++ "http-body-util",
++ "hyper",
++ "hyper-util",
+  "iroh-metrics-derive",
+  "itoa",
+  "n0-error",
+  "portable-atomic",
++ "reqwest 0.13.4",
++ "rustls",
++ "rustls-platform-verifier",
+  "ryu",
+  "serde",
++ "tokio",
++ "tokio-util",
+  "tracing",
+ ]
+ 
+ [[package]]
+ name = "iroh-metrics-derive"
+ version = "1.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1ae5f0c4405d1fbc9fb16ff422ca40620e93dc36c30ecaba0c2aee3992b7bd48"
+ dependencies = [
+  "heck",
+@@ -2645,50 +2726,63 @@ dependencies = [
+ 
+ [[package]]
+ name = "iroh-relay"
+ version = "1.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "beb2294a9749d6a25fd7cd8bcf0fccd932f20716d4f967d85d3f23c7135ae6a2"
+ dependencies = [
+  "blake3",
+  "bytes",
+  "cfg_aliases",
++ "clap",
++ "dashmap",
+  "data-encoding",
+  "derive_more",
+  "getrandom 0.4.3",
+  "http",
+  "http-body-util",
+  "hyper",
+  "hyper-util",
+  "iroh-base",
+  "iroh-dns",
+  "iroh-metrics",
+  "lru 0.18.4",
+  "n0-error",
+  "n0-future",
+  "noq",
+  "noq-proto",
+  "num_enum",
+  "pin-project",
+  "postcard",
+  "rand 0.10.2",
++ "rcgen",
++ "reloadable-state",
+  "reqwest 0.13.4",
+  "rustls",
++ "rustls-cert-file-reader",
++ "rustls-cert-reloadable-resolver",
+  "rustls-pki-types",
+  "serde",
+  "serde_bytes",
++ "serde_json",
++ "sha1",
++ "simdutf8",
+  "strum",
++ "time",
+  "tokio",
+  "tokio-rustls",
++ "tokio-rustls-acme",
+  "tokio-util",
+  "tokio-websockets",
++ "toml",
+  "tracing",
++ "tracing-subscriber",
+  "url",
+  "webpki-roots",
+  "ws_stream_wasm",
+ ]
+ 
+ [[package]]
+ name = "is_terminal_polyfill"
+ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+@@ -3571,20 +3665,21 @@ dependencies = [
+  "enum-assoc",
+  "getrandom 0.4.3",
+  "identity-hash",
+  "lru-slab",
+  "rand 0.10.2",
+  "rand_pcg",
+  "ring",
+  "rustc-hash",
+  "rustls",
+  "rustls-pki-types",
++ "rustls-platform-verifier",
+  "slab",
+  "sorted-index-buffer",
+  "thiserror 2.0.20",
+  "tinyvec",
+  "tracing",
+  "web-time",
+ ]
+ 
+ [[package]]
+ name = "noq-udp"
+@@ -3818,20 +3913,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
+ dependencies = [
+  "bitflags",
+  "dispatch2",
+  "libc",
+  "objc2",
+  "objc2-core-foundation",
+  "objc2-security",
+ ]
+ 
++[[package]]
++name = "oid-registry"
++version = "0.8.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
++dependencies = [
++ "asn1-rs",
++]
++
+ [[package]]
+ name = "once_cell"
+ version = "1.21.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+ 
+ [[package]]
+ name = "once_cell_polyfill"
+ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -4012,20 +4116,30 @@ name = "pastey"
+ version = "0.1.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
+ 
+ [[package]]
+ name = "pastey"
+ version = "0.2.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
+ 
++[[package]]
++name = "pem"
++version = "3.0.6"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
++dependencies = [
++ "base64 0.22.1",
++ "serde_core",
++]
++
+ [[package]]
+ name = "pem-rfc7468"
+ version = "1.0.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
+ dependencies = [
+  "base64ct",
+ ]
+ 
+ [[package]]
+@@ -4691,20 +4805,34 @@ dependencies = [
+ [[package]]
+ name = "rayon-core"
+ version = "1.13.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+ dependencies = [
+  "crossbeam-deque",
+  "crossbeam-utils",
+ ]
+ 
++[[package]]
++name = "rcgen"
++version = "0.14.7"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "10b99e0098aa4082912d4c649628623db6aba77335e4f4569ff5083a6448b32e"
++dependencies = [
++ "pem",
++ "ring",
++ "rustls-pki-types",
++ "time",
++ "x509-parser",
++ "yasna",
++]
++
+ [[package]]
+ name = "read-fonts"
+ version = "0.41.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "046a7d674daf459825b32f5062056d6882db0d2f5a479fbd76ccfc870ac18709"
+ dependencies = [
+  "bytemuck",
+  "font-types",
+  "once_cell",
+ ]
+@@ -4766,20 +4894,37 @@ dependencies = [
+  "memchr",
+  "regex-syntax",
+ ]
+ 
+ [[package]]
+ name = "regex-syntax"
+ version = "0.8.11"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+ 
++[[package]]
++name = "reloadable-core"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1dc20ac1418988b60072d783c9f68e28a173fb63493c127952f6face3b40c6e0"
++
++[[package]]
++name = "reloadable-state"
++version = "0.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "3853ef78d45b50f8b989896304a85239539d39b7f866a000e8846b9b72d74ce8"
++dependencies = [
++ "arc-swap",
++ "reloadable-core",
++ "tokio",
++]
++
+ [[package]]
+ name = "reqwest"
+ version = "0.12.28"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+ dependencies = [
+  "base64 0.22.1",
+  "bytes",
+  "encoding_rs",
+  "futures-core",
+@@ -4921,20 +5066,29 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+ 
+ [[package]]
+ name = "rustc_version"
+ version = "0.4.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+ dependencies = [
+  "semver",
+ ]
+ 
++[[package]]
++name = "rusticata-macros"
++version = "4.1.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
++dependencies = [
++ "nom 7.1.3",
++]
++
+ [[package]]
+ name = "rustix"
+ version = "1.1.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+ dependencies = [
+  "bitflags",
+  "errno",
+  "libc",
+  "linux-raw-sys",
+@@ -4950,20 +5104,54 @@ dependencies = [
+  "aws-lc-rs",
+  "log",
+  "once_cell",
+  "ring",
+  "rustls-pki-types",
+  "rustls-webpki",
+  "subtle",
+  "zeroize",
+ ]
+ 
++[[package]]
++name = "rustls-cert-file-reader"
++version = "0.4.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "8bb47c2a50fdfdaf95b0ac8b12620fc327da1fd4adbb30d0c56d866b005873ff"
++dependencies = [
++ "rustls-cert-read",
++ "rustls-pki-types",
++ "thiserror 2.0.20",
++ "tokio",
++]
++
++[[package]]
++name = "rustls-cert-read"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "dd46e8c5ae4de3345c4786a83f99ec7aff287209b9e26fa883c473aeb28f19d5"
++dependencies = [
++ "rustls-pki-types",
++]
++
++[[package]]
++name = "rustls-cert-reloadable-resolver"
++version = "0.7.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "fe1baa8a3a1f05eaa9fc55aed4342867f70e5c170ea3bfed1b38c51a4857c0c8"
++dependencies = [
++ "futures-util",
++ "reloadable-state",
++ "rustls",
++ "rustls-cert-read",
++ "thiserror 2.0.20",
++]
++
+ [[package]]
+ name = "rustls-native-certs"
+ version = "0.8.4"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+ dependencies = [
+  "openssl-probe",
+  "rustls-pki-types",
+  "schannel",
+  "security-framework",
+@@ -5134,22 +5322,24 @@ name = "sapphire-framework-bridge"
+ version = "0.14.0"
+ dependencies = [
+  "async-trait",
+  "chrono",
+  "clap",
+  "data-encoding",
+  "dirs",
+  "getrandom 0.4.3",
+  "grain-id",
+  "iroh",
++ "iroh-relay",
+  "libc",
+  "postcard",
++ "rustls",
+  "sapphire-framework-bridge",
+  "sapphire-framework-bridge-api",
+  "sapphire-framework-ipc",
+  "sapphire-framework-registry",
+  "sapphire-framework-session",
+  "sapphire-framework-sync",
+  "serde",
+  "serde_json",
+  "subtle",
+  "tempfile",
+@@ -5525,20 +5715,31 @@ dependencies = [
+ [[package]]
+ name = "serdect"
+ version = "0.4.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "66cf8fedced2fcf12406bcb34223dffb92eaf34908ede12fed414c82b7f00b3e"
+ dependencies = [
+  "base16ct",
+  "serde",
+ ]
+ 
++[[package]]
++name = "sha1"
++version = "0.11.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
++dependencies = [
++ "cfg-if",
++ "cpufeatures 0.3.1",
++ "digest",
++]
++
+ [[package]]
+ name = "sha1_smol"
+ version = "1.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+ 
+ [[package]]
+ name = "sha2"
+ version = "0.11.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -6208,20 +6409,48 @@ dependencies = [
+ [[package]]
+ name = "tokio-rustls"
+ version = "0.26.5"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
+ dependencies = [
+  "rustls",
+  "tokio",
+ ]
+ 
++[[package]]
++name = "tokio-rustls-acme"
++version = "0.9.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1af8573b15fdad8d66da116198cd8fd8d87ff62a67c1c6c3df7f62da1170793f"
++dependencies = [
++ "async-trait",
++ "base64 0.22.1",
++ "chrono",
++ "futures",
++ "log",
++ "num-bigint",
++ "pem",
++ "proc-macro2",
++ "rcgen",
++ "reqwest 0.13.4",
++ "ring",
++ "rustls",
++ "serde",
++ "serde_json",
++ "thiserror 2.0.20",
++ "time",
++ "tokio",
++ "tokio-rustls",
++ "webpki-roots",
++ "x509-parser",
++]
++
+ [[package]]
+ name = "tokio-stream"
+ version = "0.1.19"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
+ dependencies = [
+  "futures-core",
+  "pin-project-lite",
+  "tokio",
+  "tokio-util",
+@@ -7345,20 +7574,38 @@ dependencies = [
+  "log",
+  "pharos",
+  "rustc_version",
+  "send_wrapper",
+  "thiserror 2.0.20",
+  "wasm-bindgen",
+  "wasm-bindgen-futures",
+  "web-sys",
+ ]
+ 
++[[package]]
++name = "x509-parser"
++version = "0.18.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
++dependencies = [
++ "asn1-rs",
++ "data-encoding",
++ "der-parser",
++ "lazy_static",
++ "nom 7.1.3",
++ "oid-registry",
++ "ring",
++ "rusticata-macros",
++ "thiserror 2.0.20",
++ "time",
++]
++
+ [[package]]
+ name = "xml-rs"
+ version = "0.8.29"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+ 
+ [[package]]
+ name = "xmltree"
+ version = "0.10.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -7366,20 +7613,29 @@ checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
+ dependencies = [
+  "xml-rs",
+ ]
+ 
+ [[package]]
+ name = "y4m"
+ version = "0.8.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
+ 
++[[package]]
++name = "yasna"
++version = "0.5.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
++dependencies = [
++ "time",
++]
++
+ [[package]]
+ name = "yoke"
+ version = "0.8.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
+ dependencies = [
+  "stable_deref_trait",
+  "yoke-derive",
+  "zerofrom",
+ ]
+diff --git a/apps/sapphire-bridge/Cargo.toml b/apps/sapphire-bridge/Cargo.toml
+index a0c4cf9..db5fae4 100644
+--- a/apps/sapphire-bridge/Cargo.toml
++++ b/apps/sapphire-bridge/Cargo.toml
+@@ -1,17 +1,23 @@
+ [package]
+ name = "sapphire-bridge"
+ version.workspace = true
+ edition.workspace = true
+ description = "Host-wide sapphire daemon: device identity, workgroup authorization and sync routing"
+ license.workspace = true
+ repository.workspace = true
+ keywords = ["sync", "p2p", "daemon", "local-first"]
+ categories = ["command-line-utilities"]
+ 
++[features]
++default = []
++# Run a relay for this host's workgroup from inside the bridge. Off by default, like the
++# bridge's own feature: a relay needs a publicly reachable address and a certificate.
++embedded-relay = ["sapphire-bridge/embedded-relay"]
++
+ [dependencies]
+ sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.14.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
+ clap.workspace = true
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+ tracing.workspace = true
+ # The `env-filter` feature is what makes `EnvFilter` exist at all; it is not a default.
+ tracing-subscriber = { workspace = true, features = ["env-filter"] }
+diff --git a/crates/sapphire-framework-bridge/Cargo.toml b/crates/sapphire-framework-bridge/Cargo.toml
+index f5eca46..cb59809 100644
+--- a/crates/sapphire-framework-bridge/Cargo.toml
++++ b/crates/sapphire-framework-bridge/Cargo.toml
+@@ -6,49 +6,60 @@ description = "Host-wide sapphire daemon: device identity, workgroup authorizati
+ license.workspace = true
+ repository.workspace = true
+ keywords = ["bridge", "p2p", "iroh", "local-first"]
+ categories = ["network-programming"]
+ 
+ [features]
+ default = []
+ # The real peer transport. Off by default so a build that only needs the switchboard, or a
+ # test, does not compile iroh.
+ node = ["dep:iroh"]
++# Run a relay server for a workgroup from inside this process. Off by default: a relay
++# needs a publicly reachable address and a certificate, and most hosts have neither.
++embedded-relay = ["dep:iroh-relay", "dep:rustls", "node"]
+ # Loopback transport and fixtures for tests.
+ test-util = []
+ 
+ [dependencies]
+ sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "0.14.0", path = "../sapphire-framework-bridge-api" }
+ sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.14.0", path = "../sapphire-framework-ipc" }
+ sapphire-registry = { package = "sapphire-framework-registry", version = "0.14.0", path = "../sapphire-framework-registry" }
+ sapphire-framework-session = { version = "0.14.0", path = "../sapphire-framework-session" }
+ sapphire-sync = { package = "sapphire-framework-sync", version = "0.14.0", path = "../sapphire-framework-sync" }
+ async-trait.workspace = true
+ chrono.workspace = true
+ clap.workspace = true
+ data-encoding = "2"
+ dirs.workspace = true
+ getrandom.workspace = true
+ grain-id.workspace = true
+ postcard = { version = "1", features = ["use-std"] }
+ subtle = "2"
+ iroh = { version = "1.2", optional = true }
++# The relay *server*, compiled only behind `embedded-relay`. The `server` feature is the
++# part that serves; it brings iroh-relay's own TLS stack (`tls-ring`) with it. iroh itself
++# depends on this crate with no features, so the server code exists in a build only when
++# this feature turns it on.
++iroh-relay = { version = "1.2", default-features = false, features = ["server"], optional = true }
++# The relay server takes a ready [`rustls::ServerConfig`] for manually supplied
++# certificates, which is what a self-hosted relay has.
++rustls = { version = "0.23", optional = true }
+ serde.workspace = true
+ serde_json.workspace = true
+ thiserror.workspace = true
+ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
+ toml.workspace = true
+ tracing.workspace = true
+ url = "2"
+ 
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+ 
+ [target.'cfg(windows)'.dependencies]
+ windows-sys = { version = "0.59", features = [
+     "Win32_Foundation",
+     "Win32_System_Threading",
+ ] }
+ 
+ [dev-dependencies]
+ sapphire-framework-bridge = { path = ".", features = ["test-util"] }
+-tempfile = "3"
++tempfile = "3"
+\ No newline at end of file
+diff --git a/crates/sapphire-framework-bridge/src/iroh.rs b/crates/sapphire-framework-bridge/src/iroh.rs
+index cee3e95..f200540 100644
+--- a/crates/sapphire-framework-bridge/src/iroh.rs
++++ b/crates/sapphire-framework-bridge/src/iroh.rs
+@@ -38,20 +38,26 @@ const MAX_REQUEST_LINE: u64 = 4 * 1024;
+ ///
+ /// This is what one device hands another out of band — the pairing flow this plan leaves for
+ /// later — so that the other can dial it without a discovery service. It deliberately names
+ /// nothing from iroh: a caller shares it, stores it, or prints it without linking iroh.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct NodeAddr {
+     /// The device's node id.
+     pub node_id: String,
+     /// The socket addresses this device can be reached at, as `host:port`.
+     pub addrs: Vec<String>,
++    /// The relay URLs this device is reachable through.
++    ///
++    /// Kept apart from `addrs` because they are a different kind of address: a peer with no
++    /// direct path can only be dialed through one of these, and a device built relay-only
++    /// has nothing else to offer.
++    pub relay_urls: Vec<String>,
+ }
+ 
+ /// This host's endpoint on the network.
+ pub struct IrohTransport {
+     endpoint: Endpoint,
+     node_id: String,
+     /// Addresses learned out of band, so a peer can be dialed without a discovery service.
+     known: MemoryLookup,
+ }
+ 
+@@ -75,20 +81,47 @@ impl IrohTransport {
+     /// Bind an endpoint over an already-resolved relay configuration.
+     ///
+     /// `net` decides what the endpoint offers and uses: `discovery` turns on iroh's address
+     /// lookup services, and `relays` is taken as given — an empty list with
+     /// `use_default: false` disables relays entirely, which is what a test or a fully local
+     /// host wants.
+     pub async fn new(
+         key_path: &Path,
+         net: &NetConfig,
+         relays: &RelayConfig,
++    ) -> Result<IrohTransport> {
++        Self::bind(key_path, net, relays, false).await
++    }
++
++    /// Bind an endpoint with no direct paths: every connection goes through a relay.
++    ///
++    /// Direct connections are what iroh prefers whenever it can find a path, so an endpoint
++    /// built the ordinary way may reach a peer without the relay ever carrying a byte — which
++    /// makes "does the relay work" untestable. Removing the IP transports leaves the relay as
++    /// the only path, and a stream that arrives proves the relay carried it.
++    ///
++    /// `relays` must name at least one relay with `use_default: false`: an endpoint with
++    /// neither a direct path nor a relay can reach nobody.
++    pub async fn new_relay_only(
++        key_path: &Path,
++        net: &NetConfig,
++        relays: &RelayConfig,
++    ) -> Result<IrohTransport> {
++        Self::bind(key_path, net, relays, true).await
++    }
++
++    /// Bind an endpoint, `relay_only` deciding whether direct paths are offered.
++    async fn bind(
++        key_path: &Path,
++        net: &NetConfig,
++        relays: &RelayConfig,
++        relay_only: bool,
+     ) -> Result<IrohTransport> {
+         let secret = load_or_create_key(key_path)?;
+         let known = MemoryLookup::new();
+ 
+         // `Minimal` rather than `N0`: it picks the crypto provider, and nothing else. Every
+         // other thing `N0` turns on is what `net` is here to decide.
+         // Two protocols on one endpoint: the data plane and, on its own ALPN, pairing.
+         // They are listed together because iroh accepts per endpoint; which one a
+         // connection spoke is reported by `accept`, and the two are gated differently.
+         let alpns = vec![ALPN.to_vec(), PAIR_ALPN.to_vec()];
+@@ -96,20 +129,25 @@ impl IrohTransport {
+             .secret_key(secret)
+             .alpns(alpns)
+             .address_lookup(known.clone());
+         if net.discovery {
+             builder = builder
+                 .address_lookup(PkarrPublisher::n0_dns())
+                 .address_lookup(PkarrResolver::n0_dns())
+                 .address_lookup(DnsAddressLookup::n0_dns());
+         }
+ 
++        if relay_only {
++            // No IP transport is registered at all, so there is no direct path to find or
++            // fall back to: the relay is the only way out, and the only way in.
++            builder = builder.clear_ip_transports();
++        }
+         let endpoint = builder
+             .relay_mode(relay_mode(relays)?)
+             .bind()
+             .await
+             .map_err(|e| Error::Peer(format!("could not bind the endpoint: {e}")))?;
+         let node_id = endpoint.id().to_string();
+ 
+         Ok(IrohTransport {
+             endpoint,
+             node_id,
+@@ -125,37 +163,44 @@ impl IrohTransport {
+     pub async fn node_addr(&self) -> Result<NodeAddr> {
+         let addr = self.endpoint.addr();
+         if addr.is_empty() {
+             return Err(Error::Peer(
+                 "this endpoint has no address to share yet".to_owned(),
+             ));
+         }
+         Ok(NodeAddr {
+             node_id: addr.id.to_string(),
+             addrs: addr.ip_addrs().map(|addr| addr.to_string()).collect(),
++            relay_urls: addr.relay_urls().map(|url| url.to_string()).collect(),
+         })
+     }
+ 
+     /// Teach this endpoint how to reach `addr`, which is how a peer with discovery off is
+     /// dialed.
+     pub fn add_known_address(&self, addr: &NodeAddr) -> Result<()> {
+         let id: EndpointId = addr
+             .node_id
+             .parse()
+             .map_err(|e| Error::Config(format!("{}: not a node id: {e}", addr.node_id)))?;
+         let mut transports = Vec::with_capacity(addr.addrs.len());
+         for address in &addr.addrs {
+             let socket: SocketAddr = address
+                 .parse()
+                 .map_err(|e| Error::Config(format!("{address}: not a socket address: {e}")))?;
+             transports.push(TransportAddr::Ip(socket));
+         }
++        for url in &addr.relay_urls {
++            let url: RelayUrl = url
++                .parse()
++                .map_err(|e| Error::Config(format!("{url}: not a relay URL: {e}")))?;
++            transports.push(TransportAddr::Relay(url));
++        }
+         self.known
+             .add_endpoint_info(EndpointAddr::from_parts(id, transports));
+         Ok(())
+     }
+ }
+ 
+ #[async_trait::async_trait]
+ impl PeerTransport for IrohTransport {
+     async fn open(&self, node_id: &str, workspace_id: GrainId) -> Result<BoxedStream> {
+         let id: EndpointId = node_id
+@@ -515,20 +560,21 @@ mod tests {
+             "a node id is 64 lowercase hex characters: {id}"
+         );
+         assert_eq!(load_or_create_node_id(&path).unwrap(), id);
+ 
+         // The same identity the transport binds.
+         let net = NetConfig {
+             wake_on_sync: false,
+             discovery: false,
+             relays: vec![],
+             use_default_relays: false,
++            ..NetConfig::default()
+         };
+         let transport = IrohTransport::new(&path, &net, &crate::relays(&net, None).unwrap())
+             .await
+             .unwrap();
+         assert_eq!(transport.node_id(), id);
+     }
+ 
+     #[test]
+     fn a_key_of_the_wrong_length_is_not_replaced() {
+         let tmp = tempfile::tempdir().unwrap();
+diff --git a/crates/sapphire-framework-bridge/src/lib.rs b/crates/sapphire-framework-bridge/src/lib.rs
+index b18c30c..af65859 100644
+--- a/crates/sapphire-framework-bridge/src/lib.rs
++++ b/crates/sapphire-framework-bridge/src/lib.rs
+@@ -38,21 +38,23 @@ pub use command::BridgeCommand;
+ pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
+ pub use error::{Error, Result};
+ pub use invite::{DEFAULT_TTL, Invite, Invites, TICKET_PREFIX, Ticket};
+ #[cfg(feature = "node")]
+ pub use iroh::{IrohTransport, NodeAddr};
+ pub use net::NetConfig;
+ pub use pairing::{JoinRequest, JoinResponse, PAIR_ALPN, admit, join as join_pairing};
+ pub use peer::{BoxedStream, Inbound, PeerStream, PeerTransport, StreamRequest};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use peer::{LoopbackNetwork, LoopbackTransport};
+-pub use relay::{RelayConfig, relays};
++#[cfg(feature = "embedded-relay")]
++pub use relay::EmbeddedRelay;
++pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
+ pub use routes::{Route, RouteTable};
+ #[cfg(any(test, feature = "test-util"))]
+ pub use testing::adopt_workgroup;
+ pub use wgsync::{WORKSPACE_APP_NAME, WorkgroupReplica};
+ pub use workgroup::{Workgroup, WorkgroupWorkspace};
+ 
+ use crate::control::{Owners, Wakes};
+ use crate::data::Tickets;
+ 
+ /// The switchboard: one control plane, one data plane, and the tables they share.
+diff --git a/crates/sapphire-framework-bridge/src/net.rs b/crates/sapphire-framework-bridge/src/net.rs
+index b1e958f..7eca41f 100644
+--- a/crates/sapphire-framework-bridge/src/net.rs
++++ b/crates/sapphire-framework-bridge/src/net.rs
+@@ -15,29 +15,38 @@ pub struct NetConfig {
+     /// Use discovery services to find peers.
+     pub discovery: bool,
+     /// Relay URLs to use, in addition to the public ones while `use_default_relays` is on.
+     pub relays: Vec<String>,
+     /// Keep the public relays on alongside `relays`.
+     ///
+     /// Off only when this host wants the public relays gone entirely — and, once a
+     /// workgroup is joined, not even then on its own: [`relays`](crate::relays) turns
+     /// them off only when both sides say so.
+     pub use_default_relays: bool,
++    /// Run a relay for this workgroup from inside this process.
++    ///
++    /// Off unless `net.toml` names it: a relay needs a publicly reachable address and a
++    /// certificate, and most hosts have neither. The field is always present, so a `net.toml`
++    /// that names a relay still parses on a build without the `embedded-relay` feature — such
++    /// a build simply starts none.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub embedded_relay: Option<crate::relay::EmbeddedRelayConfig>,
+ }
+ 
+ impl Default for NetConfig {
+     fn default() -> Self {
+         NetConfig {
+             wake_on_sync: true,
+             discovery: true,
+             relays: Vec::new(),
+             use_default_relays: true,
++            embedded_relay: None,
+         }
+     }
+ }
+ 
+ impl NetConfig {
+     /// Read the file, or the defaults if it is not there.
+     ///
+     /// Every field is optional in the file: a `net.toml` that sets only `wake_on_sync`
+     /// leaves discovery on, the relay list empty, and the public relays on.
+     pub fn load(path: &Path) -> Result<NetConfig> {
+diff --git a/crates/sapphire-framework-bridge/src/relay.rs b/crates/sapphire-framework-bridge/src/relay.rs
+index 02c4d7b..dab5437 100644
+--- a/crates/sapphire-framework-bridge/src/relay.rs
++++ b/crates/sapphire-framework-bridge/src/relay.rs
+@@ -1,19 +1,24 @@
+ //! Relay configuration, merged from the host's `net.toml` and the workgroup's published one.
+ //!
+ //! Two files decide which relays a device uses, and neither overrides the other. The host's
+ //! `net.toml` is local preference; the workgroup's is what a self-hosted server announces to
+ //! its devices, synced with the rest of the workgroup root. They are **merged**: a device
+ //! keeps its own relays and gains the workgroup's, because a device that lost its own relay
+ //! when it joined a workgroup would be worse off than before. The public relays go off only
+ //! when both sides turn them off, so one side cannot silently strand the other.
+ 
++use std::net::SocketAddr;
++use std::path::PathBuf;
++
++use serde::{Deserialize, Serialize};
++
+ use crate::error::{Error, Result};
+ use crate::net::NetConfig;
+ use crate::workgroup::Workgroup;
+ 
+ /// The relays this host's endpoint should use.
+ ///
+ /// The endpoint reads this through [`relay_mode`](crate::iroh::relay_mode) — which lives
+ /// behind the `node` feature — so this type stays free of iroh and a build without the
+ /// transport can still compute and validate its configuration.
+ #[derive(Clone, Debug, PartialEq, Eq)]
+@@ -50,20 +55,272 @@ pub fn relays(host: &NetConfig, workgroup: Option<&Workgroup>) -> Result<RelayCo
+         }
+     }
+     Ok(RelayConfig {
+         urls,
+         // One side alone must not be able to strand the other: the public relays go off
+         // only when both sides turned them off.
+         use_default: host.use_default_relays || announced.use_default_relays,
+     })
+ }
+ 
++// ── the embedded relay ─────────────────────────────────────────────────────
++
++/// Whether this host runs a relay for its workgroup, and where.
++///
++/// Off by default — most hosts have neither a publicly reachable address nor a certificate —
++/// and turned on by naming this section in `net.toml`:
++///
++/// ```toml
++/// [embedded_relay]
++/// bind = "0.0.0.0:80"
++/// hostname = "relay.example.com"
++///
++/// [embedded_relay.tls]
++/// cert_path = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
++/// key_path = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
++/// https_bind = "0.0.0.0:443"
++/// ```
++///
++/// The checks in [`EmbeddedRelay::start`] exist because each failure mode below is silent:
++/// from the inside, a relay nobody can reach looks exactly like one that works.
++#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
++#[serde(default, deny_unknown_fields)]
++pub struct EmbeddedRelayConfig {
++    /// The address the relay's HTTP services bind.
++    ///
++    /// Port `0` asks the operating system for a free port, which is what a test or a local
++    /// run wants; the port actually bound is what [`EmbeddedRelay::url`] reports. On a real
++    /// host this is normally port `80`, or, with TLS configured, the plain-HTTP socket that
++    /// sits alongside the HTTPS one.
++    ///
++    /// This is also the address the start-up check inspects: on a real host it must not be a
++    /// loopback address, because a relay nobody else can reach is worse than none — every
++    /// device would try it and fail, with nothing in this host's log to say why.
++    pub bind: SocketAddr,
++    /// The name this relay is known by, and the name its certificate must be issued for.
++    ///
++    /// Required. It is reported verbatim by [`EmbeddedRelay::url`] rather than derived from
++    /// `bind`: a relay is reached by name — that is what a device is told, and what a client
++    /// verifies the certificate against — while the address it binds is a detail of this
++    /// host. Confirming that the name resolves to `bind` would mean a DNS lookup at start-up,
++    /// and would make `localhost` unusable in a test.
++    pub hostname: String,
++    /// The certificate to serve HTTPS with.
++    ///
++    /// Without one the relay serves plain HTTP from `bind`, which is what a relay behind a
++    /// terminating proxy, or a local run, wants. With one the relay serves HTTPS as well, and
++    /// `bind` keeps serving the plain HTTP the captive-portal probe needs.
++    pub tls: TlsConfig,
++    /// Allow `bind` to be a loopback address.
++    ///
++    /// Only for tests and local runs; see [`EmbeddedRelayConfig::bind`].
++    pub allow_loopback: bool,
++}
++
++impl Default for EmbeddedRelayConfig {
++    fn default() -> Self {
++        EmbeddedRelayConfig {
++            // Every interface, an ephemeral port: the address the default file would name is
++            // the one that serves the world, and the port is chosen by the OS — which is
++            // also what a test with a fixed port wants.
++            bind: SocketAddr::from(([0, 0, 0, 0], 0)),
++            hostname: String::new(),
++            tls: TlsConfig::default(),
++            allow_loopback: false,
++        }
++    }
++}
++
++/// Where a self-hosted relay's certificate and key are, and where it serves them.
++///
++/// Both files are PEM, the form every certificate authority hands out. The relay does not
++/// generate a certificate: a relay serving one nobody trusts is a relay every device
++/// rejects, so obtaining one is the operator's decision, not something to paper over.
++#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
++#[serde(default, deny_unknown_fields)]
++pub struct TlsConfig {
++    /// The PEM certificate chain, leaf first.
++    pub cert_path: Option<PathBuf>,
++    /// The PEM private key for `cert_path`.
++    ///
++    /// Must be given whenever `cert_path` is, and never alone: half a certificate completes
++    /// no handshake, and a relay that cannot complete one looks alive while serving nobody.
++    pub key_path: Option<PathBuf>,
++    /// The address the HTTPS server binds.
++    ///
++    /// Required once a certificate is given, and necessarily a different port from `bind`:
++    /// the plain-HTTP captive-portal probe has to keep its own socket, so the two services
++    /// cannot share one. Normally port `443`.
++    pub https_bind: Option<SocketAddr>,
++}
++
++/// A relay server running inside this process, for this host's workgroup.
++///
++/// Start one with [`EmbeddedRelay::start`], hand [`EmbeddedRelay::url`] to the endpoints that
++/// should use it — through [`RelayConfig::urls`], the same path every other relay URL takes —
++/// and stop it with [`EmbeddedRelay::stop`].
++#[cfg(feature = "embedded-relay")]
++#[derive(Debug)]
++pub struct EmbeddedRelay {
++    server: iroh_relay::server::Server,
++    url: String,
++}
++
++#[cfg(feature = "embedded-relay")]
++impl EmbeddedRelay {
++    /// Start a relay for `config`.
++    ///
++    /// Refuses a configuration that could only produce a relay nobody can use: a loopback
++    /// bind address without [`EmbeddedRelayConfig::allow_loopback`], a missing hostname, or
++    /// half a certificate. Each is reported with its reason, because the failure a
++    /// misconfigured relay otherwise causes is invisible — devices try it and cannot connect,
++    /// while the relay itself looks healthy.
++    pub async fn start(config: &EmbeddedRelayConfig) -> Result<EmbeddedRelay> {
++        validate(config)?;
++
++        let mut relay = iroh_relay::server::RelayConfig::new(config.bind);
++        let tls = match (&config.tls.cert_path, &config.tls.key_path) {
++            (Some(cert_path), Some(key_path)) => {
++                Some(server_tls_config(config, cert_path, key_path)?)
++            }
++            // The other combinations are refused by `validate`.
++            _ => None,
++        };
++        let secure = tls.is_some();
++        relay.tls = tls;
++
++        let mut server_config = iroh_relay::server::ServerConfig::default();
++        server_config.relay = Some(relay);
++        let server = iroh_relay::server::Server::spawn(server_config)
++            .await
++            .map_err(|e| Error::Config(format!("the embedded relay could not start: {e}")))?;
++
++        // With TLS the URL names the hostname, because that is what a client verifies the
++        // certificate against. Without it there is no name to verify, so the URL names the
++        // address actually bound: a name that resolved elsewhere would send devices nowhere,
++        // and there is nothing here to check that it does not.
++        let url = if secure {
++            let https = server.https_addr().ok_or_else(|| {
++                Error::Config("the embedded relay bound no HTTPS address".to_owned())
++            })?;
++            if https.port() == 443 {
++                format!("https://{}", config.hostname)
++            } else {
++                format!("https://{}:{}", config.hostname, https.port())
++            }
++        } else {
++            let http = server.http_addr().ok_or_else(|| {
++                Error::Config("the embedded relay bound no HTTP address".to_owned())
++            })?;
++            format!("http://{http}")
++        };
++
++        Ok(EmbeddedRelay { server, url })
++    }
++
++    /// The URL other devices should be given for this relay.
++    ///
++    /// Feed it into [`RelayConfig::urls`] like any other relay URL: the endpoints cannot tell
++    /// an embedded relay from a remote one, and there is no second way to configure a relay.
++    pub fn url(&self) -> String {
++        self.url.clone()
++    }
++
++    /// Stop the relay and release its sockets.
++    pub async fn stop(self) {
++        if let Err(err) = self.server.shutdown().await {
++            // The relay is going away either way and the caller has already decided to stop
++            // it, so failing here would only report a shutdown it cannot act on.
++            tracing::warn!("the embedded relay did not shut down cleanly: {err}");
++        }
++    }
++}
++
++/// Check `config` before anything is bound.
++///
++/// Every check here is about a relay that would run and never be used, which is the failure
++/// worth an error message: from the inside, a relay nobody can reach is indistinguishable
++/// from one that works.
++#[cfg(feature = "embedded-relay")]
++fn validate(config: &EmbeddedRelayConfig) -> Result<()> {
++    if config.hostname.trim().is_empty() {
++        return Err(Error::Config(
++            "an embedded relay needs a hostname: it is the name devices are given, so without \
++             one the relay cannot be reachable"
++                .to_owned(),
++        ));
++    }
++    if config.bind.ip().is_loopback() && !config.allow_loopback {
++        return Err(Error::Config(format!(
++            "the embedded relay's address {} is a loopback address, so the relay is not \
++             reachable by any other device; set allow_loopback to run a relay for tests",
++            config.bind.ip()
++        )));
++    }
++    match (
++        &config.tls.cert_path,
++        &config.tls.key_path,
++        config.tls.https_bind,
++    ) {
++        (None, None, _) => Ok(()),
++        (Some(_), Some(_), Some(_)) => Ok(()),
++        (Some(_), Some(_), None) => Err(Error::Config(
++            "an embedded relay with a certificate needs tls.https_bind: the HTTPS server \
++             cannot share the plain-HTTP socket"
++                .to_owned(),
++        )),
++        (Some(_), None, _) | (None, Some(_), _) => Err(Error::Config(
++            "an embedded relay's certificate needs both tls.cert_path and tls.key_path: a \
++             certificate without its key completes no handshake, and a key without its \
++             certificate has nothing to prove"
++                .to_owned(),
++        )),
++    }
++}
++
++/// The rustls server configuration for `cert_path` and `key_path`.
++///
++/// The crypto provider is iroh-relay's own, so the relay serves TLS with the provider the
++/// rest of the iroh stack uses rather than one this crate picked independently.
++#[cfg(feature = "embedded-relay")]
++fn server_tls_config(
++    config: &EmbeddedRelayConfig,
++    cert_path: &PathBuf,
++    key_path: &PathBuf,
++) -> Result<iroh_relay::server::TlsConfig> {
++    use rustls::pki_types::pem::PemObject;
++
++    let certs = rustls::pki_types::CertificateDer::pem_file_iter(cert_path)
++        .map_err(|e| Error::Config(format!("{}: {e}", cert_path.display())))?
++        .collect::<std::result::Result<Vec<_>, _>>()
++        .map_err(|e| Error::Config(format!("{}: {e}", cert_path.display())))?;
++    let key = rustls::pki_types::PrivateKeyDer::from_pem_file(key_path)
++        .map_err(|e| Error::Config(format!("{}: {e}", key_path.display())))?;
++
++    let server_config =
++        rustls::ServerConfig::builder_with_provider(iroh_relay::tls::default_provider())
++            .with_safe_default_protocol_versions()
++            .map_err(|e| Error::Config(format!("the relay's TLS versions are unusable: {e}")))?
++            .with_no_client_auth()
++            .with_single_cert(certs, key)
++            .map_err(|e| Error::Config(format!("the relay's certificate is unusable: {e}")))?;
++
++    let https_bind = config
++        .tls
++        .https_bind
++        .ok_or_else(|| Error::Config("an embedded relay needs tls.https_bind".to_owned()))?;
++    Ok(iroh_relay::server::TlsConfig::new(
++        https_bind,
++        iroh_relay::server::CertConfig::Manual { server_config },
++    ))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::dir::BridgeDir;
+ 
+     const NODE_A: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+ 
+     fn host_with(urls: &[&str], use_default: bool) -> NetConfig {
+         NetConfig {
+             relays: urls.iter().map(|u| (*u).to_owned()).collect(),
+@@ -164,10 +421,98 @@ mod tests {
+     }
+ 
+     #[test]
+     fn a_good_url_on_both_sides_is_accepted() {
+         let (_tmp, _dir, wg) = workgroup_with_net(&host_with(&["https://group.example"], true));
+         let config = relays(&host_with(&["https://group.example"], true), Some(&wg)).unwrap();
+         assert_eq!(config.urls, vec!["https://group.example".to_owned()]);
+         assert!(config.use_default);
+     }
+ }
++
++#[cfg(test)]
++mod embedded_relay_tests {
++    use super::*;
++
++    #[test]
++    fn no_embedded_relay_is_the_default() {
++        // A relay must be asked for, never inherited: it is off unless `net.toml` names it.
++        assert!(NetConfig::default().embedded_relay.is_none());
++    }
++
++    #[test]
++    fn an_embedded_relay_round_trips_through_the_file() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("net.toml");
++        std::fs::write(
++            &path,
++            "relays = [\"https://relay.example/\"]\n\
++             [embedded_relay]\n\
++             bind = \"0.0.0.0:80\"\n\
++             hostname = \"relay.example.com\"\n",
++        )
++        .unwrap();
++
++        let net = NetConfig::load(&path).unwrap();
++        let relay = net.embedded_relay.expect("the relay was configured");
++        assert_eq!(relay.bind, "0.0.0.0:80".parse().unwrap());
++        assert_eq!(relay.hostname, "relay.example.com");
++        assert!(!relay.allow_loopback, "a real host does not allow loopback");
++        assert!(relay.tls.cert_path.is_none());
++        assert!(relay.tls.https_bind.is_none());
++    }
++
++    #[test]
++    fn a_certificate_and_key_round_trip_through_the_file() {
++        let tmp = tempfile::tempdir().unwrap();
++        let path = tmp.path().join("net.toml");
++        std::fs::write(
++            &path,
++            "[embedded_relay]\n\
++             bind = \"0.0.0.0:80\"\n\
++             hostname = \"relay.example.com\"\n\
++             [embedded_relay.tls]\n\
++             cert_path = \"/etc/relay/cert.pem\"\n\
++             key_path = \"/etc/relay/key.pem\"\n\
++             https_bind = \"0.0.0.0:443\"\n",
++        )
++        .unwrap();
++
++        let net = NetConfig::load(&path).unwrap();
++        let tls = net.embedded_relay.unwrap().tls;
++        assert_eq!(
++            tls.cert_path.unwrap().to_str().unwrap(),
++            "/etc/relay/cert.pem"
++        );
++        assert_eq!(
++            tls.key_path.unwrap().to_str().unwrap(),
++            "/etc/relay/key.pem"
++        );
++        assert_eq!(tls.https_bind.unwrap(), "0.0.0.0:443".parse().unwrap());
++    }
++
++    /// A `net.toml` with no relay must survive being written back out, which is what
++    /// `Workgroup::publish_net` does when a workgroup announces its configuration. TOML has
++    /// no way to spell `None`, so an unset relay has to be left out of the output.
++    #[test]
++    fn an_unset_relay_is_left_out_of_the_written_file() {
++        let text = toml::to_string_pretty(&NetConfig::default()).unwrap();
++        assert!(!text.contains("embedded_relay"), "{text}");
++        let back: NetConfig = toml::from_str(&text).unwrap();
++        assert!(back.embedded_relay.is_none());
++    }
++
++    #[test]
++    fn a_configured_relay_survives_being_written_back_out() {
++        let net = NetConfig {
++            embedded_relay: Some(EmbeddedRelayConfig {
++                bind: "0.0.0.0:80".parse().unwrap(),
++                hostname: "relay.example.com".to_owned(),
++                ..EmbeddedRelayConfig::default()
++            }),
++            ..NetConfig::default()
++        };
++        let text = toml::to_string_pretty(&net).unwrap();
++        let back: NetConfig = toml::from_str(&text).unwrap();
++        assert_eq!(back.embedded_relay, net.embedded_relay);
++    }
++}
+diff --git a/crates/sapphire-framework-bridge/tests/embedded_relay.rs b/crates/sapphire-framework-bridge/tests/embedded_relay.rs
+new file mode 100644
+index 0000000..3a2c4bf
+--- /dev/null
++++ b/crates/sapphire-framework-bridge/tests/embedded_relay.rs
+@@ -0,0 +1,167 @@
++//! A relay server running inside the bridge's own process.
++//!
++//! Two endpoints meet here through the relay and nowhere else: they are built relay-only, so
++//! no direct path exists, and the bytes that arrive on the far side can only have come
++//! through the relay this test started. That is what says the feature works rather than
++//! merely starts.
++
++#![cfg(feature = "embedded-relay")]
++
++use std::sync::Arc;
++use std::time::{Duration, Instant};
++
++use grain_id::GrainId;
++use sapphire_framework_bridge::{
++    EmbeddedRelay, EmbeddedRelayConfig, Inbound, IrohTransport, NetConfig, NodeAddr, PeerTransport,
++    RelayConfig,
++};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++
++/// How long a test waits for something that should happen quickly but does not happen
++/// instantly — a relay connection coming up, or a peer accepting.
++const PATIENCE: Duration = Duration::from_secs(30);
++
++/// A relay on loopback, on an ephemeral port, without TLS.
++///
++/// The loopback address is what the relay refuses unless it is asked for: on a real host it
++/// would be an address no peer can reach.
++fn loopback(port: u16) -> EmbeddedRelayConfig {
++    EmbeddedRelayConfig {
++        bind: format!("127.0.0.1:{port}").parse().unwrap(),
++        hostname: "localhost".into(),
++        allow_loopback: true,
++        ..EmbeddedRelayConfig::default()
++    }
++}
++
++/// A host that neither discovers peers nor uses any relay but the one passed in.
++fn offline() -> NetConfig {
++    NetConfig {
++        wake_on_sync: false,
++        discovery: false,
++        relays: vec![],
++        use_default_relays: false,
++        ..NetConfig::default()
++    }
++}
++
++/// The address of `transport`, once its relay connection is up.
++///
++/// A relay-only endpoint has no direct address to share, so until it has connected to the
++/// relay there is nothing for a peer to dial and `node_addr` says so. Waiting here keeps that
++/// from being read as "the relay does not work".
++async fn relay_address(transport: &IrohTransport) -> NodeAddr {
++    let deadline = Instant::now() + PATIENCE;
++    loop {
++        if let Ok(addr) = transport.node_addr().await
++            && !addr.relay_urls.is_empty()
++        {
++            return addr;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "the endpoint never announced the relay"
++        );
++        tokio::time::sleep(Duration::from_millis(50)).await;
++    }
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_relay_starts_and_reports_its_url() {
++    let relay = EmbeddedRelay::start(&loopback(0)).await.unwrap();
++    assert!(relay.url().starts_with("http"), "{}", relay.url());
++    relay.stop().await;
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_loopback_address_is_refused_unless_it_is_asked_for() {
++    let mut config = loopback(0);
++    config.allow_loopback = false;
++    let err = EmbeddedRelay::start(&config).await.unwrap_err();
++    assert!(
++        err.to_string().contains("reachable"),
++        "the message must say what is wrong: {err}"
++    );
++}
++
++#[tokio::test(flavor = "multi_thread")]
++async fn a_missing_hostname_is_refused() {
++    let mut config = loopback(0);
++    config.hostname = String::new();
++    let err = EmbeddedRelay::start(&config).await.unwrap_err();
++    assert!(err.to_string().contains("hostname"), "{err}");
++}
++
++/// A certificate without its key is a relay nobody can complete a handshake with, so it is
++/// refused rather than started as something broken.
++#[tokio::test(flavor = "multi_thread")]
++async fn half_a_certificate_is_refused() {
++    let mut config = loopback(0);
++    config.tls.cert_path = Some("/nowhere/cert.pem".into());
++    let err = EmbeddedRelay::start(&config).await.unwrap_err();
++    assert!(err.to_string().contains("key"), "{err}");
++}
++
++/// Two endpoints meet through the embedded relay.
++///
++/// Both are built relay-only, so no direct path exists to fall back on, and each is taught
++/// only the other's relay address. The bytes that cross therefore crossed the relay.
++#[tokio::test(flavor = "multi_thread")]
++async fn two_endpoints_meet_through_the_embedded_relay() {
++    let relay = EmbeddedRelay::start(&loopback(0)).await.unwrap();
++
++    // The relay the endpoints may use, through the same `RelayConfig` the bridge feeds its
++    // endpoints from: an embedded relay is not a second way of configuring a relay.
++    let relays = RelayConfig {
++        urls: vec![relay.url()],
++        use_default: false,
++    };
++
++    let tmp = tempfile::tempdir().unwrap();
++    let a = IrohTransport::new_relay_only(&tmp.path().join("a.key"), &offline(), &relays)
++        .await
++        .unwrap();
++    let b = Arc::new(
++        IrohTransport::new_relay_only(&tmp.path().join("b.key"), &offline(), &relays)
++            .await
++            .unwrap(),
++    );
++
++    let b_node_id = b.node_id();
++    let a_node_id = a.node_id();
++    let b_addr = relay_address(&b).await;
++    // A is taught nothing but the relay B sits behind.
++    a.add_known_address(&b_addr).unwrap();
++
++    let ws = GrainId::random();
++    let accepting = Arc::clone(&b);
++    let accept = tokio::spawn(async move { accepting.accept().await });
++    let mut opened = a.open(&b_node_id, ws).await.unwrap();
++
++    let inbound = tokio::time::timeout(PATIENCE, accept)
++        .await
++        .expect("the far side to accept")
++        .unwrap()
++        .unwrap();
++    let (from, asked, mut accepted) = match inbound {
++        Inbound::Workspace(from, asked, stream) => (from, asked, stream),
++        Inbound::Pairing(..) => panic!("a workspace open arrived as a pairing stream"),
++    };
++    assert_eq!(from, a_node_id, "the far side must learn who called");
++    assert_eq!(asked, ws, "the far side must learn what was asked for");
++
++    opened.write_all(b"ping").await.unwrap();
++    let mut buf = [0u8; 4];
++    accepted.read_exact(&mut buf).await.unwrap();
++    assert_eq!(&buf, b"ping", "the relay must carry the payload");
++
++    // …and the far side answers, on the same stream.
++    accepted.write_all(b"pong").await.unwrap();
++    let mut back = [0u8; 4];
++    opened.read_exact(&mut back).await.unwrap();
++    assert_eq!(&back, b"pong");
++
++    drop(opened);
++    drop(accepted);
++    relay.stop().await;
++}
+diff --git a/crates/sapphire-framework-bridge/tests/iroh_transport.rs b/crates/sapphire-framework-bridge/tests/iroh_transport.rs
+index 62c51c2..a19b845 100644
+--- a/crates/sapphire-framework-bridge/tests/iroh_transport.rs
++++ b/crates/sapphire-framework-bridge/tests/iroh_transport.rs
+@@ -24,20 +24,21 @@ fn expect_err<T>(result: sapphire_framework_bridge::Result<T>) -> sapphire_frame
+     }
+ }
+ 
+ /// A host that neither discovers peers nor uses a relay: local addresses only.
+ fn offline() -> NetConfig {
+     NetConfig {
+         wake_on_sync: false,
+         discovery: false,
+         relays: vec![],
+         use_default_relays: false,
++        ..NetConfig::default()
+     }
+ }
+ 
+ /// The transport for `net`, with its relay set already resolved the way the bridge does.
+ async fn transport(tmp: &tempfile::TempDir, name: &str, net: &NetConfig) -> IrohTransport {
+     let config = relays(net, None).unwrap();
+     IrohTransport::new(&tmp.path().join(name), net, &config)
+         .await
+         .unwrap()
+ }
+diff --git a/crates/sapphire-framework-server/tests/common/mod.rs b/crates/sapphire-framework-server/tests/common/mod.rs
+index 891131d..3390d13 100644
+--- a/crates/sapphire-framework-server/tests/common/mod.rs
++++ b/crates/sapphire-framework-server/tests/common/mod.rs
+@@ -145,20 +145,21 @@ async fn build(
+         bridge_dir.clone(),
+         Arc::new(net.transport(node_id)),
+         VERSION,
+     )
+     .unwrap()
+     .net(NetConfig {
+         wake_on_sync: false,
+         discovery: false,
+         relays: Vec::new(),
+         use_default_relays: false,
++        ..NetConfig::default()
+     })
+     .control_endpoint(control.clone())
+     .data_endpoint(data);
+     let bridge_runtime = tokio::runtime::Builder::new_multi_thread()
+         .enable_all()
+         .build()
+         .expect("a runtime for the bridge");
+     bridge_runtime.spawn(async move {
+         let _ = bridge.run().await;
+     });

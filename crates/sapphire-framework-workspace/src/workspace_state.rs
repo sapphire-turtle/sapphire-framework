@@ -1,17 +1,16 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
-use sapphire_retrieve::{
-    Chunker, Document, Embedder, FileSearchResult, FtsQuery, HybridQuery, JsonlChunker,
-    RetrieveStore, TomlChunker, VectorQuery,
-};
 #[cfg(feature = "redb-store")]
-use sapphire_retrieve::{open_redb, open_redb_vec};
+use sapphire_retrieve::open_redb;
+use sapphire_retrieve::{
+    Embedder, FileSearchResult, FtsQuery, HybridQuery, RetrieveStore, VectorQuery,
+};
 use sapphire_track::TrackStore;
-use tokio::sync::OnceCell;
 
 use crate::{
-    config::{HybridConfig, RetrieveConfig, VectorDb},
+    bridge_embedder::BridgeEmbedder,
+    config::{HybridConfig, VectorDb},
     error::{Error, Result},
     indexer::{
         IndexHook, SyncReport, SyncWithHookError, build_document_from_disk, file_stamp,
@@ -21,10 +20,11 @@ use crate::{
     workspace::Workspace,
 };
 
-use sapphire_retrieve::build_embedder;
+use sapphire_bridge_api::EmbedModelInfo;
 
 /// Controls which retrieval strategy [`WorkspaceState::retrieve_files`] uses.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SearchMode {
     /// Full-text search only (BM25 / trigram).
     Fts,
@@ -56,7 +56,90 @@ pub struct WorkspaceState {
     /// mtime/size-based change-detection store (see [`sapphire_track`]). Unlike the
     /// retrieve backend it is never swapped at runtime, so it needs no lock.
     track_db: Arc<dyn TrackStore + Send + Sync>,
-    embedder: OnceCell<Option<Box<dyn Embedder + Send + Sync>>>,
+    /// The embedder: `None` until the bridge was asked, `Some(None)` when it does not embed.
+    /// Replaced when the bridge switches models (see [`refresh_embedder`](Self::refresh_embedder)).
+    embedder: RwLock<Option<Option<Installed>>>,
+    /// See [`WorkspaceState::set_vector_db`].
+    vector_db: Mutex<VectorDb>,
+}
+
+/// The embedder in use, with the model the vector store is configured for.
+#[derive(Clone)]
+struct Installed {
+    embedder: Arc<dyn Embedder + Send + Sync>,
+    /// The bridge connection behind it; `None` for one a test installed, never replaced.
+    bridge: Option<Arc<BridgeEmbedder>>,
+    /// The model the store is configured for.
+    info: EmbedModelInfo,
+}
+
+/// Whether this device computes the vector of a file it could not find one for, by the
+/// file's workspace-relative path (`/`-separated) and hex content hash.
+pub type EmbedPolicy<'a> = dyn Fn(&str, &str) -> bool + Sync + 'a;
+
+/// The synced vector files as the retrieve store's [`VectorSource`].
+struct FileVectors<'a> {
+    /// The active profile's directory; `None` reads nothing and keeps nothing.
+    dir: Option<crate::vectors::VectorDir>,
+    root: &'a Path,
+    policy: &'a EmbedPolicy<'a>,
+    batch_size: usize,
+}
+
+/// Texts per embedding request when an app embeds in the foreground.
+const BATCH: usize = 100;
+
+impl sapphire_retrieve::VectorSource for FileVectors<'_> {
+    fn find(&self, _path: &str, text: &str) -> Option<Vec<f32>> {
+        self.dir
+            .as_ref()?
+            .read(&crate::vectors::content_hash(text.as_bytes()))
+    }
+
+    fn may_embed(&self, path: &str, text: &str) -> bool {
+        let rel = Path::new(path)
+            .strip_prefix(self.root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| path.to_owned());
+        (self.policy)(&rel, &crate::vectors::content_hash(text.as_bytes()))
+    }
+
+    fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    fn embedded(&self, _path: &str, text: &str, vector: &[f32]) {
+        let Some(dir) = &self.dir else { return };
+        let hash = crate::vectors::content_hash(text.as_bytes());
+        if let Err(err) = dir.write(&hash, vector) {
+            tracing::warn!("could not write the vector file for {hash}: {err}");
+        }
+    }
+}
+
+/// Ask the bridge at `endpoint` (default: the standard one) for an embedder.
+fn connect(
+    endpoint: Option<sapphire_ipc::Endpoint>,
+) -> Option<(Arc<BridgeEmbedder>, EmbedModelInfo)> {
+    BridgeEmbedder::connect(endpoint).map(|(e, info)| (Arc::new(e), info))
+}
+
+/// The full-text query `params` ask for.
+fn fts_query<'a>(params: &RetrieveParams<'a>) -> FtsQuery<'a> {
+    let mut q = FtsQuery::new(params.query).limit(params.limit);
+    if let Some(f) = params.folder {
+        q = q.path_prefix(f);
+    }
+    q
+}
+
+/// Vectors are on by default wherever the store can hold them.
+fn default_vector_db() -> VectorDb {
+    if cfg!(feature = "redb-store") {
+        VectorDb::Redb
+    } else {
+        VectorDb::None
+    }
 }
 
 /// Database statistics returned by [`WorkspaceState::db_info`].
@@ -67,6 +150,20 @@ pub struct DbInfo {
     pub embedding_dim: u32,
     pub vector_count: u64,
     pub pending_count: u64,
+}
+
+/// Whether `retrieve` is empty while `track` still records stamps.
+///
+/// That pair is never consistent. It is what a reset of the retrieve store
+/// leaves behind (`RedbStore::open` wiping an old schema or an
+/// `UpgradeRequired` file, or the store directory deleted by hand). An
+/// incremental sync would skip every file whose stamp matches and the index
+/// would stay empty, so the caller clears the track store.
+fn index_lost_its_documents(
+    retrieve: &(dyn RetrieveStore + Send + Sync),
+    track: &(dyn TrackStore + Send + Sync),
+) -> Result<bool> {
+    Ok(retrieve.document_count()? == 0 && track.count()? > 0)
 }
 
 /// Convert a `sapphire_retrieve::Error` to a `SyncWithHookError::Workspace`.
@@ -134,11 +231,21 @@ impl WorkspaceState {
     pub fn open(workspace: Workspace) -> Result<Self> {
         let backend = Self::open_initial_backend(&workspace)?;
         let track_db = Self::open_initial_track(&workspace)?;
+        if index_lost_its_documents(backend.as_ref(), track_db.as_ref())? {
+            // The retrieve store was reset (an old schema or redb file format)
+            // but the track store still has a stamp for every file, so an
+            // incremental sync would skip them all. Forget every stamp, so the
+            // next sync re-indexes the workspace. Cleared in place rather than by
+            // deleting the file: a delete that fails (a virus scanner holding the
+            // file on Windows) would leave the stamps behind in silence (#195).
+            track_db.clear()?;
+        }
         Ok(Self {
             retrieve_db: Mutex::new(backend),
             track_db,
             workspace,
-            embedder: OnceCell::new(),
+            embedder: RwLock::new(None),
+            vector_db: Mutex::new(default_vector_db()),
         })
     }
 
@@ -148,15 +255,19 @@ impl WorkspaceState {
         // index and the track store start from a consistent (empty) state.
         // The orphaned pre-#118 `track_v1.redb` goes with it, so a rebuild
         // also clears any stale second-resolution snapshot.
-        let _ = std::fs::remove_file(workspace.track_db_path());
+        // The orphan is never read again, so a failed delete costs only disk space. The
+        // live track store is cleared in place below, which cannot fail silently the way
+        // a delete can (#195).
         let _ = std::fs::remove_file(workspace.cache_dir().join("track_v1.redb"));
         let backend = Self::open_initial_backend(&workspace)?;
         let track_db = Self::open_initial_track(&workspace)?;
+        track_db.clear()?;
         Ok(Self {
             retrieve_db: Mutex::new(backend),
             track_db,
             workspace,
-            embedder: OnceCell::new(),
+            embedder: RwLock::new(None),
+            vector_db: Mutex::new(default_vector_db()),
         })
     }
 
@@ -173,22 +284,31 @@ impl WorkspaceState {
         self.track_db.as_ref()
     }
 
-    pub fn embedder(&self) -> Option<&dyn Embedder> {
-        Some(self.embedder.get()?.as_ref()?.as_ref())
+    /// The loaded embedder, if any. `None` until [`load_embedder`](Self::load_embedder) found
+    /// one, and always `None` under [`VectorDb::None`].
+    pub fn embedder(&self) -> Option<Arc<dyn Embedder + Send + Sync>> {
+        if self.vector_db() == VectorDb::None {
+            return None;
+        }
+        let slot = self.embedder.read().unwrap_or_else(|e| e.into_inner());
+        Some(Arc::clone(&slot.as_ref()?.as_ref()?.embedder))
+    }
+
+    /// Whether the bridge has been asked for an embedder yet.
+    fn asked(&self) -> bool {
+        self.embedder
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     // ── single-file update API ────────────────────────────────────────────────
 
     /// Update the retrieve index for a single file.
     ///
-    /// Reads the file from disk and upserts it into the retrieve DB.
-    ///
-    /// JSONL files are pre-chunked line-by-line so that an append only
-    /// produces new chunks at the tail; existing lines retain their
-    /// `(doc_id, line_start)` identity in the chunk store and are not
-    /// re-embedded.  TOML files are stored as a single whole-file chunk.
-    /// Other file types fall through to the storage layer's default
-    /// paragraph chunker.
+    /// Reads the file from disk and upserts it into the retrieve DB. The file
+    /// is indexed whole, whatever its extension: when it changes, the whole
+    /// file is re-indexed and re-embedded.
     pub fn on_file_updated(&self, path: &Path) -> Result<()> {
         let resolved = self.resolve_path(path)?;
         if !resolved.is_internal() {
@@ -199,49 +319,7 @@ impl WorkspaceState {
 
         let stamp = file_stamp(abs);
 
-        let body = std::fs::read_to_string(abs)?;
-        let doc_id = path_to_doc_id(abs);
-
-        let ext = abs
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase());
-        let is_jsonl = ext.as_deref() == Some("jsonl");
-        let is_toml = ext.as_deref() == Some("toml");
-
-        let doc = if is_jsonl || is_toml {
-            let file_name = abs
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let text_chunks = if is_jsonl {
-                JsonlChunker.chunk(&file_name, &body)
-            } else {
-                TomlChunker.chunk(&file_name, &body)
-            };
-            let stored_body = text_chunks
-                .iter()
-                .map(|c| c.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            let chunks: Vec<(usize, usize, String)> = text_chunks
-                .into_iter()
-                .map(|c| (c.line_start, c.line_end, c.text))
-                .collect();
-            Document {
-                id: doc_id,
-                body: stored_body,
-                path: path_str.clone(),
-                chunks: Some(chunks),
-            }
-        } else {
-            Document {
-                id: doc_id,
-                body,
-                path: path_str.clone(),
-                chunks: None,
-            }
-        };
+        let doc = build_document_from_disk(abs, path_to_doc_id(abs))?;
 
         // Index first, then record the stamp (see the atomicity note in
         // `indexer::sync_inner`).
@@ -283,8 +361,8 @@ impl WorkspaceState {
     /// lockstep with the workspace.
     ///
     /// The hook does **not** see or modify the indexed [`Document`]; the
-    /// workspace always reads the file from disk and applies the default
-    /// chunking. Non-indexable extensions and external paths short-circuit
+    /// workspace always reads the file from disk and indexes it whole.
+    /// Non-indexable extensions and external paths short-circuit
     /// without invoking the hook.
     pub fn on_file_updated_with_hook<H: IndexHook>(
         &self,
@@ -499,62 +577,180 @@ impl WorkspaceState {
         Ok(())
     }
 
-    // ── vector backend ────────────────────────────────────────────────────────
-
-    /// Initialise the vector backend (sync). Idempotent.
-    pub fn load_retrieve_backend(&self, retrieve: &RetrieveConfig) -> Result<()> {
-        let Some((vector_db, dim)) = Self::extract_vector_config(retrieve) else {
-            return Ok(());
-        };
-        if let Some(backend) = self.make_vector_backend(vector_db, dim)? {
-            *self.retrieve_db.lock().unwrap() = backend;
-        }
-        Ok(())
-    }
-
-    /// Async version of [`load_retrieve_backend`](Self::load_retrieve_backend).
-    pub async fn load_retrieve_backend_async(&self, retrieve: &RetrieveConfig) -> Result<()> {
-        self.load_retrieve_backend(retrieve)
-    }
-
     // ── embedder ──────────────────────────────────────────────────────────────
 
-    /// Initialise the embedder (sync). Idempotent.
-    pub fn load_embedder(&self, retrieve: &RetrieveConfig) -> Result<()> {
-        if self.embedder.initialized() {
+    /// Choose the vector database. [`VectorDb::None`] means no embedder is ever loaded and
+    /// search stays FTS only; the default is [`VectorDb::Redb`] with the `redb-store`
+    /// feature, so embedding is on whenever the bridge offers it.
+    ///
+    /// Apps pass their `RetrieveConfig.db` here. Setting it after an embedder was loaded
+    /// hides that embedder from [`embedder`](Self::embedder) without unloading it.
+    pub fn set_vector_db(&self, db: VectorDb) {
+        *self.vector_db.lock().unwrap() = db;
+    }
+
+    /// The vector database chosen with [`set_vector_db`](Self::set_vector_db).
+    pub fn vector_db(&self) -> VectorDb {
+        *self.vector_db.lock().unwrap()
+    }
+
+    /// Ask the bridge for an embedder (sync). Idempotent: the bridge is asked once.
+    ///
+    /// When the bridge embeds, its model and dimension configure the vector store (vectors
+    /// from another model or dimension are dropped and become pending again). When it is
+    /// absent or does not embed, there is no embedder and search falls back to FTS.
+    pub fn load_embedder(&self) -> Result<()> {
+        self.load_embedder_at(None)
+    }
+
+    /// [`load_embedder`](Self::load_embedder), asking the bridge at `endpoint`.
+    fn load_embedder_at(&self, endpoint: Option<sapphire_ipc::Endpoint>) -> Result<()> {
+        if self.asked() || !self.wants_embedder()? {
             return Ok(());
         }
-        let embedder = retrieve
-            .embedding
-            .as_ref()
-            .filter(|c| c.enabled)
-            .map(|c| {
-                let mut cfg = c.to_embedder_config();
-                cfg.cache_dir = Some(self.workspace.ctx.model_cache_dir());
-                build_embedder(&cfg)
-            })
-            .transpose()?;
-        let _ = self.embedder.set(embedder);
+        self.install_embedder(connect(endpoint), false)
+    }
+
+    /// Async version of [`load_embedder`](Self::load_embedder): the bridge is asked on
+    /// `spawn_blocking`.
+    pub async fn load_embedder_async(&self) -> Result<()> {
+        if self.asked() || !self.wants_embedder()? {
+            return Ok(());
+        }
+        let found = tokio::task::spawn_blocking(|| connect(None))
+            .await
+            .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        self.install_embedder(found, false)
+    }
+
+    /// Ask the bridge again which model it serves, and follow it: a different model or
+    /// dimension reconfigures the vector store (vectors of the old model are dropped and
+    /// their documents become pending), and a bridge that stopped embedding removes the
+    /// embedder, so search falls back to FTS. [`sync_and_embed`](Self::sync_and_embed)
+    /// calls it every time.
+    pub async fn refresh_embedder(&self) -> Result<()> {
+        self.refresh_embedder_at(None).await
+    }
+
+    /// [`refresh_embedder`](Self::refresh_embedder), asking the bridge at `endpoint` (the
+    /// standard one when `None`): for a server whose bridge is not the host's default.
+    pub async fn refresh_embedder_at(
+        &self,
+        endpoint: Option<sapphire_ipc::Endpoint>,
+    ) -> Result<()> {
+        if !self.wants_embedder()? {
+            return Ok(());
+        }
+        let current = {
+            let slot = self.embedder.read().unwrap_or_else(|e| e.into_inner());
+            match slot.as_ref().and_then(Option::as_ref) {
+                // Installed by a test: there is no bridge to follow.
+                Some(Installed { bridge: None, .. }) => return Ok(()),
+                Some(Installed {
+                    bridge: Some(bridge),
+                    ..
+                }) => Some(Arc::clone(bridge)),
+                None => None,
+            }
+        };
+        let found = tokio::task::spawn_blocking(move || match current {
+            // The same connection, asked again; a broken one is replaced.
+            Some(bridge) => match bridge.current() {
+                Ok(Some(info)) => Some((bridge, info)),
+                Ok(None) => None,
+                Err(_) => connect(endpoint),
+            },
+            None => connect(endpoint),
+        })
+        .await
+        .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+        self.install_embedder(found, true)
+    }
+
+    /// Install `e` as the embedder for a `model` of `dim` dimensions, without a bridge.
+    ///
+    /// The vector store is configured as [`load_embedder`](Self::load_embedder) would, so
+    /// semantic search works in tests. A no-op under [`VectorDb::None`], where no embedder
+    /// is ever visible; a second call keeps the first embedder, as `load_embedder` does when
+    /// two callers race.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_embedder_for_test(
+        &self,
+        e: Box<dyn Embedder + Send + Sync>,
+        model: &str,
+        dim: u32,
+    ) -> Result<()> {
+        if self.asked() || !self.wants_embedder()? {
+            return Ok(());
+        }
+        self.retrieve_db().configure_vectors(model, dim)?;
+        *self.embedder.write().unwrap_or_else(|e| e.into_inner()) = Some(Some(Installed {
+            embedder: Arc::from(e),
+            bridge: None,
+            info: EmbedModelInfo {
+                model: model.to_owned(),
+                dimension: dim,
+                template_version: 0,
+                revision: None,
+                max_tokens: None,
+            },
+        }));
         Ok(())
     }
 
-    /// Async version of [`load_embedder`](Self::load_embedder).
-    pub async fn load_embedder_async(&self, retrieve: &RetrieveConfig) -> Result<()> {
-        let model_cache_dir = self.workspace.ctx.model_cache_dir();
-        self.embedder
-            .get_or_try_init(|| async {
-                retrieve
-                    .embedding
-                    .as_ref()
-                    .filter(|c| c.enabled)
-                    .map(|c| {
-                        let mut cfg = c.to_embedder_config();
-                        cfg.cache_dir = Some(model_cache_dir.clone());
-                        build_embedder(&cfg)
-                    })
-                    .transpose()
-            })
-            .await?;
+    /// Whether an embedder may be loaded at all.
+    fn wants_embedder(&self) -> Result<bool> {
+        match self.vector_db() {
+            VectorDb::None => Ok(false),
+            #[cfg(feature = "redb-store")]
+            VectorDb::Redb => Ok(true),
+            #[cfg(not(feature = "redb-store"))]
+            VectorDb::Redb => Err(Error::RedbStoreNotEnabled),
+        }
+    }
+
+    /// Configure the vector store for what the bridge answered, and keep the embedder.
+    ///
+    /// A first probe (`replace` false) keeps an embedder a concurrent caller installed
+    /// first; a refresh replaces it. The store is reconfigured only when the model changed.
+    fn install_embedder(
+        &self,
+        found: Option<(Arc<BridgeEmbedder>, EmbedModelInfo)>,
+        replace: bool,
+    ) -> Result<()> {
+        let mut slot = self.embedder.write().unwrap_or_else(|e| e.into_inner());
+        if slot.is_some() && !replace {
+            return Ok(());
+        }
+        let installed = match found {
+            Some((bridge, info)) => {
+                let configured = slot.as_ref().and_then(Option::as_ref).map(|i| &i.info);
+                if configured != Some(&info) {
+                    if configured.is_some() {
+                        tracing::info!(
+                            "the bridge now embeds with {} ({} dimensions); re-embedding",
+                            info.model,
+                            info.dimension
+                        );
+                    }
+                    self.retrieve_db()
+                        .configure_vectors(&info.model, info.dimension)?;
+                    bridge.set_info(info.clone());
+                }
+                Some(Installed {
+                    embedder: Arc::clone(&bridge) as Arc<dyn Embedder + Send + Sync>,
+                    bridge: Some(bridge),
+                    info,
+                })
+            }
+            None => {
+                if slot.as_ref().is_some_and(Option::is_some) {
+                    tracing::info!("the bridge no longer embeds; search falls back to FTS");
+                }
+                None
+            }
+        };
+        *slot = Some(installed);
         Ok(())
     }
 
@@ -600,49 +796,104 @@ impl WorkspaceState {
         sync_workspace_with_hook(&self.workspace, self.retrieve_db(), self.track_db(), hook)
     }
 
-    /// Sync and, when embedding is configured, embed pending chunks.
+    /// Sync and, when the bridge embeds, embed pending documents.
+    ///
+    /// Embedding never fails the sync: an error is logged and `embedded` is 0, and the
+    /// documents stay pending for the next run.
     ///
     /// Returns `(upserted, removed, embedded)`.
-    pub async fn sync_and_embed(&self, retrieve: &RetrieveConfig) -> Result<(usize, usize, usize)> {
+    pub async fn sync_and_embed(&self) -> Result<(usize, usize, usize)> {
         let (upserted, removed) =
             sync_workspace(&self.workspace, self.retrieve_db(), self.track_db())?;
 
-        let Some(embed_cfg) = retrieve.embedding.as_ref() else {
-            return Ok((upserted, removed, 0));
-        };
-        if !embed_cfg.enabled {
+        if let Err(e) = self.refresh_embedder().await {
+            tracing::warn!("could not load the embedder; documents stay pending: {e}");
             return Ok((upserted, removed, 0));
         }
-
-        self.load_retrieve_backend_async(retrieve).await?;
-        self.load_embedder_async(retrieve).await?;
-
         let Some(embedder) = self.embedder() else {
             return Ok((upserted, removed, 0));
         };
 
-        let embedded = self.retrieve_db().embed_pending(embedder, &|_, _| {})?;
+        let embedded = match self.embed_with(&*embedder, &|_, _| true, BATCH, &|_, _| {}) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!("embedding failed; documents stay pending: {e}");
+                0
+            }
+        };
         Ok((upserted, removed, embedded))
     }
 
-    /// Embed all pending chunks (sync). Loads backend and embedder if needed.
-    pub fn embed_pending(
-        &self,
-        retrieve: &RetrieveConfig,
-        on_progress: impl Fn(usize, usize),
-    ) -> Result<usize> {
-        let Some(embed_cfg) = retrieve.embedding.as_ref() else {
-            return Ok(0);
-        };
-        if !embed_cfg.enabled {
-            return Ok(0);
-        }
-        self.load_retrieve_backend(retrieve)?;
-        self.load_embedder(retrieve)?;
+    /// Embed all pending documents (sync). Loads the embedder if needed; without one
+    /// (no bridge, embedding disabled, or [`VectorDb::None`]) nothing is embedded.
+    pub fn embed_pending(&self, on_progress: impl Fn(usize, usize)) -> Result<usize> {
+        self.load_embedder()?;
         let Some(embedder) = self.embedder() else {
             return Ok(0);
         };
-        Ok(self.retrieve_db().embed_pending(embedder, &on_progress)?)
+        self.embed_with(&*embedder, &|_, _| true, BATCH, &on_progress)
+    }
+
+    /// Embed pending documents as one device of a synced workspace (#187).
+    ///
+    /// A document whose vector file exists under `.<app>/embedded/<profile>/` takes it
+    /// without embedding; one without is embedded only when `policy` says so for its
+    /// workspace-relative path and content hash, and its vector is then written there for
+    /// the other devices. The embedder must have been loaded (see
+    /// [`refresh_embedder`](Self::refresh_embedder)); without one nothing happens.
+    ///
+    /// `batch_size` texts go to the bridge per request: a background pass keeps it small,
+    /// so a search query is not stuck behind it on the bridge's one worker (#188).
+    pub fn embed_pending_with(&self, policy: &EmbedPolicy<'_>, batch_size: usize) -> Result<usize> {
+        let Some(embedder) = self.embedder() else {
+            return Ok(0);
+        };
+        self.embed_with(&*embedder, policy, batch_size, &|_, _| {})
+    }
+
+    /// Remove the vector files of the active profile that no live content needs and that
+    /// are older than `older_than` (the primary device's cleanup, #187). `live` holds the
+    /// hex content hashes of the workspace's current files. Returns how many were removed.
+    pub fn remove_stale_vectors(
+        &self,
+        live: &std::collections::HashSet<String>,
+        older_than: std::time::Duration,
+    ) -> usize {
+        match self.vector_dir() {
+            Some(dir) => dir.remove_stale(live, older_than),
+            None => 0,
+        }
+    }
+
+    /// The active profile's vector directory, once an embedder is installed.
+    fn vector_dir(&self) -> Option<crate::vectors::VectorDir> {
+        if self.vector_db() == VectorDb::None {
+            return None;
+        }
+        let slot = self.embedder.read().unwrap_or_else(|e| e.into_inner());
+        let info = &slot.as_ref()?.as_ref()?.info;
+        Some(crate::vectors::VectorDir::new(
+            &self.workspace.marker_dir(),
+            crate::vectors::Profile::of(info),
+        ))
+    }
+
+    fn embed_with(
+        &self,
+        embedder: &dyn Embedder,
+        policy: &EmbedPolicy<'_>,
+        batch_size: usize,
+        on_progress: &dyn Fn(usize, usize),
+    ) -> Result<usize> {
+        let source = FileVectors {
+            dir: self.vector_dir(),
+            root: &self.workspace.root,
+            policy,
+            batch_size,
+        };
+        Ok(self
+            .retrieve_db()
+            .embed_pending(embedder, &source, on_progress)?)
     }
 
     // ── info ──────────────────────────────────────────────────────────────────
@@ -690,20 +941,20 @@ impl WorkspaceState {
         };
 
         let results = match effective_mode {
-            SearchMode::Fts => {
-                let mut q = FtsQuery::new(params.query).limit(params.limit);
-                if let Some(f) = params.folder {
-                    q = q.path_prefix(f);
-                }
-                self.retrieve_db().search_fts(&q)?
-            }
+            SearchMode::Fts => self.retrieve_db().search_fts(&fts_query(params))?,
             SearchMode::Semantic => {
                 let embedder = self.embedder().expect("caller verified embedder exists");
-                let mut vq = VectorQuery::new(params.query, embedder).limit(params.limit);
+                let mut vq = VectorQuery::new(params.query, &*embedder).limit(params.limit);
                 if let Some(f) = params.folder {
                     vq = vq.path_prefix(f);
                 }
-                self.retrieve_db().search_similar(&vq)?
+                match self.retrieve_db().search_similar(&vq) {
+                    Err(sapphire_retrieve::Error::Embed(e)) => {
+                        tracing::warn!("the query could not be embedded; searching FTS: {e}");
+                        self.retrieve_db().search_fts(&fts_query(params))?
+                    }
+                    other => other?,
+                }
             }
             SearchMode::Hybrid => {
                 let mut hq = HybridQuery::new(params.query)
@@ -711,13 +962,20 @@ impl WorkspaceState {
                     .rrf_k(hybrid_config.rrf_k as f64)
                     .weight_fts(hybrid_config.fts_weight)
                     .weight_sem(1.0 - hybrid_config.fts_weight);
-                if let Some(e) = self.embedder() {
-                    hq = hq.embedder(e);
+                let embedder = self.embedder();
+                if let Some(e) = &embedder {
+                    hq = hq.embedder(&**e);
                 }
                 if let Some(f) = params.folder {
                     hq = hq.path_prefix(f);
                 }
-                self.retrieve_db().search_hybrid(&hq)?
+                match self.retrieve_db().search_hybrid(&hq) {
+                    Err(sapphire_retrieve::Error::Embed(e)) => {
+                        tracing::warn!("the query could not be embedded; searching FTS: {e}");
+                        self.retrieve_db().search_fts(&fts_query(params))?
+                    }
+                    other => other?,
+                }
             }
         };
 
@@ -761,36 +1019,6 @@ impl WorkspaceState {
         {
             let _ = workspace;
             Ok(Arc::new(sapphire_track::open_in_memory()))
-        }
-    }
-
-    /// Extract `(vector_db, embedding_dim)` from config if vector search is enabled.
-    fn extract_vector_config(retrieve: &RetrieveConfig) -> Option<(VectorDb, u32)> {
-        let embed_cfg = retrieve.embedding.as_ref()?;
-        if !embed_cfg.enabled {
-            return None;
-        }
-        let dim = embed_cfg.dimension?;
-        Some((retrieve.db, dim))
-    }
-
-    /// Construct a fully-initialised vector backend for the given `vector_db` kind.
-    ///
-    /// Returns `None` when `vector_db` is `VectorDb::None` (no vector search).
-    fn make_vector_backend(
-        &self,
-        vector_db: VectorDb,
-        dim: u32,
-    ) -> Result<Option<Arc<dyn RetrieveStore + Send + Sync>>> {
-        match vector_db {
-            VectorDb::None => Ok(None),
-            #[cfg(feature = "redb-store")]
-            VectorDb::Redb => Ok(Some(open_redb_vec(
-                &self.workspace.retrieve_db_path(),
-                dim,
-            )?)),
-            #[cfg(not(feature = "redb-store"))]
-            VectorDb::Redb => Err(crate::error::Error::RedbStoreNotEnabled),
         }
     }
 }
@@ -949,9 +1177,352 @@ mod tests {
             );
             assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
         }
+
+        fn reopen(tmp: &tempfile::TempDir) -> WorkspaceState {
+            WorkspaceState::open(Workspace::from_root(ctx(), tmp.path()).unwrap()).unwrap()
+        }
+
+        #[test]
+        fn a_wiped_retrieve_store_is_reindexed_by_an_incremental_sync() {
+            let (tmp, state) = make_state();
+            fs::write(tmp.path().join("a.md"), "alpha").unwrap();
+            fs::write(tmp.path().join("b.md"), "bravo").unwrap();
+            state.sync().unwrap();
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 2);
+            let store_dir = state.workspace.retrieve_db_path().with_extension("redb");
+            drop(state);
+
+            // Simulate the reset `RedbStore::open` performs for an old schema or an
+            // `UpgradeRequired` file: the retrieve store is gone, the track store is not.
+            fs::remove_dir_all(&store_dir).unwrap();
+
+            let state = reopen(&tmp);
+            let (upserted, _) = state.sync_retrieve().unwrap();
+
+            assert_eq!(upserted, 2);
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 2);
+        }
+
+        #[test]
+        fn reopening_a_populated_store_keeps_the_track_store() {
+            let (tmp, state) = make_state();
+            fs::write(tmp.path().join("a.md"), "alpha").unwrap();
+            state.sync().unwrap();
+            drop(state);
+
+            let state = reopen(&tmp);
+
+            assert_eq!(state.track_db().count().unwrap(), 1);
+            let (upserted, _) = state.sync_retrieve().unwrap();
+            assert_eq!(upserted, 0, "unchanged files are still skipped");
+        }
     }
 
-    /// Regression for #48: `canonicalize_or_parent` previously returned a path
+    #[cfg(feature = "redb-store")]
+    mod embedding {
+        use super::super::*;
+        use crate::AppContext;
+        use std::fs;
+
+        fn ctx() -> &'static AppContext {
+            static CTX: std::sync::OnceLock<AppContext> = std::sync::OnceLock::new();
+            CTX.get_or_init(|| AppContext::new("ws-state-embed-test"))
+        }
+
+        fn make_state() -> (tempfile::TempDir, WorkspaceState) {
+            let tmp = tempfile::Builder::new().prefix("ws-").tempdir().unwrap();
+            ctx().set_cache_dir(std::env::temp_dir().join("ws-state-embed-cache"));
+            fs::create_dir_all(tmp.path().join(".ws-state-embed-test")).unwrap();
+            fs::write(tmp.path().join("apple.md"), "apple pie recipe").unwrap();
+            fs::write(tmp.path().join("banana.md"), "banana bread recipe").unwrap();
+            let ws = Workspace::from_root(ctx(), tmp.path()).unwrap();
+            let state = WorkspaceState::open(ws).unwrap();
+            state.sync().unwrap();
+            (tmp, state)
+        }
+
+        /// Three dimensions: "apple", "banana", and a constant so no vector is zero.
+        struct FakeEmbedder;
+        impl Embedder for FakeEmbedder {
+            fn embed_texts(&self, texts: &[&str]) -> sapphire_retrieve::Result<Vec<Vec<f32>>> {
+                Ok(texts
+                    .iter()
+                    .map(|t| {
+                        let a = if t.contains("apple") { 1.0 } else { 0.0 };
+                        let b = if t.contains("banana") { 1.0 } else { 0.0 };
+                        vec![a, b, 0.1]
+                    })
+                    .collect())
+            }
+        }
+
+        fn params(query: &str) -> RetrieveParams<'_> {
+            RetrieveParams {
+                query,
+                limit: 10,
+                mode: SearchMode::Semantic,
+                folder: None,
+            }
+        }
+
+        #[test]
+        fn semantic_search_falls_back_to_fts_without_a_bridge() {
+            let (tmp, state) = make_state();
+            // An empty directory: nothing listens there.
+            let nowhere = tempfile::tempdir().unwrap();
+            let endpoint = sapphire_ipc::Endpoint::in_dir("bridge", nowhere.path().to_path_buf());
+
+            state.load_embedder_at(Some(endpoint)).unwrap();
+
+            assert!(state.embedder().is_none());
+            let hits = state
+                .retrieve_files(&params("banana"), &HybridConfig::default())
+                .unwrap();
+            assert_eq!(hits.len(), 1, "FTS found the one file: {hits:?}");
+            assert!(hits[0].path.ends_with("banana.md"));
+            assert_eq!(state.embed_pending(|_, _| {}).unwrap(), 0);
+            drop(tmp);
+        }
+
+        #[test]
+        fn set_embedder_for_test_enables_semantic_search() {
+            let (_tmp, state) = make_state();
+
+            state
+                .set_embedder_for_test(Box::new(FakeEmbedder), "fake-3d", 3)
+                .unwrap();
+            let embedded = state.embed_pending(|_, _| {}).unwrap();
+
+            assert_eq!(embedded, 2);
+            assert!(state.embedder().is_some());
+            let info = state.db_info().unwrap();
+            assert_eq!(info.embedding_dim, 3);
+            assert_eq!(info.vector_count, 2);
+            let hits = state
+                .retrieve_files(&params("apple"), &HybridConfig::default())
+                .unwrap();
+            assert!(
+                hits[0].path.ends_with("apple.md"),
+                "the closest vector wins: {hits:?}"
+            );
+        }
+
+        #[test]
+        fn vector_db_none_never_loads_an_embedder() {
+            let (_tmp, state) = make_state();
+            state.set_vector_db(VectorDb::None);
+            state
+                .set_embedder_for_test(Box::new(FakeEmbedder), "fake-3d", 3)
+                .unwrap();
+
+            assert!(state.embedder().is_none());
+            assert_eq!(state.embed_pending(|_, _| {}).unwrap(), 0);
+        }
+
+        #[tokio::test]
+        async fn sync_and_embed_without_a_bridge_still_syncs() {
+            let (tmp, state) = make_state();
+            // No bridge can be asked here, so make sure none is: `VectorDb::None`.
+            state.set_vector_db(VectorDb::None);
+            fs::write(tmp.path().join("cherry.md"), "cherry").unwrap();
+
+            let (upserted, _, embedded) = state.sync_and_embed().await.unwrap();
+
+            assert_eq!(upserted, 3);
+            assert_eq!(embedded, 0);
+        }
+
+        fn other_3d() -> sapphire_bridge_api::EmbedInfoResult {
+            sapphire_bridge_api::EmbedInfoResult {
+                enabled: true,
+                model: Some(EmbedModelInfo {
+                    model: "other-3d".into(),
+                    dimension: 3,
+                    template_version: 0,
+                    revision: None,
+                    max_tokens: None,
+                }),
+                ..Default::default()
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_refresh_follows_the_bridge_to_another_model_and_off() {
+            use crate::bridge_embedder::testing::FakeBridge;
+
+            let (_tmp, state) = make_state();
+            let dir = tempfile::tempdir().unwrap();
+            let bridge = FakeBridge::enabled(dir.path());
+            let endpoint = Some(bridge.endpoint.clone());
+
+            state.refresh_embedder_at(endpoint.clone()).await.unwrap();
+            assert_eq!(state.embed_pending(|_, _| {}).unwrap(), 2);
+            assert_eq!(state.db_info().unwrap().embedding_dim, 2);
+
+            // The same model again: nothing is dropped.
+            state.refresh_embedder_at(endpoint.clone()).await.unwrap();
+            assert_eq!(state.db_info().unwrap().vector_count, 2);
+
+            // Another model: the store follows, and the documents are pending again.
+            bridge.set_info(other_3d());
+            state.refresh_embedder_at(endpoint.clone()).await.unwrap();
+            let info = state.db_info().unwrap();
+            assert_eq!((info.embedding_dim, info.vector_count), (3, 0));
+            assert_eq!(state.embed_pending(|_, _| {}).unwrap(), 2);
+
+            // Switched off: no embedder, and semantic search is FTS.
+            bridge.set_info(Default::default());
+            state.refresh_embedder_at(endpoint).await.unwrap();
+            assert!(state.embedder().is_none());
+            let hits = state
+                .retrieve_files(&params("banana"), &HybridConfig::default())
+                .unwrap();
+            assert!(hits[0].path.ends_with("banana.md"), "{hits:?}");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_query_against_a_switched_model_falls_back_to_fts() {
+            use crate::bridge_embedder::testing::FakeBridge;
+
+            let (_tmp, state) = make_state();
+            let dir = tempfile::tempdir().unwrap();
+            let bridge = FakeBridge::enabled(dir.path());
+            state
+                .refresh_embedder_at(Some(bridge.endpoint.clone()))
+                .await
+                .unwrap();
+            state.embed_pending(|_, _| {}).unwrap();
+
+            // The bridge switched, and this state has not refreshed yet.
+            bridge.set_info(other_3d());
+            for mode in [SearchMode::Semantic, SearchMode::Hybrid] {
+                let hits = state
+                    .retrieve_files(
+                        &RetrieveParams {
+                            mode,
+                            ..params("banana")
+                        },
+                        &HybridConfig::default(),
+                    )
+                    .unwrap();
+                assert!(hits[0].path.ends_with("banana.md"), "{mode:?}: {hits:?}");
+            }
+        }
+
+        /// Counts the texts it embeds, through a counter the test keeps.
+        struct CountingEmbedder(Arc<std::sync::atomic::AtomicUsize>);
+        impl Embedder for CountingEmbedder {
+            fn embed_texts(&self, texts: &[&str]) -> sapphire_retrieve::Result<Vec<Vec<f32>>> {
+                self.0
+                    .fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+                FakeEmbedder.embed_texts(texts)
+            }
+        }
+
+        fn copy_tree(from: &Path, to: &Path) {
+            fs::create_dir_all(to).unwrap();
+            for entry in fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+
+        #[test]
+        fn a_vector_file_written_on_one_device_spares_the_other_the_embedding() {
+            let (tmp_a, a) = make_state();
+            a.set_embedder_for_test(Box::new(FakeEmbedder), "fake-3d", 3)
+                .unwrap();
+            assert_eq!(a.embed_pending_with(&|_, _| true, 100).unwrap(), 2);
+            let embedded = tmp_a.path().join(".ws-state-embed-test").join("embedded");
+            let profiles: Vec<_> = fs::read_dir(&embedded).unwrap().collect();
+            assert_eq!(profiles.len(), 1, "one profile directory");
+            // The vector files are not documents.
+            a.sync().unwrap();
+            assert_eq!(a.db_info().unwrap().document_count, 2);
+
+            // B holds the same files, and sync has brought A's vectors over.
+            let (tmp_b, b) = make_state();
+            copy_tree(
+                &embedded,
+                &tmp_b.path().join(".ws-state-embed-test").join("embedded"),
+            );
+            let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            b.set_embedder_for_test(Box::new(CountingEmbedder(Arc::clone(&count))), "fake-3d", 3)
+                .unwrap();
+
+            assert_eq!(b.embed_pending_with(&|_, _| false, 100).unwrap(), 2);
+            assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let hits = b
+                .retrieve_files(&params("apple"), &HybridConfig::default())
+                .unwrap();
+            assert!(hits[0].path.ends_with("apple.md"), "{hits:?}");
+        }
+
+        #[test]
+        fn without_a_vector_file_the_policy_decides() {
+            let (_tmp, state) = make_state();
+            state
+                .set_embedder_for_test(Box::new(FakeEmbedder), "fake-3d", 3)
+                .unwrap();
+            let asked = std::sync::Mutex::new(Vec::new());
+            let embedded = state
+                .embed_pending_with(
+                    &|rel: &str, hash: &str| {
+                        asked
+                            .lock()
+                            .unwrap()
+                            .push((rel.to_owned(), hash.to_owned()));
+                        rel == "apple.md"
+                    },
+                    100,
+                )
+                .unwrap();
+            assert_eq!(embedded, 1);
+            assert_eq!(state.db_info().unwrap().pending_count, 1);
+            let mut asked = asked.into_inner().unwrap();
+            asked.sort();
+            assert_eq!(asked[0].0, "apple.md");
+            assert_eq!(
+                asked[0].1,
+                crate::vectors::content_hash(b"apple pie recipe"),
+                "the content address is the hash of the file's bytes"
+            );
+        }
+
+        /// Fails every call, like a bridge whose provider is down.
+        struct BrokenEmbedder;
+        impl Embedder for BrokenEmbedder {
+            fn embed_texts(&self, _: &[&str]) -> sapphire_retrieve::Result<Vec<Vec<f32>>> {
+                Err(sapphire_retrieve::Error::Embed("provider down".into()))
+            }
+        }
+
+        #[tokio::test]
+        async fn an_embed_error_does_not_fail_sync_and_embed() {
+            let (tmp, state) = make_state();
+            state
+                .set_embedder_for_test(Box::new(BrokenEmbedder), "broken", 3)
+                .unwrap();
+            fs::write(tmp.path().join("cherry.md"), "cherry").unwrap();
+
+            let (upserted, _, embedded) = state.sync_and_embed().await.unwrap();
+
+            assert_eq!(upserted, 3);
+            assert_eq!(embedded, 0);
+            assert_eq!(
+                state.db_info().unwrap().pending_count,
+                3,
+                "all stay pending"
+            );
+        }
+    }
+
+    /// Regression for #48:`canonicalize_or_parent` previously returned a path
     /// with a trailing separator for not-yet-existing files, which caused
     /// `std::fs::write` to fail with `EISDIR` when creating a new file.
     #[test]

@@ -7,32 +7,41 @@ pub enum Error {
     #[error(transparent)]
     Workspace(#[from] sapphire_workspace::Error),
 
-    /// The remote sync client failed.
+    /// The IPC layer failed.
     #[error(transparent)]
-    Remote(#[from] sapphire_remote_client::Error),
+    Ipc(#[from] sapphire_ipc::Error),
 
     /// A blocking task panicked or was cancelled.
     #[error("backend task failed: {0}")]
     Join(String),
 
-    /// A push was rejected because the remote holds a newer, conflicting
-    /// version of one or more paths. The local cache keeps the caller's edit;
-    /// the next [`sync`](crate::WorkspaceBackend::sync) pulls the remote
-    /// version and reconciles last-writer-wins.
-    #[error("remote rejected push for {} path(s): {}", .paths.len(), .paths.join(", "))]
-    Conflict {
-        /// The workspace-relative paths the remote rejected.
-        paths: Vec<String>,
-    },
-
     /// The operation is not available on this backend.
     #[error("operation not supported by this backend: {0}")]
     Unsupported(&'static str),
 
-    /// A workspace registry entry or selection was invalid (e.g. both `path`
-    /// and `url` set, neither set, or an unknown workspace id).
+    /// A workspace registry entry or selection was invalid (e.g. an unknown
+    /// workspace id).
     #[error("invalid workspace configuration: {0}")]
     InvalidWorkspace(String),
+
+    /// The current directory is inside another workspace than the one the server serves
+    /// (#215): acting would write where the user is not looking.
+    #[error(
+        "the current directory is inside the workspace {cwd_workspace}, but the server serves \
+         {current}; run `workspace select {cwd_workspace}` to switch"
+    )]
+    OtherWorkspace {
+        /// The workspace the current directory is in.
+        cwd_workspace: std::path::PathBuf,
+        /// The workspace the server serves.
+        current: std::path::PathBuf,
+    },
+
+    /// The server has no workspace yet.
+    #[error(
+        "the server has no workspace yet; run `workspace init <dir>` or `workspace select <dir>`"
+    )]
+    NoWorkspace,
 }
 
 impl From<tokio::task::JoinError> for Error {

@@ -6,7 +6,7 @@ Releases for this repository are automated with [release-plz](https://release-pl
 
 1. When changes are pushed to `main`, release-plz automatically creates or updates a release PR.
 2. Review the release PR (version, `CHANGELOG.md`, `Cargo.toml`).
-3. Merging the PR creates the `v{version}` tag, the GitHub release, publishes to crates.io, and builds CLI binaries for each target platform.
+3. Merging the PR creates the `v{version}` tag, the GitHub release, publishes to crates.io, and builds the `sapphire-bridge` binaries (Linux x86_64 / aarch64, macOS aarch64, Windows x86_64) and attaches them to the release. To (re)upload them for an existing tag, run the "Release sapphire-bridge binaries" workflow manually with that tag.
 
 ## Version bump rules
 

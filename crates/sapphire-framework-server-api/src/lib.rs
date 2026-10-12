@@ -10,7 +10,8 @@
 //!
 //! A server serves one workspace at a time (#215), so no request names one: every
 //! `workspace.*` and `sync.*` method acts on the server's current workspace, which
-//! [`WORKSPACE_SELECT`] and [`WORKSPACE_INIT`] change and [`WORKSPACE_CURRENT`] reports.
+//! [`WORKSPACE_SELECT`] and [`WORKSPACE_INIT`] change, [`WORKSPACE_MOVE`] and
+//! [`WORKSPACE_REMOVE`] relocate or let go of, and [`WORKSPACE_CURRENT`] reports.
 
 #![warn(missing_docs)]
 
@@ -144,6 +145,31 @@ pub const WORKSPACE_INIT: &str = "workspace.init";
 pub const WORKSPACE_SELECT: &str = "workspace.select";
 /// Report the current workspace.
 pub const WORKSPACE_CURRENT: &str = "workspace.current";
+/// Move the current workspace's folder elsewhere on this host, and keep serving it there.
+pub const WORKSPACE_MOVE: &str = "workspace.move";
+/// Stop serving the current workspace, optionally deleting its folder.
+pub const WORKSPACE_REMOVE: &str = "workspace.remove";
+
+/// Parameters of [`WORKSPACE_MOVE`]. The result is the [`CurrentWorkspace`] at its new
+/// root.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WorkspaceMoveParams {
+    /// The new root: absolute, or relative to the server's cwd. It must not exist yet;
+    /// its parent must.
+    pub dir: PathBuf,
+}
+
+/// Parameters of [`WORKSPACE_REMOVE`]. The result is an [`Ack`]; the server has no
+/// workspace afterwards.
+///
+/// Sync stops for this host only: the workspace stays in the workgroup, and other
+/// devices keep their copies.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct WorkspaceRemoveParams {
+    /// Also delete the workspace's folder, every file in it, and its cache.
+    #[serde(default)]
+    pub delete: bool,
+}
 
 /// Parameters of [`WORKSPACE_SELECT`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -433,6 +459,8 @@ mod tests {
             WORKSPACE_INIT,
             WORKSPACE_SELECT,
             WORKSPACE_CURRENT,
+            WORKSPACE_MOVE,
+            WORKSPACE_REMOVE,
         ] {
             assert!(name.starts_with("workspace."), "{name}");
         }

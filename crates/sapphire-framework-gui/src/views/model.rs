@@ -169,6 +169,23 @@ pub fn bring_target(picked: &Path, workspace_name: &str, app_name: &str) -> Path
     }
 }
 
+/// Where "Move…" puts the workspace at `root` when the user picked `picked`: a folder of
+/// the same name inside it, which must not exist yet. The error is the message to show.
+pub fn move_target(picked: &Path, root: &Path) -> Result<PathBuf, String> {
+    let name = root
+        .file_name()
+        .ok_or_else(|| format!("{} cannot be moved", display_path(root).display()))?;
+    let target = picked.join(name);
+    if target.exists() {
+        return Err(format!(
+            "{} already has a {}",
+            display_path(picked).display(),
+            name.to_string_lossy()
+        ));
+    }
+    Ok(target)
+}
+
 /// Whether "New…" may create a workspace in `picked`: it must already be a workspace of
 /// `app_name`, or be empty. The error is the message to show.
 pub fn new_target_ok(picked: &Path, app_name: &str) -> Result<(), String> {
@@ -539,6 +556,16 @@ mod tests {
     fn names_are_trimmed_and_must_not_be_empty() {
         assert_eq!(valid_name("  home "), Some("home".into()));
         assert_eq!(valid_name("   "), None);
+    }
+
+    #[test]
+    fn move_target_keeps_the_name_and_refuses_one_already_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Path::new("/somewhere/Notes");
+        assert_eq!(move_target(tmp.path(), root), Ok(tmp.path().join("Notes")));
+        std::fs::create_dir(tmp.path().join("Notes")).unwrap();
+        let err = move_target(tmp.path(), root).unwrap_err();
+        assert!(err.contains("already has a Notes"), "{err}");
     }
 
     #[test]

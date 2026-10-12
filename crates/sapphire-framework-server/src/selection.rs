@@ -44,13 +44,16 @@ impl SelectionFile {
         SelectionFile { path }
     }
 
-    /// The selection, or `None` when there is none yet.
+    /// The selection, or `None` when there is none yet, or no longer.
     ///
     /// With no file but the list an older server kept beside it, the list's first synced
     /// workspace — else its first one whose marker is still there — is the selection, and
-    /// is written down. An unreadable file is an error: never overwrite what we cannot read.
+    /// is written down. An empty file is [`clear`](Self::clear)'s: no selection, and no
+    /// migration either. An unreadable file is an error: never overwrite what we cannot
+    /// read.
     pub fn load(&self, app_name: &str) -> Result<Option<Selection>> {
         match std::fs::read_to_string(&self.path) {
+            Ok(text) if text.trim().is_empty() => Ok(None),
             Ok(text) => toml::from_str(&text)
                 .map(Some)
                 .map_err(|e| Error::Config(format!("{}: {e}", self.path.display()))),
@@ -73,11 +76,21 @@ impl SelectionFile {
 
     /// Write it, via a sibling temp file and a rename.
     pub fn save(&self, selection: &Selection) -> Result<()> {
+        let text = toml::to_string_pretty(selection)
+            .map_err(|e| Error::Config(format!("{}: {e}", self.path.display())))?;
+        self.write(&text)
+    }
+
+    /// Record that there is no selection. The file stays, empty, rather than going: a
+    /// missing file would migrate an older server's list back in.
+    pub fn clear(&self) -> Result<()> {
+        self.write("")
+    }
+
+    fn write(&self, text: &str) -> Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(Error::Io)?;
         }
-        let text = toml::to_string_pretty(selection)
-            .map_err(|e| Error::Config(format!("{}: {e}", self.path.display())))?;
         let tmp = self.path.with_extension("toml.tmp");
         std::fs::write(&tmp, text).map_err(Error::Io)?;
         std::fs::rename(&tmp, &self.path).map_err(Error::Io)
@@ -179,6 +192,22 @@ mod tests {
         assert_eq!(s.root, PathBuf::from("/x/b"));
         assert!(s.sync);
         assert!(config.join(SELECTION_FILE).is_file(), "written down");
+    }
+
+    #[test]
+    fn a_cleared_selection_stays_cleared_beside_the_old_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join(LEGACY_LIST_FILE),
+            "[workspace.a]\nroot = \"/x/a\"\nsynced = true\n",
+        )
+        .unwrap();
+        let f = file(&tmp);
+        assert!(f.load("app").unwrap().is_some(), "migrated");
+        f.clear().unwrap();
+        assert_eq!(f.load("app").unwrap(), None, "not migrated again");
     }
 
     #[test]

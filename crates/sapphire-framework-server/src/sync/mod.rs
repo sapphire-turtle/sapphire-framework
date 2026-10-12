@@ -272,6 +272,41 @@ impl SyncRuntime {
     /// Stop syncing `root`. Files and the sync id stay, so re-enabling rejoins the same
     /// workspace rather than creating a second one.
     pub async fn disable(&self, root: &Path) -> Result<()> {
+        self.stop(root).await.1
+    }
+
+    /// Stop syncing `root`, like [`disable`](Self::disable), then wait up to `limit` until
+    /// nothing holds its replica store open any more — a session, a scan or an embedding
+    /// pass that started before may still have it. A store about to be moved or deleted
+    /// must be closed first.
+    ///
+    /// Only a store still in use at `limit` is an error. The bridge not hearing of it is
+    /// logged, not returned: the store is closed all the same, and the next registration
+    /// replaces the bridge's view.
+    pub async fn release(&self, root: &Path, limit: std::time::Duration) -> Result<()> {
+        let (replica, unregistered) = self.stop(root).await;
+        if let Err(err) = unregistered {
+            tracing::warn!(root = %root.display(), "stopping sync: {err}");
+        }
+        let Some(replica) = replica else {
+            return Ok(());
+        };
+        let deadline = tokio::time::Instant::now() + limit;
+        while Arc::strong_count(&replica) > 1 {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(Error::Sync(format!(
+                    "the replica of {} is still in use; try again",
+                    root.display()
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok(())
+    }
+
+    /// Stop syncing `root`, handing back its replica — `None` when it was not synced — and
+    /// how telling the bridge went.
+    async fn stop(&self, root: &Path) -> (Option<Arc<Mutex<Replica>>>, Result<()>) {
         // A root that no longer exists cannot be canonicalized, but the keys of `synced` are
         // canonical already, so the path as given (a registry root) still names the entry.
         let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
@@ -286,14 +321,18 @@ impl SyncRuntime {
         if let Some(peers) = self.live.lock().await.remove(&key) {
             peers.drop_connections().await;
         }
-        if let Some(removed) = removed {
+        let Some(removed) = removed else {
+            return (None, Ok(()));
+        };
+        let unregistered = async {
             self.bridge
                 .unregister(removed.workspace_id)
                 .await
                 .map_err(|e| Error::Bridge(e.to_string()))?;
-            self.reregister().await?;
+            self.reregister().await
         }
-        Ok(())
+        .await;
+        (Some(removed.replica), unregistered)
     }
 
     /// The workspaces the workgroup knows about.

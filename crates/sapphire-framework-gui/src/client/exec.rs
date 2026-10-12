@@ -149,6 +149,19 @@ async fn app_command(
                     )
                     .await?;
             }
+            Command::WorkspaceMove { dir } => {
+                let _: proto::CurrentWorkspace = c
+                    .call(proto::WORKSPACE_MOVE, proto::WorkspaceMoveParams { dir })
+                    .await?;
+            }
+            Command::WorkspaceRemove { delete } => {
+                let _: proto::Ack = c
+                    .call(
+                        proto::WORKSPACE_REMOVE,
+                        proto::WorkspaceRemoveParams { delete },
+                    )
+                    .await?;
+            }
             Command::SyncEnable => {
                 let _: proto::SyncEnableResult =
                     c.call(proto::SYNC_ENABLE, serde_json::json!({})).await?;

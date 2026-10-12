@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use grain_id::GrainId;
 use sapphire_backend::protocol as proto;
-use sapphire_backend::{WorkspaceEntry, WorkspaceRegistry};
+use sapphire_backend::{WorkspaceBackend, WorkspaceEntry, WorkspaceRegistry};
 use sapphire_ipc::{Router, RpcError};
 use sapphire_workspace::{AppContext, Workspace};
 use tokio::sync::Mutex as AsyncMutex;
@@ -20,6 +20,9 @@ use crate::handlers::rpc_error;
 use crate::host::WorkspaceHost;
 use crate::selection::{Selection, SelectionFile, slug};
 use crate::sync::{SYNC_ID_FILE, SyncRuntime};
+
+/// How long a move or a delete waits for the workspace's replica store to close.
+const RELEASE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The server's current workspace.
 pub struct Current {
@@ -95,6 +98,141 @@ impl Current {
         let root = runtime.place(selector, dir).await?;
         self.switch(&root, false, false).await?;
         self.enable_sync().await
+    }
+
+    /// Move the current workspace's folder to `dir`, which must not exist yet, and keep
+    /// serving it from there, syncing as before.
+    ///
+    /// The replica's state moves with it, so sync carries on as the same replica rather
+    /// than meeting its own files as strangers. The search index does not — it records
+    /// absolute paths — and is rebuilt in the background.
+    pub async fn relocate(&self, dir: &Path) -> Result<proto::CurrentWorkspace> {
+        {
+            let _one = self.switching.lock().await;
+            let from = self.root().ok_or(Error::NoWorkspace)?;
+            let to = destination(dir)?;
+            if to.starts_with(&from) {
+                return Err(Error::Config(format!(
+                    "cannot move {} into itself",
+                    from.display()
+                )));
+            }
+            // Read before the move: the cache is keyed by the root's path.
+            let from_cache = Workspace::from_root(self.ctx, &from)?.cache_dir();
+            let synced = self.let_go(&from).await?;
+            self.host.close();
+            if let Err(err) = std::fs::rename(&from, &to) {
+                // Back where it was, as it was.
+                self.reopen(&from, synced).await;
+                return Err(match err.kind() {
+                    std::io::ErrorKind::CrossesDevices => Error::Config(format!(
+                        "cannot move {} to another drive ({}); move it there yourself, then open it",
+                        from.display(),
+                        to.display()
+                    )),
+                    _ => Error::Io(std::io::Error::new(
+                        err.kind(),
+                        format!(
+                            "could not move {} to {}: {err}",
+                            from.display(),
+                            to.display()
+                        ),
+                    )),
+                });
+            }
+
+            let workspace = Workspace::from_root(self.ctx, &to)?;
+            carry_cache(&from_cache, &workspace.cache_dir(), &to);
+            if let Err(err) = rebase_registry(&workspace.config_path(), &from, &to) {
+                tracing::warn!(root = %to.display(), "could not update the workspace registry: {err}");
+            }
+            self.reopen(&to, synced).await;
+        }
+        // Outside the switch lock: a reindex walks every file, and a switch must not wait
+        // on it. One that lands first finds this workspace no longer current, and stops.
+        if let Ok(backend) = self.host.backend().await {
+            tokio::spawn(async move {
+                if let Err(err) = backend.sync().await {
+                    tracing::warn!("re-indexing the moved workspace: {err}");
+                }
+            });
+        }
+        self.describe().await.ok_or(Error::NoWorkspace)
+    }
+
+    /// Stop serving the current workspace; with `delete`, delete its folder and its cache
+    /// too. Sync stops for this host only: the workgroup and the other devices keep it.
+    pub async fn remove(&self, delete: bool) -> Result<()> {
+        let _one = self.switching.lock().await;
+        let root = self.root().ok_or(Error::NoWorkspace)?;
+        // Read before anything goes: the cache is keyed by the root's path.
+        let cache = Workspace::from_root(self.ctx, &root)
+            .ok()
+            .map(|w| w.cache_dir());
+        // Stopped first, so the watcher never reports the files going as deletions to
+        // replicate; and, before a delete, closed, so its store can go too.
+        if delete {
+            self.let_go(&root).await?;
+        } else if let Some(runtime) = &self.sync
+            && let Err(err) = runtime.disable(&root).await
+        {
+            tracing::warn!(root = %root.display(), "stopping sync before the removal: {err}");
+        }
+        self.host.close();
+        self.file.clear()?;
+        if delete {
+            match std::fs::remove_dir_all(&root) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(Error::Io(std::io::Error::new(
+                        e.kind(),
+                        format!("could not delete {}: {e}", root.display()),
+                    )));
+                }
+            }
+            if let Some(cache) = cache
+                && let Err(err) = std::fs::remove_dir_all(&cache)
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(cache = %cache.display(), "could not delete the cache: {err}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop syncing `root` and close its replica store, before its folder moves or goes,
+    /// returning whether it was synced. A store still in use is the error, and leaves the
+    /// workspace syncing as before.
+    async fn let_go(&self, root: &Path) -> Result<bool> {
+        let Some(runtime) = &self.sync else {
+            return Ok(false);
+        };
+        if !runtime.roots().await.iter().any(|r| r == root) {
+            return Ok(false);
+        }
+        if let Err(err) = runtime.release(root, RELEASE_LIMIT).await {
+            if let Err(again) = runtime.enable(root).await {
+                tracing::warn!(root = %root.display(), "could not restart sync: {again}");
+            }
+            return Err(err);
+        }
+        Ok(true)
+    }
+
+    /// Open `root` again after [`relocate`](Self::relocate) closed it, and sync it again
+    /// when it was. Failures leave it selected, unopened, the way a restore does.
+    async fn reopen(&self, root: &Path, sync: bool) {
+        if let Err(err) = self.host.select(root, true).await {
+            tracing::warn!(root = %root.display(), "could not reopen the workspace: {err}");
+        }
+        if sync
+            && let Some(runtime) = &self.sync
+            && let Err(err) = runtime.enable(root).await
+        {
+            tracing::warn!(root = %root.display(), "could not restart sync: {err}");
+        }
+        self.remember(root, sync);
     }
 
     /// Start syncing the current workspace, and remember that.
@@ -246,11 +384,101 @@ fn resolve(dir: &Path) -> Result<PathBuf> {
         .map_err(Error::Io)
 }
 
-/// Add `workspace.init`, `workspace.select` and `workspace.current` to `router`.
+/// Where a move to `dir` puts the root: `dir` made absolute, through its parent's
+/// canonical path, since `dir` itself must not exist yet.
+fn destination(dir: &Path) -> Result<PathBuf> {
+    let dir = std::env::current_dir().map_err(Error::Io)?.join(dir);
+    if dir.exists() {
+        return Err(Error::Config(format!(
+            "{} already exists; choose a new folder name",
+            dir.display()
+        )));
+    }
+    let (Some(parent), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(Error::Config(format!(
+            "{} cannot be a workspace root",
+            dir.display()
+        )));
+    };
+    Ok(parent.canonicalize().map_err(Error::Io)?.join(name))
+}
+
+/// Carry a moved workspace's cache from `from` to `to`, its new key: the replica's state,
+/// rebased onto `root`. The rest — the search index, which records absolute paths — is
+/// dropped, to be rebuilt.
+///
+/// Best-effort: a replica that does not come along is a replica that starts over, and
+/// syncing reports why.
+fn carry_cache(from: &Path, to: &Path, root: &Path) {
+    let sync_from = from.join("sync");
+    if sync_from.is_dir() {
+        let sync_to = to.join("sync");
+        let moved =
+            std::fs::create_dir_all(to).and_then(|()| std::fs::rename(&sync_from, &sync_to));
+        match moved {
+            Ok(()) => {
+                let store = sync_to.join("sync.redb");
+                if store.is_file()
+                    && let Err(err) =
+                        sapphire_sync::ReplicaStore::relocate(&store, &root.to_string_lossy())
+                {
+                    tracing::warn!(store = %store.display(), "could not rebase the replica: {err}");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(cache = %from.display(), "could not carry the replica over: {err}");
+            }
+        }
+    }
+    if let Err(err) = std::fs::remove_dir_all(from)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(cache = %from.display(), "could not delete the old cache: {err}");
+    }
+}
+
+/// Point the registry entries naming `from` at `to`, in the marker's `config.toml`.
+fn rebase_registry(config_path: &Path, from: &Path, to: &Path) -> Result<()> {
+    let mut registry = read_registry(config_path)?;
+    let mut changed = false;
+    for entry in registry.0.values_mut() {
+        if entry.path.as_deref() == Some(from) {
+            entry.path = Some(to.to_owned());
+            changed = true;
+        }
+    }
+    if changed {
+        write_registry(config_path, &registry)?;
+    }
+    Ok(())
+}
+
+/// Add `workspace.init`, `workspace.select`, `workspace.current`, `workspace.move` and
+/// `workspace.remove` to `router`.
 pub(crate) fn current_methods(current: Arc<Current>, router: Router) -> Router {
     let init = Arc::clone(&current);
     let select = Arc::clone(&current);
+    let relocate = Arc::clone(&current);
+    let remove = Arc::clone(&current);
     router
+        .method(proto::WORKSPACE_MOVE, move |req| {
+            let current = Arc::clone(&relocate);
+            async move {
+                let p: proto::WorkspaceMoveParams = serde_json::from_value(req.params)
+                    .map_err(|e| RpcError::invalid_params(format!("bad parameters: {e}")))?;
+                let result = current.relocate(&p.dir).await.map_err(|e| rpc_error(&e))?;
+                serde_json::to_value(result).map_err(|e| RpcError::internal(e.to_string()))
+            }
+        })
+        .method(proto::WORKSPACE_REMOVE, move |req| {
+            let current = Arc::clone(&remove);
+            async move {
+                let p: proto::WorkspaceRemoveParams = serde_json::from_value(req.params)
+                    .map_err(|e| RpcError::invalid_params(format!("bad parameters: {e}")))?;
+                current.remove(p.delete).await.map_err(|e| rpc_error(&e))?;
+                serde_json::to_value(proto::Ack {}).map_err(|e| RpcError::internal(e.to_string()))
+            }
+        })
         .method(proto::WORKSPACE_INIT, move |req| {
             let current = Arc::clone(&init);
             async move {

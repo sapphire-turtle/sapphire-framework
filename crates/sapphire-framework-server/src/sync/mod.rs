@@ -156,6 +156,9 @@ pub struct SyncRuntime {
     last_peers: Mutex<Option<PeersResult>>,
     /// How long a dial waits for the bridge to open a stream; [`OPEN_TIMEOUT`] by default.
     open_timeout: std::time::Duration,
+    /// The first dials [`enable`](SyncRuntime::enable) leaves running. Each pins the
+    /// runtime, so [`stop_dials`](SyncRuntime::stop_dials) ends them with the server.
+    first_dials: std::sync::Mutex<tokio::task::JoinSet<()>>,
 }
 
 impl SyncRuntime {
@@ -184,6 +187,7 @@ impl SyncRuntime {
             live: Mutex::new(HashMap::new()),
             last_peers: Mutex::new(None),
             open_timeout: OPEN_TIMEOUT,
+            first_dials: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
     }
 
@@ -278,7 +282,10 @@ impl SyncRuntime {
         // holds a dial up to `open_timeout`, longer than a client waits for `sync.enable`
         // (#228).
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        let mut dials = self.first_dials.lock().expect("first dials");
+        // Reap the finished ones, so the set holds only what is running.
+        while dials.try_join_next().is_some() {}
+        dials.spawn(async move {
             if let Err(err) = runtime.sync_now(&key).await {
                 tracing::warn!(root = %key.display(), "the first session after enabling failed: {err}");
             }
@@ -730,8 +737,10 @@ impl SyncRuntime {
         // dial-both-ways deadlock the loop was cured of, just on a different trigger.
         // Inside a star, a pair with neither hub in it does not link at all.
         let roles = peers.roles_for(workspace_id).cloned();
-        // Every peer at once, so one that is offline costs the others nothing (#228).
-        let mut dials = tokio::task::JoinSet::new();
+        // Every peer at once, so one that is offline costs the others nothing (#228). On
+        // this task, not spawned: cancelling the caller — the server's shutdown aborting the
+        // watcher — must drop every dial with it, since each one pins the runtime.
+        let mut dials: Vec<Dial<'_>> = Vec::new();
         for peer in peers
             .peers
             .iter()
@@ -759,20 +768,19 @@ impl SyncRuntime {
             if !table.begin_dial(peer.device_id).await {
                 continue;
             }
-            let runtime = Arc::clone(self);
-            let key = key.clone();
-            dials.spawn(async move {
+            let key = &key;
+            dials.push(Box::pin(async move {
                 // A peer that does not host this workspace refuses, which is normal and cheap.
-                let result = runtime
-                    .sync_one(&key, &peer.device_id, peer.name.clone(), workspace_id)
+                let result = self
+                    .sync_one(key, &peer.device_id, peer.name.clone(), workspace_id)
                     .await;
                 table.end_dial(peer.device_id).await;
                 if let Err(err) = result {
                     tracing::debug!(peer = %peer.name, "no session: {err}");
                 }
-            });
+            }));
         }
-        while dials.join_next().await.is_some() {}
+        join_all(dials).await;
         Ok(())
     }
 
@@ -961,6 +969,26 @@ impl SyncRuntime {
             Some(peers) => peers.devices().await,
             None => Vec::new(),
         }
+    }
+
+    /// End the first dials [`enable`](SyncRuntime::enable) left running, waiting until
+    /// they are gone.
+    ///
+    /// For the app server's shutdown: each one pins the runtime, and with it the replica
+    /// stores, which are redb databases that stay locked — a dial outliving its server
+    /// would lock the next one out.
+    pub async fn stop_dials(&self) {
+        let mut dials = std::mem::take(&mut *self.first_dials.lock().expect("first dials"));
+        dials.abort_all();
+        while dials.join_next().await.is_some() {}
+    }
+
+    /// Wait for the first dials [`enable`](SyncRuntime::enable) left running to finish on
+    /// their own: for a test that must not race them.
+    #[cfg(test)]
+    async fn settle_dials(&self) {
+        let mut dials = std::mem::take(&mut *self.first_dials.lock().expect("first dials"));
+        while dials.join_next().await.is_some() {}
     }
 
     /// Close every open live session, as if the connections had been cut.
@@ -1353,6 +1381,22 @@ impl SyncRuntime {
     }
 }
 
+/// One dial of [`SyncRuntime::sync_now`].
+type Dial<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
+/// Run `dials` concurrently on the calling task, until every one has finished.
+async fn join_all(mut dials: Vec<Dial<'_>>) {
+    std::future::poll_fn(|cx| {
+        dials.retain_mut(|dial| dial.as_mut().poll(cx).is_pending());
+        if dials.is_empty() {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await
+}
+
 /// The bridge API's copy of how this server was started, for [`RegisterParams`].
 fn wire_managed_by(managed_by: ManagedBy) -> sapphire_bridge_api::ManagedBy {
     match managed_by {
@@ -1463,6 +1507,9 @@ mod tests {
         let f = fixture().await;
         let _hung = f.stub.hang_streams().await;
         f.runtime.enable(&f.root).await.unwrap();
+        // The first dial, with nobody to dial yet, must be over before the peers appear:
+        // one still running would claim them, and `sync_now` would skip them all.
+        f.runtime.settle_dials().await;
         f.stub.set_peers(dialled_peers(f.stub.device_id, 3));
 
         let started = std::time::Instant::now();

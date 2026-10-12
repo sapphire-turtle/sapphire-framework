@@ -50,6 +50,10 @@ pub enum FrameworkCommand {
     /// otherwise. Needs the running bridge.
     #[command(subcommand)]
     ExternalDevice(sapphire_bridge_api::ExternalDeviceCommand),
+    /// Serve this application's tools to an AI agent over MCP on stdin/stdout. Talks to the
+    /// running server, which it does not start; register this command with the agent.
+    #[cfg(feature = "mcp")]
+    Mcp,
 }
 
 impl FrameworkCommand {
@@ -78,6 +82,11 @@ impl FrameworkCommand {
             FrameworkCommand::Embedding(command) => embedding(command, version).await,
             FrameworkCommand::ExternalDevice(command) => {
                 external_device(command, server.app_name(), version).await
+            }
+            #[cfg(feature = "mcp")]
+            FrameworkCommand::Mcp => {
+                server.serve_mcp_stdio(version).await?;
+                Ok(0)
             }
         }
     }
@@ -761,6 +770,16 @@ mod tests {
         assert!(matches!(
             probe.command,
             Command::Framework(FrameworkCommand::Status)
+        ));
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn the_mcp_command_parses_beside_the_apps() {
+        let probe = Probe::try_parse_from(["app", "mcp"]).unwrap();
+        assert!(matches!(
+            probe.command,
+            Command::Framework(FrameworkCommand::Mcp)
         ));
     }
 

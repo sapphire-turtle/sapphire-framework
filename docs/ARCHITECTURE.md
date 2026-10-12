@@ -116,7 +116,8 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
 | `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
 | `sapphire-framework-server-api` | アプリサーバ共通 API の wire 型（`workspace.*` / `sync.*` / `server.info` のメソッド名・引数・結果、`BackendEvent`・`SearchMode`・`FileSearchResult`）。serde と grain-id のみに依存。**単独でバージョン管理**（4.0.0 — メジャー == `API_VERSION`）。各アプリの API crate はこれに依存する |
-| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム） |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（全ルートを external device のトークンで保護）、`mcp` で `mcp` サブコマンドと `/mcp`。設定は `<config dir>/server.toml` |
+| `sapphire-framework-mcp` | アプリ共通の MCP ツール（`ToolContext`・`framework_tools`・`workspace_write_tools`・`FrameworkServer`）と、stdio / Streamable HTTP の両トランスポートで任意のハンドラを提供する `McpService`。ファサード feature `mcp`（`native` には入れない — sapphire-agent は MCP を持たない） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
 | `sapphire-framework-bridge-client` | bridge 制御プレーンの型付きクライアント `BridgeClient` とデータプレーンの `handshake_data`（ipc 上）。framework と同じバージョンで動く |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh）。埋め込みは `EmbedProvider` フック越しに受け取り、この crate 自体は埋め込みコンポーネントに依存しない |
@@ -297,6 +298,42 @@ CLI は `sapphire-bridge`（`serve` / `status` / `service` / `workspace` / `work
 `external-device …`（`add` は既定でそのアプリ）、SyncPanel の External devices 画面。サーバーごとの
 `KeyStore`（生トークンの `keys.toml`）は廃止した。設計は
 `superpowers/specs/2026-10-11-external-devices-design.md`。
+
+### MCP（`sapphire-framework-mcp`）
+
+MCP はフレームワークの基本機能で、アプリはファサード feature `mcp` で有効にする（sapphire-agent
+は使わない）。ツールは**一度だけ**書き、2 つの口から提供する。どちらの口でもツールはサーバの IPC
+メソッド（`workspace.*` / `server.info` / `<app>.*`）を呼ぶだけで、サーバ内部の状態には触れない:
+
+- **stdio（クライアント側）**: アプリの `mcp` サブコマンド（`FrameworkCommand::Mcp`）。エージェントが
+  子プロセスとして起動する。CLI と同じく UDS / named pipe でサーバに問い合わせ、サーバは起動しない。
+  接続は最初のツール呼び出しで張り（`ToolContext::dial`）、サーバ不在はそのツールのエラーとして
+  返す。サーバが再起動したら次の呼び出しで張り直す（書き込みの二重適用を避けるため、呼び出し自体は
+  再送しない）。stdout はプロトコルなので、ログは stderr に出す（#232 — 下記）。
+- **HTTP（サーバ側）**: サーバの HTTP リスナー上の `/mcp`（全アプリ共通のパス）。external device の
+  Bearer トークンを `protect` で確かめる。**既定で無効**で、`<config dir>/server.toml` の
+  `[mcp] http = true` で有効になる（読むのは起動時）。bind 先は `[http] listen`、なければアプリの既定
+  （`AppServer::http_listen`）。ツールはプロセス内チャネル（`Connection::pair`）でサーバ自身の
+  ルーターに IPC 接続する — stdio と同じ経路なので、同じツール実装がそのまま動く。bind に失敗しても
+  サーバは止めず、エラーを記録して IPC と同期を続ける。`[http] allowed_hosts` は rmcp の Host
+  検査（DNS rebinding 対策）に足す名前で、ループバックは常に許可。
+
+フレームワークのツールは CLI の共通語彙から、エージェントに渡してよい読み取り系だけを取る:
+`status` / `workspace_show` / `workspace_search` / `workspace_read_file` / `workspace_list_dir` /
+`workgroup_show` / `device_list`。接続権限やワークスペースの所在を変えるもの（`device invite` /
+`retire`、`external-device`、`workgroup join`、`workspace select` / `move` / `remove`、`service`）は
+人間が CLI で行う。ファイルの書き込み（`workspace_write_file` / `append_file` / `delete_file`）は
+`workspace_write_tools()` として別にし、アプリが選んで足す — journal の front matter のように
+アプリがファイルに不変条件を持つ場合、エージェントにはそれを守るアプリのツールを渡すため。
+
+アプリ独自のツールは rmcp のハンドラとして書き、`ToolContext` を持たせて
+`Self::tool_router() + framework_tools()` で共通ツールを足し、`AppServer::mcp(McpService::new(..))`
+で渡す。何も渡さなければ共通ツールだけの `FrameworkServer` になる。
+
+**コンソールログは stderr**（#232）: 1 アプリ 1 バイナリなので、stdout がプロトコル（stdio MCP、
+将来の stdio ACP）や一度きりの値（`external-device add` のトークン）になるサブコマンドがある。
+`AppContext::init` が設置するコンソール層も bridge のそれも stderr に書く。journald は stderr も
+拾うので、サービス運用は変わらない。
 
 ### 代表デバイスとスター型同期（#182）
 

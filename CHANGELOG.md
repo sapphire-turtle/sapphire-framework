@@ -8,6 +8,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- MCP as a framework feature (facade feature `mcp`, not in `native`). The new `sapphire-framework-mcp` crate holds the tools every app shares — `status`, `workspace_show`, `workspace_search`, `workspace_read_file`, `workspace_list_dir`, `workgroup_show`, `device_list` (read-only), and `workspace_write_tools()` (`workspace_write_file` / `append_file` / `delete_file`) for an app that wants them — written against the server's IPC methods, so one implementation serves both transports: the `mcp` subcommand (`FrameworkCommand::Mcp`, stdio, dialling the running server like the CLI and never starting one) and `/mcp` on the app server's HTTP listener, behind an external device's token. An app adds its own tools with an `rmcp` handler holding a `ToolContext` and hands it over with `AppServer::mcp(McpService::new(..))`; without one it serves the framework's tools alone.
+- `sapphire-framework-server`: `<config dir>/server.toml` (`ServerConfig`) — `[http] listen` / `allowed_hosts` and `[mcp] http`, all off or empty by default. Feature `http` adds the HTTP listener (`AppServer::http_listen`, `AppServer::http` for an app's own routes, all behind `sapphire-framework-keys::protect`); feature `mcp` adds `/mcp` there when `[mcp] http = true`.
+- `sapphire-framework-ipc`: `Client::is_closed`. `sapphire-framework-workspace`: `AppContext::try_config_dir`.
+
+### Fixed
+
+- The console log goes to stderr, not stdout (#232), in apps (`AppContext::init`) and in the bridge. A subcommand whose stdout is a protocol stream (stdio MCP) or a value for a script (`external-device add`'s token) no longer gets log lines mixed in. journald collects stderr as well, so a service's log is unchanged there.
+
 ## [0.15.0] - 2026-10-11
 
 ### Added

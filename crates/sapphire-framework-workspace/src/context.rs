@@ -276,6 +276,12 @@ impl AppContext {
             .map(|p| p.as_path())
             .expect("AppContext config dir not initialised: init() failed for this category or was never called")
     }
+
+    /// Return the app config directory if it has been resolved, and `None`
+    /// while it has not (see [`config_dir`](Self::config_dir)).
+    pub fn try_config_dir(&self) -> Option<&Path> {
+        self.config_dir.get().map(|p| p.as_path())
+    }
 }
 
 #[cfg(test)]

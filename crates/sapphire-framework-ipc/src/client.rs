@@ -250,6 +250,12 @@ impl Client {
     pub fn server(&self) -> &ServerInfo {
         &self.server
     }
+
+    /// Whether the connection has closed: every call from here on fails with
+    /// [`Error::Closed`], and a caller that wants the server again connects anew.
+    pub fn is_closed(&self) -> bool {
+        self.shared.lock().expect("shared mutex").closed
+    }
 }
 
 #[cfg(test)]

@@ -39,11 +39,14 @@ use sapphire_workspace::AppContext;
 const SERVE_GRACE: Duration = Duration::from_secs(2);
 
 mod command;
+mod config;
 mod current;
 mod error;
 mod events;
 mod handlers;
 mod host;
+#[cfg(feature = "http")]
+mod http;
 mod selection;
 pub mod sync;
 #[cfg(test)]
@@ -53,6 +56,7 @@ pub use command::{
     DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
     render_workspace,
 };
+pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig};
 pub use current::Current;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
@@ -60,6 +64,10 @@ pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
 pub use sync::{BackfillTiming, SyncRuntime, SyncStatus, sync_router};
+
+/// The MCP tools an application serves, and how (feature `mcp`).
+#[cfg(feature = "mcp")]
+pub use sapphire_framework_mcp as mcp;
 
 /// An application's server.
 pub struct AppServer {
@@ -76,6 +84,20 @@ pub struct AppServer {
     status_rows: Option<Arc<dyn Fn() -> Vec<StatusRow> + Send + Sync>>,
     /// The version of the application's own API, reported in the handshake.
     app_api: Option<u32>,
+    /// `server.toml`'s settings, when given rather than read from the config directory.
+    config: Option<ServerConfig>,
+    /// Where the HTTP listener binds when `server.toml` does not say.
+    #[cfg(feature = "http")]
+    http_listen: Option<std::net::SocketAddr>,
+    /// The application's own HTTP routes.
+    #[cfg(feature = "http")]
+    http_routes: Option<axum::Router>,
+    /// How the HTTP routes check a token; `None` asks the bridge.
+    #[cfg(feature = "http")]
+    http_auth: Option<sapphire_framework_keys::AuthConfig>,
+    /// The application's MCP handler, for the `mcp` subcommand and `/mcp`.
+    #[cfg(feature = "mcp")]
+    mcp: sapphire_framework_mcp::McpService,
 }
 
 /// The SIGTERM end of the server's select loop, in a shape every platform shares.
@@ -138,6 +160,15 @@ impl AppServer {
             extend: None,
             status_rows: None,
             app_api: None,
+            config: None,
+            #[cfg(feature = "http")]
+            http_listen: None,
+            #[cfg(feature = "http")]
+            http_routes: None,
+            #[cfg(feature = "http")]
+            http_auth: None,
+            #[cfg(feature = "mcp")]
+            mcp: sapphire_framework_mcp::McpService::framework(),
         }
     }
 
@@ -162,6 +193,69 @@ impl AppServer {
     pub fn app_api(mut self, version: u32) -> AppServer {
         self.app_api = Some(version);
         self
+    }
+
+    /// Use `config` rather than reading `<config dir>/server.toml`: for fixtures.
+    pub fn config(mut self, config: ServerConfig) -> AppServer {
+        self.config = Some(config);
+        self
+    }
+
+    /// Where the HTTP listener binds unless `server.toml` says otherwise: the application's
+    /// own port. Without it, a host that serves anything over HTTP names the address in
+    /// `[http] listen`.
+    #[cfg(feature = "http")]
+    pub fn http_listen(mut self, addr: std::net::SocketAddr) -> AppServer {
+        self.http_listen = Some(addr);
+        self
+    }
+
+    /// Serve the application's own HTTP routes on the server's listener, behind the same
+    /// external-device token as `/mcp`. The routes are served whenever they are given;
+    /// `/mcp` only when `server.toml` turns it on.
+    #[cfg(feature = "http")]
+    pub fn http(mut self, routes: axum::Router) -> AppServer {
+        self.http_routes = Some(routes);
+        self
+    }
+
+    /// Check HTTP tokens with `auth` rather than with the bridge: for fixtures.
+    #[cfg(feature = "http")]
+    pub fn http_auth(mut self, auth: sapphire_framework_keys::AuthConfig) -> AppServer {
+        self.http_auth = Some(auth);
+        self
+    }
+
+    /// Answer MCP with the application's own handler, rather than the framework's tools
+    /// alone: on stdio for the `mcp` subcommand, and at `/mcp` when `server.toml` turns it
+    /// on.
+    #[cfg(feature = "mcp")]
+    pub fn mcp(mut self, service: sapphire_framework_mcp::McpService) -> AppServer {
+        self.mcp = service;
+        self
+    }
+
+    /// Serve the application's MCP tools on this process's stdio, until the agent closes
+    /// it: the `mcp` subcommand.
+    ///
+    /// This is the client side: the tools reach the running server over its IPC endpoint,
+    /// as the CLI does, and nothing here starts one.
+    #[cfg(feature = "mcp")]
+    pub async fn serve_mcp_stdio(self, version: &'static str) -> Result<()> {
+        let endpoint = match self.endpoint {
+            Some(e) => e,
+            None => Endpoint::for_app(self.ctx.app_name)?,
+        };
+        let ctx = sapphire_framework_mcp::ToolContext::dial(
+            self.ctx.app_name,
+            version,
+            self.app_api,
+            endpoint,
+        );
+        self.mcp
+            .serve_stdio(ctx)
+            .await
+            .map_err(|e| Error::Mcp(e.to_string()))
     }
 
     /// Keep the selected workspace (`workspace.toml`) at `path` rather than in the
@@ -236,6 +330,15 @@ impl AppServer {
             extend,
             status_rows,
             app_api,
+            config,
+            #[cfg(feature = "http")]
+            http_listen,
+            #[cfg(feature = "http")]
+            http_routes,
+            #[cfg(feature = "http")]
+            http_auth,
+            #[cfg(feature = "mcp")]
+            mcp,
         } = self;
 
         let endpoint = match endpoint {
@@ -258,6 +361,18 @@ impl AppServer {
         // in the file. The subscriber itself was installed by `ctx.init`; this is what
         // routes the file layer at `<data dir>/logs/`.
         let _log = sapphire_workspace::logging::install(ctx)?;
+
+        let config = match config {
+            Some(config) => config,
+            None => ServerConfig::load_for_app(ctx)?,
+        };
+        #[cfg(not(feature = "mcp"))]
+        if config.mcp.http {
+            tracing::warn!(
+                "server.toml turns MCP over HTTP on, but this build of {} has no MCP",
+                ctx.app_name
+            );
+        }
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
 
@@ -336,6 +451,68 @@ impl AppServer {
         #[cfg(windows)]
         let mut listener = sapphire_ipc::bind(&endpoint)?;
 
+        let mut connections = tokio::task::JoinSet::new();
+
+        // The HTTP listener, when anything is served over it. Started once the IPC socket
+        // is bound, for the same reason as the sync tasks below. `/mcp`'s tools reach this
+        // server the way the `mcp` subcommand's do — over IPC — on an in-process connection
+        // served like any other.
+        #[cfg(feature = "http")]
+        let http_stop = tokio_util::sync::CancellationToken::new();
+        #[cfg(feature = "http")]
+        let _http = {
+            let mut routes = http_routes;
+            #[cfg(feature = "mcp")]
+            if config.mcp.http {
+                let (ours, theirs) = sapphire_ipc::Connection::pair();
+                {
+                    let router = Arc::clone(&router);
+                    let info = info.clone();
+                    let app = ctx.app_name;
+                    connections.spawn(async move {
+                        let _ = serve(theirs, router, app, info).await;
+                    });
+                }
+                let client_info = sapphire_ipc::ClientInfo {
+                    kind: sapphire_framework_mcp::CLIENT_KIND.to_owned(),
+                    version: version.to_owned(),
+                    api: proto::API_VERSION,
+                    app_api,
+                    pid: std::process::id(),
+                };
+                let (client, _) =
+                    sapphire_ipc::Client::handshake(ours, ctx.app_name, client_info).await?;
+                let tools = sapphire_framework_mcp::ToolContext::connected(
+                    ctx.app_name,
+                    version,
+                    Arc::new(client),
+                );
+                let mcp_routes =
+                    mcp.http_router(tools, &config.http.allowed_hosts, http_stop.child_token());
+                routes = Some(match routes {
+                    Some(routes) => routes.merge(mcp_routes),
+                    None => mcp_routes,
+                });
+            }
+            match (routes, config.http.listen.or(http_listen)) {
+                (None, _) => None,
+                (Some(_), None) => {
+                    tracing::error!(
+                        "nothing to bind HTTP to: set `[http] listen` in {SERVER_CONFIG_FILE}"
+                    );
+                    None
+                }
+                (Some(routes), Some(addr)) => {
+                    let auth = http_auth.unwrap_or_else(|| {
+                        sapphire_framework_keys::AuthConfig::new(Arc::new(
+                            sapphire_framework_keys::BridgeVerifier::new(ctx.app_name, version),
+                        ))
+                    });
+                    http::start(addr, routes, auth, http_stop.clone()).await
+                }
+            }
+        };
+
         // The watcher, the bridge announcement loop and the dialer, if sync is on. Started
         // only once the socket is bound, so an early `?` above cannot leave tasks running for
         // a server that never served. All three are allowed to fail: only sync stops when
@@ -368,7 +545,6 @@ impl AppServer {
             None => None,
         };
 
-        let mut connections = tokio::task::JoinSet::new();
         loop {
             tokio::select! {
                 changed = stop_rx.changed() => {
@@ -398,6 +574,18 @@ impl AppServer {
 
         if let Some(restoring) = restoring {
             restoring.abort();
+        }
+        // HTTP first: its sessions hold a connection to this server, which the reaping
+        // below waits for.
+        #[cfg(feature = "http")]
+        {
+            http_stop.cancel();
+            if let Some((_, mut task)) = _http
+                && tokio::time::timeout(SERVE_GRACE, &mut task).await.is_err()
+            {
+                tracing::debug!("the HTTP listener did not stop in time");
+                task.abort();
+            }
         }
         if let Some((announcements, watching, dialling)) = _sync_tasks {
             announcements.abort();

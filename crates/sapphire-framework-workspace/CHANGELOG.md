@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.16.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.15.0...v0.16.0) - 2026-10-12
+
+### Other
+
+- deprecate current-directory marker discovery
+
 ## [0.14.0](https://github.com/fluo10/sapphire-framework/compare/v0.13.0...v0.14.0) - 2026-09-08
 
 ### Fixed

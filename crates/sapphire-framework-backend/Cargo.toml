@@ -13,9 +13,9 @@ default = ["redb-store"]
 redb-store = ["sapphire-workspace/redb-store"]
 
 [dependencies]
-sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.15.0", path = "../sapphire-framework-workspace", default-features = false }
-sapphire-server-api = { package = "sapphire-framework-server-api", version = "4.0.0", path = "../sapphire-framework-server-api" }
-sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.15.0", path = "../sapphire-framework-ipc" }
+sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.16.0", path = "../sapphire-framework-workspace", default-features = false }
+sapphire-server-api = { package = "sapphire-framework-server-api", version = "4.1.0", path = "../sapphire-framework-server-api" }
+sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.16.0", path = "../sapphire-framework-ipc" }
 tokio = { workspace = true, features = ["rt", "sync", "macros"] }
 async-trait.workspace = true
 thiserror.workspace = true

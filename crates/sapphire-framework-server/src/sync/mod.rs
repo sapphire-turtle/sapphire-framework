@@ -27,7 +27,7 @@ mod topology;
 mod watch;
 
 pub use id::{SYNC_ID_FILE, WORKSPACE_MAP_FILE, sync_id, sync_id_path};
-pub use live::DIAL_BACKOFF_MAX;
+pub use live::{DIAL_BACKOFF_MAX, OPEN_TIMEOUT};
 pub use methods::sync_router;
 pub use watch::{DEBOUNCE, Watcher};
 
@@ -154,6 +154,8 @@ pub struct SyncRuntime {
     /// The bridge's last answer to `peers`, roles included. The inbound guard and
     /// [`is_primary`](SyncRuntime::is_primary) read it rather than asking again.
     last_peers: Mutex<Option<PeersResult>>,
+    /// How long a dial waits for the bridge to open a stream; [`OPEN_TIMEOUT`] by default.
+    open_timeout: std::time::Duration,
 }
 
 impl SyncRuntime {
@@ -181,7 +183,15 @@ impl SyncRuntime {
             bridge_endpoint: None,
             live: Mutex::new(HashMap::new()),
             last_peers: Mutex::new(None),
+            open_timeout: OPEN_TIMEOUT,
         }
+    }
+
+    /// Give up on opening a stream to a peer after `timeout` rather than [`OPEN_TIMEOUT`]:
+    /// for tests, which cannot wait that long for a peer that never answers.
+    pub fn with_open_timeout(mut self, timeout: std::time::Duration) -> SyncRuntime {
+        self.open_timeout = timeout;
+        self
     }
 
     /// Tell the runtime which app server owns these workspaces' caches.
@@ -263,9 +273,16 @@ impl SyncRuntime {
         // Best-effort: a workspace is enabled whether or not any peer is up, and a failure
         // here is not a failure to enable. A session is symmetric, so dialing is enough —
         // this side sends its own view, and the peer answers with what this side lacks.
-        if let Err(err) = self.sync_now(&key).await {
-            tracing::warn!(root = %key.display(), "the first session after enabling failed: {err}");
-        }
+        //
+        // In the background, so the answer does not wait on it: a peer that is offline
+        // holds a dial up to `open_timeout`, longer than a client waits for `sync.enable`
+        // (#228).
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(err) = runtime.sync_now(&key).await {
+                tracing::warn!(root = %key.display(), "the first session after enabling failed: {err}");
+            }
+        });
         Ok(workspace_id)
     }
 
@@ -713,6 +730,8 @@ impl SyncRuntime {
         // dial-both-ways deadlock the loop was cured of, just on a different trigger.
         // Inside a star, a pair with neither hub in it does not link at all.
         let roles = peers.roles_for(workspace_id).cloned();
+        // Every peer at once, so one that is offline costs the others nothing (#228).
+        let mut dials = tokio::task::JoinSet::new();
         for peer in peers
             .peers
             .iter()
@@ -740,15 +759,20 @@ impl SyncRuntime {
             if !table.begin_dial(peer.device_id).await {
                 continue;
             }
-            // A peer that does not host this workspace refuses, which is normal and cheap.
-            let result = self
-                .sync_one(&key, &peer.device_id, peer.name.clone(), workspace_id)
-                .await;
-            table.end_dial(peer.device_id).await;
-            if let Err(err) = result {
-                tracing::debug!(peer = %peer.name, "no session: {err}");
-            }
+            let runtime = Arc::clone(self);
+            let key = key.clone();
+            dials.spawn(async move {
+                // A peer that does not host this workspace refuses, which is normal and cheap.
+                let result = runtime
+                    .sync_one(&key, &peer.device_id, peer.name.clone(), workspace_id)
+                    .await;
+                table.end_dial(peer.device_id).await;
+                if let Err(err) = result {
+                    tracing::debug!(peer = %peer.name, "no session: {err}");
+                }
+            });
         }
+        while dials.join_next().await.is_some() {}
         Ok(())
     }
 
@@ -765,13 +789,33 @@ impl SyncRuntime {
         name: String,
         workspace_id: GrainId,
     ) -> Result<()> {
-        let stream = self.bridge.open_stream(workspace_id, *device).await?;
+        let stream = self.open_stream(workspace_id, *device).await?;
         self.adopt_live_session(stream, key, *device, workspace_id)
             .await
             .map_err(|err| {
                 tracing::warn!(peer = %name, "a live session could not be started: {err}");
                 err
             })
+    }
+
+    /// Ask the bridge for a stream to `device`, giving up after `open_timeout`.
+    async fn open_stream(
+        &self,
+        workspace_id: GrainId,
+        device: GrainId,
+    ) -> Result<sapphire_ipc::RawStream> {
+        match tokio::time::timeout(
+            self.open_timeout,
+            self.bridge.open_stream(workspace_id, device),
+        )
+        .await
+        {
+            Ok(opened) => Ok(opened?),
+            Err(_) => Err(Error::Bridge(format!(
+                "no stream to {device} within {} s; it may be offline",
+                self.open_timeout.as_secs_f32()
+            ))),
+        }
     }
 
     /// Answer the bridge's announcements until the connection closes.
@@ -1056,7 +1100,7 @@ impl SyncRuntime {
                     if !table.begin_dial(device).await {
                         continue;
                     }
-                    let opened = self.bridge.open_stream(workspace_id, device).await;
+                    let opened = self.open_stream(workspace_id, device).await;
                     if opened.is_err() {
                         table.end_dial(device).await;
                     }
@@ -1378,6 +1422,59 @@ mod tests {
         }
     }
 
+    /// How long the fixture's runtime waits on a stream to a peer.
+    const FIXTURE_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// `n` peers this host dials (a greater device id), as `bridge.peers` lists them.
+    fn dialled_peers(me: GrainId, n: usize) -> Vec<sapphire_bridge_api::PeerInfo> {
+        std::iter::repeat_with(GrainId::random)
+            .filter(|id| *id > me)
+            .take(n)
+            .enumerate()
+            .map(|(i, device_id)| sapphire_bridge_api::PeerInfo {
+                device_id,
+                name: format!("offline-{i}"),
+                node_id: format!("node-{i}"),
+                connected: false,
+                priority: 1,
+                availability: None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn enabling_answers_at_once_with_a_peer_that_never_answers() {
+        // #228: the first dial waited on a peer that was offline, past the client's limit.
+        let f = fixture().await;
+        let _hung = f.stub.hang_streams().await;
+        f.stub.set_peers(dialled_peers(f.stub.device_id, 1));
+
+        let started = std::time::Instant::now();
+        f.runtime.enable(&f.root).await.unwrap();
+        assert!(
+            started.elapsed() < FIXTURE_OPEN_TIMEOUT,
+            "enable waited {:?} on the dial",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peers_that_never_answer_are_dialled_together_and_given_up_on() {
+        let f = fixture().await;
+        let _hung = f.stub.hang_streams().await;
+        f.runtime.enable(&f.root).await.unwrap();
+        f.stub.set_peers(dialled_peers(f.stub.device_id, 3));
+
+        let started = std::time::Instant::now();
+        f.runtime.sync_now(&f.root).await.unwrap();
+        let took = started.elapsed();
+        assert!(took >= FIXTURE_OPEN_TIMEOUT, "gave up early: {took:?}");
+        assert!(
+            took < FIXTURE_OPEN_TIMEOUT * 2,
+            "three dials one after another: {took:?}"
+        );
+    }
+
     async fn fixture() -> Fixture {
         let lock = test_support::lock();
         let tmp = tempfile::tempdir().unwrap();
@@ -1401,13 +1498,11 @@ mod tests {
         std::fs::create_dir_all(root.join(".sapphire-synctest")).unwrap();
         let root = root.canonicalize().unwrap();
 
-        let (stub, client) = StubBridge::start().await;
-        let runtime = Arc::new(SyncRuntime::new(
-            &CTX,
-            client,
-            "/bin/true".into(),
-            ManagedBy::Service,
-        ));
+        let (stub, client) = StubBridge::start_in(tmp.path().join("run")).await;
+        let runtime = Arc::new(
+            SyncRuntime::new(&CTX, client, "/bin/true".into(), ManagedBy::Service)
+                .with_open_timeout(FIXTURE_OPEN_TIMEOUT),
+        );
         Fixture {
             _tmp: tmp,
             _env: env,

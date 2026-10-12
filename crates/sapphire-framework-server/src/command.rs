@@ -85,11 +85,12 @@ impl FrameworkCommand {
 
 /// The `workspace` subcommands (#215: one workspace per server).
 ///
-/// `init`, `select` and `map`'s write go to the app's server over IPC, because the server
-/// owns the marker directories, the sync ids and which workspace it serves; `show` asks the
-/// server for its workspace and then the bridge for the workgroup's ledger; `map`'s
-/// selector resolution is the workgroup's word, so it goes to the bridge first. These are
-/// the only verbs that take a path: everything else acts on the server's workspace.
+/// `init`, `select`, `move`, `remove` and `map`'s write go to the app's server over IPC,
+/// because the server owns the marker directories, the sync ids and which workspace it
+/// serves; `show` asks the server for its workspace and then the bridge for the workgroup's
+/// ledger; `map`'s selector resolution is the workgroup's word, so it goes to the bridge
+/// first. These are the only verbs that take a path: everything else acts on the server's
+/// workspace.
 #[derive(Debug, clap::Subcommand)]
 pub enum WorkspaceCommand {
     /// Create this app's workspace home in the given directory, and switch the server to it.
@@ -107,6 +108,17 @@ pub enum WorkspaceCommand {
     },
     /// Show the server's workspace, then the workgroup's workspaces of this app.
     Show,
+    /// Move the server's workspace folder to a new path on this host, keeping its sync.
+    Move {
+        /// The new root. It must not exist yet; its parent must.
+        dir: PathBuf,
+    },
+    /// Stop serving the server's workspace on this host. Other devices keep their copies.
+    Remove {
+        /// Also delete the workspace's folder and every file in it.
+        #[arg(long)]
+        delete: bool,
+    },
     /// Bring a workspace the workgroup knows to a local directory, and switch to it.
     Map {
         /// The workspace, by name or id, as the workgroup lists it.
@@ -126,6 +138,8 @@ impl WorkspaceCommand {
             WorkspaceCommand::Init { dir, sync } => workspace_init(app, version, dir, sync).await,
             WorkspaceCommand::Select { dir } => workspace_select(app, version, dir).await,
             WorkspaceCommand::Show => workspace_show(app, version).await,
+            WorkspaceCommand::Move { dir } => workspace_move(app, version, dir).await,
+            WorkspaceCommand::Remove { delete } => workspace_remove(app, version, delete).await,
             WorkspaceCommand::Map { selector, dir } => {
                 workspace_map(app, version, &selector, dir).await
             }
@@ -514,6 +528,42 @@ async fn workspace_select(
     Ok(0)
 }
 
+/// `workspace move`: move the server's workspace folder.
+async fn workspace_move(app: &'static str, version: &'static str, dir: PathBuf) -> Result<i32> {
+    let Some(client) = connect_app(app, version).await? else {
+        return Ok(1);
+    };
+    // Resolved here: the server's cwd is not the user's.
+    let dir = std::env::current_dir()?.join(dir);
+    let ws: proto::CurrentWorkspace = client
+        .call(proto::WORKSPACE_MOVE, proto::WorkspaceMoveParams { dir })
+        .await?;
+    println!("{} {}", ws.root.display(), describe_state(&ws));
+    Ok(0)
+}
+
+/// `workspace remove`: let go of the server's workspace, deleting it with `--delete`.
+async fn workspace_remove(app: &'static str, version: &'static str, delete: bool) -> Result<i32> {
+    let Some(client) = connect_app(app, version).await? else {
+        return Ok(1);
+    };
+    let _: proto::Ack = client
+        .call(
+            proto::WORKSPACE_REMOVE,
+            proto::WorkspaceRemoveParams { delete },
+        )
+        .await?;
+    println!(
+        "{}",
+        if delete {
+            "removed and deleted"
+        } else {
+            "removed; the files stay"
+        }
+    );
+    Ok(0)
+}
+
 /// `workspace show`: the server's workspace, then the workgroup's workspaces of this app.
 ///
 /// The workgroup's ledger is the bridge's to answer, and the bridge being down is not the
@@ -734,6 +784,9 @@ mod tests {
             vec!["app", "workspace", "show"],
             vec!["app", "workspace", "select", "papers"],
             vec!["app", "workspace", "map", "papers", "papers-remote"],
+            vec!["app", "workspace", "move", "../papers"],
+            vec!["app", "workspace", "remove"],
+            vec!["app", "workspace", "remove", "--delete"],
             vec![
                 "app",
                 "workgroup",

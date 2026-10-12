@@ -232,6 +232,16 @@ pub enum Command {
         /// The workspace's root.
         dir: PathBuf,
     },
+    /// Move the current workspace's folder to `dir`, which must not exist yet.
+    WorkspaceMove {
+        /// The new root.
+        dir: PathBuf,
+    },
+    /// Stop serving the current workspace on this host; with `delete`, delete its folder.
+    WorkspaceRemove {
+        /// Also delete the folder and every file in it.
+        delete: bool,
+    },
     /// Start syncing the current workspace.
     SyncEnable,
     /// Stop syncing the current workspace.

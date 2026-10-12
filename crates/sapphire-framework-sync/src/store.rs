@@ -95,6 +95,28 @@ impl ReplicaStore {
         Ok(Self { db })
     }
 
+    /// Record that the workspace this store belongs to now lives at `root`: its folder
+    /// was moved. Every state is kept — the store holds workspace-relative paths only —
+    /// so the replica carries on as the same replica rather than starting over.
+    pub fn relocate(path: &Path, root: &str) -> Result<()> {
+        let db = Database::open(path).db()?;
+        let wtx = db.begin_write().db()?;
+        {
+            let mut meta_table = wtx.open_table(META).db()?;
+            let bytes = meta_table
+                .get(META_KEY)
+                .db()?
+                .map(|g| g.value().to_vec())
+                .ok_or_else(|| Error::Corrupt("missing meta record".into()))?;
+            let mut meta: Meta = serde_json::from_slice(&bytes)?;
+            meta.root = root.to_owned();
+            meta_table
+                .insert(META_KEY, serde_json::to_vec(&meta)?.as_slice())
+                .db()?;
+        }
+        wtx.commit().db()
+    }
+
     pub fn meta(&self) -> Result<Meta> {
         let rtx = self.db.begin_read().db()?;
         let table = rtx.open_table(META).db()?;
@@ -207,6 +229,27 @@ mod tests {
         assert_eq!(store.get("b.txt").unwrap(), None);
         assert_eq!(store.all().unwrap(), vec![("a.txt".to_string(), s)]);
         assert!(!store.any_materialized().unwrap());
+    }
+
+    #[test]
+    fn a_relocated_store_opens_at_its_new_root_with_its_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync.redb");
+        let (id, s) = {
+            let store = ReplicaStore::open(&path, "/old").unwrap();
+            let meta = store.meta().unwrap();
+            let s = state(meta.replica_id, "x", true);
+            store.commit(&meta, &[("a.txt".into(), s.clone())]).unwrap();
+            (meta.replica_id, s)
+        };
+        ReplicaStore::relocate(&path, "/new").unwrap();
+        assert!(matches!(
+            ReplicaStore::open(&path, "/old"),
+            Err(Error::RootMismatch { .. })
+        ));
+        let store = ReplicaStore::open(&path, "/new").unwrap();
+        assert_eq!(store.meta().unwrap().replica_id, id);
+        assert_eq!(store.get("a.txt").unwrap(), Some(s));
     }
 
     #[test]

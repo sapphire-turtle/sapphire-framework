@@ -340,3 +340,188 @@ async fn an_older_servers_list_becomes_the_selection() {
     drop(c);
     stop(&CTX_E, &endpoint, task).await;
 }
+
+static CTX_F: AppContext = AppContext::new("sapphire-hostreg-f");
+const VARS_F: [&str; 3] = [
+    "SAPPHIRE_HOSTREG_F_CACHE_DIR",
+    "SAPPHIRE_HOSTREG_F_DATA_DIR",
+    "SAPPHIRE_HOSTREG_F_CONFIG_DIR",
+];
+
+async fn search(c: &Client, query: &str) -> Vec<String> {
+    let result: proto::SearchResult = c
+        .call(
+            proto::SEARCH,
+            proto::SearchParams {
+                query: query.into(),
+                limit: 10,
+                mode: sapphire_backend::SearchMode::Fts,
+            },
+        )
+        .await
+        .unwrap();
+    result.hits.into_iter().map(|h| h.path).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_moved_workspace_keeps_its_files_its_sync_and_its_replica() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_F, VARS_F, tmp.path());
+    std::fs::create_dir_all(tmp.path().join("run")).unwrap();
+    let endpoint = Endpoint::in_dir("sapphire-hostreg-f", tmp.path().join("run"));
+    let (stub, task) = start(&CTX_F, &endpoint).await;
+    let c = client(&CTX_F, &endpoint).await;
+
+    let wrong = tmp.path().join("wrong");
+    std::fs::create_dir_all(&wrong).unwrap();
+    let made = init(&c, wrong).await;
+    let enabled: proto::SyncEnableResult = c
+        .call(proto::SYNC_ENABLE, serde_json::json!({}))
+        .await
+        .unwrap();
+    let _: proto::Ack = c
+        .call(
+            proto::WRITE_FILE,
+            proto::ContentParams {
+                path: PathBuf::from("a.md"),
+                content: "the quick brown fox".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let old_replica = CTX_F
+        .cache_dir_for(&made.root)
+        .join("sync")
+        .join("sync.redb");
+    assert!(old_replica.is_file());
+
+    std::fs::create_dir_all(tmp.path().join("right")).unwrap();
+    let to = tmp.path().join("right").join("notes");
+    let moved: proto::CurrentWorkspace = c
+        .call(
+            proto::WORKSPACE_MOVE,
+            proto::WorkspaceMoveParams { dir: to.clone() },
+        )
+        .await
+        .unwrap();
+    let to = to.canonicalize().unwrap();
+    assert_eq!(moved.root, to);
+    assert!(!made.root.exists(), "the old folder is gone");
+    assert!(moved.reachable);
+    assert!(moved.sync.enabled, "still synced");
+    assert_eq!(moved.workspace_id, Some(enabled.workspace_id));
+    assert!(stub.last_workspaces().contains(&enabled.workspace_id));
+    assert!(
+        !CTX_F.cache_dir_for(&made.root).exists(),
+        "the old cache is gone"
+    );
+    let replica = CTX_F.cache_dir_for(&to).join("sync").join("sync.redb");
+    assert!(replica.is_file(), "the replica came along");
+
+    let read: proto::ReadResult = c
+        .call(
+            proto::READ_FILE,
+            proto::PathParams {
+                path: PathBuf::from("a.md"),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.content, "the quick brown fox");
+    // The index names files by their absolute path, so a stale one names the old root.
+    let moved_file = to.join("a.md").to_string_lossy().into_owned();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while search(&c, "brown").await != [moved_file.clone()] {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the index is rebuilt at the new root: {:?}",
+            search(&c, "brown").await
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Onto an existing folder is refused, and changes nothing.
+    let err = c
+        .call::<_, proto::CurrentWorkspace>(
+            proto::WORKSPACE_MOVE,
+            proto::WorkspaceMoveParams {
+                dir: tmp.path().join("right"),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+    assert_eq!(current(&c).await.unwrap().root, to);
+
+    drop(c);
+    stop(&CTX_F, &endpoint, task).await;
+
+    // A restart comes back to the new root.
+    let (_stub, task) = start(&CTX_F, &endpoint).await;
+    let c = client(&CTX_F, &endpoint).await;
+    assert_eq!(current(&c).await.unwrap().root, to);
+    drop(c);
+    stop(&CTX_F, &endpoint, task).await;
+}
+
+static CTX_G: AppContext = AppContext::new("sapphire-hostreg-g");
+const VARS_G: [&str; 3] = [
+    "SAPPHIRE_HOSTREG_G_CACHE_DIR",
+    "SAPPHIRE_HOSTREG_G_DATA_DIR",
+    "SAPPHIRE_HOSTREG_G_CONFIG_DIR",
+];
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_workspace_is_let_go_and_deleted_only_when_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_G, VARS_G, tmp.path());
+    std::fs::create_dir_all(tmp.path().join("run")).unwrap();
+    let endpoint = Endpoint::in_dir("sapphire-hostreg-g", tmp.path().join("run"));
+    let (stub, task) = start(&CTX_G, &endpoint).await;
+    let c = client(&CTX_G, &endpoint).await;
+
+    let kept = tmp.path().join("kept");
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join("a.md"), "keep me").unwrap();
+    init(&c, kept.clone()).await;
+    let enabled: proto::SyncEnableResult = c
+        .call(proto::SYNC_ENABLE, serde_json::json!({}))
+        .await
+        .unwrap();
+    let _: proto::Ack = c
+        .call(
+            proto::WORKSPACE_REMOVE,
+            proto::WorkspaceRemoveParams { delete: false },
+        )
+        .await
+        .unwrap();
+    assert!(current(&c).await.is_none());
+    assert!(kept.join("a.md").is_file(), "the files stay");
+    assert!(!stub.last_workspaces().contains(&enabled.workspace_id));
+
+    let doomed = tmp.path().join("doomed");
+    std::fs::create_dir_all(&doomed).unwrap();
+    std::fs::write(doomed.join("b.md"), "delete me").unwrap();
+    let made = init(&c, doomed.clone()).await;
+    let _: proto::Ack = c
+        .call(
+            proto::WORKSPACE_REMOVE,
+            proto::WorkspaceRemoveParams { delete: true },
+        )
+        .await
+        .unwrap();
+    assert!(current(&c).await.is_none());
+    assert!(!doomed.exists(), "the folder is deleted");
+    assert!(!CTX_G.cache_dir_for(&made.root).exists(), "and its cache");
+    drop(c);
+    stop(&CTX_G, &endpoint, task).await;
+
+    let (_stub, task) = start(&CTX_G, &endpoint).await;
+    let c = client(&CTX_G, &endpoint).await;
+    assert!(
+        current(&c).await.is_none(),
+        "a restart does not bring it back"
+    );
+    drop(c);
+    stop(&CTX_G, &endpoint, task).await;
+}

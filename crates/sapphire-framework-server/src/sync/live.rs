@@ -18,6 +18,12 @@ use tokio::sync::{Mutex, broadcast};
 /// How often the dialer walks the peers.
 pub const DIAL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How long a dial waits for the bridge to open a stream to a peer.
+///
+/// The bridge waits on iroh's own connect, which against a node that is offline takes far
+/// longer than this; one such peer must not hold up a dial to every other (#228).
+pub const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The longest the dialer stays away from a peer that keeps refusing.
 pub const DIAL_BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 

@@ -439,22 +439,15 @@ fn status_command(spec: &ServiceSpec, env: &Environment) -> Vec<String> {
 
 /// The invoking user's home directory, where a user-level install writes.
 ///
-/// Read from the environment for the platform in hand, so a Windows install looks at
-/// `USERPROFILE` and everything else at `HOME`. A user unit has nowhere to go without it,
-/// which is worth saying rather than guessing a path.
+/// Taken from [`Environment::home`]. A user unit has nowhere to go without it, which is
+/// worth saying rather than guessing a path.
 fn home_dir(env: &Environment) -> Result<PathBuf> {
-    let variable = match env.os {
-        Os::Windows => "USERPROFILE",
-        Os::Linux | Os::MacOs => "HOME",
-    };
-    std::env::var_os(variable)
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            Error::Config(format!(
-                "{variable} is not set; there is nowhere to write a user unit"
-            ))
-        })
+    env.home.clone().ok_or_else(|| {
+        Error::Config(format!(
+            "{} is not set; there is nowhere to write a user unit",
+            env.os.home_variable()
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -474,6 +467,7 @@ mod tests {
         Environment {
             euid: 1000,
             os: Os::Linux,
+            home: Some(PathBuf::from("/home/user")),
         }
     }
 
@@ -481,6 +475,7 @@ mod tests {
         Environment {
             euid: 1000,
             os: Os::MacOs,
+            home: Some(PathBuf::from("/home/user")),
         }
     }
 
@@ -488,6 +483,7 @@ mod tests {
         Environment {
             euid: 1000,
             os: Os::Windows,
+            home: Some(PathBuf::from("/home/user")),
         }
     }
 
@@ -511,6 +507,20 @@ mod tests {
             "{:?}",
             calls.commands
         );
+    }
+
+    #[test]
+    fn an_install_without_a_home_names_the_missing_variable() {
+        for env in [linux(), macos()] {
+            let env = Environment { home: None, ..env };
+            let manager = RecordingManager::default();
+            let err = install(&spec(), &env, &manager).unwrap_err().to_string();
+            assert!(err.contains("HOME"), "{err}");
+            assert!(
+                manager.calls().units.is_empty(),
+                "nothing is written without a home"
+            );
+        }
     }
 
     #[test]

@@ -72,16 +72,42 @@ impl Pending {
     }
 }
 
+/// A watched root, as the caller named it and as the OS may report it.
+///
+/// FSEvents (macOS) reports events under the resolved path: a root under `/var/...`
+/// sees its events arrive as `/private/var/...`. Matching only the name given would
+/// drop every event under a root reached through a symlink, so both forms are kept;
+/// the root is still reported under the name it was given.
+#[derive(Debug)]
+struct Root {
+    path: PathBuf,
+    resolved: PathBuf,
+}
+
+impl Root {
+    fn new(path: &Path) -> Root {
+        Root {
+            path: path.to_owned(),
+            resolved: std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned()),
+        }
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        path.starts_with(&self.path) || path.starts_with(&self.resolved)
+    }
+}
+
 /// Watches workspace roots and reports which one changed.
 pub struct Watcher {
     inner: Mutex<notify::RecommendedWatcher>,
-    roots: Arc<Mutex<Vec<PathBuf>>>,
+    roots: Arc<Mutex<Vec<Root>>>,
 }
 
 impl Watcher {
     /// Start watching `roots`, reporting on `tx`.
     pub fn start(roots: Vec<PathBuf>, tx: mpsc::Sender<PathBuf>) -> Result<Watcher> {
-        let known = Arc::new(Mutex::new(roots.clone()));
+        let known: Arc<Mutex<Vec<Root>>> =
+            Arc::new(Mutex::new(roots.iter().map(|r| Root::new(r)).collect()));
         let pending: Arc<Mutex<Pending>> = Arc::new(Mutex::new(Pending::default()));
 
         // The debounce timer: report a root once it is due (see [`Pending::take_ready`]).
@@ -106,14 +132,14 @@ impl Watcher {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
-                let roots = handler_roots.lock().expect("roots").clone();
+                let roots = handler_roots.lock().expect("roots");
                 for path in event.paths {
                     // Attribute the event to the root it happened under. Nothing is filtered
                     // by path here: what is synced is `SyncFilter`'s decision, made later on
                     // content — the marker directory holds sync-id and config, which sync.
-                    if let Some(root) = roots.iter().find(|r| path.starts_with(r)) {
+                    if let Some(root) = roots.iter().find(|r| r.contains(&path)) {
                         handler_pending.lock().expect("pending").note(
-                            root,
+                            &root.path,
                             &event.kind,
                             Instant::now(),
                         );
@@ -138,7 +164,7 @@ impl Watcher {
 
     /// Start watching one more root.
     pub fn watch(&self, root: &Path) -> Result<()> {
-        self.roots.lock().expect("roots").push(root.to_owned());
+        self.roots.lock().expect("roots").push(Root::new(root));
         self.inner
             .lock()
             .expect("watcher")
@@ -148,7 +174,7 @@ impl Watcher {
 
     /// Stop watching one root.
     pub fn unwatch(&self, root: &Path) {
-        self.roots.lock().expect("roots").retain(|r| r != root);
+        self.roots.lock().expect("roots").retain(|r| r.path != root);
         let _ = self.inner.lock().expect("watcher").unwatch(root);
     }
 }

@@ -39,17 +39,22 @@ jobs:
             cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
           done
 
-  # The Windows named pipe carrier (crates/sapphire-framework-ipc/src/windows.rs) sits
-  # behind `#[cfg(windows)]`, so the job above never compiles it. This job runs that
-  # crate's tests on Windows, where the pipe, the DACL and the SID lookup are real.
+  # The release (release-bridge.yml) ships binaries for four platforms; the job
+  # above covers linux-x86_64, this one covers the other three so a platform-only
+  # break shows up on the pull request instead of in a release run. It also
+  # compiles the `#[cfg(windows)]` / `#[cfg(unix)]` code the Linux job never sees
+  # (e.g. the Windows named pipe carrier in crates/sapphire-framework-ipc).
   #
-  # Scoped to the ipc crate on purpose. The crate's own dependency graph is portable
-  # (serde, tokio, windows-sys, …), so this job needs no extra setup and its signal is
-  # unambiguous. A workspace-wide Windows job is a separate, larger change: other
-  # members pull in fastembed/ort and grain-id (protoc + cmake) and ring/aws-lc-sys
-  # (C toolchain), so widening this job would mean solving their Windows build first.
-  test-windows:
-    runs-on: windows-latest
+  # Kept separate from `test` rather than folded into one matrix: the `main`
+  # ruleset requires a check named `test`, and a matrix would rename it to
+  # `test (<os>)`. Formatting and the facade feature loop are platform
+  # independent, so they stay on Linux only.
+  test-platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
@@ -58,11 +63,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      # Same set as release-bridge.yml, plus what the gui crate needs on Linux.
+      # cmake (aws-lc-sys) is preinstalled on the macOS and Windows runners.
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake libwayland-dev libxkbcommon-dev
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc
 
-      - name: Clippy (ipc)
-        run: cargo clippy -p sapphire-framework-ipc --all-targets --all-features -- -D warnings
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Test (ipc)
-        run: cargo test -p sapphire-framework-ipc --all-features --locked
+      - name: Test
+        run: cargo test --all-features --locked

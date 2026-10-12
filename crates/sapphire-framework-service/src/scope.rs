@@ -1,8 +1,11 @@
 //! What an application wants installed, and the facts about the machine an install needs.
 //!
-//! Every rule here turns on the effective uid and the platform; they arrive bundled in an
+//! Every rule here turns on the effective uid, the platform and the home directory; they
+//! arrive bundled in an
 //! [`Environment`] so all combinations are testable on one machine, and so the rules are
 //! functions of values rather than of the world they run in.
+
+use std::path::PathBuf;
 
 use crate::error::Result;
 
@@ -57,18 +60,26 @@ pub struct Environment {
     pub euid: u32,
     /// The operating system, which decides which file an install writes.
     pub os: Os,
+    /// The invoking user's home directory, where a user-level install writes; `None` when
+    /// the platform's variable for it (see [`Os::home_variable`]) is unset or empty.
+    pub home: Option<PathBuf>,
 }
 
 impl Environment {
-    /// Read this machine's own facts: the effective uid and the platform.
+    /// Read this machine's own facts: the effective uid, the platform and the home
+    /// directory.
     ///
     /// The one place these are read from the world. Every rule in this module turns on the
     /// value this returns, which is exactly why a test builds one itself instead: the rules
     /// are testable because they are functions of values, not of the machine.
     pub fn detect() -> Environment {
+        let os = Os::current();
         Environment {
             euid: effective_uid(),
-            os: Os::current(),
+            os,
+            home: std::env::var_os(os.home_variable())
+                .map(PathBuf::from)
+                .filter(|path| !path.as_os_str().is_empty()),
         }
     }
 }
@@ -110,6 +121,15 @@ impl Os {
             Os::Windows
         } else {
             Os::MacOs
+        }
+    }
+
+    /// The environment variable that names the user's home directory on this platform:
+    /// `USERPROFILE` on Windows, `HOME` everywhere else.
+    pub const fn home_variable(self) -> &'static str {
+        match self {
+            Os::Windows => "USERPROFILE",
+            Os::Linux | Os::MacOs => "HOME",
         }
     }
 }

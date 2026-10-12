@@ -204,11 +204,24 @@ mod tests {
 
     static CTX: AppContext = AppContext::new("sapphire-hosttest");
 
-    /// Point the three context directories at `tmp` while holding the crate-wide env
-    /// lock, restoring the previous values when dropped — including while unwinding.
+    /// A scratch tree with the three context directories pointed into it, held under the
+    /// crate-wide env lock and restoring the previous values when dropped — including while
+    /// unwinding.
+    ///
+    /// The guard owns the tree so it is deleted while the lock is still held: [`CTX`] is
+    /// first-writer-wins, so every later test resolves into the first test's tree, and a
+    /// test that woke on the lock while that tree was still being deleted failed with
+    /// `NotFound` (seen on Windows, where the deletion is slow).
     struct EnvGuard {
         previous: [Option<OsString>; 3],
+        tmp: tempfile::TempDir,
         _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn path(&self) -> &Path {
+            self.tmp.path()
+        }
     }
 
     const DIR_VARS: [&str; 3] = [
@@ -230,18 +243,20 @@ mod tests {
         }
     }
 
-    fn init_ctx(tmp: &Path) -> EnvGuard {
+    fn init_ctx() -> EnvGuard {
         let lock = test_support::lock();
+        let tmp = tempfile::tempdir().unwrap();
         let previous = DIR_VARS.map(std::env::var_os);
         for (name, dir) in DIR_VARS
             .iter()
-            .zip(["cache", "data", "config"].map(|c| tmp.join(c)))
+            .zip(["cache", "data", "config"].map(|c| tmp.path().join(c)))
         {
             test_support::set(name, &dir);
         }
         CTX.init(AppKind::Server);
         EnvGuard {
             previous,
+            tmp,
             _lock: lock,
         }
     }
@@ -254,17 +269,16 @@ mod tests {
 
     #[tokio::test]
     async fn without_a_selection_there_is_no_backend() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _env = init_ctx(tmp.path());
+        let _env = init_ctx();
         let host = WorkspaceHost::new(&CTX);
         assert!(matches!(host.backend().await, Err(Error::NoWorkspace)));
     }
 
     #[tokio::test]
     async fn the_selected_workspace_is_opened_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _env = init_ctx(tmp.path());
-        let root = workspace(tmp.path(), "ws");
+        let env = init_ctx();
+        let tmp = env.path();
+        let root = workspace(tmp, "ws");
         let host = WorkspaceHost::new(&CTX);
         host.select(&root, false).await.unwrap();
         let a = host.backend().await.unwrap();
@@ -275,10 +289,10 @@ mod tests {
 
     #[tokio::test]
     async fn switching_closes_the_old_workspace_and_reselecting_reopens_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _env = init_ctx(tmp.path());
-        let a = workspace(tmp.path(), "a");
-        let b = workspace(tmp.path(), "b");
+        let env = init_ctx();
+        let tmp = env.path();
+        let a = workspace(tmp, "a");
+        let b = workspace(tmp, "b");
         let host = WorkspaceHost::new(&CTX);
         host.select(&a, false).await.unwrap();
         host.backend().await.unwrap();
@@ -292,10 +306,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_directory_without_a_marker_is_refused_and_the_old_one_kept() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _env = init_ctx(tmp.path());
-        let a = workspace(tmp.path(), "a");
-        let plain = tmp.path().join("plain");
+        let env = init_ctx();
+        let tmp = env.path();
+        let a = workspace(tmp, "a");
+        let plain = tmp.join("plain");
         std::fs::create_dir_all(&plain).unwrap();
         let host = WorkspaceHost::new(&CTX);
         host.select(&a, false).await.unwrap();
@@ -308,9 +322,9 @@ mod tests {
     /// another of the same workspace would fail with `Database already open`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_uses_are_serialised() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _env = init_ctx(tmp.path());
-        let root = workspace(tmp.path(), "ws");
+        let env = init_ctx();
+        let tmp = env.path();
+        let root = workspace(tmp, "ws");
         let host = Arc::new(WorkspaceHost::new(&CTX));
         host.select(&root, true).await.unwrap();
         host.close();

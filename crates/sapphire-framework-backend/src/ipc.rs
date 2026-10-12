@@ -112,6 +112,12 @@ impl IpcBackend {
     /// command run from there fails and says how to switch, rather than silently acting
     /// on the server's. Outside any workspace, anything goes. Also fails when the server
     /// has no workspace yet.
+    ///
+    /// Deprecated: the current directory has no bearing on the server's workspace, so
+    /// standing inside another one is no reason to refuse. Use
+    /// [`current`](Self::current) to learn the served workspace.
+    #[deprecated(note = "the current directory no longer matters; use `IpcBackend::current`")]
+    #[allow(deprecated)]
     pub async fn check_cwd(&self, app: &str) -> Result<std::path::PathBuf> {
         let current = self.current().await?.ok_or(crate::Error::NoWorkspace)?;
         let cwd = std::env::current_dir().map_err(sapphire_ipc::Error::Io)?;
@@ -146,6 +152,10 @@ impl IpcBackend {
 ///
 /// Walks up from `cwd` to the nearest `.<app>` marker; the directory holding it is the
 /// workspace `cwd` is in. `None` when there is none, or when it is `current`.
+///
+/// Deprecated with [`IpcBackend::check_cwd`]: the server serves one workspace whatever
+/// the current directory.
+#[deprecated(note = "the current directory no longer matters to the served workspace")]
 pub fn cwd_conflict(app: &str, current: &Path, cwd: &Path) -> Option<PathBuf> {
     let marker = format!(".{app}");
     let found = cwd.ancestors().find(|d| d.join(&marker).is_dir())?;
@@ -270,6 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn the_cwd_conflicts_only_inside_another_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a");

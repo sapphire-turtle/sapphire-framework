@@ -22,12 +22,13 @@ sapphire-workspace = "0.10"
 ### ワークスペースの初期化
 
 ```rust
+use std::path::Path;
 use sapphire_workspace::{AppContext, Workspace};
 
 let ctx = AppContext::new("my-app");
 
-// cwdから上へ辿り、`.my-app`マーカーディレクトリを見つけるまで探索。
-let ws = Workspace::find_with_ctx(ctx, std::env::current_dir()?)?;
+// `.my-app`マーカーディレクトリを持つ既知のルートを開く。
+let ws = Workspace::from_root(ctx, Path::new("/path/to/workspace"))?;
 println!("root: {}", ws.root.display());
 println!("uuid: {}", ws.uuid);
 println!("cache: {}", ws.ctx.cache_dir().display());
@@ -36,11 +37,12 @@ println!("cache: {}", ws.ctx.cache_dir().display());
 ### 開いてインデックス
 
 ```rust
+use std::path::Path;
 use sapphire_workspace::{AppContext, Workspace, WorkspaceState};
 
 let ctx = AppContext::new("my-app");
-let ws = Workspace::find_with_ctx(ctx.clone(), std::env::current_dir()?)?;
-let state = WorkspaceState::open(ws, ctx)?;
+let ws = Workspace::from_root(ctx, Path::new("/path/to/workspace"))?;
+let state = WorkspaceState::open(ws)?;
 
 // すべてのMarkdown / JSON / JSONLファイルをretrieve DBへ増分的に同期。
 let (upserted, removed) = state.sync()?;
@@ -82,9 +84,9 @@ state.write_file(Path::new("notes/hello.md"), "# Hello\n\nworld")?;
 state.delete_file(Path::new("notes/old.md"))?;
 ```
 
-## ワークスペースの検出
+## ワークスペースのマーカー
 
-ワークスペースルートは、マーカーディレクトリが見つかるまでディレクトリツリーを上へ辿ることで検出されます。すべての構築メソッドに`AppContext`を渡して`app_name`を設定すると、マーカーディレクトリとXDGキャッシュがホストアプリケーションの名前空間を使うようになります。スタートアップで一度`init(AppKind::…)`を呼び出すと、キャッシュ／データ／設定ディレクトリをプラットフォームルート以下のper-binary-typeレイアウト`<プラットフォームルート>/<app-name>/<kind>/`（`kind` = `cli`/`server`/`desktop`、first-writer-wins）に解決し、一回限りのディレクトリ移行を適用します：
+ワークスペースルートは`.{app_name}`マーカーディレクトリを持つディレクトリです。サーバーはワークスペースを一つだけ開くため、クライアントがカレントディレクトリからマーカーを探索することはありません（`Workspace::find`／`find_from`は非推奨）。ルートは`Workspace::from_root`で開きます。すべての構築メソッドに`AppContext`を渡して`app_name`を設定すると、マーカーディレクトリとXDGキャッシュがホストアプリケーションの名前空間を使うようになります。スタートアップで一度`init(AppKind::…)`を呼び出すと、キャッシュ／データ／設定ディレクトリをプラットフォームルート以下のper-binary-typeレイアウト`<プラットフォームルート>/<app-name>/<kind>/`（`kind` = `cli`/`server`/`desktop`、first-writer-wins）に解決し、一回限りのディレクトリ移行を適用します：
 
 ```rust
 use sapphire_workspace::{AppContext, AppKind};

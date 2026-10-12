@@ -13,6 +13,8 @@ pub enum Error {
     },
 
     /// Marker directory not found while walking up from `start`.
+    ///
+    /// Only returned by the deprecated `Workspace::find` / `Workspace::find_from`.
     #[error("no '{marker}' directory found in '{start}' or any parent")]
     MarkerNotFound { marker: String, start: PathBuf },
 

@@ -55,7 +55,7 @@
 //!
 //! #[tool_handler]
 //! impl rmcp::ServerHandler for LedgerTools {
-//!     fn get_info(&self) -> rmcp::model::ServerInfo { mcp::server_info(&self.ctx) }
+//!     fn get_info(&self) -> rmcp::model::ServerConfig { mcp::server_info(&self.ctx) }
 //! }
 //!
 //! // Handed to the app server, which serves it on stdio (`mcp`) and at `/mcp`:

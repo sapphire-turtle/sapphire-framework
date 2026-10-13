@@ -3,8 +3,8 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Implementation, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -16,8 +16,8 @@ use crate::tools::framework_tools;
 /// tools, and instructions naming the workspace they act on.
 ///
 /// An application's own handler returns this from `get_info`, or starts from it.
-pub fn server_info(ctx: &ToolContext) -> ServerInfo {
-    ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+pub fn server_info(ctx: &ToolContext) -> ServerConfig {
+    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         .with_server_info(Implementation::new(ctx.app(), ctx.version()))
         .with_instructions(format!(
             "Tools of {app}, a local-first application whose data is a workspace of plain-text \
@@ -51,7 +51,7 @@ impl AsRef<ToolContext> for FrameworkServer {
 }
 
 impl ServerHandler for FrameworkServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         server_info(&self.ctx)
     }
 
@@ -59,7 +59,7 @@ impl ServerHandler for FrameworkServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         self.tools
             .call(ToolCallContext::new(self, request, context))
             .await
@@ -70,11 +70,7 @@ impl ServerHandler for FrameworkServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult {
-            tools: self.tools.list_all(),
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(self.tools.list_all()))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {

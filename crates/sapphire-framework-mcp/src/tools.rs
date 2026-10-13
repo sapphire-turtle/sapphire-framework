@@ -323,9 +323,10 @@ where
                 Ok(args) => handler(ctx, args).await,
                 Err(err) => Err(Error::Arguments(err)),
             };
-            Ok::<_, ErrorData>(outcome.unwrap_or_else(|err| {
+            let result = outcome.unwrap_or_else(|err| {
                 CallToolResult::error(vec![ContentBlock::text(err.to_string())])
-            }))
+            });
+            Ok::<_, ErrorData>(result.into())
         })
     })
 }

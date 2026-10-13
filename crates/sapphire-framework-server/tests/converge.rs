@@ -144,11 +144,7 @@ async fn a_host_that_was_offline_catches_up_when_it_returns() {
 
     // B comes back with the same directories.
     let b = b.restart(&net).await;
-    let _: proto::SyncEnableResult = b
-        .client
-        .call(proto::SYNC_ENABLE, serde_json::json!({}))
-        .await
-        .unwrap();
+    common::enable_sync_after_restart(&b).await;
 
     assert_eq!(
         await_file(&b, "while-away.md").await,

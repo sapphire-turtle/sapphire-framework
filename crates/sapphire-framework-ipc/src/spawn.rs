@@ -2,7 +2,8 @@
 //!
 //! This crate no longer starts anything: an app server is started by `serve` in a
 //! terminal or by the OS service manager, and the CLI merely finds it. A socket with
-//! nobody behind it is a corpse, not a task — [`probe`] clears it.
+//! nobody behind it is a corpse, not a task — [`probe`] reports nothing listening, and the
+//! next server's `bind` clears it.
 
 use crate::client::Client;
 use crate::conn::Connection;
@@ -44,7 +45,8 @@ pub async fn connect_raw(endpoint: &Endpoint) -> Result<RawStream> {
     }
 }
 
-/// Is a server listening on `endpoint`? Clears a stale Unix socket file as a side effect.
+/// Is a server listening on `endpoint`? Never removes anything: a dead server's Unix socket
+/// file is cleared by the next `bind` (#235).
 pub async fn probe(endpoint: &Endpoint) -> Result<bool> {
     #[cfg(unix)]
     {
@@ -58,8 +60,8 @@ pub async fn probe(endpoint: &Endpoint) -> Result<bool> {
 
 /// Handshake with the server on `endpoint`, or report that nothing is there.
 ///
-/// `Ok(None)` covers both "nothing is listening" and "a corpse socket": `probe` has
-/// already cleared the latter. A server of a different API version is an error, not a
+/// `Ok(None)` covers both "nothing is listening" and "a corpse socket", which the next
+/// server's `bind` clears. A server of a different API version is an error, not a
 /// replacement — start-on-demand retired spawned servers by re-exec, and this crate no
 /// longer starts anything. It is reported as [`Error::ApiVersionMismatch`]: the caller
 /// upgrades and restarts the service, and no client fixes it. A different crate version

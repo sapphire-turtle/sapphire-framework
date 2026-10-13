@@ -145,13 +145,16 @@ pub async fn start_with_net(
             .data_endpoint(data),
     );
     let shared = Arc::clone(&bridge);
-    tokio::spawn(async move {
-        let _ = shared.run_shared(config).await;
-    });
+    let running = tokio::spawn(async move { shared.run_shared(config).await });
 
-    // Wait for the control endpoint to come up.
+    // Wait for the control endpoint to come up. A bridge that stopped instead says why.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !sapphire_ipc::probe(&control).await.unwrap_or(false) {
+        assert!(
+            !running.is_finished(),
+            "the bridge stopped before it listened: {:?}",
+            running.await
+        );
         assert!(
             std::time::Instant::now() < deadline,
             "the bridge never started"

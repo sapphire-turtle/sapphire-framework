@@ -593,8 +593,10 @@ impl AppServer {
             dialling.abort();
         }
         if let Some(runtime) = &sync {
-            // The first dials after an enable pin the runtime the same way.
+            // The first dials after an enable pin the runtime the same way, and so do the
+            // inbound sessions, the live-session readers and the embedding passes.
             runtime.stop_dials().await;
+            runtime.stop_background().await;
             // Close every live sync session. A session's reader task holds the replica, and
             // the session itself sits in the runtime's table until it is cleared, so leaving
             // one open pins the runtime — and the redb replica stores in it — after the

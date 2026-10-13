@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- A server could become unreachable for good if a client probed its endpoint while it was starting (#235). Binding a Unix socket creates its file before the socket listens; `probe` read that brief "file, but refused" state as a dead server's leftover and unlinked the file, and the server then listened on a path nobody could reach — seen as "never started listening" in CI, mostly on macOS. `sapphire-framework-ipc`'s `bind` now binds under a private staging name and hard-links the listening socket into place, so the path appears only once it accepts connections; a second server for a served endpoint still gets "address in use".
+- Stopping an app server now ends the sync runtime's background work — inbound sessions, live-session readers and embedding passes — and waits for it (`SyncRuntime::stop_background`), so a server restarted in the same process opens its replica stores at once instead of hitting "Database already open" until the last straggler finished.
+
 ## [0.18.0] - 2026-10-13
 
 ### Added

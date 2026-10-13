@@ -70,16 +70,54 @@ impl Drop for UnixListenerHandle {
 }
 
 /// Listen on `endpoint`, first removing a socket file left behind by a dead server.
+///
+/// The socket file appears at its path only once the socket accepts connections (#235).
+/// Binding creates the file before the socket listens, and a connect in between is refused;
+/// [`probe`] reads exactly that — a file nobody answers on — as a dead server's leftover and
+/// unlinks it, and a server that then starts listening would do so on a path nobody can
+/// reach. So the socket is bound under a private staging name, and only then linked to its
+/// real path. The link fails if the path exists, so a second server racing for the same
+/// endpoint still gets "address in use" and never replaces a live socket.
 pub async fn bind(endpoint: &Endpoint) -> Result<UnixListenerHandle> {
     ensure_private_dir(&endpoint.dir)?;
     let path = endpoint.socket_path();
-    if path.exists() {
-        // Either nothing is listening (stale) or another server is. `probe` unlinks the
-        // former; the latter makes the bind below fail with EADDRINUSE, which is correct.
-        probe(endpoint).await?;
+    if path.exists() && probe(endpoint).await? {
+        // Another server is listening: `probe` only unlinks a file nobody answers on.
+        return Err(address_in_use(&path));
     }
-    let listener = UnixListener::bind(&path)?;
-    Ok(UnixListenerHandle { listener, path })
+
+    let staging = staging_path(endpoint);
+    // A leftover of a bind that died between binding and linking: never anyone's live name.
+    let _ = std::fs::remove_file(&staging);
+    let listener = UnixListener::bind(&staging)?;
+    let linked = std::fs::hard_link(&staging, &path);
+    // The staging name has served its purpose either way; the socket lives on under `path`.
+    let _ = std::fs::remove_file(&staging);
+    match linked {
+        Ok(()) => Ok(UnixListenerHandle { listener, path }),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(address_in_use(&path)),
+        Err(err) => Err(Error::Io(err)),
+    }
+}
+
+/// A name for binding `endpoint` before it is published, unique within this process.
+///
+/// Beside the real path, so the link stays on one file system, and short: a Unix socket
+/// path is limited to about a hundred bytes.
+fn staging_path(endpoint: &Endpoint) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    endpoint
+        .dir
+        .join(format!(".{}.{}.{n}", endpoint.name, std::process::id()))
+}
+
+/// The error a second server gets for an endpoint that is already served.
+fn address_in_use(path: &Path) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::AddrInUse,
+        format!("{} is already being served", path.display()),
+    ))
 }
 
 /// Connect to `endpoint`.

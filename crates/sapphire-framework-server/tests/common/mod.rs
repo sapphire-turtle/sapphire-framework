@@ -234,10 +234,8 @@ async fn build(
         .enable_all()
         .build()
         .expect("a runtime for the bridge");
-    bridge_runtime.spawn(async move {
-        let _ = bridge.run().await;
-    });
-    wait_until_listening(&control, "the bridge").await;
+    let mut bridge_task = bridge_runtime.spawn(async move { bridge.run().await });
+    wait_until_listening(&control, "the bridge", &mut bridge_task).await;
 
     // The app server's connection to its own bridge. Built explicitly rather than through
     // `BridgeClient::connect`, which would look the bridge up in the process environment —
@@ -280,8 +278,8 @@ async fn build(
         .endpoint(endpoint.clone())
         .selection_file(tmp.path().join("workspace.toml"))
         .sync(Arc::clone(&runtime));
-    let server_task = tokio::spawn(async move { server.run().await });
-    wait_until_listening(&endpoint, "the app server").await;
+    let mut server_task = tokio::spawn(async move { server.run().await });
+    wait_until_listening(&endpoint, "the app server", &mut server_task).await;
 
     let (client, _) = connect_or_absent(&endpoint, ctx.app_name, client_info("cli"))
         .await
@@ -534,10 +532,20 @@ async fn wait_until_not_listening(endpoint: &Endpoint) {
     }
 }
 
-/// Wait until something listens on `endpoint`, polling rather than sleeping.
-async fn wait_until_listening(endpoint: &Endpoint, what: &str) {
+/// Wait until `task` listens on `endpoint`, polling rather than sleeping.
+///
+/// A task that stopped instead fails the wait with its own result, so a startup error is
+/// reported as itself rather than as a timeout.
+async fn wait_until_listening<T: std::fmt::Debug>(
+    endpoint: &Endpoint,
+    what: &str,
+    task: &mut tokio::task::JoinHandle<T>,
+) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !sapphire_ipc::probe(endpoint).await.unwrap_or(false) {
+        if task.is_finished() {
+            panic!("{what} stopped before it listened: {:?}", task.await);
+        }
         assert!(Instant::now() < deadline, "{what} never started listening");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }

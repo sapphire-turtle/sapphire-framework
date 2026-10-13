@@ -159,6 +159,11 @@ pub struct SyncRuntime {
     /// The first dials [`enable`](SyncRuntime::enable) leaves running. Each pins the
     /// runtime, so [`stop_dials`](SyncRuntime::stop_dials) ends them with the server.
     first_dials: std::sync::Mutex<tokio::task::JoinSet<()>>,
+    /// The rest of the runtime's background work: inbound sessions, the readers of live
+    /// sessions, and embedding passes. Each pins the runtime — and through it the replica
+    /// stores, which are redb databases locked until the last pin drops — so
+    /// [`stop_background`](SyncRuntime::stop_background) ends them with the server (#235).
+    background: std::sync::Mutex<tokio::task::JoinSet<()>>,
 }
 
 impl SyncRuntime {
@@ -188,7 +193,16 @@ impl SyncRuntime {
             last_peers: Mutex::new(None),
             open_timeout: OPEN_TIMEOUT,
             first_dials: std::sync::Mutex::new(tokio::task::JoinSet::new()),
+            background: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
+    }
+
+    /// Run `task` in the background, tracked so the server's shutdown ends it.
+    fn spawn_background(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut background = self.background.lock().expect("background tasks");
+        // Reap the finished ones, so the set holds only what is running.
+        while background.try_join_next().is_some() {}
+        background.spawn(task);
     }
 
     /// Give up on opening a stream to a peer after `timeout` rather than [`OPEN_TIMEOUT`]:
@@ -642,7 +656,7 @@ impl SyncRuntime {
             return;
         };
         let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        self.spawn_background(async move {
             if !runtime.embed_wanted.lock().await.insert(key.clone()) {
                 return;
             }
@@ -901,7 +915,7 @@ impl SyncRuntime {
             let workspace_id = announcement.workspace_id;
             let peer = announcement.peer_device_id;
             let driver = Arc::clone(&self);
-            tokio::spawn(async move {
+            self.spawn_background(async move {
                 let stream = match bridge.accept_stream(announcement.ticket).await {
                     Ok(stream) => stream,
                     Err(err) => {
@@ -1020,6 +1034,20 @@ impl SyncRuntime {
         let mut dials = std::mem::take(&mut *self.first_dials.lock().expect("first dials"));
         dials.abort_all();
         while dials.join_next().await.is_some() {}
+    }
+
+    /// End the runtime's background work — inbound sessions, live-session readers and
+    /// embedding passes — and wait until it has let go.
+    ///
+    /// The server's shutdown calls this, so a server restarted in the same process can open
+    /// the replica stores again at once rather than whenever the last straggler finished
+    /// (#235). An embedding pass already inside its blocking section runs that section to
+    /// the end; it holds the workspace's index, never a replica.
+    pub async fn stop_background(&self) {
+        let mut background =
+            std::mem::take(&mut *self.background.lock().expect("background tasks"));
+        background.abort_all();
+        while background.join_next().await.is_some() {}
     }
 
     /// Wait for the first dials [`enable`](SyncRuntime::enable) left running to finish on
@@ -1261,7 +1289,7 @@ impl SyncRuntime {
         from: GrainId,
     ) {
         let driver = Arc::clone(self);
-        tokio::spawn(async move {
+        self.spawn_background(async move {
             loop {
                 match updates.recv().await {
                     Ok(batch) => {

@@ -91,6 +91,11 @@ version_group = "framework"
 name = "sapphire-framework-service"
 version_group = "framework"
 
+# 共通 MCP ツール（stdio と HTTP /mcp）。ファサードが `mcp` feature で optional 参照する。
+[[package]]
+name = "sapphire-framework-mcp"
+version_group = "framework"
+
 [[package]]
 name = "sapphire-framework-keys"
 version_group = "framework"

@@ -72,6 +72,10 @@ pub enum Error {
     #[error("{0}")]
     Config(String),
 
+    /// The MCP session on stdio could not start or ended abnormally.
+    #[error("{0}")]
+    Mcp(String),
+
     /// Installing, removing or reporting this application's service failed.
     ///
     /// Carries the service crate's own message, which already says what to do about the

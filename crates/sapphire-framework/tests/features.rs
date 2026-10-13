@@ -28,6 +28,7 @@ fn every_module_feature_has_a_matching_optional_dependency() {
         "registry",
         "backend",
         "gui",
+        "mcp",
     ] {
         assert!(
             manifest.contains(&format!("sapphire-framework-{feature} =")),

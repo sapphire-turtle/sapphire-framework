@@ -14,6 +14,13 @@
 //!
 //! This is the same shape the bridge's own `logging` module has always had, lifted onto
 //! the shared foundation so every app server gets it for free.
+//!
+//! The console layer writes to **stderr**, never stdout (#232). One binary carries every
+//! subcommand of an app, and several of them own their stdout: a protocol spoken over
+//! stdio (JSON-RPC to an agent, say), or a value printed once for a script to capture (a
+//! token from `external-device add`). A log line there corrupts the stream or the value.
+//! journald and the other service managers collect stderr just as they collect stdout, so a
+//! service-managed server's log reaches the journal all the same.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -154,9 +161,10 @@ fn build_subscriber(app_name: &'static str) -> Wire {
 
     // The console layer is built here rather than left to the caller: this subscriber is
     // the one the process prints through, and a server run must not lose the console
-    // output journald would otherwise show.
+    // output journald would otherwise show. Stderr, so a subcommand whose stdout is a
+    // protocol stream or a captured value keeps it clean (see the module docs).
     let console = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stdout)
+        .with_writer(std::io::stderr)
         .with_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new(default_log_filter(app_name))),

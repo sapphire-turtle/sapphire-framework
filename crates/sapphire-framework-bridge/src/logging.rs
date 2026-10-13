@@ -122,9 +122,10 @@ fn build_subscriber() -> Wire {
 
     // The console layer is rebuilt here rather than left to the caller: this subscriber is
     // the one the process prints through, and a bridge run must not lose the console output
-    // it would have had.
+    // it would have had. Stderr, as an app's console layer: `external-device add` prints its
+    // token on stdout for a script to capture, and a log line must not land beside it.
     let console = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stdout)
+        .with_writer(std::io::stderr)
         .with_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| DEFAULT_LOG_FILTER.into()),

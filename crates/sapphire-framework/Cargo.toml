@@ -32,6 +32,12 @@ backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
+# The app server's HTTP listener (`AppServer::http`), every route behind an external device's token.
+http = ["server", "sapphire-framework-server/http"]
+# MCP: the shared tools, the `mcp` subcommand (stdio, through the server's IPC endpoint) and
+# `/mcp` on the HTTP listener when the server's config turns it on. Not in `native`: an app
+# opts in (sapphire-agent does not).
+mcp = ["http", "sapphire-framework-server/mcp", "dep:sapphire-framework-mcp"]
 
 # Everything usable on a native host.
 native = ["workspace", "backend", "server", "bridge", "registry", "service"]
@@ -57,3 +63,4 @@ sapphire-framework-backend = { version = "0.16.0", path = "../sapphire-framework
 sapphire-framework-gui = { version = "0.16.0", path = "../sapphire-framework-gui", optional = true }
 sapphire-framework-keys = { version = "0.16.0", path = "../sapphire-framework-keys", optional = true }
 sapphire-framework-service = { version = "0.16.0", path = "../sapphire-framework-service", optional = true }
+sapphire-framework-mcp = { version = "0.16.0", path = "../sapphire-framework-mcp", optional = true }

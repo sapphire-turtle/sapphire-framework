@@ -1,0 +1,26 @@
+[package]
+name = "sapphire-framework-mcp"
+version.workspace = true
+edition.workspace = true
+description = "MCP tools shared by sapphire-framework apps, served over stdio by the CLI and over HTTP by the app server"
+license.workspace = true
+repository.workspace = true
+keywords = ["mcp", "ai", "agent", "local-first"]
+categories = ["asynchronous"]
+
+[dependencies]
+sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version = "0.16.0", path = "../sapphire-framework-bridge-client" }
+sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.16.0", path = "../sapphire-framework-ipc" }
+sapphire-server-api = { package = "sapphire-framework-server-api", version = "4.1.0", path = "../sapphire-framework-server-api" }
+axum.workspace = true
+rmcp = { workspace = true, features = ["server", "transport-io", "transport-streamable-http-server"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tokio-util = { version = "0.7", default-features = false }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

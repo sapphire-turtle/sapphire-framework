@@ -1,0 +1,21 @@
+[package]
+name = "sapphire-framework-frontmatter"
+version.workspace = true
+edition.workspace = true
+description = "YAML front matter for Markdown files: split, parse, render, and edit one key in place"
+license.workspace = true
+repository.workspace = true
+keywords = ["markdown", "frontmatter", "yaml", "serde"]
+categories = ["parser-implementations", "text-processing"]
+
+[dependencies]
+serde.workspace = true
+serde-saphyr = "1.3"
+# Front matter is written by hand: keep its keys in the order they were written, nested
+# maps included.
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+indexmap.workspace = true

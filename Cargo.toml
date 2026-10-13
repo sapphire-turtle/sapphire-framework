@@ -13,6 +13,7 @@ members = [
     "crates/sapphire-framework-server-api",
     "crates/sapphire-framework-server",
     "crates/sapphire-framework-mcp",
+    "crates/sapphire-framework-frontmatter",
     "crates/sapphire-framework-service",
     "crates/sapphire-framework-retrieve",
     "crates/sapphire-framework-workspace",

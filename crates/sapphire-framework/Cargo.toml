@@ -38,6 +38,8 @@ http = ["server", "sapphire-framework-server/http"]
 # `/mcp` on the HTTP listener when the server's config turns it on. Not in `native`: an app
 # opts in (sapphire-agent does not).
 mcp = ["http", "sapphire-framework-server/mcp", "dep:sapphire-framework-mcp"]
+# YAML front matter for Markdown files (split, parse, render, edit one key in place).
+frontmatter = ["dep:sapphire-framework-frontmatter"]
 
 # Everything usable on a native host.
 native = ["workspace", "backend", "server", "bridge", "registry", "service"]
@@ -64,3 +66,4 @@ sapphire-framework-gui = { version = "0.17.0", path = "../sapphire-framework-gui
 sapphire-framework-keys = { version = "0.17.0", path = "../sapphire-framework-keys", optional = true }
 sapphire-framework-service = { version = "0.17.0", path = "../sapphire-framework-service", optional = true }
 sapphire-framework-mcp = { version = "0.17.0", path = "../sapphire-framework-mcp", optional = true }
+sapphire-framework-frontmatter = { version = "0.17.0", path = "../sapphire-framework-frontmatter", optional = true }

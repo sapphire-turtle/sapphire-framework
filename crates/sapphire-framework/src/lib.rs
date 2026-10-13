@@ -37,6 +37,7 @@
 //! | `gui` | [`gui`] | `sapphire-framework-gui` |
 //! | `service` | [`service`] | `sapphire-framework-service` |
 //! | `http` | — | the app server's HTTP listener (`AppServer::http`) |
+//! | `frontmatter` | [`frontmatter`] | `sapphire-framework-frontmatter` |
 //! | `mcp` | [`mcp`] | `sapphire-framework-mcp`, plus the `mcp` subcommand and `/mcp` on the app server |
 
 #[cfg(feature = "workspace")]
@@ -90,6 +91,9 @@ pub use sapphire_framework_service as service;
 
 #[cfg(feature = "mcp")]
 pub use sapphire_framework_mcp as mcp;
+
+#[cfg(feature = "frontmatter")]
+pub use sapphire_framework_frontmatter as frontmatter;
 
 /// Commonly-used types, re-exported for `use sapphire_framework::prelude::*;`.
 ///

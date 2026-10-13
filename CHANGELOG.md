@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- `rmcp` 2 (from 1.8). `sapphire-framework-mcp` re-exports it, so an application with its own MCP handler moves to rmcp 2 as well; in tool code, `rmcp::model::Content` is now `ContentBlock`.
+
 ## [0.17.0] - 2026-10-13
 
 ### Added

@@ -20,7 +20,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::common::{schema_for_empty_input, schema_for_type};
 use rmcp::handler::server::router::tool::{ToolRoute, ToolRouter};
 use rmcp::handler::server::tool::ToolCallContext;
-use rmcp::model::{CallToolResult, Content, JsonObject, Tool, ToolAnnotations};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool, ToolAnnotations};
 use sapphire_server_api as proto;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -101,7 +101,9 @@ where
                 let result: proto::ReadResult = ctx
                     .call(proto::READ_FILE, proto::PathParams { path: args.path })
                     .await?;
-                Ok(CallToolResult::success(vec![Content::text(result.content)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(
+                    result.content,
+                )]))
             },
         ))
         .with_route(route::<S, ListDirArgs, _, _>(
@@ -321,25 +323,23 @@ where
                 Ok(args) => handler(ctx, args).await,
                 Err(err) => Err(Error::Arguments(err)),
             };
-            Ok::<_, ErrorData>(
-                outcome.unwrap_or_else(|err| {
-                    CallToolResult::error(vec![Content::text(err.to_string())])
-                }),
-            )
+            Ok::<_, ErrorData>(outcome.unwrap_or_else(|err| {
+                CallToolResult::error(vec![ContentBlock::text(err.to_string())])
+            }))
         })
     })
 }
 
 /// A result carrying `value` as pretty-printed JSON.
 fn json(value: &impl serde::Serialize) -> Result<CallToolResult> {
-    Ok(CallToolResult::success(vec![Content::text(
+    Ok(CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string_pretty(value)?,
     )]))
 }
 
 /// A result carrying one line of text.
 fn done(text: String) -> Result<CallToolResult> {
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 #[cfg(test)]

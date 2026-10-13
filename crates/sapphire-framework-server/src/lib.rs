@@ -54,7 +54,7 @@ mod test_support;
 
 pub use command::{
     DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
-    render_workspace,
+    WorkspaceSyncCommand, render_workspace,
 };
 pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig};
 pub use current::Current;

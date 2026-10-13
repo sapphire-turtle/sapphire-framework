@@ -230,7 +230,9 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
 `sync`）。クライアント（CLI・GUI・MCP/ACP）はワークスペースを指定しない — `workspace.*` /
 `sync.*` は常に現在のワークスペースに対して働く。切り替えは `workspace.select`（`init` と
 `sync.map` も切り替える）で、プロセスは再起動せず、開けなければ元のまま。選択時、sync id を持つ
-ワークスペースなら同期がオンになる。同期するのは現在のワークスペースだけで、bridge にもそれだけを
+ワークスペースなら同期がオンになる。CLI では `workspace init --sync` / `workspace select --sync` で
+選ぶと同時に、`workspace sync enable | disable | status` で後から切り替える（`sync.enable` /
+`sync.disable` / `sync.status`）。同期するのは現在のワークスペースだけで、bridge にもそれだけを
 登録する。CLI はカレントディレクトリに従わず、別のワークスペースの中で実行されたらエラーにする
 （`IpcBackend::check_cwd`）。`serve` は起動時に `workspace.toml` のワークスペースとその同期を
 復元する。詳細はプロセス構成仕様 §2, §4 と[1 サーバ 1 ワークスペース仕様](superpowers/specs/2026-10-11-single-workspace-server-design.md)。

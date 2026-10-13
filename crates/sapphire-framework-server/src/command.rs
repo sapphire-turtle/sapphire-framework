@@ -94,7 +94,7 @@ impl FrameworkCommand {
 
 /// The `workspace` subcommands (#215: one workspace per server).
 ///
-/// `init`, `select`, `move`, `remove` and `map`'s write go to the app's server over IPC,
+/// `init`, `select`, `sync`, `move`, `remove` and `map`'s write go to the app's server over IPC,
 /// because the server owns the marker directories, the sync ids and which workspace it
 /// serves; `show` asks the server for its workspace and then the bridge for the workgroup's
 /// ledger; `map`'s selector resolution is the workgroup's word, so it goes to the bridge
@@ -114,7 +114,14 @@ pub enum WorkspaceCommand {
     Select {
         /// The workspace's root. Defaults to the current directory.
         dir: Option<PathBuf>,
+        /// Also start syncing it, which publishes it into the workgroup ledger. A
+        /// workspace that has synced before turns sync back on by itself.
+        #[arg(long)]
+        sync: bool,
     },
+    /// Turn sync on or off for the server's workspace, or show its sync state.
+    #[command(subcommand)]
+    Sync(WorkspaceSyncCommand),
     /// Show the server's workspace, then the workgroup's workspaces of this app.
     Show,
     /// Move the server's workspace folder to a new path on this host, keeping its sync.
@@ -145,7 +152,10 @@ impl WorkspaceCommand {
     pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
         match self {
             WorkspaceCommand::Init { dir, sync } => workspace_init(app, version, dir, sync).await,
-            WorkspaceCommand::Select { dir } => workspace_select(app, version, dir).await,
+            WorkspaceCommand::Select { dir, sync } => {
+                workspace_select(app, version, dir, sync).await
+            }
+            WorkspaceCommand::Sync(command) => workspace_sync(app, version, command).await,
             WorkspaceCommand::Show => workspace_show(app, version).await,
             WorkspaceCommand::Move { dir } => workspace_move(app, version, dir).await,
             WorkspaceCommand::Remove { delete } => workspace_remove(app, version, delete).await,
@@ -154,6 +164,18 @@ impl WorkspaceCommand {
             }
         }
     }
+}
+
+/// The `workspace sync` subcommands: the server's workspace's sync, switched after the fact.
+#[derive(Debug, clap::Subcommand)]
+pub enum WorkspaceSyncCommand {
+    /// Start syncing the server's workspace, which publishes it into the workgroup ledger.
+    Enable,
+    /// Stop syncing the server's workspace on this host. It keeps its sync id, so enabling
+    /// it again picks up where it left off; other devices keep their copies.
+    Disable,
+    /// Show the server's workspace's sync state.
+    Status,
 }
 
 /// The `workgroup` subcommands.
@@ -434,27 +456,103 @@ async fn workspace_init(
     println!("the {app} server now serves {}", result.root.display());
 
     if sync {
-        let enabled: proto::SyncEnableResult = client
-            .call(proto::SYNC_ENABLE, serde_json::json!({}))
-            .await?;
-        // Never fails on account of the bridge: the workspace is synced either way, and
-        // the status is the user's word for what the workgroup does not know yet.
-        let status: proto::SyncStatusResult = client
-            .call(proto::SYNC_STATUS, serde_json::json!({}))
-            .await
-            .unwrap_or(proto::SyncStatusResult {
-                enabled: true,
-                workspace_id: Some(enabled.workspace_id),
-                ..proto::SyncStatusResult::not_synced()
-            });
-        println!(
-            "syncing as {} ({} peer{})",
-            enabled.workspace_id,
-            status.peers,
-            if status.peers == 1 { "" } else { "s" }
-        );
+        enable_sync(&client).await?;
     }
     Ok(0)
+}
+
+/// Turn sync on for the server's workspace over `client`, and print what it syncs as.
+///
+/// The one path behind `init --sync`, `select --sync` and `sync enable`: the server's
+/// `sync.enable`, then its status, printed after, so an unjoined host's "no workgroup knows
+/// it yet" is plain.
+async fn enable_sync(client: &sapphire_ipc::Client) -> Result<()> {
+    let enabled: proto::SyncEnableResult = client
+        .call(proto::SYNC_ENABLE, serde_json::json!({}))
+        .await?;
+    // Never fails on account of the bridge: the workspace is synced either way, and the
+    // status is the user's word for what the workgroup does not know yet.
+    let status: proto::SyncStatusResult = client
+        .call(proto::SYNC_STATUS, serde_json::json!({}))
+        .await
+        .unwrap_or(proto::SyncStatusResult {
+            enabled: true,
+            workspace_id: Some(enabled.workspace_id),
+            ..proto::SyncStatusResult::not_synced()
+        });
+    println!(
+        "syncing as {} ({} peer{})",
+        enabled.workspace_id,
+        status.peers,
+        if status.peers == 1 { "" } else { "s" }
+    );
+    Ok(())
+}
+
+/// `workspace sync …`: the server's workspace's sync, switched after the fact.
+async fn workspace_sync(
+    app: &'static str,
+    version: &'static str,
+    command: WorkspaceSyncCommand,
+) -> Result<i32> {
+    let Some(client) = connect_app(app, version).await? else {
+        return Ok(1);
+    };
+    match command {
+        WorkspaceSyncCommand::Enable => enable_sync(&client).await?,
+        WorkspaceSyncCommand::Disable => {
+            let _: proto::Ack = client
+                .call(proto::SYNC_DISABLE, serde_json::json!({}))
+                .await?;
+            println!("sync is off for the {app} workspace on this host; it keeps its sync id");
+        }
+        WorkspaceSyncCommand::Status => {
+            let status: proto::SyncStatusResult = client
+                .call(proto::SYNC_STATUS, serde_json::json!({}))
+                .await?;
+            for line in describe_sync(&status) {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// `workspace sync status`, line by line.
+fn describe_sync(status: &proto::SyncStatusResult) -> Vec<String> {
+    let mut lines = vec![format!(
+        "sync: {}",
+        if status.enabled { "on" } else { "off" }
+    )];
+    if let Some(id) = status.workspace_id {
+        lines.push(format!("workspace id: {id}"));
+    }
+    if status.enabled {
+        lines.push(format!(
+            "peers: {}{}",
+            status.peers,
+            if matches!(status.topology, proto::Topology::Star { .. }) {
+                " (star)"
+            } else {
+                ""
+            }
+        ));
+        lines.push(format!(
+            "bridge: {}",
+            if status.bridge_available {
+                "reachable"
+            } else {
+                "not reachable"
+            }
+        ));
+    }
+    if let Some(paused) = &status.paused {
+        lines.push(format!("paused: {paused}"));
+    }
+    if let Some(error) = &status.last_error {
+        lines.push(format!("last error: {error}"));
+    }
+    lines
 }
 
 /// Render the server's workspace as the CLI prints it: `root state`.
@@ -516,11 +614,12 @@ async fn connect_app(app: &str, version: &str) -> Result<Option<sapphire_ipc::Cl
     Ok(client.map(|(c, _)| c))
 }
 
-/// `workspace select`: switch the server to an existing workspace.
+/// `workspace select`: switch the server to an existing workspace, syncing it with `--sync`.
 async fn workspace_select(
     app: &'static str,
     version: &'static str,
     dir: Option<PathBuf>,
+    sync: bool,
 ) -> Result<i32> {
     let Some(client) = connect_app(app, version).await? else {
         return Ok(1);
@@ -534,6 +633,10 @@ async fn workspace_select(
         )
         .await?;
     println!("{} {}", ws.root.display(), describe_state(&ws));
+    // A workspace that has synced before is synced again by the select itself.
+    if sync && !ws.sync.enabled {
+        enable_sync(&client).await?;
+    }
     Ok(0)
 }
 
@@ -802,6 +905,11 @@ mod tests {
             vec!["app", "workspace", "init", "--sync"],
             vec!["app", "workspace", "show"],
             vec!["app", "workspace", "select", "papers"],
+            vec!["app", "workspace", "select", "--sync"],
+            vec!["app", "workspace", "select", "papers", "--sync"],
+            vec!["app", "workspace", "sync", "enable"],
+            vec!["app", "workspace", "sync", "disable"],
+            vec!["app", "workspace", "sync", "status"],
             vec!["app", "workspace", "map", "papers", "papers-remote"],
             vec!["app", "workspace", "move", "../papers"],
             vec!["app", "workspace", "remove"],

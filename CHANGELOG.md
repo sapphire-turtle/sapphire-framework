@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- `workspace select --sync`, as `workspace init --sync`: bring an existing workspace in and start syncing it in one step. `workspace sync enable | disable | status` switches the server's workspace's sync after the fact (`disable` keeps its sync id) and shows its state. `sapphire-framework-server` exports `WorkspaceSyncCommand`.
 - `sapphire-framework-frontmatter` (facade feature `frontmatter`, #237): YAML front matter for Markdown files, to replace the deprecated `serde_yaml` parsers apps carry. `split` (LF or CRLF, body verbatim), `parse` / `parse_optional` / `from_yaml` into a type of your own, `render` / `to_yaml`, and `set_top_level_key`, which changes one key and keeps comments, key order and line endings. YAML is read and written with `serde-saphyr`; untyped values are `Value` / `Mapping` (`serde_json`'s, with `preserve_order`, so hand-written key order survives a round trip). Front matter written by `serde_yaml` reads unchanged; written back, date-like strings come out quoted.
 
 ### Changed

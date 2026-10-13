@@ -1,10 +1,11 @@
-//! A probe made while a server is starting must never strand it.
+//! Probes made while a server starts, and while it is busy, must never strand it (#235).
 //!
 //! Binding a Unix socket creates its file before the socket listens, and a connect in
-//! between is refused. `probe` reads "the file is there, the connection is refused" as a
-//! dead server's leftover and unlinks the file — and a server that then starts listening
-//! does so on a path nobody can reach (#235). A client polling `probe` while the server
-//! starts is exactly what the CLI, the GUI and the tests do.
+//! between is refused; on macOS a live socket whose listen queue is full refuses too.
+//! `probe` used to read "the file is there, the connection is refused" as a dead server's
+//! leftover and unlink the file — and the server went on listening on a path nobody could
+//! reach. A client polling `probe` while the server starts is exactly what the CLI, the GUI
+//! and the tests do.
 #![cfg(unix)]
 
 use std::time::Duration;

@@ -72,18 +72,29 @@ impl Drop for UnixListenerHandle {
 /// Listen on `endpoint`, first removing a socket file left behind by a dead server.
 ///
 /// The socket file appears at its path only once the socket accepts connections (#235).
-/// Binding creates the file before the socket listens, and a connect in between is refused;
-/// [`probe`] reads exactly that — a file nobody answers on — as a dead server's leftover and
-/// unlinks it, and a server that then starts listening would do so on a path nobody can
-/// reach. So the socket is bound under a private staging name, and only then linked to its
-/// real path. The link fails if the path exists, so a second server racing for the same
-/// endpoint still gets "address in use" and never replaces a live socket.
+/// Binding creates the file before the socket listens, and a connect in between is refused,
+/// so a client looking at that moment would see a file nobody answers on. The socket is
+/// therefore bound under a private staging name, and only then linked to its real path.
+/// The link fails if the path exists, so a second server racing for the same endpoint
+/// still gets "address in use" and never replaces a live socket.
+///
+/// Removing a dead server's leftover is this function's job and nobody else's: only a
+/// server about to take the endpoint can tell "nobody is there" from "somebody is busy" —
+/// a refused connect means either on macOS, whose listen queue refuses when it is full.
 pub async fn bind(endpoint: &Endpoint) -> Result<UnixListenerHandle> {
     ensure_private_dir(&endpoint.dir)?;
     let path = endpoint.socket_path();
-    if path.exists() && probe(endpoint).await? {
-        // Another server is listening: `probe` only unlinks a file nobody answers on.
-        return Err(address_in_use(&path));
+    if path.exists() {
+        if probe(endpoint).await? {
+            return Err(address_in_use(&path));
+        }
+        // A file nobody answers on: the state a crash or a reboot leaves (spec §2.6 step 4).
+        tracing::debug!(path = %path.display(), "removing a stale socket");
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(Error::Io(err)),
+        }
     }
 
     let staging = staging_path(endpoint);
@@ -137,8 +148,10 @@ async fn connect_stream(endpoint: &Endpoint) -> Result<UnixStream> {
 
 /// Is a server listening on `endpoint`?
 ///
-/// Unlinks the socket file and returns `false` when the file exists but nothing answers —
-/// the state left by a crash or a reboot (spec §2.6 step 4).
+/// `false` when there is no socket file, or a file nobody answers on. The file is left
+/// where it is (#235): a refused connect does not prove the server dead — on macOS a live
+/// server whose listen queue is full refuses too — and a probe that removed it would cut
+/// that server off for good. A dead server's file is removed by the next [`bind`].
 pub async fn probe(endpoint: &Endpoint) -> Result<bool> {
     let path = endpoint.socket_path();
     if !path.exists() {
@@ -146,11 +159,9 @@ pub async fn probe(endpoint: &Endpoint) -> Result<bool> {
     }
     match UnixStream::connect(&path).await {
         Ok(_) => Ok(true),
-        Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
-            tracing::debug!(path = %path.display(), "removing a stale socket");
-            let _ = std::fs::remove_file(&path);
-            Ok(false)
-        }
+        Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => Ok(false),
+        // Gone between the check and the connect: a server stopping.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(Error::Io(err)),
     }
 }
@@ -272,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stale_socket_file_is_removed_and_reported_as_not_listening() {
+    async fn a_stale_socket_file_is_reported_as_not_listening_and_left_to_bind() {
         let tmp = tempfile::tempdir().unwrap();
         let ep = endpoint(tmp.path());
         // A socket file with nobody behind it: bind, then drop the listener without
@@ -283,9 +294,13 @@ mod tests {
 
         assert!(!probe(&ep).await.unwrap());
         assert!(
-            !ep.socket_path().exists(),
-            "the stale socket should have been unlinked"
+            ep.socket_path().exists(),
+            "a probe never removes a socket file: only the next bind does"
         );
+        // The next server takes the endpoint over.
+        let listener = bind(&ep).await.unwrap();
+        assert!(probe(&ep).await.unwrap());
+        drop(listener);
     }
 
     #[tokio::test]

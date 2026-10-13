@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-13
+
 ### Added
 
 - `workspace select --sync`, as `workspace init --sync`: bring an existing workspace in and start syncing it in one step. `workspace sync enable | disable | status` switches the server's workspace's sync after the fact (`disable` keeps its sync id) and shows its state. `sapphire-framework-server` exports `WorkspaceSyncCommand`.

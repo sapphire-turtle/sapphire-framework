@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-13
+
 ### Added
 
 - MCP as a framework feature (facade feature `mcp`, not in `native`). The new `sapphire-framework-mcp` crate holds the tools every app shares — `status`, `workspace_show`, `workspace_search`, `workspace_read_file`, `workspace_list_dir`, `workgroup_show`, `device_list` (read-only), and `workspace_write_tools()` (`workspace_write_file` / `append_file` / `delete_file`) for an app that wants them — written against the server's IPC methods, so one implementation serves both transports: the `mcp` subcommand (`FrameworkCommand::Mcp`, stdio, dialling the running server like the CLI and never starting one) and `/mcp` on the app server's HTTP listener, behind an external device's token. An app adds its own tools with an `rmcp` handler holding a `ToolContext` and hands it over with `AppServer::mcp(McpService::new(..))`; without one it serves the framework's tools alone.

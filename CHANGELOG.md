@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- `sapphire-framework-frontmatter` (facade feature `frontmatter`, #237): YAML front matter for Markdown files, to replace the deprecated `serde_yaml` parsers apps carry. `split` (LF or CRLF, body verbatim), `parse` / `parse_optional` / `from_yaml` into a type of your own, `render` / `to_yaml`, and `set_top_level_key`, which changes one key and keeps comments, key order and line endings. YAML is read and written with `serde-saphyr`; untyped values are `Value` / `Mapping` (`serde_json`'s, with `preserve_order`, so hand-written key order survives a round trip). Front matter written by `serde_yaml` reads unchanged; written back, date-like strings come out quoted.
+
 ### Changed
 
 - `rmcp` 3.5 (from 1.8). `sapphire-framework-mcp` re-exports it, so an application with its own MCP handler moves to rmcp 3 as well: `rmcp::model::Content` is now `ContentBlock`, `ServerInfo` is `ServerConfig` (`mcp::server_info` returns it), and `ServerHandler::call_tool` returns a `CallToolResponse` (`CallToolResult` converts with `.into()`).

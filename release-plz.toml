@@ -96,6 +96,11 @@ version_group = "framework"
 name = "sapphire-framework-mcp"
 version_group = "framework"
 
+# YAML フロントマター（#237）。ファサードが `frontmatter` feature で optional 参照する。
+[[package]]
+name = "sapphire-framework-frontmatter"
+version_group = "framework"
+
 [[package]]
 name = "sapphire-framework-keys"
 version_group = "framework"

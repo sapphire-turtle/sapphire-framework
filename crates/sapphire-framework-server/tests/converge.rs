@@ -177,4 +177,69 @@ async fn with_the_bridge_down_the_app_server_still_serves_files() {
         .await
         .expect("status must answer even with the bridge down");
     assert!(!status.bridge_available);
+
+    // The other `sync.*` methods answer too, saying why they cannot act (#244).
+    let err = a
+        .client
+        .call::<_, proto::SyncEnableResult>(
+            proto::SYNC_MAP,
+            proto::SyncMapParams {
+                workspace: "anything".into(),
+                dir: a.ws.clone(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("not connected to sapphire-bridge"),
+        "{err}"
+    );
+}
+
+/// Write `content` to `rel` on `host`, through its app server.
+async fn write(host: &Host, rel: &str, content: &str) {
+    let _: proto::Ack = host
+        .client
+        .call(
+            proto::WRITE_FILE,
+            proto::ContentParams {
+                path: PathBuf::from(rel),
+                content: content.into(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_whose_bridge_restarts_syncs_again() {
+    // #244: a restarted bridge left every app server's sync stopped until it restarted too.
+    let net = LoopbackNetwork::new();
+    let (mut a, b) = synced_pair(&net).await;
+
+    a.stop_bridge().await;
+    a.restart_bridge().await;
+
+    write(&b, "after-restart.md", "from b").await;
+    assert_eq!(await_file(&a, "after-restart.md").await, "from b");
+    write(&a, "back.md", "from a").await;
+    assert_eq!(await_file(&b, "back.md").await, "from a");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_started_before_its_bridge_syncs_once_the_bridge_is_up() {
+    // #244: the server came up 2 ms before its bridge and served without sync for good.
+    let net = LoopbackNetwork::new();
+    let (mut a, b) = synced_pair(&net).await;
+    a.stop().await;
+    let a = a.restart_server_first(&net).await;
+
+    write(&b, "late-bridge.md", "from b").await;
+    assert_eq!(await_file(&a, "late-bridge.md").await, "from b");
+    let status: proto::SyncStatusResult = a
+        .client
+        .call(proto::SYNC_STATUS, serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(status.enabled && status.bridge_available, "{status:?}");
 }

@@ -308,6 +308,18 @@ impl BridgeClient {
         self.incoming.subscribe()
     }
 
+    /// Whether the connection to the bridge has closed. A closed client never comes back:
+    /// connect anew.
+    pub fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
+
+    /// Wait until the connection to the bridge has closed — the bridge stopped or
+    /// restarted. Returns at once when it already has.
+    pub async fn closed(&self) {
+        self.client.closed().await
+    }
+
     /// Open a stream to `device` for `workspace`.
     pub async fn open_stream(
         &self,

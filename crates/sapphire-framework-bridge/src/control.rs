@@ -453,6 +453,13 @@ async fn register(
     bridge.owners().connect(&params.app_name, ctx.peer.clone());
     session.record(&params.app_name);
 
+    // Streams that arrived while this app's server was not connected — stopped, starting,
+    // or reconnecting after this bridge restarted — are announced now, rather than left to
+    // expire unclaimed while their peers wait on them (#244).
+    for held in bridge.tickets().unannounced(&params.app_name) {
+        crate::data::announce(&ctx.peer, &params.app_name, held).await;
+    }
+
     encode(RegisterResult {
         device_id: me.id,
         node_id: bridge.transport().node_id(),

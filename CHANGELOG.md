@@ -15,6 +15,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - An app's `update` also updates the bridge: after the app itself, it runs the `sapphire-bridge` on `PATH` with `update` and the same `--check` / `--yes`, so the bridge checks its own version and install method. `--no-bridge` leaves the bridge alone. No bridge on `PATH` is skipped; a bridge too old to have `update` is reported with where to download one. The exit code is the worse of the two. `FrameworkCommand::Update` now carries `AppUpdateArgs` (`update: UpdateArgs`, `no_bridge`).
 - `AppServer::sync_runtime()` (#250): the runtime `sync` or `sync_via_bridge` set, for an application's own code that reads sync state — status rows, placement — so it can use `sync_via_bridge()` rather than building a runtime of its own to keep one. `SyncRuntime::this_device()` (this host's device id, once the bridge has told it; never asks) and `SyncRuntime::peers()` (the workgroup's devices and roles, from the bridge, `Error::BridgeDisconnected` while it is away), so an application no longer opens a bridge connection of its own to learn which device it is. `sapphire-framework-server::sync` re-exports `PeersResult` and `PeerInfo`.
 
+### Changed
+
+- `sapphire-bridge` with no subcommand prints the help instead of starting the bridge; start it with `sapphire-bridge serve` (the installed service unit already names `serve`). `BridgeCommand` and `FrameworkCommand` no longer implement `Default`, so an app CLI that started its server on a bare invocation with `unwrap_or_default()` no longer compiles: make the subcommand required and add `#[command(arg_required_else_help = true)]` to print the help instead.
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

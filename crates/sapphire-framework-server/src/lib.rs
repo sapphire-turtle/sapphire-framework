@@ -331,9 +331,9 @@ impl AppServer {
 
     /// What this application's service is: the arguments a service manager starts it with.
     ///
-    /// `["serve"]`: a service manager starts the executable directly, and the executable's
-    /// bare invocation is `serve` — the subcommand-less default of
-    /// [`FrameworkCommand::Serve`](crate::FrameworkCommand::Serve). A CLI that wants its
+    /// `["serve"]`: a service manager starts the executable directly with
+    /// [`FrameworkCommand::Serve`](crate::FrameworkCommand::Serve) — the bare invocation
+    /// only prints the help. A CLI that wants its
     /// service installed hands this to
     /// [`ServiceCommand`](sapphire_framework_service::ServiceCommand).
     pub fn service_spec(&self) -> ServiceSpec {

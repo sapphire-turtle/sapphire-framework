@@ -21,10 +21,9 @@ pub use sapphire_backend::protocol::{StatusReport, StatusRow};
 /// An application composes these beside its own verbs by giving its subcommand enum a
 /// `#[command(flatten)] Framework(FrameworkCommand)` variant, so every verb — the app's and
 /// the framework's — sits at the same top level. The parse tests below pin that shape.
-#[derive(Debug, Default, clap::Subcommand)]
+#[derive(Debug, clap::Subcommand)]
 pub enum FrameworkCommand {
-    /// Run the server in this process until SIGTERM or SIGINT (the bare invocation).
-    #[default]
+    /// Run the server in this process until SIGTERM or SIGINT.
     Serve,
     /// Report whether a server is running, and which version.
     Status,
@@ -1193,21 +1192,21 @@ mod tests {
     }
 
     #[test]
-    fn bare_invocation_defaults_to_serve() {
-        // <app> with no subcommand at all means serve (spec decision 1). An app CLI
-        // achieves it by `Option<Command>` and handing the framework's default here; this
-        // probe pins the framework half.
+    fn bare_invocation_prints_the_help() {
+        // <app> with no subcommand prints the help; the server starts only on an explicit
+        // `serve`. An app CLI gets that by a required subcommand and
+        // `arg_required_else_help`, as this probe does.
         #[derive(Parser)]
+        #[command(arg_required_else_help = true)]
         struct Bare {
             #[command(subcommand)]
-            command: Option<Command>,
+            command: Command,
         }
-        let bare = Bare::try_parse_from(["app"]).unwrap();
-        assert!(bare.command.is_none());
-        assert!(matches!(
-            FrameworkCommand::default(),
-            FrameworkCommand::Serve
-        ));
+        let err = Bare::try_parse_from(["app"]).err().unwrap();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
     }
 }
 

@@ -49,13 +49,23 @@ async fn probing_while_a_server_binds_never_strands_it() {
             prober.await.unwrap();
         }
 
-        let reachable = tokio::time::timeout(
-            Duration::from_secs(5),
-            sapphire_framework_ipc::probe(&endpoint),
-        )
-        .await
-        .expect("the probe answered")
-        .unwrap();
+        // On macOS the probers can leave the listen queue full for a moment, and a full
+        // queue refuses a connect like a dead socket does. A stranded socket never becomes
+        // reachable again, so retry until a deadline rather than trusting one connect.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let reachable = loop {
+            let reachable = tokio::time::timeout(
+                Duration::from_secs(5),
+                sapphire_framework_ipc::probe(&endpoint),
+            )
+            .await
+            .expect("the probe answered")
+            .unwrap();
+            if reachable || std::time::Instant::now() >= deadline {
+                break reachable;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         acceptor.abort();
         assert!(
             reachable,

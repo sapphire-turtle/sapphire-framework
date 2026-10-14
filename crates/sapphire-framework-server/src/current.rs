@@ -240,7 +240,16 @@ impl Current {
         let runtime = self.runtime()?;
         let _one = self.switching.lock().await;
         let root = self.root().ok_or(Error::NoWorkspace)?;
-        let id = runtime.enable(&root).await?;
+        let id = match runtime.enable(&root).await {
+            Ok(id) => id,
+            // The runtime enables it once the bridge is back, so remember it as synced: the
+            // next start tries again too (#244).
+            Err(err @ Error::BridgeDisconnected) => {
+                self.remember(&root, true);
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         self.remember(&root, true);
         Ok(id)
     }

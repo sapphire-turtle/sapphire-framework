@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use grain_id::GrainId;
 use sapphire_backend::protocol as proto;
-use sapphire_bridge_api::{PeersResult, RegisterParams, WorkspaceRegistration, WorkspacesResult};
+use sapphire_bridge_api::{
+    IncomingParams, PeersResult, RegisterParams, WorkspaceRegistration, WorkspacesResult,
+};
 use sapphire_bridge_client::BridgeClient;
 use sapphire_ipc::ManagedBy;
 use sapphire_sync::{PathUpdate, PauseReason, Replica, ReplicaConfig, ScanOutcome, SystemClock};
@@ -97,10 +99,100 @@ impl Default for BackfillTiming {
     }
 }
 
+/// How long [`SyncRuntime::keep_connected`] waits before its first retry after the bridge
+/// could not be reached. Each failure doubles it, up to [`RECONNECT_BACKOFF_MAX`].
+pub const RECONNECT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The longest [`SyncRuntime::keep_connected`] waits between two attempts to reach the
+/// bridge: a bridge that comes up is found within this long.
+pub const RECONNECT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The wait before reconnection attempt `attempt` (0-based).
+fn reconnect_backoff(attempt: u32) -> std::time::Duration {
+    RECONNECT_BACKOFF
+        .saturating_mul(1u32 << attempt.min(16))
+        .min(RECONNECT_BACKOFF_MAX)
+}
+
+/// What a connection attempt to the bridge yields.
+type Connecting = std::pin::Pin<
+    Box<dyn std::future::Future<Output = sapphire_ipc::Result<Option<BridgeClient>>> + Send>,
+>;
+
+/// How a [`SyncRuntime`] reaches the bridge, on start and whenever it has lost it (#244).
+///
+/// An attempt answers `Ok(None)` when no bridge is running — the runtime then tries again
+/// later — and an error for anything else, such as a bridge of another API version.
+#[derive(Clone)]
+pub struct BridgeConnector(Arc<dyn Fn() -> Connecting + Send + Sync>);
+
+impl BridgeConnector {
+    /// Connect with `connect`.
+    pub fn new<F, Fut>(connect: F) -> BridgeConnector
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = sapphire_ipc::Result<Option<BridgeClient>>>
+            + Send
+            + 'static,
+    {
+        BridgeConnector(Arc::new(move || Box::pin(connect())))
+    }
+
+    /// The host's own bridge, at its standard endpoint, as a client of `kind` at
+    /// `version`.
+    pub fn standard(kind: &'static str, version: &'static str) -> BridgeConnector {
+        BridgeConnector::new(move || async move {
+            match BridgeClient::connect(kind, version).await {
+                Ok(client) => Ok(Some(client)),
+                Err(sapphire_ipc::Error::NotRunning(_)) => Ok(None),
+                Err(err) => Err(err),
+            }
+        })
+    }
+
+    /// The bridge listening at `endpoint`: for a fixture that runs its own.
+    pub fn at(
+        endpoint: sapphire_ipc::Endpoint,
+        kind: &'static str,
+        version: &'static str,
+    ) -> BridgeConnector {
+        BridgeConnector::new(move || {
+            let endpoint = endpoint.clone();
+            async move { BridgeClient::connect_at(&endpoint, kind, version).await }
+        })
+    }
+
+    async fn connect(&self) -> sapphire_ipc::Result<Option<BridgeClient>> {
+        (self.0)().await
+    }
+}
+
+impl std::fmt::Debug for BridgeConnector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BridgeConnector")
+    }
+}
+
 /// Replication for one application's workspaces.
 pub struct SyncRuntime {
     ctx: &'static AppContext,
-    bridge: Arc<BridgeClient>,
+    /// The bridge connection, while there is one. Swapped when the runtime reconnects
+    /// (#244); [`run`](SyncRuntime::run) follows it.
+    bridge: tokio::sync::watch::Sender<Option<Arc<BridgeClient>>>,
+    /// How to reach the bridge again; `None` for a runtime given one connection to use.
+    connector: Option<BridgeConnector>,
+    /// Workspaces asked to sync while the bridge was away, with their ids. Enabled once
+    /// it is back.
+    ///
+    /// Also the lock that orders an `enable` against a reconnection: whoever holds it sees
+    /// the bridge slot as the other left it, so a workspace is either enabled now or left
+    /// here for the reconnection to enable — never neither.
+    pending: Mutex<HashMap<PathBuf, GrainId>>,
+    /// The announcements of a connection [`attach`](SyncRuntime::attach) just made,
+    /// subscribed to before it registered: the bridge announces the streams that waited for
+    /// this server as soon as it registers (#244), and a subscription made afterwards by
+    /// [`run`](SyncRuntime::run) would miss them.
+    subscribed: std::sync::Mutex<Option<(Arc<BridgeClient>, broadcast::Receiver<IncomingParams>)>>,
     exe_path: PathBuf,
     managed_by: ManagedBy,
     synced: Mutex<HashMap<PathBuf, Synced>>,
@@ -167,16 +259,54 @@ pub struct SyncRuntime {
 }
 
 impl SyncRuntime {
-    /// A runtime for `ctx`'s application.
+    /// A runtime for `ctx`'s application, syncing through `bridge`.
+    ///
+    /// It has no way to reach the bridge again: when the connection closes, sync stops until
+    /// the runtime is given a [`connector`](Self::with_connector).
     pub fn new(
         ctx: &'static AppContext,
         bridge: Arc<BridgeClient>,
         exe_path: PathBuf,
         managed_by: ManagedBy,
     ) -> SyncRuntime {
+        SyncRuntime::build(ctx, Some(bridge), None, exe_path, managed_by)
+    }
+
+    /// A runtime for `ctx`'s application that reaches the bridge with `connector`, and again
+    /// whenever it loses it (#244).
+    ///
+    /// Not connected yet: [`connect`](Self::connect) makes the first attempt, and
+    /// [`keep_connected`](Self::keep_connected) the rest. [`AppServer::run`] does both.
+    ///
+    /// [`AppServer::run`]: crate::AppServer::run
+    pub fn connecting(
+        ctx: &'static AppContext,
+        connector: BridgeConnector,
+        exe_path: PathBuf,
+        managed_by: ManagedBy,
+    ) -> SyncRuntime {
+        SyncRuntime::build(ctx, None, Some(connector), exe_path, managed_by)
+    }
+
+    /// Reach the bridge again with `connector` once the connection closes.
+    pub fn with_connector(mut self, connector: BridgeConnector) -> SyncRuntime {
+        self.connector = Some(connector);
+        self
+    }
+
+    fn build(
+        ctx: &'static AppContext,
+        bridge: Option<Arc<BridgeClient>>,
+        connector: Option<BridgeConnector>,
+        exe_path: PathBuf,
+        managed_by: ManagedBy,
+    ) -> SyncRuntime {
         SyncRuntime {
             ctx,
-            bridge,
+            bridge: tokio::sync::watch::Sender::new(bridge),
+            connector,
+            pending: Mutex::new(HashMap::new()),
+            subscribed: std::sync::Mutex::new(None),
             exe_path,
             managed_by,
             synced: Mutex::new(HashMap::new()),
@@ -195,6 +325,19 @@ impl SyncRuntime {
             first_dials: std::sync::Mutex::new(tokio::task::JoinSet::new()),
             background: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
+    }
+
+    /// The bridge, while connected.
+    fn bridge(&self) -> Result<Arc<BridgeClient>> {
+        match &*self.bridge.borrow() {
+            Some(bridge) if !bridge.is_closed() => Ok(Arc::clone(bridge)),
+            _ => Err(Error::BridgeDisconnected),
+        }
+    }
+
+    /// Whether the runtime has a live connection to the bridge.
+    pub fn is_connected(&self) -> bool {
+        self.bridge().is_ok()
     }
 
     /// Run `task` in the background, tracked so the server's shutdown ends it.
@@ -245,6 +388,17 @@ impl SyncRuntime {
         let key = root.canonicalize().map_err(Error::Io)?;
         let watch_key = key.clone();
         let workspace_id = sync_id(self.ctx.app_name, &key)?;
+
+        // Without a bridge there is no device id to open the replica with, and nobody to
+        // register with: keep the workspace for the reconnection to enable (#244).
+        {
+            let mut pending = self.pending.lock().await;
+            if self.bridge().is_err() {
+                pending.insert(key, workspace_id);
+                return Err(Error::BridgeDisconnected);
+            }
+            pending.remove(&key);
+        }
 
         // The map stays locked across opening the replica, so two simultaneous `enable`s for
         // one root cannot both open it — the store is a redb database, and it is opened once.
@@ -348,6 +502,7 @@ impl SyncRuntime {
         // A root that no longer exists cannot be canonicalized, but the keys of `synced` are
         // canonical already, so the path as given (a registry root) still names the entry.
         let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        self.pending.lock().await.remove(&key);
         let removed = self.synced.lock().await.remove(&key);
         if removed.is_some()
             && let Some(watcher) = self.watcher.get()
@@ -363,7 +518,12 @@ impl SyncRuntime {
             return (None, Ok(()));
         };
         let unregistered = async {
-            self.bridge
+            // A bridge that is gone has forgotten this server's registrations already, and
+            // the reconnection registers only what is still synced.
+            let Ok(bridge) = self.bridge() else {
+                return Ok(());
+            };
+            bridge
                 .unregister(removed.workspace_id)
                 .await
                 .map_err(|e| Error::Bridge(e.to_string()))?;
@@ -379,7 +539,7 @@ impl SyncRuntime {
     /// bridge being down is not an empty answer — that would read as "nothing to map" — so
     /// it is an error, and `sync.map` reports it.
     pub async fn workspaces(&self) -> Result<WorkspacesResult> {
-        self.bridge
+        self.bridge()?
             .workspaces()
             .await
             .map_err(|e| Error::Bridge(e.to_string()))
@@ -469,8 +629,15 @@ impl SyncRuntime {
 
     /// What `sync.status` answers with.
     pub async fn status(&self, root: &Path) -> SyncStatus {
-        let bridge_available = self.bridge.status().await.is_ok();
-        let answer = self.bridge.peers().await.ok();
+        let bridge = self.bridge().ok();
+        let bridge_available = match &bridge {
+            Some(bridge) => bridge.status().await.is_ok(),
+            None => false,
+        };
+        let answer = match &bridge {
+            Some(bridge) => bridge.peers().await.ok(),
+            None => None,
+        };
         if let Some(answer) = &answer {
             *self.last_peers.lock().await = Some(answer.clone());
         }
@@ -505,16 +672,22 @@ impl SyncRuntime {
                 ),
                 embedding: self.embedding_progress(&key).await,
             },
-            None => SyncStatus {
-                enabled: false,
-                workspace_id: None,
-                peers,
-                paused: None,
-                last_error: None,
-                bridge_available,
-                topology: proto::Topology::Mesh,
-                embedding: None,
-            },
+            None => {
+                drop(synced);
+                // Asked to sync while the bridge was away: it is enabled, waiting for the
+                // bridge, and `bridge_available` says why nothing moves.
+                let waiting = self.pending.lock().await.get(&key).copied();
+                SyncStatus {
+                    enabled: waiting.is_some(),
+                    workspace_id: waiting,
+                    peers,
+                    paused: None,
+                    last_error: None,
+                    bridge_available,
+                    topology: proto::Topology::Mesh,
+                    embedding: None,
+                }
+            }
         }
     }
 
@@ -778,7 +951,7 @@ impl SyncRuntime {
             }
         };
         let peers = self
-            .bridge
+            .bridge()?
             .peers()
             .await
             .map_err(|e| Error::Bridge(e.to_string()))?;
@@ -867,7 +1040,7 @@ impl SyncRuntime {
     ) -> Result<sapphire_ipc::RawStream> {
         match tokio::time::timeout(
             self.open_timeout,
-            self.bridge.open_stream(workspace_id, device),
+            self.bridge()?.open_stream(workspace_id, device),
         )
         .await
         {
@@ -879,17 +1052,52 @@ impl SyncRuntime {
         }
     }
 
-    /// Answer the bridge's announcements until the connection closes.
+    /// Answer the bridge's announcements, following the connection across reconnections
+    /// (#244). Runs until the task is aborted.
     pub async fn run(self: Arc<Self>) -> Result<()> {
-        let mut incoming = self.bridge.incoming();
+        let mut slot = self.bridge.subscribe();
         loop {
-            let announcement = match incoming.recv().await {
+            let bridge = slot.borrow_and_update().clone();
+            match bridge {
+                Some(bridge) if !bridge.is_closed() => self.answer(&bridge, &mut slot).await,
+                // Wait for a connection. The runtime holds the sender, so this never ends.
+                _ => {
+                    if slot.changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Answer `bridge`'s announcements until it closes or another connection replaces it.
+    async fn answer(
+        self: &Arc<Self>,
+        bridge: &Arc<BridgeClient>,
+        slot: &mut tokio::sync::watch::Receiver<Option<Arc<BridgeClient>>>,
+    ) {
+        let early = self
+            .subscribed
+            .lock()
+            .expect("subscribed")
+            .take_if(|(b, _)| Arc::ptr_eq(b, bridge));
+        let mut incoming = match early {
+            Some((_, incoming)) => incoming,
+            None => bridge.incoming(),
+        };
+        loop {
+            let received = tokio::select! {
+                received = incoming.recv() => received,
+                () = bridge.closed() => return,
+                _ = slot.changed() => return,
+            };
+            let announcement = match received {
                 Ok(a) => a,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!(missed = n, "fell behind on bridge announcements");
                     continue;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             };
 
             let found = {
@@ -911,10 +1119,10 @@ impl SyncRuntime {
                 continue;
             };
 
-            let bridge = Arc::clone(&self.bridge);
+            let bridge = Arc::clone(bridge);
             let workspace_id = announcement.workspace_id;
             let peer = announcement.peer_device_id;
-            let driver = Arc::clone(&self);
+            let driver = Arc::clone(self);
             self.spawn_background(async move {
                 let stream = match bridge.accept_stream(announcement.ticket).await {
                     Ok(stream) => stream,
@@ -953,12 +1161,107 @@ impl SyncRuntime {
                 let Some(updates) = table.insert(peer, session, false).await else {
                     return;
                 };
+                table.catch_up(peer, &replica).await;
                 // This is the receiving side: the files are on disk now and nobody else will
                 // index them.
                 driver.reindex(&key).await;
                 driver.request_embed(&key);
                 driver.spawn_reader(table, updates, key, peer);
             });
+        }
+    }
+
+    /// Make the first attempt to reach the bridge, when the runtime has a
+    /// [`BridgeConnector`] and is not connected yet.
+    ///
+    /// No bridge running is not an error: the server serves without sync, and
+    /// [`keep_connected`](Self::keep_connected) picks the bridge up once it starts. Any
+    /// other failure — a bridge of another API version, say — is, and stops the start.
+    pub async fn connect(self: &Arc<Self>) -> Result<()> {
+        let Some(connector) = &self.connector else {
+            return Ok(());
+        };
+        if self.is_connected() {
+            return Ok(());
+        }
+        match connector.connect().await? {
+            Some(client) => self.attach(client).await,
+            None => tracing::warn!(
+                "no sapphire-bridge is running; serving without sync until it starts"
+            ),
+        }
+        Ok(())
+    }
+
+    /// Stay connected to the bridge: wait for the connection to close, then reach the
+    /// bridge again with the runtime's [`BridgeConnector`], backing off from
+    /// [`RECONNECT_BACKOFF`] to [`RECONNECT_BACKOFF_MAX`] while it cannot (#244).
+    ///
+    /// Runs until the task is aborted, which is what the app server's shutdown does with
+    /// it. Without a connector it only marks the runtime disconnected once the connection
+    /// closes, and returns.
+    pub async fn keep_connected(self: Arc<Self>) {
+        let mut attempt = 0;
+        loop {
+            if let Ok(bridge) = self.bridge() {
+                bridge.closed().await;
+                tracing::warn!("lost the connection to sapphire-bridge; reconnecting");
+                self.bridge.send_if_modified(|slot| {
+                    let same = slot.as_ref().is_some_and(|b| Arc::ptr_eq(b, &bridge));
+                    if same {
+                        *slot = None;
+                    }
+                    same
+                });
+                attempt = 0;
+                continue;
+            }
+            let Some(connector) = &self.connector else {
+                return;
+            };
+            match connector.connect().await {
+                Ok(Some(client)) => {
+                    tracing::info!("connected to sapphire-bridge");
+                    self.attach(client).await;
+                    attempt = 0;
+                    continue;
+                }
+                Ok(None) => tracing::debug!("no sapphire-bridge is running yet"),
+                // Logged once per outage, not once per attempt.
+                Err(err) if attempt == 0 => {
+                    tracing::warn!("could not connect to sapphire-bridge: {err}")
+                }
+                Err(err) => tracing::debug!("could not connect to sapphire-bridge: {err}"),
+            }
+            tokio::time::sleep(reconnect_backoff(attempt)).await;
+            attempt = attempt.saturating_add(1);
+        }
+    }
+
+    /// Start using `client`, and bring the bridge up to date: it knows nothing of this
+    /// server yet, whether it has just started or this server has.
+    async fn attach(self: &Arc<Self>, client: BridgeClient) {
+        // Swapped under the pending lock, so an `enable` racing this either sees the new
+        // connection or leaves its workspace for the drain below.
+        let client = Arc::new(client);
+        *self.subscribed.lock().expect("subscribed") =
+            Some((Arc::clone(&client), client.incoming()));
+        let waiting = {
+            let mut pending = self.pending.lock().await;
+            self.bridge.send_replace(Some(client));
+            std::mem::take(&mut *pending)
+        };
+        // What was synced before the connection was lost.
+        if !self.synced.lock().await.is_empty()
+            && let Err(err) = self.reregister().await
+        {
+            tracing::warn!("could not register with sapphire-bridge: {err}");
+        }
+        // What was asked for while it was away. `enable` registers and dials each one.
+        for root in waiting.into_keys() {
+            if let Err(err) = self.enable(&root).await {
+                tracing::warn!(root = %root.display(), "could not start sync: {err}");
+            }
         }
     }
 
@@ -1100,7 +1403,7 @@ impl SyncRuntime {
             if roots.is_empty() {
                 continue;
             }
-            let peers = match self.bridge.peers().await {
+            let peers = match async { self.bridge()?.peers().await.map_err(Error::from) }.await {
                 Ok(peers) => {
                     *self.last_peers.lock().await = Some(peers.clone());
                     peers
@@ -1267,6 +1570,7 @@ impl SyncRuntime {
         let Some(updates) = table.insert(device, session, true).await else {
             return Ok(());
         };
+        table.catch_up(device, &replica).await;
         // The session wrote files during the exchange; the index has to catch up before the
         // workspace is searchable again.
         self.reindex(&key).await;
@@ -1381,7 +1685,7 @@ impl SyncRuntime {
                 })
                 .collect()
         };
-        self.bridge
+        self.bridge()?
             .register(RegisterParams {
                 app_name: self.ctx.app_name.to_owned(),
                 exe_path: self.exe_path.clone(),
@@ -1428,7 +1732,7 @@ impl SyncRuntime {
             return Ok(*id);
         }
         let result = self
-            .bridge
+            .bridge()?
             .register(RegisterParams {
                 app_name: self.ctx.app_name.to_owned(),
                 exe_path: self.exe_path.clone(),
@@ -1590,6 +1894,148 @@ mod tests {
     }
 
     async fn fixture() -> Fixture {
+        let (tmp, env, root) = scratch();
+        let (stub, client) = StubBridge::start_in(tmp.path().join("run")).await;
+        let runtime = Arc::new(
+            SyncRuntime::new(&CTX, client, "/bin/true".into(), ManagedBy::Service)
+                .with_open_timeout(FIXTURE_OPEN_TIMEOUT),
+        );
+        Fixture {
+            _tmp: tmp,
+            _env: env,
+            root,
+            stub,
+            runtime,
+        }
+    }
+
+    /// The bridge connections a [`connecting`] fixture's connector hands out, in order;
+    /// empty is "no bridge is running".
+    type Bridges = Arc<std::sync::Mutex<std::collections::VecDeque<BridgeClient>>>;
+
+    /// A fixture whose runtime reaches the bridge through a connector, and has not yet.
+    /// `f.stub`'s client is not handed out: push it to the returned queue for that.
+    async fn connecting() -> (Fixture, Bridges, BridgeClient) {
+        let (tmp, env, root) = scratch();
+        let (stub, client) = StubBridge::start_client_in(tmp.path().join("run")).await;
+        let bridges: Bridges = Arc::default();
+        let connector = BridgeConnector::new({
+            let bridges = Arc::clone(&bridges);
+            move || {
+                let next = bridges.lock().unwrap().pop_front();
+                async move { Ok(next) }
+            }
+        });
+        let runtime = Arc::new(
+            SyncRuntime::connecting(&CTX, connector, "/bin/true".into(), ManagedBy::Service)
+                .with_open_timeout(FIXTURE_OPEN_TIMEOUT),
+        );
+        let f = Fixture {
+            _tmp: tmp,
+            _env: env,
+            root,
+            stub,
+            runtime,
+        };
+        (f, bridges, client)
+    }
+
+    /// Wait up to ten seconds for `done`.
+    async fn eventually(what: &str, mut done: impl AsyncFnMut() -> bool) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !done().await {
+            assert!(tokio::time::Instant::now() < deadline, "never: {what}");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_started_without_a_bridge_syncs_once_one_starts() {
+        // #244: a server that started before its bridge never synced until restarted.
+        let (f, bridges, client) = connecting().await;
+        f.runtime.connect().await.unwrap();
+        assert!(!f.runtime.is_connected());
+
+        let err = f.runtime.enable(&f.root).await.unwrap_err();
+        assert!(matches!(err, Error::BridgeDisconnected), "{err:?}");
+        let status = f.runtime.status(&f.root).await;
+        assert!(status.enabled, "enabled, waiting for the bridge");
+        assert!(!status.bridge_available);
+        let id = status.workspace_id.expect("its id");
+
+        let keeping = tokio::spawn(Arc::clone(&f.runtime).keep_connected());
+        bridges.lock().unwrap().push_back(client);
+        eventually("the waiting workspace is registered", async || {
+            f.stub.last_workspaces() == vec![id]
+        })
+        .await;
+        assert_eq!(f.runtime.roots().await, vec![f.root.clone()]);
+        assert!(f.runtime.status(&f.root).await.bridge_available);
+        keeping.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_runtime_that_loses_its_bridge_registers_with_the_next_one() {
+        let (f, bridges, client) = connecting().await;
+        bridges.lock().unwrap().push_back(client);
+        f.runtime.connect().await.unwrap();
+        assert!(f.runtime.is_connected());
+        let id = f.runtime.enable(&f.root).await.unwrap();
+        let keeping = tokio::spawn(Arc::clone(&f.runtime).keep_connected());
+
+        f.stub.disconnect();
+        eventually("the runtime notices", async || !f.runtime.is_connected()).await;
+        let err = f.runtime.workspaces().await.unwrap_err();
+        assert!(matches!(err, Error::BridgeDisconnected), "{err:?}");
+
+        let (next, client) = StubBridge::start_client_in(f._tmp.path().join("run")).await;
+        bridges.lock().unwrap().push_back(client);
+        eventually("the synced workspace is registered again", async || {
+            next.last_workspaces() == vec![id]
+        })
+        .await;
+        assert!(f.runtime.is_connected());
+        keeping.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn disabling_while_the_bridge_is_away_forgets_the_waiting_workspace() {
+        let (f, bridges, client) = connecting().await;
+        f.runtime.enable(&f.root).await.unwrap_err();
+        f.runtime.disable(&f.root).await.unwrap();
+        assert!(!f.runtime.status(&f.root).await.enabled);
+
+        bridges.lock().unwrap().push_back(client);
+        f.runtime.connect().await.unwrap();
+        assert!(f.runtime.roots().await.is_empty());
+        assert!(f.stub.last_workspaces().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn announcements_are_answered_from_a_reconnected_bridge() {
+        let (f, bridges, client) = connecting().await;
+        bridges.lock().unwrap().push_back(client);
+        f.runtime.connect().await.unwrap();
+        let id = f.runtime.enable(&f.root).await.unwrap();
+        let keeping = tokio::spawn(Arc::clone(&f.runtime).keep_connected());
+        let answering = tokio::spawn(Arc::clone(&f.runtime).run());
+
+        f.stub.disconnect();
+        let (next, client) = StubBridge::start_client_in(f._tmp.path().join("run")).await;
+        bridges.lock().unwrap().push_back(client);
+        eventually("reconnected", async || next.last_workspaces() == vec![id]).await;
+
+        // The announcement loop follows the new connection: an announcement on it is
+        // claimed, which with no data endpoint fails — and the loop lives on.
+        next.announce(id, "ticket").await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!answering.is_finished(), "the announcement loop ended");
+        answering.abort();
+        keeping.abort();
+    }
+
+    /// The scratch tree, the environment pointed at it, and a workspace root in it.
+    fn scratch() -> (tempfile::TempDir, EnvGuard, PathBuf) {
         let lock = test_support::lock();
         let tmp = tempfile::tempdir().unwrap();
         let previous = DIR_VARS.map(std::env::var_os);
@@ -1611,19 +2057,7 @@ mod tests {
         let root = tmp.path().join("ws");
         std::fs::create_dir_all(root.join(".sapphire-synctest")).unwrap();
         let root = root.canonicalize().unwrap();
-
-        let (stub, client) = StubBridge::start_in(tmp.path().join("run")).await;
-        let runtime = Arc::new(
-            SyncRuntime::new(&CTX, client, "/bin/true".into(), ManagedBy::Service)
-                .with_open_timeout(FIXTURE_OPEN_TIMEOUT),
-        );
-        Fixture {
-            _tmp: tmp,
-            _env: env,
-            root,
-            stub,
-            runtime,
-        }
+        (tmp, env, root)
     }
 
     #[tokio::test(flavor = "multi_thread")]

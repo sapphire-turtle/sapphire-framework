@@ -40,7 +40,11 @@ pub struct StubBridge {
     /// Dials and status reports both ask; a test that watches this grow after touching a
     /// file has proof the runtime was driven, without reaching into a replica.
     peers_queries: Arc<AtomicUsize>,
-    announcer: sapphire_ipc::Sender,
+    /// The server's end of the connection, for announcements; `None` once disconnected,
+    /// since a sender left alive would hold the connection open.
+    announcer: Mutex<Option<sapphire_ipc::Sender>>,
+    /// The task serving the control connection; aborting it is the bridge going away.
+    serving: tokio::task::JoinHandle<()>,
 }
 
 impl StubBridge {
@@ -54,6 +58,13 @@ impl StubBridge {
     ///
     /// [`hang_streams`]: Self::hang_streams
     pub async fn start_in(runtime_dir: PathBuf) -> (StubBridge, Arc<BridgeClient>) {
+        let (stub, client) = StubBridge::start_client_in(runtime_dir).await;
+        (stub, Arc::new(client))
+    }
+
+    /// [`start_in`](Self::start_in), handing the client over as it is: for a
+    /// [`BridgeConnector`](super::BridgeConnector) to return.
+    pub async fn start_client_in(runtime_dir: PathBuf) -> (StubBridge, BridgeClient) {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let device_id = GrainId::random();
         let workgroup_id = GrainId::random();
@@ -143,7 +154,7 @@ impl StubBridge {
                 }),
         );
 
-        tokio::spawn(async move {
+        let serving = tokio::spawn(async move {
             let info = ServerInfo {
                 version: "stub".into(),
                 api: sapphire_bridge_api::API_VERSION,
@@ -164,10 +175,7 @@ impl StubBridge {
         let (client, _) = sapphire_ipc::Client::handshake(client_conn, "bridge", info)
             .await
             .expect("the stub handshake");
-        let client = Arc::new(BridgeClient::from_client(
-            Arc::new(client),
-            runtime_dir.clone(),
-        ));
+        let client = BridgeClient::from_client(Arc::new(client), runtime_dir.clone());
 
         (
             StubBridge {
@@ -178,10 +186,17 @@ impl StubBridge {
                 device_id,
                 workgroup_id,
                 peers_queries,
-                announcer,
+                announcer: Mutex::new(Some(announcer)),
+                serving,
             },
             client,
         )
+    }
+
+    /// Go away, as a bridge that stops does: the client's connection closes.
+    pub fn disconnect(&self) {
+        self.serving.abort();
+        self.announcer.lock().expect("stub").take();
     }
 
     /// Pretend a peer wants `workspace_id`.
@@ -191,8 +206,10 @@ impl StubBridge {
             peer_device_id: GrainId::random(),
             ticket: ticket.to_owned(),
         };
-        let _ = self
-            .announcer
+        let Some(announcer) = self.announcer.lock().expect("stub").clone() else {
+            return;
+        };
+        let _ = announcer
             .send(sapphire_ipc::Message::Notification(
                 sapphire_ipc::Notification {
                     method: sapphire_bridge_api::INCOMING.to_owned(),

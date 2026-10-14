@@ -63,7 +63,7 @@ pub use events::subscribe_method;
 pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
-pub use sync::{BackfillTiming, SyncRuntime, SyncStatus, sync_router};
+pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).
 #[cfg(feature = "mcp")]
@@ -279,6 +279,23 @@ impl AppServer {
         self
     }
 
+    /// Sync through the host's `sapphire-bridge`: [`sync`](Self::sync) with a runtime that
+    /// reaches the bridge itself, and reaches it again whenever it is lost (#244).
+    ///
+    /// [`run`](Self::run) makes the first attempt. No bridge running is not fatal — the
+    /// server serves without sync and picks the bridge up once it starts, and `sync.*`
+    /// answers that it is not connected meanwhile — but any other failure, such as a bridge
+    /// of another API version, stops the start.
+    pub fn sync_via_bridge(self) -> Result<AppServer> {
+        let runtime = SyncRuntime::connecting(
+            self.ctx,
+            BridgeConnector::standard(self.ctx.app_name, self.version),
+            std::env::current_exe()?,
+            ManagedBy::Service,
+        );
+        Ok(self.sync(Arc::new(runtime)))
+    }
+
     /// The application's own rows for the status report: shown after the framework's
     /// `running` / `version` / `pid` / `managed_by` lines.
     ///
@@ -375,6 +392,12 @@ impl AppServer {
         }
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+
+        // The first attempt to reach the bridge, before the selected workspace comes back
+        // and asks it for sync.
+        if let Some(runtime) = &sync {
+            runtime.connect().await?;
+        }
 
         let file = match selection_file {
             Some(path) => SelectionFile::at(path),
@@ -513,11 +536,11 @@ impl AppServer {
             }
         };
 
-        // The watcher, the bridge announcement loop and the dialer, if sync is on. Started
-        // only once the socket is bound, so an early `?` above cannot leave tasks running for
-        // a server that never served. All three are allowed to fail: only sync stops when
-        // they do, and the app server keeps serving files (spec §10). They are aborted with
-        // the server.
+        // The watcher, the bridge announcement loop, the dialer and the bridge connection, if
+        // sync is on. Started only once the socket is bound, so an early `?` above cannot
+        // leave tasks running for a server that never served. All of them are allowed to
+        // fail: only sync stops when they do, and the app server keeps serving files
+        // (spec §10). They are aborted with the server.
         let _sync_tasks = match &sync {
             Some(runtime) => {
                 let driver = Arc::clone(runtime);
@@ -540,7 +563,9 @@ impl AppServer {
                         tracing::warn!("the live dial loop ended: {err}");
                     }
                 });
-                Some((announcements, watching, dialling))
+                // Reaching the bridge again whenever it is lost (#244).
+                let connected = tokio::spawn(Arc::clone(runtime).keep_connected());
+                Some([announcements, watching, dialling, connected])
             }
             None => None,
         };
@@ -592,7 +617,7 @@ impl AppServer {
             // is only dropped once its current poll returns — which, mid-scan, can take a
             // while — so wait for that rather than return with a loop still holding a store
             // the next server in this process would fail to open (#235).
-            for task in [tasks.0, tasks.1, tasks.2] {
+            for task in tasks {
                 task.abort();
                 let _ = task.await;
             }

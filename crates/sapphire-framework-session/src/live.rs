@@ -156,6 +156,7 @@ where
         writer: _,
         queued,
         peer_vv,
+        sent_vv,
         mut received,
         outcome,
         stop: _,
@@ -172,6 +173,11 @@ where
         session::materialise(&mut locked, &received, &peer_vv, outcome)?
     };
 
+    // The peer has what it said it had and everything this side sent it. Starting from both,
+    // rather than from its `Hello` alone, is what lets a caller push exactly what this side
+    // committed after the exchange — nothing it already sent.
+    let mut peer_vv = peer_vv;
+    peer_vv.merge(&sent_vv);
     let peer_vv = Arc::new(Mutex::new(peer_vv));
     let open = Arc::new(AtomicBool::new(true));
     let (updates, _) = broadcast::channel(LIVE_QUEUE);

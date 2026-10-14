@@ -32,6 +32,9 @@ pub(crate) const TICKET_TTL: Duration = Duration::from_secs(60);
 struct Pending {
     stream: BoxedStream,
     created: Instant,
+    /// The announcement its owner has not heard yet, because it was not connected: the
+    /// application and what to tell it once it registers (#244).
+    unannounced: Option<(String, IncomingParams)>,
 }
 
 /// Inbound streams waiting for their owner to claim them.
@@ -57,9 +60,35 @@ impl Tickets {
             Pending {
                 stream,
                 created: Instant::now(),
+                unannounced: None,
             },
         );
         ticket
+    }
+
+    /// Keep `params` with its parked stream until `app_name` registers: its server was not
+    /// connected to hear it. Nothing happens for a ticket no longer parked.
+    pub(crate) fn hold(&self, app_name: &str, params: IncomingParams) {
+        let mut pending = self.pending.lock().expect("tickets");
+        if let Some(parked) = pending.get_mut(&params.ticket) {
+            parked.unannounced = Some((app_name.to_owned(), params));
+        }
+    }
+
+    /// The announcements held for `app_name`, now that its server has registered: one for
+    /// every stream still parked for it. Each is handed out once.
+    pub(crate) fn unannounced(&self, app_name: &str) -> Vec<IncomingParams> {
+        let mut pending = self.pending.lock().expect("tickets");
+        pending.retain(|_, p| !expired(p));
+        pending
+            .values_mut()
+            .filter(|p| {
+                p.unannounced
+                    .as_ref()
+                    .is_some_and(|(app, _)| app == app_name)
+            })
+            .filter_map(|p| p.unannounced.take().map(|(_, params)| params))
+            .collect()
     }
 
     /// Take a stream. A ticket works once; presenting it again finds nothing.
@@ -459,44 +488,60 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
             peer_device_id: device.id,
             ticket,
         };
-        match bridge.owners().peer(&route.app_name) {
-            Some(peer) => match serde_json::to_value(params) {
-                Ok(params) => {
-                    if let Err(err) = peer.notify(INCOMING, params).await {
-                        tracing::warn!(app = %route.app_name, "could not announce a peer: {err}");
-                    }
-                }
-                Err(err) => {
-                    // Infallible in practice: every field of `IncomingParams` serialises.
-                    tracing::warn!(
-                        app = %route.app_name,
-                        "could not serialise an announcement: {err}"
-                    );
-                }
-            },
-            // 4. Nobody home.
-            //
-            // The ticket is already parked, and its TTL is what gives an owner the bridge
-            // starts here the time to start, connect and claim it. A `Service`-managed
-            // owner is never started from here: its own service manager starts it, and
-            // neither the bridge nor the CLI is that manager. Wake stays `Spawned`-only,
-            // so its workspace is reported offline and its service manager is left to
-            // answer for it.
-            None if net.wake_on_sync && route.managed_by == ManagedBy::Spawned => {
-                // `claim` first, and unconditionally: it is what records the attempt, and a
-                // failed start must not be retried on every ask either.
-                if bridge.wakes().claim(&route.app_name)
-                    && let Err(err) = wake(&route)
-                {
-                    tracing::warn!(app = %route.app_name, "could not start the owner: {err}");
-                }
+        let Some(peer) = bridge.owners().peer(&route.app_name) else {
+            // Its server is not connected — stopped, or still starting, or reconnecting
+            // after this bridge restarted. The announcement waits with the stream, and
+            // registering delivers it (#244): otherwise the peer's stream would sit here
+            // unclaimed until it expired.
+            bridge.tickets().hold(&route.app_name, params);
+            nobody_home(&bridge, &net, &route);
+            continue;
+        };
+        announce(&peer, &route.app_name, params).await;
+    }
+}
+
+/// Tell `app_name`'s server, at `peer`, that a stream waits for it under `params.ticket`.
+pub(crate) async fn announce(
+    peer: &sapphire_ipc::PeerHandle,
+    app_name: &str,
+    params: IncomingParams,
+) {
+    match serde_json::to_value(params) {
+        Ok(params) => {
+            if let Err(err) = peer.notify(INCOMING, params).await {
+                tracing::warn!(app = %app_name, "could not announce a peer: {err}");
             }
-            None => tracing::info!(
-                app = %route.app_name,
-                managed_by = ?route.managed_by,
-                "the owner is not connected; reporting the workspace as offline"
-            ),
         }
+        Err(err) => {
+            // Infallible in practice: every field of `IncomingParams` serialises.
+            tracing::warn!(app = %app_name, "could not serialise an announcement: {err}");
+        }
+    }
+}
+
+/// 4. Nobody home: a stream is parked for `route`'s app, and its server is not connected.
+///
+/// The ticket is already parked, and its TTL is what gives an owner the bridge starts here
+/// the time to start, connect and claim it. A `Service`-managed owner is never started from
+/// here: its own service manager starts it, and neither the bridge nor the CLI is that
+/// manager. Wake stays `Spawned`-only, so its workspace is reported offline and its service
+/// manager is left to answer for it.
+fn nobody_home(bridge: &Bridge, net: &NetConfig, route: &Route) {
+    if net.wake_on_sync && route.managed_by == ManagedBy::Spawned {
+        // `claim` first, and unconditionally: it is what records the attempt, and a failed
+        // start must not be retried on every ask either.
+        if bridge.wakes().claim(&route.app_name)
+            && let Err(err) = wake(route)
+        {
+            tracing::warn!(app = %route.app_name, "could not start the owner: {err}");
+        }
+    } else {
+        tracing::info!(
+            app = %route.app_name,
+            managed_by = ?route.managed_by,
+            "the owner is not connected; reporting the workspace as offline"
+        );
     }
 }
 
@@ -547,6 +592,42 @@ mod tests {
             tickets.claim(&old).is_none(),
             "parking must drop what has expired"
         );
+    }
+
+    fn incoming(ticket: &str) -> IncomingParams {
+        IncomingParams {
+            workspace_id: GrainId::random(),
+            peer_device_id: GrainId::random(),
+            ticket: ticket.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_held_announcement_is_handed_to_its_app_once() {
+        // #244: a stream parked while its owner was away was never announced to it.
+        let tickets = Tickets::default();
+        let ticket = tickets.park(stream());
+        tickets.hold("app", incoming(&ticket));
+
+        assert!(tickets.unannounced("other-app").is_empty());
+        let held = tickets.unannounced("app");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].ticket, ticket);
+        assert!(tickets.unannounced("app").is_empty(), "handed out twice");
+        // The stream itself stays parked for the owner to claim.
+        assert!(tickets.claim(&ticket).is_some());
+    }
+
+    #[tokio::test]
+    async fn no_announcement_is_held_for_a_stream_that_is_gone() {
+        let tickets = Tickets::default();
+        let claimed = tickets.park(stream());
+        tickets.claim(&claimed);
+        tickets.hold("app", incoming(&claimed));
+        let expired = tickets.park(stream());
+        tickets.hold("app", incoming(&expired));
+        tickets.age(TICKET_TTL + Duration::from_secs(1));
+        assert!(tickets.unannounced("app").is_empty());
     }
 
     #[tokio::test]

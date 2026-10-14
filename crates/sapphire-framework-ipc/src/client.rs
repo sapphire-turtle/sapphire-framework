@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot, watch};
 
 use crate::conn::{Connection, Sender};
 use crate::error::{Error, Result};
@@ -83,6 +83,8 @@ pub struct Client {
     events: broadcast::Sender<Notification>,
     next_id: AtomicU64,
     server: ServerInfo,
+    /// Turns `true` once the reader has seen the connection close.
+    closed: watch::Receiver<bool>,
     reader: tokio::task::JoinHandle<()>,
 }
 
@@ -161,6 +163,7 @@ impl Client {
 
         let shared: Arc<Mutex<Shared>> = Arc::new(Mutex::new(Shared::default()));
         let (events, _) = broadcast::channel(NOTIFICATION_CAPACITY);
+        let (closed_tx, closed) = watch::channel(false);
 
         let reader = tokio::spawn({
             let shared = Arc::clone(&shared);
@@ -192,6 +195,7 @@ impl Client {
                 // and fail every call still in flight rather than leaving callers waiting
                 // forever. Both happen under one lock; see [`Shared`].
                 shared.lock().expect("shared mutex").close();
+                let _ = closed_tx.send(true);
             }
         });
 
@@ -202,6 +206,7 @@ impl Client {
             events,
             next_id: AtomicU64::new(1),
             server: welcome.server,
+            closed,
             reader,
         };
         Ok((client, server))
@@ -255,6 +260,15 @@ impl Client {
     /// [`Error::Closed`], and a caller that wants the server again connects anew.
     pub fn is_closed(&self) -> bool {
         self.shared.lock().expect("shared mutex").closed
+    }
+
+    /// Wait until the connection has closed: the moment [`is_closed`](Self::is_closed)
+    /// turns `true`. Returns at once when it already has.
+    pub async fn closed(&self) {
+        let mut closed = self.closed.clone();
+        // An error means the reader is gone without saying so, which is a closed
+        // connection all the same.
+        let _ = closed.wait_for(|closed| *closed).await;
     }
 }
 
@@ -381,6 +395,29 @@ mod tests {
 
         let err = pending.await.unwrap().unwrap_err();
         assert!(matches!(err, Error::Closed), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn closed_returns_once_the_server_goes_away() {
+        let (client_conn, server_conn) = Connection::pair();
+        let router = Arc::new(Router::new());
+        let server = tokio::spawn(async move {
+            let _ = serve(server_conn, router, "test-app", server_info()).await;
+        });
+        let (client, _) = Client::handshake(client_conn, "test-app", client_info())
+            .await
+            .unwrap();
+
+        let open = tokio::time::timeout(std::time::Duration::from_millis(50), client.closed());
+        assert!(open.await.is_err(), "closed() returned while connected");
+
+        server.abort();
+        tokio::time::timeout(std::time::Duration::from_secs(5), client.closed())
+            .await
+            .expect("closed() returns after the server went away");
+        assert!(client.is_closed());
+        // And at once, now that it has.
+        client.closed().await;
     }
 
     #[tokio::test]

@@ -64,6 +64,13 @@ pub enum Error {
     #[error("the bridge could not be reached: {0}")]
     Bridge(String),
 
+    /// The server has no connection to the bridge right now: it was not running when the
+    /// server started, or it stopped since. The server reconnects on its own (#244).
+    #[error(
+        "not connected to sapphire-bridge; this server reconnects on its own once the bridge is running"
+    )]
+    BridgeDisconnected,
+
     /// A replication session failed.
     #[error(transparent)]
     Session(#[from] sapphire_framework_session::Error),

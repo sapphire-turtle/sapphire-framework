@@ -25,7 +25,7 @@ use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_bridge::{
     Bridge, BridgeDir, HelloTiming, LoopbackNetwork, NetConfig, Workgroup,
 };
-use sapphire_framework_server::{AppServer, SyncRuntime};
+use sapphire_framework_server::{AppServer, BridgeConnector, SyncRuntime};
 use sapphire_ipc::ManagedBy;
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::AppContext;
@@ -131,6 +131,7 @@ pub async fn start_host_with_priority(
         priority,
         None,
         tempfile::tempdir().expect("a host tree"),
+        false,
     )
     .await
 }
@@ -150,6 +151,7 @@ pub async fn start_host_embedding(
         priority,
         Some(provider),
         tempfile::tempdir().expect("a host tree"),
+        false,
     )
     .await
 }
@@ -180,6 +182,7 @@ async fn build(
     priority: u8,
     embed: Option<Arc<dyn sapphire_framework_bridge::EmbedProvider>>,
     tmp: tempfile::TempDir,
+    server_first: bool,
 ) -> Host {
     let ctx = ctx();
     let runtime_dir = tmp.path().join("run");
@@ -199,69 +202,22 @@ async fn build(
     std::fs::create_dir_all(root.join(format!(".{}", ctx.app_name))).unwrap();
     let root = root.canonicalize().unwrap();
 
-    // The bridge: control, data and the inbound peer loop, on this host's own endpoints.
-    //
-    // `wake_on_sync` is off deliberately: the exe a route names would be this test binary,
-    // and a bridge that started it would spawn a second copy of the test suite.
     let control = Endpoint::in_dir("bridge", runtime_dir.clone());
-    let data = Endpoint::in_dir("bridge-data", runtime_dir.clone());
-    let bridge = Bridge::new(
-        bridge_dir.clone(),
-        Arc::new(net.transport(node_id)),
-        VERSION,
-    )
-    .unwrap()
-    .net(NetConfig {
-        wake_on_sync: false,
-        discovery: false,
-        relays: Vec::new(),
-        use_default_relays: false,
-        ..NetConfig::default()
-    })
-    .control_endpoint(control.clone())
-    .data_endpoint(data)
-    // Short Hello timing, so an election settles in well under a second instead of the
-    // field's default.
-    .hello_timing(HelloTiming {
-        interval: Duration::from_millis(100),
-        dead: Duration::from_millis(600),
-    });
-    let bridge = match &embed {
-        Some(provider) => bridge.embed_provider(Arc::clone(provider)),
-        None => bridge,
-    };
-    let bridge_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("a runtime for the bridge");
-    let mut bridge_task = bridge_runtime.spawn(async move { bridge.run().await });
-    wait_until_listening(&control, "the bridge", &mut bridge_task).await;
+    let mut bridge_runtime = None;
+    if !server_first {
+        bridge_runtime =
+            Some(start_bridge(net, node_id, &bridge_dir, &runtime_dir, embed.clone()).await);
+    }
 
-    // The app server's connection to its own bridge. Built explicitly rather than through
-    // `BridgeClient::connect`, which would look the bridge up in the process environment —
-    // one value, two hosts.
-    let (control_client, _) = connect_or_absent(
-        &control,
-        "bridge",
-        ClientInfo {
-            api: sapphire_bridge_api::API_VERSION,
-            ..client_info("test")
-        },
-    )
-    .await
-    .unwrap()
-    .expect("the bridge is listening");
-    let bridge_client = Arc::new(BridgeClient::from_client(
-        Arc::new(control_client),
-        runtime_dir.clone(),
-    ));
-
-    // The app server, with sync wired the way an application wires it.
+    // The app server, with sync wired the way an application wires it: the runtime reaches
+    // the bridge itself, and again whenever it loses it (#244). Through this host's own
+    // endpoint rather than `BridgeConnector::standard`, which would look the bridge up in the
+    // process environment — one value, two hosts.
     let endpoint = Endpoint::in_dir(ctx.app_name, runtime_dir.clone());
     let runtime = Arc::new(
-        SyncRuntime::new(
+        SyncRuntime::connecting(
             ctx,
-            Arc::clone(&bridge_client),
+            BridgeConnector::at(control.clone(), "test", VERSION),
             std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
             ManagedBy::Service,
         )
@@ -280,6 +236,28 @@ async fn build(
         .sync(Arc::clone(&runtime));
     let mut server_task = tokio::spawn(async move { server.run().await });
     wait_until_listening(&endpoint, "the app server", &mut server_task).await;
+
+    if server_first {
+        bridge_runtime =
+            Some(start_bridge(net, node_id, &bridge_dir, &runtime_dir, embed.clone()).await);
+    }
+
+    // The fixture's own connection to the bridge, for asking it directly.
+    let (control_client, _) = connect_or_absent(
+        &control,
+        "bridge",
+        ClientInfo {
+            api: sapphire_bridge_api::API_VERSION,
+            ..client_info("test")
+        },
+    )
+    .await
+    .unwrap()
+    .expect("the bridge is listening");
+    let bridge_client = Arc::new(BridgeClient::from_client(
+        Arc::new(control_client),
+        runtime_dir.clone(),
+    ));
 
     let (client, _) = connect_or_absent(&endpoint, ctx.app_name, client_info("cli"))
         .await
@@ -308,7 +286,7 @@ async fn build(
         bridge_client,
         runtime: Some(runtime),
         server: Some(server_task),
-        bridge: Some(bridge_runtime),
+        bridge: bridge_runtime,
         embed,
     }
 }
@@ -375,7 +353,17 @@ impl Host {
     }
 
     /// Bring this host back, against the same directories, with sync wired but not enabled.
-    pub async fn restart(mut self, net: &LoopbackNetwork) -> Host {
+    pub async fn restart(self, net: &LoopbackNetwork) -> Host {
+        self.rebuild(net, false).await
+    }
+
+    /// [`restart`](Self::restart), with the app server up before its bridge, as when a
+    /// service manager starts the two at once and the server wins (#244).
+    pub async fn restart_server_first(self, net: &LoopbackNetwork) -> Host {
+        self.rebuild(net, true).await
+    }
+
+    async fn rebuild(mut self, net: &LoopbackNetwork, server_first: bool) -> Host {
         self.stop_bridge().await;
         let tmp = self
             .tmp
@@ -389,7 +377,31 @@ impl Host {
             .unwrap()
             .priority;
         let embed = self.embed.take();
-        build(net, &self.node_id, &self.device_name, priority, embed, tmp).await
+        build(
+            net,
+            &self.node_id,
+            &self.device_name,
+            priority,
+            embed,
+            tmp,
+            server_first,
+        )
+        .await
+    }
+
+    /// Start this host's bridge again after [`stop_bridge`](Self::stop_bridge), against the
+    /// same directories, as a service manager restarts a daemon that died.
+    pub async fn restart_bridge(&mut self) {
+        assert!(self.bridge.is_none(), "the bridge is still running");
+        let runtime = start_bridge(
+            &self.net,
+            &self.node_id,
+            &self.bridge_dir,
+            &self.runtime_dir,
+            self.embed.clone(),
+        )
+        .await;
+        self.bridge = Some(runtime);
     }
 
     /// Stop this host's bridge, as if the daemon had died, and leave the app server running.
@@ -501,6 +513,55 @@ fn client_info(kind: &str) -> ClientInfo {
         app_api: None,
         pid: std::process::id(),
     }
+}
+
+/// Start `node_id`'s bridge on a runtime of its own — see [`Host`]'s `bridge` for why — and
+/// wait until it listens.
+async fn start_bridge(
+    net: &LoopbackNetwork,
+    node_id: &str,
+    bridge_dir: &BridgeDir,
+    runtime_dir: &std::path::Path,
+    embed: Option<Arc<dyn sapphire_framework_bridge::EmbedProvider>>,
+) -> tokio::runtime::Runtime {
+    // The bridge: control, data and the inbound peer loop, on this host's own endpoints.
+    //
+    // `wake_on_sync` is off deliberately: the exe a route names would be this test binary,
+    // and a bridge that started it would spawn a second copy of the test suite.
+    let control = Endpoint::in_dir("bridge", runtime_dir.to_path_buf());
+    let data = Endpoint::in_dir("bridge-data", runtime_dir.to_path_buf());
+    let bridge = Bridge::new(
+        bridge_dir.clone(),
+        Arc::new(net.transport(node_id)),
+        VERSION,
+    )
+    .unwrap()
+    .net(NetConfig {
+        wake_on_sync: false,
+        discovery: false,
+        relays: Vec::new(),
+        use_default_relays: false,
+        ..NetConfig::default()
+    })
+    .control_endpoint(control.clone())
+    .data_endpoint(data)
+    // Short Hello timing, so an election settles in well under a second instead of the
+    // field's default.
+    .hello_timing(HelloTiming {
+        interval: Duration::from_millis(100),
+        dead: Duration::from_millis(600),
+    });
+    let bridge = match &embed {
+        Some(provider) => bridge.embed_provider(Arc::clone(provider)),
+        None => bridge,
+    };
+    let bridge_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime for the bridge");
+    let mut bridge_task = bridge_runtime.spawn(async move { bridge.run().await });
+    wait_until_listening(&control, "the bridge", &mut bridge_task).await;
+    bridge_runtime
 }
 
 /// Drop a bridge's runtime on a thread of its own.

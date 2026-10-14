@@ -135,6 +135,9 @@ pub(crate) struct Exchange<S> {
     pub(crate) queued: JoinHandle<()>,
     /// Everything the peer said it has, as of its `Hello`.
     pub(crate) peer_vv: VersionVector,
+    /// Everything this side had when it worked out what to send: the peer has all of it
+    /// once the exchange completes.
+    pub(crate) sent_vv: VersionVector,
     /// Content received inline, or fetched, during the exchange.
     pub(crate) received: Received,
     /// What the exchange did.
@@ -344,6 +347,7 @@ where
     let delta = replica
         .delta_for(&peer_vv)
         .map_err(|e| Error::Sync(e.to_string()))?;
+    let sent_vv = replica.vv().clone();
     let sent = delta.len();
     let mut outgoing: Vec<Out> = Vec::new();
     for page in delta.chunks(PAGE) {
@@ -452,6 +456,7 @@ where
     };
 
     Ok(Exchange {
+        sent_vv,
         reader,
         out: out_tx,
         writer: writer_task,

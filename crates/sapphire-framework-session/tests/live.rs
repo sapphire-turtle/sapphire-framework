@@ -134,6 +134,33 @@ async fn a_subscriber_sees_what_arrived() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_peers_version_vector_covers_what_the_exchange_sent() {
+    // What a caller pushes once the session is up is `delta_for(peer_vv)`: it must be the
+    // commits made after the exchange, never what the exchange already carried.
+    let ws = grain_id::GrainId::random();
+    let a = side("a");
+    let b = side("b");
+    std::fs::write(a.root.join("sent.md"), "in the exchange").unwrap();
+    scan(&a).await;
+
+    let (left, right) = tokio::io::duplex(64 * 1024);
+    let (x, y) = tokio::join!(
+        open_live_session(left, Arc::clone(&a.replica), ws),
+        open_live_session(right, Arc::clone(&b.replica), ws)
+    );
+    let (_, live_a) = x.unwrap();
+    let (_, _live_b) = y.unwrap();
+    let delta = a.replica.lock().await.delta_for(&live_a.peer_vv()).unwrap();
+    assert!(delta.is_empty(), "already sent: {delta:?}");
+
+    std::fs::write(a.root.join("later.md"), "after the exchange").unwrap();
+    scan(&a).await;
+    let delta = a.replica.lock().await.delta_for(&live_a.peer_vv()).unwrap();
+    let paths: Vec<_> = delta.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(paths, ["later.md"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_peers_version_vector_advances_as_pushes_are_taken() {
     let ws = grain_id::GrainId::random();
     let a = side("a");

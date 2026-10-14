@@ -41,6 +41,10 @@ on:
         description: 'Also run test-platforms (Linux aarch64, macOS aarch64, Windows x86_64).'
         type: boolean
         default: true
+      windows:
+        description: 'Include Windows in test-platforms. Turn it off for a workspace that does not build there.'
+        type: boolean
+        default: true
       pre-build:
         description: 'A bash script run after the cargo cache is restored, before anything builds.'
         type: string
@@ -116,7 +120,9 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu-24.04-arm has no `-latest` alias; macos-latest is Apple Silicon.
-        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.windows
+          && '["ubuntu-24.04-arm", "macos-latest", "windows-latest"]'
+          || '["ubuntu-24.04-arm", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

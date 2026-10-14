@@ -38,6 +38,10 @@ on:
         description: 'A bash script run after the cargo cache is restored, before the build.'
         type: string
         default: ''
+      windows:
+        description: 'Build windows-x86_64 too. Turn it off for a binary that does not build there.'
+        type: boolean
+        default: true
       post-build:
         description: 'A bash script run after the build, with the built file in $BIN; fail it to keep a broken binary off the release.'
         type: string
@@ -51,27 +55,14 @@ jobs:
   build:
     # macOS and Windows are the platforms most likely to break unnoticed; a
     # failure there must not keep the Linux binaries from being uploaded.
-    continue-on-error: ${{ matrix.continue-on-error }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' || matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            platform: linux-x86_64
-            exe: ''
-            continue-on-error: false
-          - os: ubuntu-24.04-arm
-            platform: linux-aarch64
-            exe: ''
-            continue-on-error: false
-          - os: macos-latest
-            platform: macos-aarch64
-            exe: ''
-            continue-on-error: true
-          - os: windows-latest
-            platform: windows-x86_64
-            exe: '.exe'
-            continue-on-error: true
+        # ubuntu-24.04-arm has no `-latest` alias; macos-latest is Apple Silicon.
+        os: ${{ fromJSON(inputs.windows
+          && '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "windows-latest"]'
+          || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -107,6 +98,25 @@ jobs:
           SCRIPT: ${{ inputs.pre-build }}
         run: eval "$SCRIPT"
 
+      # The release file names this runner the way sapphire-framework-update
+      # does: <os>-<arch>, `.exe` on Windows.
+      - name: Name the platform
+        id: platform
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64) platform=linux-x86_64 ;;
+            Linux-ARM64) platform=linux-aarch64 ;;
+            macOS-ARM64) platform=macos-aarch64 ;;
+            Windows-X64) platform=windows-x86_64 ;;
+            *) echo "::error::no release platform for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+          esac
+          exe=""
+          [ "$RUNNER_OS" = Windows ] && exe=".exe"
+          {
+            echo "name=$platform"
+            echo "exe=$exe"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         run: cargo build --release --locked --package "${{ inputs.package }}" --bin "${{ inputs.binary }}"
 
@@ -114,16 +124,16 @@ jobs:
         if: inputs.post-build != ''
         env:
           SCRIPT: ${{ inputs.post-build }}
-          BIN: target/release/${{ inputs.binary }}${{ matrix.exe }}
+          BIN: target/release/${{ inputs.binary }}${{ steps.platform.outputs.exe }}
         run: eval "$SCRIPT"
 
       - name: Name the release file
         id: asset
         env:
-          BIN: target/release/${{ inputs.binary }}${{ matrix.exe }}
+          BIN: target/release/${{ inputs.binary }}${{ steps.platform.outputs.exe }}
           BASE: ${{ inputs.asset != '' && inputs.asset || inputs.binary }}
         run: |
-          name="$BASE-${{ matrix.platform }}${{ matrix.exe }}"
+          name="$BASE-${{ steps.platform.outputs.name }}${{ steps.platform.outputs.exe }}"
           cp "$BIN" "$name"
           echo "name=$name" >> "$GITHUB_OUTPUT"
 

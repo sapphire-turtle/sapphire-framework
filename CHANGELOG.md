@@ -15,6 +15,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - An app's `update` also updates the bridge: after the app itself, it runs the `sapphire-bridge` on `PATH` with `update` and the same `--check` / `--yes`, so the bridge checks its own version and install method. `--no-bridge` leaves the bridge alone. No bridge on `PATH` is skipped; a bridge too old to have `update` is reported with where to download one. The exit code is the worse of the two. `FrameworkCommand::Update` now carries `AppUpdateArgs` (`update: UpdateArgs`, `no_bridge`).
 - `AppServer::sync_runtime()` (#250): the runtime `sync` or `sync_via_bridge` set, for an application's own code that reads sync state — status rows, placement — so it can use `sync_via_bridge()` rather than building a runtime of its own to keep one. `SyncRuntime::this_device()` (this host's device id, once the bridge has told it; never asks) and `SyncRuntime::peers()` (the workgroup's devices and roles, from the bridge, `Error::BridgeDisconnected` while it is away), so an application no longer opens a bridge connection of its own to learn which device it is. `sapphire-framework-server::sync` re-exports `PeersResult` and `PeerInfo`.
 
+### Changed
+
+- `workspace init --sync --remote-workspace=<name|id> [dir]` brings a workspace the workgroup already has to this host, replacing `workspace map <name|id> [dir]`, which is gone (`WorkspaceCommand::Map` removed; `WorkspaceCommand::Init` gains `remote_workspace`). The server resolves the name, so the CLI no longer asks the bridge first.
+- `sync.map` makes the directory's marker itself when it has none, and writes no `config.toml`. The GUI's "Bring to this host…" no longer calls `workspace.init` first.
+
+### Fixed
+
+- Bringing a workspace to a new host lost the application's settings (#253): `workspace init` wrote a `config.toml` holding only the `[workspace]` registry, and when the workspace's own `config.toml` arrived it was saved as a conflict copy, leaving the registry-only one in place (sapphire-ledger: "is not a ledger yet"). Mapping no longer writes one, and the first `sync.map` of a directory deletes a `config.toml` that holds nothing but `[workspace]` before syncing starts.
+- Writing the workspace registry (`workspace init`, `workspace move`) dropped every other key of the marker's `config.toml`, such as `schema_version` (#253), and overwrote a file that did not parse. It now replaces only the `workspace` table, and a file that does not parse is an error and left as it is.
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

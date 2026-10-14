@@ -87,6 +87,7 @@ async fn sync_is_switched_by_select_and_by_workspace_sync() {
     let init = WorkspaceCommand::Init {
         dir: Some(first.clone()),
         sync: false,
+        remote_workspace: None,
     };
     assert_eq!(run(init).await, 0);
     let ws = current(&c).await;
@@ -127,6 +128,7 @@ async fn sync_is_switched_by_select_and_by_workspace_sync() {
     let init = WorkspaceCommand::Init {
         dir: Some(second.clone()),
         sync: false,
+        remote_workspace: None,
     };
     assert_eq!(run(init).await, 0);
     let select_first = WorkspaceCommand::Select {

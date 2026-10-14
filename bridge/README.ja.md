@@ -14,6 +14,24 @@
 bridge はワークスペースの中身を一切見ません。所有しているアプリサーバへ *ルーティング* し、
 ピアのバイト列が流れてよい *かどうか* を決めるだけで、その意味には関与しません。
 
+## インストール
+
+sapphire の各アプリのインストールスクリプトは、bridge も一緒に入れます。bridge だけを入れるには:
+
+```sh
+# Linux, macOS
+curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge
+```
+
+```powershell
+# Windows
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) bridge
+```
+
+`~/.local/bin` に入り、あとから `sapphire-bridge update` で更新できます。続けて
+`sapphire-bridge service install` でサービスとして動かしてください。オプションや他のアプリについては
+[`install/`](../install/README.ja.md) を参照してください。
+
 ## 動かす
 
 ```console

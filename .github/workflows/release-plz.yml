@@ -5,95 +5,30 @@ on:
     branches:
       - main
 
-# release コマンドと release-pr が同じブランチで競合しないように
-# 1 つの release-plz workflow が走っている間は次回起動を待たせる。
+# Keep the release command and the release PR from racing on the same branch:
+# while one release-plz run is in flight, the next one waits.
 concurrency:
   group: release-plz-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release-plz-release:
-    name: Release-plz release
-    runs-on: ubuntu-latest
+  release-plz:
     permissions:
       contents: write
-    outputs:
-      releases: ${{ steps.release.outputs.releases }}
-      releases_created: ${{ steps.release.outputs.releases_created }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      pull-requests: write
+    uses: ./.github/workflows/shared-release-plz.yml
+    with:
+      linux-packages: cmake libwayland-dev libxkbcommon-dev
+    secrets: inherit
 
-      # Toolchain comes from rust-toolchain.toml; rustup installs it on first use.
-      - name: Install the pinned toolchain
-        run: cargo --version
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake libwayland-dev libxkbcommon-dev
-
-      - id: release
-        uses: release-plz/action@v0.5
-        with:
-          command: release
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-  # Find the release tag to attach the sapphire-bridge binaries to. Only
-  # sapphire-framework-workspace creates the `v{version}` tag and GitHub release
-  # (release-plz.toml); sapphire-bridge shares its version group, so its binaries
-  # go onto that same release.
-  parse-releases:
-    name: Parse release-plz output
-    needs: release-plz-release
-    if: needs.release-plz-release.outputs.releases_created == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      bridge_tag: ${{ steps.parse.outputs.bridge_tag }}
-    steps:
-      - id: parse
-        env:
-          RELEASES: ${{ needs.release-plz-release.outputs.releases }}
-        run: |
-          bridge_tag=""
-          if jq -e 'any(.[]; .package_name == "sapphire-bridge")' <<<"$RELEASES" >/dev/null; then
-            bridge_tag=$(jq -r '.[] | select(.package_name == "sapphire-framework-workspace") | .tag // empty' <<<"$RELEASES")
-          fi
-          echo "bridge_tag=$bridge_tag" >> "$GITHUB_OUTPUT"
-
+  # Only sapphire-framework-workspace makes the `v{version}` tag and GitHub
+  # release (release-plz.toml); sapphire-bridge shares its version group, so its
+  # binaries go onto that release.
   build-bridge:
-    name: Build sapphire-bridge binaries
-    needs: parse-releases
-    if: needs.parse-releases.outputs.bridge_tag != ''
+    needs: release-plz
+    if: contains(fromJSON(needs.release-plz.outputs.packages), 'sapphire-bridge')
     permissions:
       contents: write
     uses: ./.github/workflows/release-bridge.yml
     with:
-      tag: ${{ needs.parse-releases.outputs.bridge_tag }}
-
-  release-plz-pr:
-    name: Release-plz PR
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
-
-      # Toolchain comes from rust-toolchain.toml; rustup installs it on first use.
-      - name: Install the pinned toolchain
-        run: cargo --version
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake libwayland-dev libxkbcommon-dev
-
-      - uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      tag: ${{ fromJSON(needs.release-plz.outputs.tags)['sapphire-framework-workspace'] }}

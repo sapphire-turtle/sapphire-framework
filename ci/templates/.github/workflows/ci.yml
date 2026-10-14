@@ -1,0 +1,15 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  ci:
+    uses: sapphire-turtle/sapphire-framework/.github/workflows/shared-rust-ci.yml@main
+    # Everything below is optional; drop what the repository does not need.
+    with:
+      # eframe's windowing needs these to build on Linux.
+      linux-packages: libwayland-dev libxkbcommon-dev
+      # packages: --workspace --exclude <app>-desktop
+      # post-test: |
+      #   ./scripts/ci/some-repository-specific-check.sh

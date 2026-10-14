@@ -1,0 +1,22 @@
+[package]
+name = "sapphire-framework-update"
+version.workspace = true
+edition.workspace = true
+description = "Find newer GitHub releases of a sapphire-framework binary, and replace it with one"
+license.workspace = true
+repository.workspace = true
+keywords = ["update", "self-update", "release", "github"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+clap.workspace = true
+reqwest.workspace = true
+self-replace = "1.5"
+semver = "1"
+serde.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

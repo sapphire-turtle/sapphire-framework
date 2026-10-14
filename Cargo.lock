@@ -5748,6 +5748,7 @@ dependencies = [
  "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-sync",
+ "sapphire-framework-update",
  "serde",
  "serde_json",
  "subtle",
@@ -5944,6 +5945,7 @@ dependencies = [
  "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-sync",
+ "sapphire-framework-update",
  "sapphire-framework-workspace",
  "semver",
  "serde",
@@ -6020,6 +6022,21 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "walkdir",
+]
+
+[[package]]
+name = "sapphire-framework-update"
+version = "0.19.0"
+dependencies = [
+ "clap",
+ "reqwest 0.13.5",
+ "self-replace",
+ "semver",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6126,6 +6143,17 @@ name = "seize"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
+
+[[package]]
+name = "self-replace"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
+dependencies = [
+ "fastrand",
+ "tempfile",
+ "windows-sys 0.52.0",
+]
 
 [[package]]
 name = "self_cell"

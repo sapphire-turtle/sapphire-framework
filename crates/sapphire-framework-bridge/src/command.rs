@@ -61,6 +61,9 @@ pub enum BridgeCommand {
     /// Install, remove or report this host's bridge service.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Replace this executable with the newest release.
+    /// Restart the service afterwards to run it.
+    Update(sapphire_framework_update::UpdateArgs),
     /// What the workgroup contains — read-only.
     #[command(subcommand)]
     Workspace(WorkspaceCommand),
@@ -92,6 +95,14 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
         args: vec!["serve".to_owned()],
         post_install: None,
     }
+}
+
+/// Where `sapphire-bridge` is released: this repository's `v<version>` releases, as
+/// `sapphire-bridge-<os>-<arch>`.
+pub fn bridge_release_source() -> sapphire_framework_update::ReleaseSource {
+    sapphire_framework_update::ReleaseSource::github("sapphire-turtle", "sapphire-framework")
+        .asset("sapphire-bridge")
+        .cargo_crate("sapphire-bridge")
 }
 
 /// `device` subcommands.
@@ -184,6 +195,14 @@ impl BridgeCommand {
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
+            BridgeCommand::Update(args) => sapphire_framework_update::run(
+                &args,
+                &bridge_release_source(),
+                BRIDGE_NAME,
+                version,
+            )
+            .await
+            .map_err(Error::from),
             BridgeCommand::Workspace(command) => match command {
                 WorkspaceCommand::List => workspace_list(version).await,
             },

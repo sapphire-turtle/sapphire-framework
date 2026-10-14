@@ -15,6 +15,10 @@ pub enum Error {
     #[error(transparent)]
     Ipc(#[from] sapphire_ipc::Error),
 
+    /// Finding, verifying or installing a release failed.
+    #[error(transparent)]
+    Update(#[from] sapphire_framework_update::Error),
+
     /// Listening, or preparing the runtime directory, failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

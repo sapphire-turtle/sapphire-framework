@@ -34,6 +34,18 @@ yet (or, for `retire`, no control-plane method).
 Starting a second bridge is not an error: it reports the pid of the one already running and
 exits non-zero.
 
+### Updating
+
+```sh
+$ sapphire-bridge update --check   # only say whether a newer release exists
+$ sapphire-bridge update           # download and install it, after asking
+```
+
+`update` replaces the binary with this platform's file from the newest GitHub release,
+downloaded over HTTPS. It never downgrades, and it leaves a binary
+installed with `cargo install` or a package manager alone (it says what to run instead).
+Restart the service afterwards to run the new version.
+
 ## Commands
 
 | Command | What it does |

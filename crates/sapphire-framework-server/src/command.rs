@@ -31,9 +31,10 @@ pub enum FrameworkCommand {
     /// Install, remove or report this application's operating-system service.
     #[command(subcommand)]
     Service(ServiceCommand),
-    /// Replace this executable with the newest release.
-    /// Restart the service afterwards to run it.
-    Update(sapphire_framework_update::UpdateArgs),
+    /// Replace this executable with the newest release, then do the same for
+    /// `sapphire-bridge` (unless `--no-bridge`). Restart the services afterwards to run
+    /// them.
+    Update(AppUpdateArgs),
     /// Create, select, show and map this application's workspace. The server serves one
     /// at a time.
     #[command(subcommand)]
@@ -77,17 +78,30 @@ impl FrameworkCommand {
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
-            FrameworkCommand::Update(args) => match server.release_source() {
-                Some(source) => {
-                    sapphire_framework_update::run(&args, source, server.app_name(), version)
-                        .await
-                        .map_err(Error::from)
-                }
-                None => {
-                    println!("{} does not say where its releases are", server.app_name());
-                    Ok(1)
-                }
-            },
+            FrameworkCommand::Update(args) => {
+                let own = match server.release_source() {
+                    Some(source) => sapphire_framework_update::run(
+                        &args.update,
+                        source,
+                        server.app_name(),
+                        version,
+                    )
+                    .await
+                    .map_err(Error::from),
+                    None => {
+                        println!("{} does not say where its releases are", server.app_name());
+                        Ok(1)
+                    }
+                };
+                // The bridge is updated whatever became of the app: one is independent of
+                // the other, and an app installed with cargo still has a released bridge.
+                let bridge = if args.no_bridge {
+                    0
+                } else {
+                    update_bridge(&args.update).await?
+                };
+                Ok(own?.max(bridge))
+            }
             FrameworkCommand::Workspace(command) => {
                 command.dispatch(server.app_name(), version).await
             }
@@ -104,6 +118,80 @@ impl FrameworkCommand {
             }
         }
     }
+}
+
+/// `update`'s arguments in an application: its own, and whether the bridge follows.
+#[derive(Clone, Debug, Default, clap::Args)]
+pub struct AppUpdateArgs {
+    /// `--check` and `--yes`, for the application and the bridge alike.
+    #[command(flatten)]
+    pub update: sapphire_framework_update::UpdateArgs,
+    /// Update this application alone, leaving `sapphire-bridge` as it is.
+    #[arg(long)]
+    pub no_bridge: bool,
+}
+
+/// The bridge's executable, as it is installed beside the apps.
+const BRIDGE_BINARY: &str = "sapphire-bridge";
+
+/// Where the bridge's releases are, for a bridge too old to update itself.
+const BRIDGE_RELEASES: &str = "https://github.com/sapphire-turtle/sapphire-framework/releases";
+
+/// The first `name` (with the platform's executable suffix) in the directories of `path`.
+fn find_on_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(path?)
+        .map(|dir| dir.join(&file))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Run the bridge on `PATH`'s own `update` with `args`; returns its exit code. No bridge on
+/// `PATH` is nothing to update.
+async fn update_bridge(args: &sapphire_framework_update::UpdateArgs) -> Result<i32> {
+    match find_on_path(BRIDGE_BINARY, std::env::var_os("PATH").as_deref()) {
+        Some(exe) => run_bridge_update(&exe, args).await,
+        None => {
+            println!("{BRIDGE_BINARY} is not on PATH; not updating it");
+            Ok(0)
+        }
+    }
+}
+
+/// Run the bridge at `exe`'s own `update` with `args`; returns its exit code.
+///
+/// The bridge updates itself rather than being replaced from here: it knows its own
+/// version and where it was installed from, and replacing a running executable is its own
+/// business on every platform.
+async fn run_bridge_update(
+    exe: &std::path::Path,
+    args: &sapphire_framework_update::UpdateArgs,
+) -> Result<i32> {
+    // A bridge from before `update` rejects the subcommand.
+    let knows_update = tokio::process::Command::new(exe)
+        .args(["update", "--help"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await?
+        .success();
+    if !knows_update {
+        println!(
+            "{} cannot update itself; install the newest from {BRIDGE_RELEASES}",
+            exe.display()
+        );
+        return Ok(1);
+    }
+    let mut command = tokio::process::Command::new(exe);
+    command.arg("update");
+    if args.check {
+        command.arg("--check");
+    }
+    if args.yes {
+        command.arg("--yes");
+    }
+    // Inherited stdio: the bridge asks its own question and says what it did.
+    let status = command.status().await?;
+    Ok(status.code().unwrap_or(1))
 }
 
 /// The `workspace` subcommands (#215: one workspace per server).
@@ -955,6 +1043,100 @@ mod tests {
             probe.command,
             Command::Framework(FrameworkCommand::Mcp)
         ));
+    }
+
+    #[test]
+    fn the_update_command_parses_with_and_without_the_bridge() {
+        let probe = Probe::try_parse_from(["app", "update", "--check", "-y"]).unwrap();
+        let Command::Framework(FrameworkCommand::Update(args)) = probe.command else {
+            panic!("not update");
+        };
+        assert!(args.update.check && args.update.yes && !args.no_bridge);
+        let probe = Probe::try_parse_from(["app", "update", "--no-bridge"]).unwrap();
+        let Command::Framework(FrameworkCommand::Update(args)) = probe.command else {
+            panic!("not update");
+        };
+        assert!(args.no_bridge);
+    }
+
+    #[test]
+    fn the_bridge_is_found_in_the_first_directory_of_path_that_has_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (empty, first, second) = (
+            tmp.path().join("empty"),
+            tmp.path().join("first"),
+            tmp.path().join("second"),
+        );
+        let file = format!("sapphire-bridge{}", std::env::consts::EXE_SUFFIX);
+        for dir in [&empty, &first, &second] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(first.join(&file), b"").unwrap();
+        std::fs::write(second.join(&file), b"").unwrap();
+        let path = std::env::join_paths([&empty, &first, &second]).unwrap();
+        assert_eq!(
+            find_on_path("sapphire-bridge", Some(&path)),
+            Some(first.join(&file))
+        );
+        let path = std::env::join_paths([&empty]).unwrap();
+        assert_eq!(find_on_path("sapphire-bridge", Some(&path)), None);
+        assert_eq!(find_on_path("sapphire-bridge", None), None);
+    }
+
+    /// An executable shell script at `dir/name` that runs `body`.
+    #[cfg(unix)]
+    fn script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_bridge_runs_its_own_update_with_the_apps_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("args");
+        // Records the real run (not the `--help` probe) and exits as an update that
+        // declined would.
+        let exe = script(
+            tmp.path(),
+            "bridge",
+            &format!(
+                r#"case "$*" in *--help*) exit 0;; esac; echo "$@" > {}; exit 1"#,
+                log.display()
+            ),
+        );
+        let args = sapphire_framework_update::UpdateArgs {
+            check: true,
+            yes: true,
+        };
+        assert_eq!(run_bridge_update(&exe, &args).await.unwrap(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().trim(),
+            "update --check --yes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bridge_without_update_is_not_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join("runs");
+        // What clap does with an unknown subcommand: exit 2, whatever the arguments.
+        let exe = script(
+            tmp.path(),
+            "bridge",
+            &format!(r#"echo "$*" >> {}; exit 2"#, runs.display()),
+        );
+        let code = run_bridge_update(&exe, &Default::default()).await.unwrap();
+        assert_eq!(code, 1);
+        assert_eq!(
+            std::fs::read_to_string(&runs).unwrap(),
+            "update --help\n",
+            "only the probe ran"
+        );
     }
 
     #[test]

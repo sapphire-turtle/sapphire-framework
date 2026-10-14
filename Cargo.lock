@@ -1313,9 +1313,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.5.8"
+version = "0.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 dependencies = [
  "serde_core",
 ]
@@ -1697,9 +1697,9 @@ dependencies = [
 
 [[package]]
 name = "equivalent"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "erased-serde"
@@ -5180,9 +5180,9 @@ checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
 name = "redb"
-version = "4.3.0"
+version = "4.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
+checksum = "39178e0a867f9e3eaa6292a4ab1dd3613f2519c5b564341e1e7b29b270736cc4"
 dependencies = [
  "libc",
 ]
@@ -5559,9 +5559,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-native-certs"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+checksum = "4a073f5dc7469f984c52ad2752b63b0807745133b6de880b7b64c1ac4c48aec4"
 dependencies = [
  "openssl-probe",
  "rustls-pki-types",
@@ -5666,7 +5666,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -5682,7 +5682,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
@@ -5704,7 +5704,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-backend"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5725,7 +5725,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5775,7 +5775,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-client"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
@@ -5786,7 +5786,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-embed"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5806,7 +5806,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-frontmatter"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "chrono",
  "indexmap",
@@ -5818,7 +5818,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-gui"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "egui",
  "fontdb",
@@ -5840,7 +5840,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-ipc"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "dirs 7.0.0",
  "libc",
@@ -5857,7 +5857,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-keys"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5876,7 +5876,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-mcp"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "axum",
  "rmcp",
@@ -5894,7 +5894,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-registry"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -5909,7 +5909,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-retrieve"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "redb",
  "serde",
@@ -5923,7 +5923,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-server"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5966,7 +5966,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-service"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "clap",
  "libc",
@@ -5980,7 +5980,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-session"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "grain-id",
  "sapphire-framework-sync",
@@ -5994,7 +5994,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-sync"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "grain-id",
  "ignore",
@@ -6013,7 +6013,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-track"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "redb",
  "tempfile",
@@ -6023,7 +6023,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-workspace"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "chrono",
  "clap",
@@ -6994,9 +6994,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -8308,18 +8308,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.62"
+version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86502bf56ac7c77571a32e2647bb2a15894565e981fb2a48d7bde2d91c965a9d"
+checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.62"
+version = "0.8.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5457206954b06561e2608c7e19cf58b1926586d999c246eebe4502f7e2039d1a"
+checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
 dependencies = [
  "proc-macro2",
  "quote",

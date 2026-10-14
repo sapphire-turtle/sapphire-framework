@@ -14,6 +14,25 @@ workgroups the host belongs to, and tells an app server where its peers are.
 It never looks inside a workspace: it routes *to* the app server that owns one, and decides
 *whether* a peer's bytes may flow, never what they mean.
 
+## Installing
+
+Every sapphire application's install script installs the bridge along with it. For the
+bridge alone:
+
+```sh
+# Linux, macOS
+curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge
+```
+
+```powershell
+# Windows
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) bridge
+```
+
+It goes to `~/.local/bin`, where `sapphire-bridge update` can replace it later. Then run it as
+a service with `sapphire-bridge service install`. See [`install/`](../install/README.md) for
+the options and the other applications.
+
 ## Running it
 
 ```console

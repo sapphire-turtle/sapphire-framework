@@ -212,7 +212,9 @@ pub struct WorkspaceInitParams {
 pub struct WorkspaceInitResult {
     /// The workspace's canonical root.
     pub root: PathBuf,
-    /// Its stable id, as the registry keys it.
+    /// The root's directory name, slugified. Nothing keys by it any more: it was the id
+    /// of the `[workspace]` registry entry `workspace.init` used to write into the
+    /// marker's `config.toml`, and stays for clients that print it.
     pub workspace_id: String,
     /// `false` when the workspace already existed (exit 0 either way).
     pub created: bool,

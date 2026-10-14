@@ -128,7 +128,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-keys` | `protect` / `AuthConfig` / `BridgeVerifier`。HTTP エンドポイントで external device の Bearer トークンを bridge に確かめる（#199） |
 | `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec`・systemd user unit・LaunchAgent・タスクスケジューラ） |
 | `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + `IpcBackend` / `LocalBackend`。`protocol` は `sapphire-framework-server-api` の re-export |
-| `sapphire-framework-gui` | app 非依存の egui `WorkspaceManager` / `WorkspaceRegistry` と同期 GUI 部品（下記「GUI 部品」） |
+| `sapphire-framework-gui` | app 非依存の egui 部品: 同期 GUI 部品（下記「GUI 部品」）。旧 `WorkspaceManager`（`WorkspaceRegistry` を操作する一覧画面）は deprecated（#217） |
 | ~~`sapphire-framework-rpc`~~ / ~~`-remote-client`~~ / ~~`-remote-server`~~ / ~~`-blob`~~ | **削除**（HTTP 同期スタック。表面テスト `tests/surface.rs` で存在を封じる。内容はファイル原本から直接供給される — sync 仕様 §2.3） |
 
 **`-sync` と `-session` は `-workspace` / `-retrieve` に依存しない**（転送非依存の中核として。
@@ -413,7 +413,7 @@ re-export される（`sapphire_framework::{clap, serde, dirs}`）。ディレ�
 
 **環境変数名は統一規約**: カテゴリ別のオーバーライドは `SAPPHIRE_<APP>_<CATEGORY>_DIR`
 （`CATEGORY` は `CACHE` / `DATA` / `CONFIG`）。置換するのは**プラットフォームルートのみ**。
-ワークスペースルートは `SAPPHIRE_<APP>_DIR`。ワークスペース外の状態は per-app レイアウトの
+ワークスペースルートの `SAPPHIRE_<APP>_DIR` は deprecated（#227。下記）。ワークスペース外の状態は per-app レイアウトの
 外に置く — bridge ディレクトリは `<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）、
 IPC ソケットは `<データルート>/sapphire-bridge/run/`（`SAPPHIRE_RUNTIME_DIR`）。ホスト = 1 デバイス
 だから app 名も kind も持たない。
@@ -424,11 +424,11 @@ IPC ソケットは `<データルート>/sapphire-bridge/run/`（`SAPPHIRE_RUNT
   つき）。per-kind 時代のレイアウトを読むので、unsplit より先に走る。
 - unsplit: `<app>/<kind>/…` → `<app>/…`（上記の blockquote 参照。競合時は server のコピーが勝ち）。
 
-**CLI 引数の統一**: 共通引数 `WorkspaceArgs`（clap の `Args`。`#[command(flatten)]` で組み込む）
-の正規名は `--workspace-dir`。旧名（`--journal-dir` / `--ledger-dir` / `--data-dir`）は
-clap alias として受け付ける。解決順序は `Workspace::resolve` が担い、**明示引数 →
-`SAPPHIRE_<APP>_DIR` → `SAPPHIRE_WORKSPACE_DIR`（warn 付き。deprecated のまま残る唯一の旧名）→
-カレントディレクトリ** の順。
+**ワークスペースの指定**: アプリサーバーが開くワークスペースは `<config dir>/workspace.toml`
+（`workspace select` が書く）だけで決まる。クライアント側の共通引数 `WorkspaceArgs`
+（`--workspace-dir` と別名 `--journal-dir` / `--ledger-dir` / `--data-dir`）と、明示引数 →
+`SAPPHIRE_<APP>_DIR` → カレントディレクトリの順で解決する `Workspace::resolve` は deprecated
+（#227）。`serve` にも起動時の指定手段は設けない。
 
 ## 実装の現在地
 

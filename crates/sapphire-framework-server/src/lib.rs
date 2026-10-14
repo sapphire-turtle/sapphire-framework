@@ -1032,7 +1032,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn workspace_init_creates_the_marker_and_tells_the_registry() {
+    async fn workspace_init_creates_the_marker() {
         let f = prepared();
         let endpoint = f.endpoint.clone();
         let server = AppServer::new(&CTX, "0.0.0").endpoint(endpoint.clone());

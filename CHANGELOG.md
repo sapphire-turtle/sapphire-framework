@@ -21,6 +21,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `sync.map` makes the directory's marker itself when it has none, and writes no `config.toml`. The GUI's "Bring to this host…" no longer calls `workspace.init` first.
 - `sapphire-bridge` with no subcommand prints the help instead of starting the bridge; start it with `sapphire-bridge serve` (the installed service unit already names `serve`). `BridgeCommand` and `FrameworkCommand` no longer implement `Default`, so an app CLI that started its server on a bare invocation with `unwrap_or_default()` no longer compiles: make the subcommand required and add `#[command(arg_required_else_help = true)]` to print the help instead.
 
+- `workspace init` (`workspace.init`) no longer writes a `[workspace.<id>]` registry entry into the marker's `config.toml`, and `workspace move` no longer rewrites one (#217). It keyed the apps' `--workspace <id>` selectors, which went with the server serving one workspace. `WorkspaceInitResult::workspace_id` stays — still the root's directory name, slugified — but nothing keys by it. The first `sync.map` of a directory still deletes a `config.toml` an older `init` left holding nothing but `[workspace]`.
+
+### Deprecated
+
+- `WorkspaceArgs` (the global `--workspace-dir` and its aliases `--journal-dir` / `--ledger-dir` / `--data-dir`), `Workspace::resolve` and `app_dirs::workspace_dir_env_var` (#227). A client command runs against the workspace the server serves, chosen with `workspace select` and kept in `workspace.toml`, so naming a directory on the client side picks nothing; apps stop flattening `WorkspaceArgs` into their CLI. `serve` takes no workspace option either: `workspace.toml` stays the one place the choice comes from.
+- `sapphire-framework-backend`'s `WorkspaceRegistry`, `WorkspaceEntry`, `WorkspaceSelection`, `WorkspaceLocator`, `WorkspaceSource` and `DEFAULT_ID`, and `sapphire-framework-gui`'s `WorkspaceManager`, `WorkspaceHost` and `WorkspaceAction` (#217): they choose among several workspaces on the client side. Use `IpcBackend` and, in a GUI, `views::WorkspacePicker` with `Command::WorkspaceSelect`. All of these go once the apps have moved off them.
+
 ### Fixed
 
 - Bringing a workspace to a new host lost the application's settings (#253): `workspace init` wrote a `config.toml` holding only the `[workspace]` registry, and when the workspace's own `config.toml` arrived it was saved as a conflict copy, leaving the registry-only one in place (sapphire-ledger: "is not a ledger yet"). Mapping no longer writes one, and the first `sync.map` of a directory deletes a `config.toml` that holds nothing but `[workspace]` before syncing starts.

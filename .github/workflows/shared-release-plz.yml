@@ -14,8 +14,8 @@ name: Shared release-plz
 # workflow for what GITHUB_TOKEN pushes, so a release PR opened with it never
 # runs CI and can never satisfy a ruleset's required checks.
 #
-# Keep the caller's `concurrency` so a release and the next release PR never
-# race on the same branch.
+# Keep the caller's `concurrency` so two pushes' runs never race on the same
+# branch; within a run, release-pr waits for release (see below).
 #
 # Outputs, for fanning out to shared-release-binary.yml:
 # - packages: JSON array of the package names released by this push.
@@ -92,8 +92,14 @@ jobs:
             echo "tags=$(jq -c 'map({key: .package_name, value: (.tag // "")}) | from_entries' <<<"$releases")"
           } >> "$GITHUB_OUTPUT"
 
+  # Only after `release`. Run side by side, release-pr on the push that merges
+  # a release PR would look before the release exists — no tag, nothing on
+  # crates.io yet — take the version as unreleased, and open a release PR for
+  # the very version being released. If `release` fails, there is no next PR
+  # to open until it is fixed.
   release-pr:
     name: Release-plz PR
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: write

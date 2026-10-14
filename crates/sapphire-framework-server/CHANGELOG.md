@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.20.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.19.0...sapphire-framework-server-v0.20.0) - 2026-10-14
+
+### Added
+
+- [**breaking**] print the help on a bare invocation instead of starting the server
+- *(server)* let an application read the runtime sync_via_bridge mounts ([#250](https://github.com/sapphire-turtle/sapphire-framework/pull/250))
+- *(server)* an app's update also updates sapphire-bridge
+- verified self-update for app CLIs and sapphire-bridge
+- *(server)* look for newer releases and show them in status and the GUI
+
+### Fixed
+
+- map a workgroup workspace without writing config.toml first
+- *(server)* pick the newest release by tag prefix, not releases/latest
+
+### Other
+
+- Merge pull request #266 from sapphire-turtle/refactor/single-workspace-cleanup
+- deprecate client-side workspace selection and the old registry
+- Merge remote-tracking branch 'origin/main' into feat/bare-invocation-help
+- Merge pull request #254 from sapphire-turtle/fix/workspace-init-sync
+- *(update)* drop minisign; trust the GitHub release over HTTPS
+
 ## [0.19.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.18.0...sapphire-framework-server-v0.19.0) - 2026-10-14
 
 ### Added

@@ -550,7 +550,9 @@ impl SyncRuntime {
     /// then selects it and syncs it.
     ///
     /// `selector` is the workspace's name or id, as [`workspaces`] lists it; `dir` must
-    /// already be a workspace of this application — the directory is placed, not made.
+    /// exist. Its marker is made when it has none, and nothing else: the marker's
+    /// `config.toml` is the application's, and arrives with the first sync — a local one
+    /// written first would meet it as a conflict (#253).
     ///
     /// [`workspaces`]: SyncRuntime::workspaces
     pub async fn place(&self, selector: &str, dir: &Path) -> Result<PathBuf> {
@@ -573,6 +575,10 @@ impl SyncRuntime {
         }
 
         let root = dir.canonicalize().map_err(Error::Io)?;
+        let marker = root.join(format!(".{}", self.ctx.app_name));
+        if !marker.is_dir() {
+            std::fs::create_dir(&marker).map_err(Error::Io)?;
+        }
         let workspace = Workspace::from_root(self.ctx, &root)?;
         if workspace.root != root {
             return Err(Error::UnknownWorkspace(root, self.ctx.app_name));

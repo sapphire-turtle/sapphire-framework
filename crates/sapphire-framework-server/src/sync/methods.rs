@@ -475,6 +475,83 @@ mod map_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn mapping_makes_the_marker_and_writes_no_config() {
+        let f = fixture().await;
+        let id = grain_id::GrainId::random();
+        f.stub.list(WorkgroupWorkspaceInfo {
+            workspace_id: id,
+            app_name: "sapphire-syncmap".into(),
+            name: "notes".into(),
+        });
+        let dir = f.root.parent().unwrap().join("fresh");
+        std::fs::create_dir(&dir).unwrap();
+
+        let result: proto::SyncEnableResult = f
+            .client
+            .call(
+                proto::SYNC_MAP,
+                proto::SyncMapParams {
+                    workspace: "notes".into(),
+                    dir: dir.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.workspace_id, id);
+        let marker = dir.join(".sapphire-syncmap");
+        assert!(marker.is_dir(), "mapping made the marker");
+        assert!(
+            !marker.join("config.toml").exists(),
+            "the workspace's config arrives with the sync (#253)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mapping_drops_a_registry_only_config_and_keeps_an_apps() {
+        let f = fixture().await;
+        let id = grain_id::GrainId::random();
+        f.stub.list(WorkgroupWorkspaceInfo {
+            workspace_id: id,
+            app_name: "sapphire-syncmap".into(),
+            name: "notes".into(),
+        });
+        let bare = f.root.parent().unwrap().join("bare");
+        let app = f.root.parent().unwrap().join("app");
+        for (dir, config) in [
+            (&bare, "[workspace.bare]\npath = \"/x\"\n"),
+            (
+                &app,
+                "schema_version = 2\n\n[workspace.app]\npath = \"/x\"\n",
+            ),
+        ] {
+            std::fs::create_dir_all(dir.join(".sapphire-syncmap")).unwrap();
+            std::fs::write(dir.join(".sapphire-syncmap").join("config.toml"), config).unwrap();
+        }
+
+        for dir in [&bare, &app] {
+            let _: proto::SyncEnableResult = f
+                .client
+                .call(
+                    proto::SYNC_MAP,
+                    proto::SyncMapParams {
+                        workspace: "notes".into(),
+                        dir: dir.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            !bare.join(".sapphire-syncmap").join("config.toml").exists(),
+            "a config holding only the registry would win over the workspace's (#253)"
+        );
+        assert!(
+            app.join(".sapphire-syncmap").join("config.toml").exists(),
+            "an application's settings stay"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn mapping_by_id_works_too() {
         let f = fixture().await;
         let id = grain_id::GrainId::random();
@@ -555,10 +632,9 @@ mod map_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_directory_that_is_not_a_workspace_is_refused() {
+    async fn a_directory_that_does_not_exist_is_refused() {
         let f = fixture().await;
         let plain = f._tmp.path().join("plain");
-        std::fs::create_dir_all(&plain).unwrap();
         let id = grain_id::GrainId::random();
         f.stub.list(WorkgroupWorkspaceInfo {
             workspace_id: id,
@@ -572,16 +648,11 @@ mod map_tests {
                 proto::SYNC_MAP,
                 proto::SyncMapParams {
                     workspace: "notes".into(),
-                    dir: plain,
+                    dir: plain.clone(),
                 },
             )
-            .await
-            .unwrap_err();
-        match err {
-            sapphire_ipc::Error::Rpc(e) => {
-                assert_eq!(e.code, sapphire_ipc::codes::INVALID_PARAMS, "{}", e.message);
-            }
-            other => panic!("got {other:?}"),
-        }
+            .await;
+        assert!(err.is_err(), "mapping needs the directory");
+        assert!(!plain.exists(), "and does not make it");
     }
 }

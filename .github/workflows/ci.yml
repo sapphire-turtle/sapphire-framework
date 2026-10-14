@@ -4,79 +4,15 @@ on:
   pull_request:
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      # The toolchain (and its clippy/rustfmt components) comes from
-      # rust-toolchain.toml. rustup installs it on first use; do that in its
-      # own step so the download does not land in the middle of another one.
-      - name: Install the pinned toolchain
-        run: cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake libwayland-dev libxkbcommon-dev
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all-features --locked
-
+  ci:
+    uses: ./.github/workflows/shared-rust-ci.yml
+    with:
+      # cmake for aws-lc-sys; Wayland and xkbcommon for the gui crate.
+      linux-packages: cmake libwayland-dev libxkbcommon-dev
       # A facade feature can name a dependency that only compiles with its
       # neighbours enabled: a manifest test sees the text, a compile proves the
-      # promise each feature makes on its own (`--locked` here covers the whole
-      # job's run above, so it is free).
-      - name: Each facade feature builds on its own
-        run: |
-          for f in workspace retrieve track sync session ipc server http mcp frontmatter bridge keys service registry backend; do
-            cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
-          done
-
-  # The release (release-bridge.yml) ships binaries for four platforms; the job
-  # above covers linux-x86_64, this one covers the other three so a platform-only
-  # break shows up on the pull request instead of in a release run. It also
-  # compiles the `#[cfg(windows)]` / `#[cfg(unix)]` code the Linux job never sees
-  # (e.g. the Windows named pipe carrier in crates/sapphire-framework-ipc).
-  #
-  # Kept separate from `test` rather than folded into one matrix: the `main`
-  # ruleset requires a check named `test`, and a matrix would rename it to
-  # `test (<os>)`. Formatting and the facade feature loop are platform
-  # independent, so they stay on Linux only.
-  test-platforms:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install the pinned toolchain
-        run: cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-
-      # Same set as release-bridge.yml, plus what the gui crate needs on Linux.
-      # cmake (aws-lc-sys) is preinstalled on the macOS and Windows runners.
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler cmake libwayland-dev libxkbcommon-dev
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: choco install protoc
-
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all-features --locked
+      # promise each feature makes on its own.
+      post-test: |
+        for f in workspace retrieve track sync session ipc server http mcp frontmatter bridge keys service registry backend; do
+          cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
+        done

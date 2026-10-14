@@ -1,0 +1,122 @@
+name: Shared release-plz
+
+# release-plz for a sapphire-turtle repository: `release` publishes what a
+# merged release PR bumped (crates.io, tags, GitHub releases), then `release-pr`
+# opens or updates the next release PR. Call it on every push to `main`, with
+# the caller's secrets (see ci/templates/release-plz.yml):
+#
+#   jobs:
+#     release-plz:
+#       uses: sapphire-turtle/sapphire-framework/.github/workflows/shared-release-plz.yml@main
+#       secrets: inherit
+#
+# Both commands use RELEASE_PLZ_TOKEN, not GITHUB_TOKEN: GitHub starts no
+# workflow for what GITHUB_TOKEN pushes, so a release PR opened with it never
+# runs CI and can never satisfy a ruleset's required checks.
+#
+# Keep the caller's `concurrency` so a release and the next release PR never
+# race on the same branch.
+#
+# Outputs, for fanning out to shared-release-binary.yml:
+# - packages: JSON array of the package names released by this push.
+# - tags: JSON object from each released package's name to its tag (`""` for
+#   a package that makes no tag of its own).
+on:
+  workflow_call:
+    inputs:
+      linux-packages:
+        description: 'Extra apt packages to install, space separated. protoc is always installed.'
+        type: string
+        default: ''
+    secrets:
+      RELEASE_PLZ_TOKEN:
+        required: true
+      CARGO_REGISTRY_TOKEN:
+        required: false
+    outputs:
+      packages:
+        description: 'JSON array of the package names this push released.'
+        value: ${{ jobs.release.outputs.packages }}
+      tags:
+        description: 'JSON object from each released package name to its tag.'
+        value: ${{ jobs.release.outputs.tags }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      packages: ${{ steps.parse.outputs.packages }}
+      tags: ${{ steps.parse.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      # rustup installs the rust-toolchain.toml toolchain on first use.
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Install dependencies
+        env:
+          PACKAGES: ${{ inputs.linux-packages }}
+        run: |
+          sudo apt-get update
+          # Unquoted on purpose: PACKAGES is a list.
+          sudo apt-get install -y protobuf-compiler $PACKAGES
+
+      - id: release
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Always produce valid JSON, so a caller's `fromJSON` never sees an empty
+      # string on a push that released nothing.
+      - id: parse
+        env:
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: |
+          releases=${RELEASES:-[]}
+          {
+            echo "packages=$(jq -c '[.[].package_name]' <<<"$releases")"
+            echo "tags=$(jq -c 'map({key: .package_name, value: (.tag // "")}) | from_entries' <<<"$releases")"
+          } >> "$GITHUB_OUTPUT"
+
+  release-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Install dependencies
+        env:
+          PACKAGES: ${{ inputs.linux-packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler $PACKAGES
+
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

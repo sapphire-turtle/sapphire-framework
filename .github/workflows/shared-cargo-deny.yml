@@ -1,0 +1,17 @@
+name: Shared cargo-deny
+
+# License compatibility, RUSTSEC advisories, banned crates and unknown sources,
+# against the caller's deny.toml (see ci/templates/deny.toml). The caller picks
+# the triggers; ci/templates/cargo-deny.yml runs it on manifest changes, on
+# `main`, and weekly so a newly filed advisory surfaces without a code change.
+on:
+  workflow_call:
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

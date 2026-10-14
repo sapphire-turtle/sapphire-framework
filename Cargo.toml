@@ -29,7 +29,7 @@ members = [
 version = "0.19.0"
 description = "Local-first, file-based workspace framework made for human-agent collaboration - indexing, search and sync over plain-text files"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/fluo10/sapphire-framework"
+repository = "https://github.com/sapphire-turtle/sapphire-framework"
 edition = "2024"
 
 [workspace.dependencies]

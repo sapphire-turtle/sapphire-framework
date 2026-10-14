@@ -54,8 +54,8 @@ mod test_support;
 mod update;
 
 pub use command::{
-    DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
-    WorkspaceSyncCommand, render_workspace,
+    AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
+    WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
 };
 pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig};
 pub use current::Current;

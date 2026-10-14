@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-14
+
 ### Added
 
 - `AppServer::sync_via_bridge()` (#244): the server reaches the host's `sapphire-bridge` itself, and reaches it again whenever it is lost — a bridge that starts after the server, or restarts under it. `run` makes the first attempt: no bridge running is not fatal, any other failure (a bridge of another API version) still stops the start. Applications replace their own `BridgeClient::connect` / `SyncRuntime::new` / `AppServer::sync` branch in `serve` with this one call. The pieces underneath: `SyncRuntime::connecting` with a `BridgeConnector` (`standard`, `at`, or `new` from a closure), `SyncRuntime::connect` / `keep_connected` / `is_connected`, and `with_connector` for a runtime built with `SyncRuntime::new`. `sapphire-framework-ipc`: `Client::closed`. `sapphire-framework-bridge-client`: `BridgeClient::is_closed` / `closed`.

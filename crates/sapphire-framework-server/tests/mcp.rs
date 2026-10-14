@@ -286,6 +286,7 @@ async fn mcp_over_http_takes_a_token_and_serves_the_framework_tools() {
             allowed_hosts: Vec::new(),
         },
         mcp: McpConfig { http: true },
+        ..ServerConfig::default()
     };
     let server = AppServer::new(&CTX_HTTP, "0.0.0")
         .config(config)

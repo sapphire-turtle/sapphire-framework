@@ -1,4 +1,6 @@
-use crate::client::{Command, CommandOutput, Conn, ServiceTarget};
+use sapphire_backend::protocol::ReleaseInfo;
+
+use crate::client::{Command, CommandOutput, Conn, ServerState, ServiceTarget};
 
 use super::{ViewCtx, error_line};
 
@@ -50,6 +52,15 @@ impl ServiceStatusBanner {
                 ui.separator();
             }
         });
+        if let Some(release) = available_release(&cx.snapshot.server) {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} {} is available. Install it, then restart the service.",
+                    cx.app_name, release.version
+                ));
+                ui.hyperlink_to("Release notes", &release.url);
+            });
+        }
         if cx.busy {
             ui.spinner();
         }
@@ -70,6 +81,17 @@ impl ServiceStatusBanner {
     /// Show an install failure (it carries the command to run by hand).
     pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
         self.error = result.as_ref().err().cloned();
+    }
+}
+
+/// The newer release the app server found, if it found one.
+fn available_release(server: &Conn<ServerState>) -> Option<&ReleaseInfo> {
+    let Conn::Up(state) = server else { return None };
+    let update = state.update.as_ref()?;
+    if update.enabled && update.update_available {
+        update.latest.as_ref()
+    } else {
+        None
     }
 }
 
@@ -105,6 +127,47 @@ mod tests {
         );
         assert_eq!(manual_command("closed"), None);
         assert_eq!(manual_command("run: "), None);
+    }
+
+    fn server(update: Option<sapphire_backend::protocol::UpdateStatus>) -> Conn<ServerState> {
+        Conn::Up(ServerState {
+            info: sapphire_backend::protocol::StatusReport {
+                running: true,
+                version: Some("0.19.0".into()),
+                pid: Some(1),
+                managed_by: None,
+                app: vec![],
+            },
+            current: None,
+            update,
+        })
+    }
+
+    #[test]
+    fn only_a_found_newer_release_is_shown() {
+        use sapphire_backend::protocol::UpdateStatus;
+        let release = ReleaseInfo {
+            version: "0.20.0".into(),
+            url: "https://example.invalid/v0.20.0".into(),
+        };
+        let found = UpdateStatus {
+            enabled: true,
+            latest: Some(release.clone()),
+            update_available: true,
+            last_error: None,
+        };
+        assert_eq!(
+            available_release(&server(Some(found.clone()))),
+            Some(&release)
+        );
+        let current = UpdateStatus {
+            update_available: false,
+            ..found
+        };
+        assert_eq!(available_release(&server(Some(current))), None);
+        // An older server, or one not checking, says nothing.
+        assert_eq!(available_release(&server(None)), None);
+        assert_eq!(available_release(&Conn::Absent), None);
     }
 
     #[test]

@@ -135,10 +135,11 @@ pub mod prelude {
     // flat command vocabulary an app flattens into its own CLI beside its own
     // subcommands (issue #142); the sub-enums and the typed status report come
     // with it, so an app never needs the `server` module to build its CLI.
+    // `UpdateCheck` names where the app's releases are, for `AppServer::update_check`.
     #[cfg(feature = "server")]
     pub use sapphire_framework_server::{
-        AppServer, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
-        WorkspaceCommand, WorkspaceHost,
+        AppServer, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, UpdateCheck,
+        WorkgroupCommand, WorkspaceCommand, WorkspaceHost,
     };
 }
 

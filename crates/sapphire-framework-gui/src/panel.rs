@@ -226,6 +226,7 @@ mod tests {
                     workspace_id: None,
                     sync: SyncStatusResult::not_synced(),
                 }),
+                update: None,
             }),
         }
     }

@@ -8,6 +8,11 @@
 # Files go to ~\.local\bin, where the `update` command of each binary
 # recognises a release install and can replace it later. A binary installed by
 # cargo is left alone, as `update` would.
+
+# Only the app names are positional: without PositionalBinding = $false, a bare
+# name binds to the first free parameter in declaration order (-Version, say)
+# before -App ever sees it.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $App = @(),

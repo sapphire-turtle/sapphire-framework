@@ -1,8 +1,8 @@
 //! The `sapphire-bridge` command line.
 //!
 //! The same flat vocabulary every sapphire CLI speaks (2026-09-24 spec decisions 1/2), with
-//! this bridge's own `log` beside it. Running it with no subcommand starts the bridge; every
-//! other subcommand is a one-shot command against a running one. Two of them work directly on
+//! this bridge's own `log` beside it. Running it with no subcommand prints the help; `serve`
+//! starts the bridge, and every other subcommand is a one-shot command against a running one. Two of them work directly on
 //! the bridge directory instead — [`WorkgroupCommand::Create`], because there is nothing to
 //! ask about a workgroup that does not exist yet, and [`DeviceCommand::Retire`], because the
 //! control plane has no method for it. Both then see their effect immediately: the ledger is
@@ -42,10 +42,9 @@ use crate::{Bridge, BridgeDir, InstanceLock};
 /// workgroup that does not exist yet, and `device retire`, because the control
 /// plane has no method for it. Both see their effect at once: the ledger is
 /// re-read on every authorization.
-#[derive(Debug, Default, clap::Subcommand)]
+#[derive(Debug, clap::Subcommand)]
 pub enum BridgeCommand {
-    /// Run the bridge in this process (the bare invocation).
-    #[default]
+    /// Run the bridge in this process.
     Serve,
     /// Report what the bridge knows — live, or from the last snapshot it wrote.
     Status,
@@ -299,9 +298,8 @@ fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSett
 
 // ── run ─────────────────────────────────────────────────────────────────────
 
-/// Run the bridge in this process — what the bare invocation, and `serve`, mean.
+/// Run the bridge in this process — what `serve` means.
 ///
-/// The bare invocation is the same thing as `serve`; the enum's default is [`BridgeCommand::Serve`].
 /// A second start is a normal thing to do by accident, so "already running" is a reported
 /// outcome, not an error.
 async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Result<i32> {
@@ -911,18 +909,24 @@ mod tests {
     }
 
     #[test]
-    fn bare_invocation_defaults_to_serve() {
-        // `sapphire-bridge` with no subcommand is `sapphire-bridge serve` (2026-09-24
-        // spec decision 1, bridge edition) — main.rs expresses it with
-        // `unwrap_or(BridgeCommand::Serve)`, and the default pins that.
+    fn bare_invocation_prints_the_help() {
+        // `sapphire-bridge` with no subcommand prints the help instead of starting the
+        // bridge; starting it takes an explicit `serve`. main.rs expresses it the same way.
         #[derive(Parser)]
+        #[command(arg_required_else_help = true)]
         struct Bare {
             #[command(subcommand)]
-            command: Option<BridgeCommand>,
+            command: BridgeCommand,
         }
-        let bare = Bare::try_parse_from(["b"]).unwrap();
-        assert!(bare.command.is_none());
-        assert!(matches!(BridgeCommand::default(), BridgeCommand::Serve));
+        let err = Bare::try_parse_from(["b"]).err().unwrap();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+        assert!(matches!(
+            Bare::try_parse_from(["b", "serve"]).unwrap().command,
+            BridgeCommand::Serve
+        ));
     }
 
     #[test]

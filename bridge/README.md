@@ -36,16 +36,16 @@ the options and the other applications.
 ## Running it
 
 ```console
-$ sapphire-bridge            # same as `sapphire-bridge serve`
+$ sapphire-bridge serve
 $ sapphire-bridge status
 $ sapphire-bridge workgroup create home --device-name laptop
 $ sapphire-bridge device list
 ```
 
-With no subcommand at all, the bridge starts and stays in the foreground. Every other
-subcommand is a one-shot command against a running bridge — except `workgroup create` and
-`device retire`, which work directly on the bridge directory because there is nothing to ask
-yet (or, for `retire`, no control-plane method).
+With no subcommand at all, it prints the help. `serve` starts the bridge and stays in the
+foreground; every other subcommand is a one-shot command against a running bridge — except
+`workgroup create` and `device retire`, which work directly on the bridge directory because
+there is nothing to ask yet (or, for `retire`, no control-plane method).
 
 > an OS service unit installed by an older build still names `run`; run
 > `sapphire-bridge service install` again after upgrading, so the unit names `serve`.

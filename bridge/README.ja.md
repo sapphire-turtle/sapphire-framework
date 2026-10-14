@@ -35,14 +35,14 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 ## 動かす
 
 ```console
-$ sapphire-bridge            # `sapphire-bridge serve` と同じ
+$ sapphire-bridge serve
 $ sapphire-bridge status
 $ sapphire-bridge workgroup create home --device-name laptop
 $ sapphire-bridge device list
 ```
 
-サブコマンドを付けずに実行すると、bridge はフォアグラウンドで起動し続けます。それ以外の
-サブコマンドは起動中の bridge に対する単発コマンドです。例外は `workgroup create` と
+サブコマンドを付けずに実行するとヘルプを表示します。`serve` で bridge がフォアグラウンドで
+起動し続けます。それ以外のサブコマンドは起動中の bridge に対する単発コマンドです。例外は `workgroup create` と
 `device retire` で、これらは bridge ディレクトリを直接操作します（前者はまだ問い合わせる先が
 無いため、後者は制御プレーンにメソッドが無いため）。
 

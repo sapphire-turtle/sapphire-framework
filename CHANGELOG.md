@@ -19,6 +19,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - `workspace init --sync --remote-workspace=<name|id> [dir]` brings a workspace the workgroup already has to this host, replacing `workspace map <name|id> [dir]`, which is gone (`WorkspaceCommand::Map` removed; `WorkspaceCommand::Init` gains `remote_workspace`). The server resolves the name, so the CLI no longer asks the bridge first.
 - `sync.map` makes the directory's marker itself when it has none, and writes no `config.toml`. The GUI's "Bring to this host…" no longer calls `workspace.init` first.
+- `sapphire-bridge` with no subcommand prints the help instead of starting the bridge; start it with `sapphire-bridge serve` (the installed service unit already names `serve`). `BridgeCommand` and `FrameworkCommand` no longer implement `Default`, so an app CLI that started its server on a bare invocation with `unwrap_or_default()` no longer compiles: make the subcommand required and add `#[command(arg_required_else_help = true)]` to print the help instead.
 
 ### Fixed
 

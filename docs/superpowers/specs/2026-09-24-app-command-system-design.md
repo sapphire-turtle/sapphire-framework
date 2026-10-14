@@ -8,6 +8,9 @@
 - Revises: [`2026-09-16-process-architecture-design.md`](./2026-09-16-process-architecture-design.md)
   decision 5 — servers are always-on daemons; start-on-demand is replaced by
   "the service manager starts the one server process".
+- **Partly revised on 2026-10-14** by
+  [`2026-10-14-bare-invocation-help-design.md`](./2026-10-14-bare-invocation-help-design.md):
+  the bare invocation prints the help instead of meaning `serve` (decision 1).
 - Related: sapphire-framework issue #142; follow-up migrations of journal / ledger /
   tally / sapphire-sync CLIs happen in their own repositories.
 

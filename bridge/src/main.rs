@@ -1,7 +1,7 @@
 //! The host-wide sapphire daemon.
 //!
-//! Running it with no subcommand starts the bridge (`serve`); every other subcommand is a
-//! one-shot command against a running one. Some work directly on the bridge directory
+//! Running it with no subcommand prints the help; `serve` starts the bridge, and every other
+//! subcommand is a one-shot command against a running one. Some work directly on the bridge directory
 //! instead — `workgroup create`, because there is nothing to ask about a workgroup that does
 //! not exist yet, and `device retire`, because the control plane has no method for it. Both
 //! then see their effect immediately: the ledger is re-read on every authorization. The
@@ -18,10 +18,15 @@ use clap::Parser;
 use sapphire_bridge::{BridgeCommand, ServiceCommand, bridge_service_spec};
 
 #[derive(Parser)]
-#[command(name = "sapphire-bridge", version, about)]
+#[command(
+    name = "sapphire-bridge",
+    version,
+    about,
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<BridgeCommand>,
+    command: BridgeCommand,
 }
 
 // The `service` subcommand is this type; naming it here is what keeps it in the bridge's
@@ -39,8 +44,8 @@ async fn main() -> std::process::ExitCode {
     sapphire_bridge::install_console();
 
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or(BridgeCommand::Serve);
-    match command
+    match cli
+        .command
         .dispatch_with(env!("CARGO_PKG_VERSION"), Some(embed::factory()))
         .await
     {

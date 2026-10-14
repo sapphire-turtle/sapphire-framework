@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use grain_id::GrainId;
 use sapphire_framework_session::LiveSession;
-use sapphire_sync::PathUpdate;
+use sapphire_sync::{PathUpdate, Replica};
 use tokio::sync::{Mutex, broadcast};
 
 /// How often the dialer walks the peers.
@@ -134,6 +134,31 @@ impl LivePeers {
         let updates = session.updates();
         self.sessions.lock().await.insert(device, Arc::new(session));
         Some(updates)
+    }
+
+    /// Push to `device`'s session what `replica` has committed and the peer has not seen.
+    ///
+    /// Called once a session has joined the table. A commit that landed after the session's
+    /// exchange but before it joined was carried by no fan-out — there was nothing to fan
+    /// out to yet — and no dial either, since the peer counts as caught up by its live
+    /// session. Without this it would wait for the next commit.
+    pub(crate) async fn catch_up(&self, device: GrainId, replica: &Mutex<Replica>) {
+        let Some(session) = self.sessions.lock().await.get(&device).cloned() else {
+            return;
+        };
+        let delta = match replica.lock().await.delta_for(&session.peer_vv()) {
+            Ok(delta) => delta,
+            Err(err) => {
+                tracing::debug!(%device, "no catch-up for a new live session: {err}");
+                return;
+            }
+        };
+        if delta.is_empty() {
+            return;
+        }
+        if let Err(err) = session.push(delta).await {
+            tracing::debug!(%device, "a live push failed: {err}");
+        }
     }
 
     /// The devices with an open session.

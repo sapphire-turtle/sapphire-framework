@@ -1161,6 +1161,7 @@ impl SyncRuntime {
                 let Some(updates) = table.insert(peer, session, false).await else {
                     return;
                 };
+                table.catch_up(peer, &replica).await;
                 // This is the receiving side: the files are on disk now and nobody else will
                 // index them.
                 driver.reindex(&key).await;
@@ -1569,6 +1570,7 @@ impl SyncRuntime {
         let Some(updates) = table.insert(device, session, true).await else {
             return Ok(());
         };
+        table.catch_up(device, &replica).await;
         // The session wrote files during the exchange; the index has to catch up before the
         // workspace is searchable again.
         self.reindex(&key).await;

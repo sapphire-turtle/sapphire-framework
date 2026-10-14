@@ -2181,9 +2181,9 @@ dependencies = [
 
 [[package]]
 name = "generator"
-version = "0.8.10"
+version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54ade96dc9003043bce7c035c85a9df5a858bfb2039c5a2e6fdf00f324f6c551"
+checksum = "1be81b31c9ce4caf7f3178eeb90662bb1864d3ad363ec6bdada3201adff19c37"
 dependencies = [
  "cc",
  "cfg-if",
@@ -5509,9 +5509,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -5666,7 +5666,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -5682,7 +5682,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
@@ -5704,7 +5704,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-backend"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5725,7 +5725,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5776,7 +5776,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-client"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
@@ -5787,7 +5787,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-embed"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -5807,7 +5807,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-frontmatter"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "chrono",
  "indexmap",
@@ -5819,7 +5819,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-gui"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "egui",
  "fontdb",
@@ -5841,7 +5841,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-ipc"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "dirs 7.0.0",
  "libc",
@@ -5858,7 +5858,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-keys"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-mcp"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "axum",
  "rmcp",
@@ -5895,7 +5895,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-registry"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -5910,7 +5910,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-retrieve"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "redb",
  "serde",
@@ -5924,7 +5924,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-server"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -5960,7 +5960,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-server-api"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "grain-id",
  "serde",
@@ -5969,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-service"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "clap",
  "libc",
@@ -5983,7 +5983,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-session"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "grain-id",
  "sapphire-framework-sync",
@@ -5997,7 +5997,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-sync"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "grain-id",
  "ignore",
@@ -6016,7 +6016,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-track"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "redb",
  "tempfile",
@@ -6026,7 +6026,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-update"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "clap",
  "reqwest 0.13.5",
@@ -6041,7 +6041,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-workspace"
-version = "0.19.0"
+version = "0.20.0"
 dependencies = [
  "chrono",
  "clap",

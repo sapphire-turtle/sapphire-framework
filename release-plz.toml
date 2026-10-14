@@ -101,6 +101,11 @@ version_group = "framework"
 name = "sapphire-framework-frontmatter"
 version_group = "framework"
 
+# リリースの確認と、署名を検証したうえでの自己更新（段階2）。サーバと bridge が使う。
+[[package]]
+name = "sapphire-framework-update"
+version_group = "framework"
+
 [[package]]
 name = "sapphire-framework-keys"
 version_group = "framework"

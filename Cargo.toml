@@ -15,6 +15,7 @@ members = [
     "crates/sapphire-framework-mcp",
     "crates/sapphire-framework-frontmatter",
     "crates/sapphire-framework-service",
+    "crates/sapphire-framework-update",
     "crates/sapphire-framework-retrieve",
     "crates/sapphire-framework-workspace",
     "crates/sapphire-framework-keys",

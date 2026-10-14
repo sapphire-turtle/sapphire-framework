@@ -72,6 +72,8 @@ jobs:
     uses: ./.github/workflows/release-bridge.yml
     with:
       tag: ${{ needs.parse-releases.outputs.bridge_tag }}
+    secrets:
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
 
   release-plz-pr:
     name: Release-plz PR

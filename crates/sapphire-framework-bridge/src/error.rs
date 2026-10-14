@@ -49,6 +49,10 @@ pub enum Error {
     #[error(transparent)]
     Service(#[from] sapphire_framework_service::Error),
 
+    /// Finding, verifying or installing a release failed.
+    #[error(transparent)]
+    Update(#[from] sapphire_framework_update::Error),
+
     /// A peer sent something the data plane could not make sense of.
     #[error("{0}")]
     Protocol(String),

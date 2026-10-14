@@ -31,6 +31,9 @@ pub enum FrameworkCommand {
     /// Install, remove or report this application's operating-system service.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Replace this executable with the newest release, after verifying its signature.
+    /// Restart the service afterwards to run it.
+    Update(sapphire_framework_update::UpdateArgs),
     /// Create, select, show and map this application's workspace. The server serves one
     /// at a time.
     #[command(subcommand)]
@@ -74,6 +77,17 @@ impl FrameworkCommand {
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
+            FrameworkCommand::Update(args) => match server.release_source() {
+                Some(source) => {
+                    sapphire_framework_update::run(&args, source, server.app_name(), version)
+                        .await
+                        .map_err(Error::from)
+                }
+                None => {
+                    println!("{} does not say where its releases are", server.app_name());
+                    Ok(1)
+                }
+            },
             FrameworkCommand::Workspace(command) => {
                 command.dispatch(server.app_name(), version).await
             }
@@ -1127,7 +1141,7 @@ mod status_tests {
         let server = AppServer::new(&CTX, "0.19.0")
             .endpoint(endpoint.clone())
             .selection_file(tmp.path().join("workspace.toml"))
-            .update_check(crate::UpdateCheck::github("o", "r").api_base(api));
+            .releases(crate::ReleaseSource::github("o", "r").api_base(api));
         let handle = tokio::spawn(async move { server.run().await });
         wait_until_listening(&endpoint).await;
 

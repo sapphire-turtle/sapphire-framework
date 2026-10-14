@@ -63,9 +63,9 @@ pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
+pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
-pub use update::UpdateCheck;
 
 /// The MCP tools an application serves, and how (feature `mcp`).
 #[cfg(feature = "mcp")]
@@ -88,8 +88,9 @@ pub struct AppServer {
     app_api: Option<u32>,
     /// `server.toml`'s settings, when given rather than read from the config directory.
     config: Option<ServerConfig>,
-    /// Where the application's releases are published, to look for newer ones.
-    update_check: Option<UpdateCheck>,
+    /// Where the application's releases are published: what the server looks for newer
+    /// ones in, and what `update` installs from.
+    releases: Option<ReleaseSource>,
     /// Where the HTTP listener binds when `server.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
@@ -165,7 +166,7 @@ impl AppServer {
             status_rows: None,
             app_api: None,
             config: None,
-            update_check: None,
+            releases: None,
             #[cfg(feature = "http")]
             http_listen: None,
             #[cfg(feature = "http")]
@@ -312,12 +313,20 @@ impl AppServer {
         self
     }
 
-    /// Look for newer releases of this application where `check` says they are published:
-    /// once at start and once a day after, unless `server.toml` says `[update] check =
-    /// false`. `status` and the GUI show what was found; nothing is installed.
-    pub fn update_check(mut self, check: UpdateCheck) -> AppServer {
-        self.update_check = Some(check);
+    /// Where this application's releases are published.
+    ///
+    /// The server looks there for newer ones once at start and once a day after, unless
+    /// `server.toml` says `[update] check = false`; `status` and the GUI show what it found.
+    /// The `update` command installs from there, when `source` names the release's
+    /// [asset](ReleaseSource::asset) and [public key](ReleaseSource::public_key).
+    pub fn releases(mut self, source: ReleaseSource) -> AppServer {
+        self.releases = Some(source);
         self
+    }
+
+    /// Where this application's releases are published, if it said.
+    pub fn release_source(&self) -> Option<&ReleaseSource> {
+        self.releases.as_ref()
     }
 
     /// What this application's service is: the arguments a service manager starts it with.
@@ -361,7 +370,7 @@ impl AppServer {
             status_rows,
             app_api,
             config,
-            update_check,
+            releases,
             #[cfg(feature = "http")]
             http_listen,
             #[cfg(feature = "http")]
@@ -409,7 +418,7 @@ impl AppServer {
 
         // What `server.update` answers; the looking task fills it in once the server serves.
         let update_status = update::SharedStatus::default();
-        let update_check = update_check.filter(|_| config.update.check);
+        let update_check = releases.filter(|_| config.update.check);
 
         // The first attempt to reach the bridge, before the selected workspace comes back
         // and asks it for sync.

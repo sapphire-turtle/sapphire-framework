@@ -65,9 +65,11 @@ impl UpdateCheck {
         self
     }
 
-    fn latest_url(&self) -> String {
+    /// The repository's newest releases. Not `releases/latest`: a repository that tags
+    /// several binaries (`cli-v…`, `desktop-v…`) has one "latest" among all of them.
+    fn releases_url(&self) -> String {
         format!(
-            "{}/repos/{}/{}/releases/latest",
+            "{}/repos/{}/{}/releases?per_page=100",
             self.api_base.trim_end_matches('/'),
             self.owner,
             self.repo
@@ -80,6 +82,10 @@ impl UpdateCheck {
 struct GithubRelease {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 /// The shared [`UpdateStatus`] the looking task writes and `server.update` reads.
@@ -142,47 +148,43 @@ pub(crate) fn start(
     })))
 }
 
-/// Ask GitHub for the latest release once.
+/// Ask GitHub for the newest release once.
 async fn look(client: &reqwest::Client, check: &UpdateCheck) -> Result<ReleaseInfo, String> {
-    let response = client
-        .get(check.latest_url())
+    let url = check.releases_url();
+    let releases: Vec<GithubRelease> = client
+        .get(&url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| format!("asking {}: {e}", check.latest_url()))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!(
-            "{}/{} has no published release",
-            check.owner, check.repo
-        ));
-    }
-    let release: GithubRelease = response
-        .error_for_status()
-        .map_err(|e| format!("asking {}: {e}", check.latest_url()))?
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("asking {url}: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("reading the latest release: {e}"))?;
-    release_info(&release, &check.tag_prefix)
+        .map_err(|e| format!("reading the releases: {e}"))?;
+    newest(&releases, &check.tag_prefix).ok_or_else(|| {
+        format!(
+            "{}/{} has no published release tagged {}<version>",
+            check.owner, check.repo, check.tag_prefix
+        )
+    })
 }
 
-/// The release a tag names, or why the tag is not `<prefix><semver>`.
-fn release_info(release: &GithubRelease, prefix: &str) -> Result<ReleaseInfo, String> {
-    let version = release.tag_name.strip_prefix(prefix).ok_or_else(|| {
-        format!(
-            "the latest release's tag {:?} does not start with {prefix:?}",
-            release.tag_name
-        )
-    })?;
-    semver::Version::parse(version).map_err(|e| {
-        format!(
-            "the latest release's tag {:?} is not a version: {e}",
-            release.tag_name
-        )
-    })?;
-    Ok(ReleaseInfo {
-        version: version.to_owned(),
-        url: release.html_url.clone(),
-    })
+/// The newest published, non-prerelease release tagged `<prefix><semver>`. Tags of the
+/// repository's other binaries, drafts, prereleases and tags that are not versions are
+/// skipped.
+fn newest(releases: &[GithubRelease], prefix: &str) -> Option<ReleaseInfo> {
+    releases
+        .iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter_map(|r| {
+            let version = semver::Version::parse(r.tag_name.strip_prefix(prefix)?).ok()?;
+            version.pre.is_empty().then_some((version, r))
+        })
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(version, r)| ReleaseInfo {
+            version: version.to_string(),
+            url: r.html_url.clone(),
+        })
 }
 
 /// Record one look's outcome. A failure keeps the last release found.
@@ -237,7 +239,14 @@ mod tests {
         GithubRelease {
             tag_name: tag.to_owned(),
             html_url: format!("https://example.invalid/{tag}"),
+            draft: false,
+            prerelease: false,
         }
+    }
+
+    /// The release `tag` names, as a look that found only it reports.
+    fn found(tag: &str) -> Result<ReleaseInfo, String> {
+        newest(&[release(tag)], "v").ok_or_else(|| format!("no release in {tag}"))
     }
 
     fn shared() -> SharedStatus {
@@ -248,24 +257,52 @@ mod tests {
     }
 
     #[test]
-    fn a_tag_is_its_prefix_and_a_version() {
-        let info = release_info(&release("v0.20.0"), "v").unwrap();
-        assert_eq!(info.version, "0.20.0");
-        let info = release_info(&release("sapphire-journal-v1.2.3"), "sapphire-journal-v").unwrap();
-        assert_eq!(info.version, "1.2.3");
-        assert!(release_info(&release("0.20.0"), "v").is_err());
-        assert!(release_info(&release("vnext"), "v").is_err());
+    fn the_newest_release_is_the_highest_version_with_the_prefix() {
+        // sapphire-journal tags its CLI and its desktop app in one repository, and the
+        // desktop app's release can be the newest of all.
+        let releases = [
+            release("desktop-v0.1.0"),
+            release("cli-v0.12.0"),
+            release("cli-v0.9.3"),
+            release("cli-v0.11.0"),
+        ];
+        let info = newest(&releases, "cli-v").unwrap();
+        assert_eq!(info.version, "0.12.0");
+        assert_eq!(info.url, "https://example.invalid/cli-v0.12.0");
+        assert_eq!(newest(&releases, "desktop-v").unwrap().version, "0.1.0");
+        // `v` does not reach into `desktop-v…`, nor `cli-v` into `sapphire-agent-cli-v…`.
+        assert_eq!(newest(&releases, "v"), None);
+        assert_eq!(
+            newest(&[release("sapphire-agent-cli-v0.8.0")], "cli-v"),
+            None
+        );
+    }
+
+    #[test]
+    fn drafts_prereleases_and_tags_that_are_not_versions_are_skipped() {
+        let mut draft = release("v0.22.0");
+        draft.draft = true;
+        let mut flagged = release("v0.21.0");
+        flagged.prerelease = true;
+        let releases = [
+            draft,
+            flagged,
+            release("v0.21.0-rc.1"),
+            release("vnext"),
+            release("v0.20.0"),
+        ];
+        assert_eq!(newest(&releases, "v").unwrap().version, "0.20.0");
     }
 
     #[test]
     fn only_a_newer_release_is_an_update() {
         let current = semver::Version::parse("0.19.0").unwrap();
         let status = shared();
-        apply(&status, &current, release_info(&release("v0.19.0"), "v"));
+        apply(&status, &current, found("v0.19.0"));
         assert!(!status.lock().unwrap().update_available);
-        apply(&status, &current, release_info(&release("v0.18.2"), "v"));
+        apply(&status, &current, found("v0.18.2"));
         assert!(!status.lock().unwrap().update_available);
-        apply(&status, &current, release_info(&release("v0.20.0"), "v"));
+        apply(&status, &current, found("v0.20.0"));
         let status = status.lock().unwrap();
         assert!(status.update_available);
         assert_eq!(status.latest.as_ref().unwrap().version, "0.20.0");
@@ -275,14 +312,14 @@ mod tests {
     fn a_failed_look_keeps_the_last_release_and_a_success_clears_the_error() {
         let current = semver::Version::parse("0.19.0").unwrap();
         let status = shared();
-        apply(&status, &current, release_info(&release("v0.20.0"), "v"));
+        apply(&status, &current, found("v0.20.0"));
         apply(&status, &current, Err("offline".to_owned()));
         {
             let status = status.lock().unwrap();
             assert!(status.update_available);
             assert_eq!(status.last_error.as_deref(), Some("offline"));
         }
-        apply(&status, &current, release_info(&release("v0.20.0"), "v"));
+        apply(&status, &current, found("v0.20.0"));
         assert_eq!(status.lock().unwrap().last_error, None);
     }
 
@@ -294,10 +331,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_look_reads_the_latest_release_from_the_api() {
+    async fn a_look_reads_the_newest_release_from_the_api() {
         let base = one_response(
             "200 OK",
-            r#"{"tag_name":"v0.20.0","html_url":"https://github.com/o/r/releases/tag/v0.20.0","draft":false}"#,
+            r#"[{"tag_name":"desktop-v0.30.0","html_url":"https://github.com/o/r/releases/tag/desktop-v0.30.0","draft":false,"prerelease":false},
+                {"tag_name":"v0.20.0","html_url":"https://github.com/o/r/releases/tag/v0.20.0","draft":false,"prerelease":false}]"#,
         )
         .await;
         let check = UpdateCheck::github("o", "r").api_base(base);
@@ -308,10 +346,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_repository_without_releases_is_a_failed_look() {
+        let base = one_response("200 OK", "[]").await;
+        let check = UpdateCheck::github("o", "r").api_base(base);
+        let err = look(&client(), &check).await.unwrap_err();
+        assert!(
+            err.contains("no published release tagged v<version>"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_repository_is_a_failed_look() {
         let base = one_response("404 Not Found", r#"{"message":"Not Found"}"#).await;
         let check = UpdateCheck::github("o", "r").api_base(base);
         let err = look(&client(), &check).await.unwrap_err();
-        assert!(err.contains("no published release"), "{err}");
+        assert!(err.contains("404"), "{err}");
     }
 
     #[tokio::test]

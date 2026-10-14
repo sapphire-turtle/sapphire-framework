@@ -1121,7 +1121,7 @@ mod status_tests {
         let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
         let api = crate::update::stub::one_response(
             "200 OK",
-            r#"{"tag_name":"v0.20.0","html_url":"https://example.invalid/v0.20.0"}"#,
+            r#"[{"tag_name":"v0.20.0","html_url":"https://example.invalid/v0.20.0"}]"#,
         )
         .await;
         let server = AppServer::new(&CTX, "0.19.0")

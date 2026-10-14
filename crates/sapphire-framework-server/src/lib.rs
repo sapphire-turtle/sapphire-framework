@@ -51,12 +51,13 @@ mod selection;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
+mod update;
 
 pub use command::{
     DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
     WorkspaceSyncCommand, render_workspace,
 };
-pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig};
+pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig};
 pub use current::Current;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
@@ -64,6 +65,7 @@ pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
+pub use update::UpdateCheck;
 
 /// The MCP tools an application serves, and how (feature `mcp`).
 #[cfg(feature = "mcp")]
@@ -86,6 +88,8 @@ pub struct AppServer {
     app_api: Option<u32>,
     /// `server.toml`'s settings, when given rather than read from the config directory.
     config: Option<ServerConfig>,
+    /// Where the application's releases are published, to look for newer ones.
+    update_check: Option<UpdateCheck>,
     /// Where the HTTP listener binds when `server.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
@@ -161,6 +165,7 @@ impl AppServer {
             status_rows: None,
             app_api: None,
             config: None,
+            update_check: None,
             #[cfg(feature = "http")]
             http_listen: None,
             #[cfg(feature = "http")]
@@ -307,6 +312,14 @@ impl AppServer {
         self
     }
 
+    /// Look for newer releases of this application where `check` says they are published:
+    /// once at start and once a day after, unless `server.toml` says `[update] check =
+    /// false`. `status` and the GUI show what was found; nothing is installed.
+    pub fn update_check(mut self, check: UpdateCheck) -> AppServer {
+        self.update_check = Some(check);
+        self
+    }
+
     /// What this application's service is: the arguments a service manager starts it with.
     ///
     /// `["serve"]`: a service manager starts the executable directly, and the executable's
@@ -348,6 +361,7 @@ impl AppServer {
             status_rows,
             app_api,
             config,
+            update_check,
             #[cfg(feature = "http")]
             http_listen,
             #[cfg(feature = "http")]
@@ -392,6 +406,10 @@ impl AppServer {
         }
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+
+        // What `server.update` answers; the looking task fills it in once the server serves.
+        let update_status = update::SharedStatus::default();
+        let update_check = update_check.filter(|_| config.update.check);
 
         // The first attempt to reach the bridge, before the selected workspace comes back
         // and asks it for sync.
@@ -440,6 +458,16 @@ impl AppServer {
                             app,
                         };
                         serde_json::to_value(report)
+                            .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
+                    }
+                }
+            })
+            .method(proto::SERVER_UPDATE, {
+                let update_status = Arc::clone(&update_status);
+                move |_| {
+                    let status = update_status.lock().expect("update status lock").clone();
+                    async move {
+                        serde_json::to_value(status)
                             .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
                     }
                 }
@@ -569,6 +597,12 @@ impl AppServer {
             }
             None => None,
         };
+
+        // Looking for newer releases, once the socket is bound for the same reason. Ends
+        // with the server, when this is dropped.
+        let _update_checking = update_check.and_then(|check| {
+            update::start(check, ctx.app_name, version, Arc::clone(&update_status))
+        });
 
         loop {
             tokio::select! {

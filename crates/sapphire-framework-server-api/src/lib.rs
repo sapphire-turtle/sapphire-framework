@@ -221,6 +221,11 @@ pub struct WorkspaceInitResult {
 pub const EVENT: &str = "workspace.event";
 /// What the server knows about itself.
 pub const SERVER_INFO: &str = "server.info";
+/// What the server last learnt about newer releases of itself: [`UpdateStatus`].
+///
+/// A server older than this method answers method-not-found; a client reads that as
+/// "nothing known" rather than an error.
+pub const SERVER_UPDATE: &str = "server.update";
 
 /// Parameters naming a path inside the workspace.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -579,6 +584,34 @@ pub struct StatusReport {
     pub managed_by: Option<ManagedBy>,
     /// The application's own rows, rendered after the framework's.
     pub app: Vec<StatusRow>,
+}
+
+/// The answer to [`SERVER_UPDATE`]: whether a newer release of the running server exists.
+///
+/// The server only looks; it never downloads or installs anything. Installing the
+/// release and restarting the server are the user's.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateStatus {
+    /// Whether the server looks for releases at all: the application named where its
+    /// releases are published, and `server.toml` did not turn the check off.
+    pub enabled: bool,
+    /// The newest release the last successful check found, whether or not it is newer
+    /// than the running server. `None` until a check has succeeded.
+    pub latest: Option<ReleaseInfo>,
+    /// Whether [`latest`](Self::latest) is newer than the running server.
+    pub update_available: bool,
+    /// Why the last check failed, when it did. A later success clears it; the last
+    /// [`latest`](Self::latest) is kept meanwhile.
+    pub last_error: Option<String>,
+}
+
+/// One published release, as [`UpdateStatus`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    /// The release's version, without the tag's prefix: `0.20.0`.
+    pub version: String,
+    /// The release's web page, where its notes and downloads are.
+    pub url: String,
 }
 
 /// One application-provided line of the status report.

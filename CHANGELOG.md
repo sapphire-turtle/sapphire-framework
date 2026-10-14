@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- Update check: `AppServer::update_check(UpdateCheck::github(owner, repo))` has the server ask GitHub for the application's latest release, once at start and once a day after. It only looks: nothing is downloaded or installed. `status` prints `update: <version> is available (<url>)`, `up to date`, or why the check failed, and `restart: needed` when the installed CLI is newer than the running server, whether or not the check is on. The GUI's banner shows a newer release with a link to its notes. `[update] check = false` in `server.toml` turns the check off. `UpdateCheck::tag_prefix` covers tags other than `v<version>`. `sapphire-framework-server-api` 4.x: `SERVER_UPDATE` (`server.update`), `UpdateStatus`, `ReleaseInfo`; a server without the method is read as "nothing known". `ServerConfig` gains `update: UpdateConfig`, so a struct literal of it needs `..ServerConfig::default()`.
+
 ## [0.19.0] - 2026-10-14
 
 ### Added

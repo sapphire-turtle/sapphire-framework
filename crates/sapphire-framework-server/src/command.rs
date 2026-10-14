@@ -831,7 +831,64 @@ async fn run_status_into(
     for row in &report.app {
         writeln!(out, "{}: {}", row.name, row.value).expect("writing to a String cannot fail");
     }
+    // A server older than `server.update` answers method-not-found: there is nothing to
+    // say about releases then, and the restart line still stands.
+    let update: Option<proto::UpdateStatus> = client
+        .call(proto::SERVER_UPDATE, serde_json::json!({}))
+        .await
+        .ok();
+    for line in describe_update(app, version, report.version.as_deref(), update.as_ref()) {
+        writeln!(out, "{line}").expect("writing to a String cannot fail");
+    }
     Ok(0)
+}
+
+/// The `update` and `restart` lines of `status`.
+///
+/// `installed` is this CLI's version — the executable on disk — and `running` the
+/// server's. A server older than what is installed was upgraded under it and needs a
+/// restart; a release newer than what is installed is an update to install. A release
+/// that is newer than the server but already installed is only the restart.
+fn describe_update(
+    app: &str,
+    installed: &str,
+    running: Option<&str>,
+    update: Option<&proto::UpdateStatus>,
+) -> Vec<String> {
+    let parse = |v: &str| semver::Version::parse(v).ok();
+    let installed_v = parse(installed);
+    let mut lines = Vec::new();
+    if let Some(update) = update.filter(|u| u.enabled) {
+        match (&update.latest, &update.last_error) {
+            (Some(latest), _) => {
+                let newer = match (parse(&latest.version), &installed_v) {
+                    (Some(latest), Some(installed)) => latest > *installed,
+                    _ => update.update_available,
+                };
+                if newer {
+                    lines.push(format!(
+                        "update: {} is available ({})",
+                        latest.version, latest.url
+                    ));
+                } else {
+                    lines.push(format!(
+                        "update: up to date (latest release {})",
+                        latest.version
+                    ));
+                }
+            }
+            (None, Some(error)) => lines.push(format!("update: could not check: {error}")),
+            (None, None) => lines.push("update: not checked yet".to_owned()),
+        }
+    }
+    if let (Some(running), Some(installed)) = (running.and_then(parse), installed_v)
+        && installed > running
+    {
+        lines.push(format!(
+            "restart: needed: {installed} is installed but {running} is running; restart the {app} service"
+        ));
+    }
+    lines
 }
 #[cfg(test)]
 mod tests {
@@ -987,6 +1044,134 @@ mod status_tests {
         let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
         let code = run_status(&endpoint, "status-test", "0.0.0").await.unwrap();
         assert_eq!(code, 1, "no server is a non-zero exit");
+    }
+
+    fn update(latest: Option<&str>, error: Option<&str>) -> proto::UpdateStatus {
+        proto::UpdateStatus {
+            enabled: true,
+            latest: latest.map(|version| proto::ReleaseInfo {
+                version: version.to_owned(),
+                url: format!("https://example.invalid/v{version}"),
+            }),
+            update_available: false,
+            last_error: error.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn status_names_a_newer_release_and_nothing_when_up_to_date() {
+        let lines = describe_update(
+            "app",
+            "0.19.0",
+            Some("0.19.0"),
+            Some(&update(Some("0.20.0"), None)),
+        );
+        assert_eq!(
+            lines,
+            vec!["update: 0.20.0 is available (https://example.invalid/v0.20.0)"]
+        );
+        let lines = describe_update(
+            "app",
+            "0.19.0",
+            Some("0.19.0"),
+            Some(&update(Some("0.19.0"), None)),
+        );
+        assert_eq!(lines, vec!["update: up to date (latest release 0.19.0)"]);
+    }
+
+    #[test]
+    fn status_asks_for_a_restart_when_the_installed_server_is_newer_than_the_running_one() {
+        // Installed 0.20.0 under a running 0.19.0: the release is no longer news, the
+        // restart is.
+        let lines = describe_update(
+            "app",
+            "0.20.0",
+            Some("0.19.0"),
+            Some(&update(Some("0.20.0"), None)),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "update: up to date (latest release 0.20.0)",
+                "restart: needed: 0.20.0 is installed but 0.19.0 is running; restart the app service",
+            ]
+        );
+        // An older server without `server.update` still gets the restart line.
+        let lines = describe_update("app", "0.20.0", Some("0.19.0"), None);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("restart: needed"));
+    }
+
+    #[test]
+    fn status_says_why_a_check_failed_and_nothing_when_checks_are_off() {
+        let lines = describe_update(
+            "app",
+            "0.19.0",
+            Some("0.19.0"),
+            Some(&update(None, Some("offline"))),
+        );
+        assert_eq!(lines, vec!["update: could not check: offline"]);
+        let off = proto::UpdateStatus::default();
+        assert!(describe_update("app", "0.19.0", Some("0.19.0"), Some(&off)).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_shows_a_newer_release_the_server_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let endpoint = sapphire_ipc::Endpoint::in_dir("status-test", tmp.path().to_path_buf());
+        let api = crate::update::stub::one_response(
+            "200 OK",
+            r#"[{"tag_name":"v0.20.0","html_url":"https://example.invalid/v0.20.0"}]"#,
+        )
+        .await;
+        let server = AppServer::new(&CTX, "0.19.0")
+            .endpoint(endpoint.clone())
+            .selection_file(tmp.path().join("workspace.toml"))
+            .update_check(crate::UpdateCheck::github("o", "r").api_base(api));
+        let handle = tokio::spawn(async move { server.run().await });
+        wait_until_listening(&endpoint).await;
+
+        // The first look runs as the server starts; wait for its answer to land.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let out = loop {
+            let mut out = String::new();
+            run_status_into(&endpoint, CTX.app_name, "0.19.0", &mut out)
+                .await
+                .unwrap();
+            if !out.contains("not checked yet") {
+                break out;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never checked: {out}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert!(
+            out.contains("update: 0.20.0 is available (https://example.invalid/v0.20.0)"),
+            "output was: {out}"
+        );
+        assert!(!out.contains("restart:"), "output was: {out}");
+
+        let (client, _) = sapphire_ipc::connect_or_absent(
+            &endpoint,
+            CTX.app_name,
+            sapphire_ipc::ClientInfo {
+                kind: "test".into(),
+                version: "0.19.0".into(),
+                api: sapphire_backend::protocol::API_VERSION,
+                app_api: None,
+                pid: std::process::id(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("the server is listening");
+        let _: serde_json::Value = client
+            .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+            .await
+            .unwrap();
+        handle.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

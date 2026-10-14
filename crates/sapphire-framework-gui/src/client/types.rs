@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use grain_id::GrainId;
-use sapphire_backend::protocol::{CurrentWorkspace, StatusReport};
+use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
 use sapphire_bridge_api::{
     BRIDGE_NAME, EmbedRequest, EmbedSettingsResult, ExternalDeviceInfo, ExternalDeviceRequest,
     PeerInfo, StatusResult, WorkgroupWorkspaceInfo, WorkspaceRoles,
@@ -147,6 +147,8 @@ pub struct ServerState {
     pub info: StatusReport,
     /// `workspace.current`: the one workspace the server serves, if it has one (#215).
     pub current: Option<CurrentWorkspace>,
+    /// `server.update`; `None` from a server older than the method.
+    pub update: Option<UpdateStatus>,
 }
 
 /// Both processes, as of the last refresh.

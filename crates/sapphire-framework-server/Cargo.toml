@@ -47,6 +47,9 @@ clap.workspace = true
 grain-id.workspace = true
 indexmap.workspace = true
 notify = "8"
+# Asking GitHub for the latest release (`AppServer::update_check`).
+reqwest.workspace = true
+semver = "1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -67,8 +70,6 @@ tempfile = "3"
 toml.workspace = true
 # The synced-vector test serves a fake embedding provider from its bridges.
 async-trait.workspace = true
-# The MCP test drives `/mcp` with raw HTTP requests.
-reqwest.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 # The signal test sends SIGTERM with `libc::kill` directly.

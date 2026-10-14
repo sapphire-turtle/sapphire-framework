@@ -137,9 +137,15 @@ impl Connections {
             let current: proto::WorkspaceCurrentResult = c
                 .call(proto::WORKSPACE_CURRENT, serde_json::json!({}))
                 .await?;
+            // A server older than `server.update` has no such method: the banner says nothing.
+            let update: Option<proto::UpdateStatus> = c
+                .call(proto::SERVER_UPDATE, serde_json::json!({}))
+                .await
+                .ok();
             Ok::<_, sapphire_ipc::Error>(Some(ServerState {
                 info,
                 current: current.workspace,
+                update,
             }))
         })
         .await;

@@ -14,6 +14,11 @@
 //! [mcp]
 //! # Serve the application's MCP tools at /mcp, behind an external device's token.
 //! http = true
+//!
+//! [update]
+//! # Do not ask GitHub for newer releases of this application. On by default, for an
+//! # application that names where its releases are.
+//! check = false
 //! ```
 
 use std::net::SocketAddr;
@@ -37,6 +42,9 @@ pub struct ServerConfig {
     /// MCP over HTTP.
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Looking for newer releases.
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 /// The `[http]` table: the listener every HTTP route shares.
@@ -61,6 +69,28 @@ pub struct McpConfig {
     /// Serve the application's MCP tools at `/mcp` on the HTTP listener. Off by default.
     #[serde(default)]
     pub http: bool,
+}
+
+/// The `[update]` table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// Ask the application's release page for newer releases, once at start and once a
+    /// day. On by default; it does nothing for an application that names no release page.
+    #[serde(default = "UpdateConfig::default_check")]
+    pub check: bool,
+}
+
+impl UpdateConfig {
+    fn default_check() -> bool {
+        true
+    }
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        UpdateConfig { check: true }
+    }
 }
 
 impl ServerConfig {
@@ -104,6 +134,17 @@ mod tests {
         assert_eq!(config, ServerConfig::default());
         assert!(!config.mcp.http);
         assert_eq!(config.http.listen, None);
+        assert!(config.update.check);
+    }
+
+    #[test]
+    fn the_file_turns_the_update_check_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join(SERVER_CONFIG_FILE);
+        std::fs::write(&path, "[update]\ncheck = false\n").unwrap();
+        assert!(!ServerConfig::load(&path).unwrap().update.check);
+        std::fs::write(&path, "[update]\n").unwrap();
+        assert!(ServerConfig::load(&path).unwrap().update.check);
     }
 
     #[test]

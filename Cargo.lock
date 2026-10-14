@@ -5945,6 +5945,7 @@ dependencies = [
  "sapphire-framework-session",
  "sapphire-framework-sync",
  "sapphire-framework-workspace",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

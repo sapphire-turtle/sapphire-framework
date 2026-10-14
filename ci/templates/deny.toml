@@ -55,6 +55,9 @@ exceptions = [
 # Duplicate versions are too common in real workspaces to be worth a warning.
 multiple-versions = "allow"
 wildcards = "deny"
+# A `path` dependency without a version (a workspace crate's dev-dependency, or a
+# crate that is not published) is not a wildcard on the registry.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

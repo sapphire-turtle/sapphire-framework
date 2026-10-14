@@ -377,8 +377,9 @@ priority が同じ候補の間では、可用性（#190）の高いデバイス�
 - アプリ固有の修復（journal の重複 id 等）は content-deterministic・冪等・収束の契約のもとで
   アプリ自身が行う（sync 仕様 §5.1）。
 
-ワークスペースを workgroup に置くのはアプリの CLI（`journal sync enable` /
-`journal sync map <name|id> <dir>`）。同期の同一性はパス導出の uuid ではなく、マーカー内
+ワークスペースを workgroup に置くのはアプリの CLI（`journal workspace init --sync`、既存の
+ワークスペースを持ってくるなら `journal workspace init --sync --remote-workspace=<name|id> [dir]`）。
+後者は `sync.map` を呼び、マーカーだけを作る: `config.toml` は同期で届くものを使う（#253）。同期の同一性はパス導出の uuid ではなく、マーカー内
 `.<app>/sync-id` の grain-id（同期されるので全デバイスで一致）。
 
 ### 特権分離（撤去済み — issue #145）

@@ -178,14 +178,8 @@ async fn app_command(
                         format!("could not create {}: {e}", dir.display()),
                     ))
                 })?;
-                if !dir.join(format!(".{app}")).is_dir() {
-                    let _: proto::WorkspaceInitResult = c
-                        .call(
-                            proto::WORKSPACE_INIT,
-                            proto::WorkspaceInitParams { dir: dir.clone() },
-                        )
-                        .await?;
-                }
+                // No `workspace.init` first: `sync.map` makes the marker, and a
+                // `config.toml` written here would meet the workspace's own (#253).
                 let _: proto::SyncEnableResult = c
                     .call(
                         proto::SYNC_MAP,

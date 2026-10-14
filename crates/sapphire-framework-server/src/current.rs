@@ -93,9 +93,21 @@ impl Current {
     }
 
     /// Place the workgroup workspace `selector` at `dir`, make it current and sync it.
+    ///
+    /// `dir` needs no marker: placing makes one. One that a `workspace.init` made first
+    /// holds a `config.toml` with nothing but the registry, which would meet the
+    /// workspace's own `config.toml` as a conflict on the first sync and win (#253), so a
+    /// directory mapped for the first time loses it.
     pub async fn map(&self, selector: &str, dir: &Path) -> Result<GrainId> {
         let runtime = self.runtime()?;
+        let first = !has_sync_id(self.ctx, &resolve(dir)?);
         let root = runtime.place(selector, dir).await?;
+        if first {
+            let config = Workspace::from_root(self.ctx, &root)?.config_path();
+            if let Err(err) = drop_bare_registry(&config) {
+                tracing::warn!(config = %config.display(), "could not clear the registry-only config: {err}");
+            }
+        }
         self.switch(&root, false, false).await?;
         self.enable_sync().await
     }
@@ -556,38 +568,107 @@ fn init_workspace(ctx: &'static AppContext, dir: &Path) -> Result<proto::Workspa
 /// not an error: the marker's config is the app's own file, and a workspace created
 /// before this table existed is a workspace with no entries.
 fn read_registry(path: &Path) -> Result<WorkspaceRegistry> {
-    #[derive(serde::Deserialize, Default)]
-    struct Config {
-        #[serde(default)]
-        workspace: WorkspaceRegistry,
-    }
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            let config: Config = toml::from_str(&text).map_err(|e| Error::SyncId(e.to_string()))?;
-            Ok(config.workspace)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(WorkspaceRegistry::default()),
-        Err(e) => Err(Error::Io(e)),
+    match read_config(path)?.remove("workspace") {
+        Some(value) => value
+            .try_into()
+            .map_err(|e: toml::de::Error| Error::Config(format!("{}: {e}", path.display()))),
+        None => Ok(WorkspaceRegistry::default()),
     }
 }
 
 /// Write the registry back into the marker's `config.toml`, keeping the rest of the file.
 ///
 /// The marker's config is the app's own document, and a rewrite that dropped the rest of
-/// it would eat an application's settings.
+/// it would eat an application's settings (#253). A file that does not parse is left as
+/// it is, and is the error.
 fn write_registry(path: &Path, registry: &WorkspaceRegistry) -> Result<()> {
-    #[derive(serde::Deserialize, serde::Serialize, Default)]
-    struct Config {
-        #[serde(default, skip_serializing_if = "WorkspaceRegistry::is_empty")]
-        workspace: WorkspaceRegistry,
+    let mut config = read_config(path)?;
+    if registry.is_empty() {
+        config.remove("workspace");
+    } else {
+        let value = toml::Value::try_from(registry)
+            .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
+        config.insert("workspace".to_owned(), value);
     }
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(Error::Io(e)),
-    };
-    let mut config: Config = toml::from_str(&text).unwrap_or_default();
-    config.workspace = registry.clone();
-    let out = toml::to_string_pretty(&config).map_err(|e| Error::SyncId(e.to_string()))?;
+    let out = toml::to_string_pretty(&config)
+        .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
     std::fs::write(path, out).map_err(Error::Io)
+}
+
+/// Delete the marker's `config.toml` when it holds the registry and nothing else.
+fn drop_bare_registry(path: &Path) -> Result<()> {
+    let config = read_config(path)?;
+    if config.len() == 1 && config.contains_key("workspace") {
+        std::fs::remove_file(path).map_err(Error::Io)?;
+    }
+    Ok(())
+}
+
+/// The marker's `config.toml` as a table; an empty one when there is no file.
+fn read_config(path: &Path) -> Result<toml::Table> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .parse()
+            .map_err(|e: toml::de::Error| Error::Config(format!("{}: {e}", path.display()))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writing_the_registry_keeps_the_apps_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "schema_version = 2\nbase_currency = \"JPY\"\n\n[cache]\nsize = 3\n",
+        )
+        .unwrap();
+        let mut registry = WorkspaceRegistry::default();
+        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
+        write_registry(&path, &registry).unwrap();
+
+        let config: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(config["schema_version"].as_integer(), Some(2));
+        assert_eq!(config["base_currency"].as_str(), Some("JPY"));
+        assert_eq!(config["cache"]["size"].as_integer(), Some(3));
+        assert_eq!(read_registry(&path).unwrap(), registry);
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "schema_version = \n").unwrap();
+        let mut registry = WorkspaceRegistry::default();
+        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
+        assert!(write_registry(&path, &registry).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "schema_version = \n"
+        );
+    }
+
+    #[test]
+    fn only_a_registry_only_config_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut registry = WorkspaceRegistry::default();
+        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
+
+        write_registry(&path, &registry).unwrap();
+        drop_bare_registry(&path).unwrap();
+        assert!(!path.exists());
+        // Nothing there is nothing to drop.
+        drop_bare_registry(&path).unwrap();
+
+        std::fs::write(&path, "schema_version = 2\n").unwrap();
+        write_registry(&path, &registry).unwrap();
+        drop_bare_registry(&path).unwrap();
+        assert!(path.exists());
+    }
 }

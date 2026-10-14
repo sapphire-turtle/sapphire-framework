@@ -195,12 +195,10 @@ async fn run_bridge_update(
 
 /// The `workspace` subcommands (#215: one workspace per server).
 ///
-/// `init`, `select`, `sync`, `move`, `remove` and `map`'s write go to the app's server over IPC,
+/// `init`, `select`, `sync`, `move` and `remove` go to the app's server over IPC,
 /// because the server owns the marker directories, the sync ids and which workspace it
 /// serves; `show` asks the server for its workspace and then the bridge for the workgroup's
-/// ledger; `map`'s selector resolution is the workgroup's word, so it goes to the bridge
-/// first. These are the only verbs that take a path: everything else acts on the server's
-/// workspace.
+/// ledger. `init --remote-workspace` has the server resolve the name through the bridge.
 #[derive(Debug, clap::Subcommand)]
 pub enum WorkspaceCommand {
     /// Create this app's workspace home in the given directory, and switch the server to it.
@@ -210,6 +208,10 @@ pub enum WorkspaceCommand {
         /// Also start syncing it, which publishes it into the workgroup ledger.
         #[arg(long)]
         sync: bool,
+        /// Sync it as this workspace of the workgroup, by name or id, instead of as a new
+        /// one: its files and settings arrive from the other devices.
+        #[arg(long, value_name = "NAME|ID", requires = "sync")]
+        remote_workspace: Option<String>,
     },
     /// Switch the server to an existing workspace of this app.
     Select {
@@ -236,13 +238,6 @@ pub enum WorkspaceCommand {
         #[arg(long)]
         delete: bool,
     },
-    /// Bring a workspace the workgroup knows to a local directory, and switch to it.
-    Map {
-        /// The workspace, by name or id, as the workgroup lists it.
-        selector: String,
-        /// The local directory to map it to. Defaults to the current one.
-        dir: Option<PathBuf>,
-    },
 }
 
 impl WorkspaceCommand {
@@ -252,7 +247,11 @@ impl WorkspaceCommand {
     /// process's own, for the handshake.
     pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
         match self {
-            WorkspaceCommand::Init { dir, sync } => workspace_init(app, version, dir, sync).await,
+            WorkspaceCommand::Init {
+                dir,
+                sync,
+                remote_workspace,
+            } => workspace_init(app, version, dir, sync, remote_workspace).await,
             WorkspaceCommand::Select { dir, sync } => {
                 workspace_select(app, version, dir, sync).await
             }
@@ -260,9 +259,6 @@ impl WorkspaceCommand {
             WorkspaceCommand::Show => workspace_show(app, version).await,
             WorkspaceCommand::Move { dir } => workspace_move(app, version, dir).await,
             WorkspaceCommand::Remove { delete } => workspace_remove(app, version, delete).await,
-            WorkspaceCommand::Map { selector, dir } => {
-                workspace_map(app, version, &selector, dir).await
-            }
         }
     }
 }
@@ -520,11 +516,16 @@ async fn external_device(
 /// `--sync` rides the server's existing `sync.enable` path on the same connection, and
 /// its state is printed after, so an unjoined host's "no workgroup knows it yet" is
 /// plain.
+///
+/// `--remote-workspace` goes to `sync.map` instead, which makes the marker and takes the
+/// workgroup's identity in one step: the workspace's `config.toml` is the one that
+/// arrives, not one written here first (#253).
 async fn workspace_init(
     app: &'static str,
     version: &'static str,
     dir: Option<PathBuf>,
     sync: bool,
+    remote_workspace: Option<String>,
 ) -> Result<i32> {
     let endpoint = Endpoint::for_app(app)?;
     let client_info = ClientInfo {
@@ -542,6 +543,26 @@ async fn workspace_init(
 
     // Resolved here: the server's cwd is not the user's.
     let dir = std::env::current_dir()?.join(dir.unwrap_or_else(|| PathBuf::from(".")));
+    if let Some(selector) = remote_workspace {
+        let mapped: proto::SyncEnableResult = client
+            .call(
+                proto::SYNC_MAP,
+                proto::SyncMapParams {
+                    workspace: selector.clone(),
+                    dir: dir.clone(),
+                },
+            )
+            .await?;
+        println!(
+            "initialized {app} workspace in {} from {selector}",
+            dir.display()
+        );
+        println!(
+            "the {app} server now serves it, syncing as {}",
+            mapped.workspace_id
+        );
+        return Ok(0);
+    }
     let result: proto::WorkspaceInitResult = client
         .call(proto::WORKSPACE_INIT, proto::WorkspaceInitParams { dir })
         .await?;
@@ -810,61 +831,6 @@ async fn workspace_show(app: &'static str, version: &'static str) -> Result<i32>
         }
     }
     Ok(code)
-}
-
-/// `workspace map`: the bridge resolves the selector, the server takes the write.
-///
-/// The resolution is the workgroup's word (which workspace, by what id), the write is the
-/// server's (`sync.map` places the id and starts the replica). The bridge is required —
-/// without it there is nothing to resolve against, so exit 1 — and so is the server,
-/// because the write and the replica are its.
-async fn workspace_map(
-    app: &'static str,
-    version: &'static str,
-    selector: &str,
-    dir: Option<PathBuf>,
-) -> Result<i32> {
-    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
-        println!("no sapphire-bridge is running");
-        return Ok(1);
-    };
-    let workspaces = client.workspaces().await.map_err(Error::from)?;
-    let wanted = workspaces
-        .workspaces
-        .iter()
-        // A name is the user-facing handle; the id is the exact one.
-        .find(|w| w.name == selector || w.workspace_id.to_string() == selector)
-        .ok_or_else(|| Error::UnknownWorkspaceName(selector.to_owned()))?;
-
-    let endpoint = Endpoint::for_app(app)?;
-    let client_info = ClientInfo {
-        kind: "cli".to_owned(),
-        version: version.to_owned(),
-        api: proto::API_VERSION,
-        app_api: None,
-        pid: std::process::id(),
-    };
-    let Some((client, _)) = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?
-    else {
-        println!("no {app} server is running");
-        return Ok(1);
-    };
-
-    let dir = std::env::current_dir()?.join(dir.unwrap_or_else(|| PathBuf::from(".")));
-    let mapped: proto::SyncEnableResult = client
-        .call(
-            proto::SYNC_MAP,
-            proto::SyncMapParams {
-                workspace: wanted.workspace_id.to_string(),
-                dir,
-            },
-        )
-        .await?;
-    println!(
-        "mapped {} as {}; the {app} server now serves it",
-        wanted.name, mapped.workspace_id
-    );
-    Ok(0)
 }
 
 /// The status command's face: render and return the exit code, going to the process's
@@ -1162,7 +1128,22 @@ mod tests {
             vec!["app", "workspace", "sync", "enable"],
             vec!["app", "workspace", "sync", "disable"],
             vec!["app", "workspace", "sync", "status"],
-            vec!["app", "workspace", "map", "papers", "papers-remote"],
+            vec![
+                "app",
+                "workspace",
+                "init",
+                "--sync",
+                "--remote-workspace=Ledger",
+            ],
+            vec![
+                "app",
+                "workspace",
+                "init",
+                "papers",
+                "--sync",
+                "--remote-workspace",
+                "Ledger",
+            ],
             vec!["app", "workspace", "move", "../papers"],
             vec!["app", "workspace", "remove"],
             vec!["app", "workspace", "remove", "--delete"],
@@ -1189,6 +1170,12 @@ mod tests {
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn a_remote_workspace_needs_sync() {
+        let args = ["app", "workspace", "init", "--remote-workspace=Ledger"];
+        assert!(Probe::try_parse_from(args).is_err());
     }
 
     #[test]

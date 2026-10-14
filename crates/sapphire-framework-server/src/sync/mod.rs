@@ -12,7 +12,7 @@ use std::sync::Arc;
 use grain_id::GrainId;
 use sapphire_backend::protocol as proto;
 use sapphire_bridge_api::{
-    IncomingParams, PeersResult, RegisterParams, WorkspaceRegistration, WorkspacesResult,
+    IncomingParams, RegisterParams, WorkspaceRegistration, WorkspacesResult,
 };
 use sapphire_bridge_client::BridgeClient;
 use sapphire_ipc::ManagedBy;
@@ -31,6 +31,8 @@ mod watch;
 pub use id::{SYNC_ID_FILE, WORKSPACE_MAP_FILE, sync_id, sync_id_path};
 pub use live::{DIAL_BACKOFF_MAX, OPEN_TIMEOUT};
 pub use methods::sync_router;
+/// What [`SyncRuntime::peers`] answers with.
+pub use sapphire_bridge_api::{PeerInfo, PeersResult};
 pub use watch::{DEBOUNCE, Watcher};
 
 use live::{LivePeers, dial_backoff};
@@ -635,12 +637,9 @@ impl SyncRuntime {
             None => false,
         };
         let answer = match &bridge {
-            Some(bridge) => bridge.peers().await.ok(),
+            Some(_) => self.peers().await.ok(),
             None => None,
         };
-        if let Some(answer) = &answer {
-            *self.last_peers.lock().await = Some(answer.clone());
-        }
         let peers = answer
             .as_ref()
             .map_or(0, |p| p.peers.len().saturating_sub(1));
@@ -950,12 +949,7 @@ impl SyncRuntime {
                 None => return Ok(()),
             }
         };
-        let peers = self
-            .bridge()?
-            .peers()
-            .await
-            .map_err(|e| Error::Bridge(e.to_string()))?;
-        *self.last_peers.lock().await = Some(peers.clone());
+        let peers = self.peers().await?;
         let me = self.device_id().await?;
 
         // The same direction rule the dial loop follows: a host only dials peers with a
@@ -1403,11 +1397,8 @@ impl SyncRuntime {
             if roots.is_empty() {
                 continue;
             }
-            let peers = match async { self.bridge()?.peers().await.map_err(Error::from) }.await {
-                Ok(peers) => {
-                    *self.last_peers.lock().await = Some(peers.clone());
-                    peers
-                }
+            let peers = match self.peers().await {
+                Ok(peers) => peers,
                 // The bridge is down or has no workgroup: nothing to dial, and the next walk
                 // asks again. Not an error for the caller — the app server is still serving.
                 Err(err) => {
@@ -1726,6 +1717,31 @@ impl SyncRuntime {
             .is_some_and(|r| r.primary == Some(me))
     }
 
+    /// This host's device id, once the bridge has told it (#250).
+    ///
+    /// `None` until this runtime first registered — no workspace was enabled yet, or the
+    /// bridge was not connected when one was. Never asks the bridge: a registration made
+    /// only to learn the id would carry an empty workspace list, and briefly clear this
+    /// application's routes.
+    pub fn this_device(&self) -> Option<GrainId> {
+        self.device_id.get().copied()
+    }
+
+    /// The workgroup's devices, this host's included, and the roles the bridge assigns per
+    /// workspace (#250). Asked of the bridge each time; [`is_primary`](Self::is_primary)
+    /// reads the answer afterwards.
+    ///
+    /// [`Error::BridgeDisconnected`] while there is no connection to the bridge.
+    pub async fn peers(&self) -> Result<PeersResult> {
+        let peers = self
+            .bridge()?
+            .peers()
+            .await
+            .map_err(|e| Error::Bridge(e.to_string()))?;
+        *self.last_peers.lock().await = Some(peers.clone());
+        Ok(peers)
+    }
+
     /// This host's device id, asked of the bridge once.
     async fn device_id(&self) -> Result<GrainId> {
         if let Some(id) = self.device_id.get() {
@@ -1996,6 +2012,37 @@ mod tests {
         .await;
         assert!(f.runtime.is_connected());
         keeping.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn this_device_is_known_once_a_workspace_is_enabled_and_never_asked_for() {
+        let f = fixture().await;
+        assert_eq!(f.runtime.this_device(), None);
+        assert!(
+            f.stub.seen.lock().unwrap().registrations.is_empty(),
+            "asking must not register"
+        );
+
+        f.runtime.enable(&f.root).await.unwrap();
+        assert_eq!(f.runtime.this_device(), Some(f.stub.device_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peers_answers_the_workgroup_from_the_bridge() {
+        let f = fixture().await;
+        let listed = dialled_peers(f.stub.device_id, 2);
+        f.stub.set_peers(listed.clone());
+
+        let peers = f.runtime.peers().await.unwrap();
+        let ids: Vec<_> = peers.peers.iter().map(|p| p.device_id).collect();
+        assert_eq!(ids, listed.iter().map(|p| p.device_id).collect::<Vec<_>>());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn peers_says_so_while_the_bridge_is_away() {
+        let (f, _bridges, _client) = connecting().await;
+        let err = f.runtime.peers().await.unwrap_err();
+        assert!(matches!(err, Error::BridgeDisconnected), "{err:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

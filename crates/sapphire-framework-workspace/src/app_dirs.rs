@@ -55,6 +55,10 @@ pub fn app_dir_env_var(app_name: &str, category: &str) -> String {
 }
 
 /// Env var that names the workspace root for an app: `SAPPHIRE_JOURNAL_DIR`.
+///
+/// Deprecated with [`Workspace::resolve`](crate::Workspace::resolve), its only
+/// reader: the server's workspace comes from `workspace select` (#227).
+#[deprecated(note = "the server's workspace comes from `workspace select`, not an env var")]
 pub fn workspace_dir_env_var(app_name: &str) -> String {
     format!("{}_DIR", app_name.to_uppercase().replace('-', "_"))
 }
@@ -224,6 +228,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    #[allow(deprecated)]
     fn env_var_names_follow_the_app_name_rule() {
         assert_eq!(
             app_dir_env_var("sapphire-journal", "cache"),

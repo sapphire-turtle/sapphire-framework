@@ -128,8 +128,7 @@ fn migrate(legacy: &Path, app_name: &str) -> Result<Option<Selection>> {
     }))
 }
 
-/// The registry id a workspace root carries in its marker's `config.toml`: its directory
-/// name, slugified.
+/// A workspace root's directory name, slugified: `workspace.init`'s `workspace_id`.
 pub(crate) fn slug(root: &Path) -> String {
     let base: String = root
         .file_name()

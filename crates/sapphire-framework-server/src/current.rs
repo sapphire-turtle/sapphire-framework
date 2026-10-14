@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use grain_id::GrainId;
+use sapphire_backend::WorkspaceBackend;
 use sapphire_backend::protocol as proto;
-use sapphire_backend::{WorkspaceBackend, WorkspaceEntry, WorkspaceRegistry};
 use sapphire_ipc::{Router, RpcError};
 use sapphire_workspace::{AppContext, Workspace};
 use tokio::sync::Mutex as AsyncMutex;
@@ -83,8 +83,8 @@ impl Current {
         self.describe().await.ok_or(Error::NoWorkspace)
     }
 
-    /// Create this app's workspace at `dir` — the marker and the marker registry's entry,
-    /// idempotently — and make it current.
+    /// Create this app's workspace at `dir` — its marker, idempotently — and make it
+    /// current.
     pub async fn init(&self, dir: &Path) -> Result<proto::WorkspaceInitResult> {
         let result = init_workspace(self.ctx, dir)?;
         let sync = has_sync_id(self.ctx, &result.root);
@@ -94,10 +94,10 @@ impl Current {
 
     /// Place the workgroup workspace `selector` at `dir`, make it current and sync it.
     ///
-    /// `dir` needs no marker: placing makes one. One that a `workspace.init` made first
-    /// holds a `config.toml` with nothing but the registry, which would meet the
-    /// workspace's own `config.toml` as a conflict on the first sync and win (#253), so a
-    /// directory mapped for the first time loses it.
+    /// `dir` needs no marker: placing makes one. One that an older `workspace.init` made
+    /// first may hold a `config.toml` with nothing but the `[workspace]` registry, which
+    /// would meet the workspace's own `config.toml` as a conflict on the first sync and win
+    /// (#253), so a directory mapped for the first time loses it.
     pub async fn map(&self, selector: &str, dir: &Path) -> Result<GrainId> {
         let runtime = self.runtime()?;
         let first = !has_sync_id(self.ctx, &resolve(dir)?);
@@ -155,9 +155,6 @@ impl Current {
 
             let workspace = Workspace::from_root(self.ctx, &to)?;
             carry_cache(&from_cache, &workspace.cache_dir(), &to);
-            if let Err(err) = rebase_registry(&workspace.config_path(), &from, &to) {
-                tracing::warn!(root = %to.display(), "could not update the workspace registry: {err}");
-            }
             self.reopen(&to, synced).await;
         }
         // Outside the switch lock: a reindex walks every file, and a switch must not wait
@@ -458,22 +455,6 @@ fn carry_cache(from: &Path, to: &Path, root: &Path) {
     }
 }
 
-/// Point the registry entries naming `from` at `to`, in the marker's `config.toml`.
-fn rebase_registry(config_path: &Path, from: &Path, to: &Path) -> Result<()> {
-    let mut registry = read_registry(config_path)?;
-    let mut changed = false;
-    for entry in registry.0.values_mut() {
-        if entry.path.as_deref() == Some(from) {
-            entry.path = Some(to.to_owned());
-            changed = true;
-        }
-    }
-    if changed {
-        write_registry(config_path, &registry)?;
-    }
-    Ok(())
-}
-
 /// Add `workspace.init`, `workspace.select`, `workspace.current`, `workspace.move` and
 /// `workspace.remove` to `router`.
 pub(crate) fn current_methods(current: Arc<Current>, router: Router) -> Router {
@@ -528,12 +509,16 @@ pub(crate) fn current_methods(current: Arc<Current>, router: Router) -> Router {
         })
 }
 
-/// Create the workspace home at `dir`: the marker directory and the marker registry's
-/// entry, idempotently. The sync id is `sync.enable` / `sync.map`'s to mint, not this one's.
+/// Create the workspace home at `dir`: the marker directory, idempotently. The sync id is
+/// `sync.enable` / `sync.map`'s to mint, not this one's.
 ///
-/// A relative `dir` is resolved against the server's cwd. The registry entry's id is the
-/// root's directory name, slugified; `created` is `false` when the marker was already there,
-/// and an entry already there is kept as it is.
+/// A relative `dir` is resolved against the server's cwd. `created` is `false` when the
+/// marker was already there.
+///
+/// No `[workspace]` registry is written into the marker's `config.toml` any more (#217):
+/// it keyed the apps' `--workspace` selectors, which went with the server serving one
+/// workspace, and a `config.toml` holding only it lost the application's settings on the
+/// first sync (#253).
 fn init_workspace(ctx: &'static AppContext, dir: &Path) -> Result<proto::WorkspaceInitResult> {
     let root = resolve(dir)?;
     let marker = root.join(format!(".{}", ctx.app_name));
@@ -542,60 +527,15 @@ fn init_workspace(ctx: &'static AppContext, dir: &Path) -> Result<proto::Workspa
         std::fs::create_dir(&marker).map_err(Error::Io)?;
     }
 
-    // Reads the marker's `config.toml`, keyed the way the apps' CLIs key their
-    // `--workspace` selectors. The registry lives in the marker, so it travels with the
-    // workspace when it syncs.
-    let workspace = Workspace::from_root(ctx, &root)?;
-    let id = slug(&root);
-    let config_path = workspace.config_path();
-    let registry = read_registry(&config_path)?;
-    if registry.get(&id).is_none() {
-        let mut registry = registry;
-        registry.insert(id.clone(), WorkspaceEntry::local(&root));
-        write_registry(&config_path, &registry)?;
-    }
-
     Ok(proto::WorkspaceInitResult {
+        workspace_id: slug(&root),
         root,
-        workspace_id: id,
         created,
     })
 }
 
-/// The registry as the marker's `config.toml` holds it, or an empty one.
-///
-/// A file another application wrote without a `[workspace]` table is an empty registry,
-/// not an error: the marker's config is the app's own file, and a workspace created
-/// before this table existed is a workspace with no entries.
-fn read_registry(path: &Path) -> Result<WorkspaceRegistry> {
-    match read_config(path)?.remove("workspace") {
-        Some(value) => value
-            .try_into()
-            .map_err(|e: toml::de::Error| Error::Config(format!("{}: {e}", path.display()))),
-        None => Ok(WorkspaceRegistry::default()),
-    }
-}
-
-/// Write the registry back into the marker's `config.toml`, keeping the rest of the file.
-///
-/// The marker's config is the app's own document, and a rewrite that dropped the rest of
-/// it would eat an application's settings (#253). A file that does not parse is left as
-/// it is, and is the error.
-fn write_registry(path: &Path, registry: &WorkspaceRegistry) -> Result<()> {
-    let mut config = read_config(path)?;
-    if registry.is_empty() {
-        config.remove("workspace");
-    } else {
-        let value = toml::Value::try_from(registry)
-            .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-        config.insert("workspace".to_owned(), value);
-    }
-    let out = toml::to_string_pretty(&config)
-        .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?;
-    std::fs::write(path, out).map_err(Error::Io)
-}
-
-/// Delete the marker's `config.toml` when it holds the registry and nothing else.
+/// Delete the marker's `config.toml` when it holds the `[workspace]` registry an older
+/// `workspace.init` wrote, and nothing else.
 fn drop_bare_registry(path: &Path) -> Result<()> {
     let config = read_config(path)?;
     if config.len() == 1 && config.contains_key("workspace") {
@@ -619,56 +559,32 @@ fn read_config(path: &Path) -> Result<toml::Table> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn writing_the_registry_keeps_the_apps_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(
-            &path,
-            "schema_version = 2\nbase_currency = \"JPY\"\n\n[cache]\nsize = 3\n",
-        )
-        .unwrap();
-        let mut registry = WorkspaceRegistry::default();
-        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
-        write_registry(&path, &registry).unwrap();
-
-        let config: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(config["schema_version"].as_integer(), Some(2));
-        assert_eq!(config["base_currency"].as_str(), Some("JPY"));
-        assert_eq!(config["cache"]["size"].as_integer(), Some(3));
-        assert_eq!(read_registry(&path).unwrap(), registry);
-    }
-
-    #[test]
-    fn a_config_that_does_not_parse_is_not_overwritten() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "schema_version = \n").unwrap();
-        let mut registry = WorkspaceRegistry::default();
-        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
-        assert!(write_registry(&path, &registry).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "schema_version = \n"
-        );
-    }
+    const REGISTRY_ONLY: &str = "[workspace.ledger]\npath = \"/home/me/ledger\"\n";
 
     #[test]
     fn only_a_registry_only_config_is_dropped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        let mut registry = WorkspaceRegistry::default();
-        registry.insert("ledger".to_owned(), WorkspaceEntry::local(dir.path()));
 
-        write_registry(&path, &registry).unwrap();
+        std::fs::write(&path, REGISTRY_ONLY).unwrap();
         drop_bare_registry(&path).unwrap();
         assert!(!path.exists());
         // Nothing there is nothing to drop.
         drop_bare_registry(&path).unwrap();
 
-        std::fs::write(&path, "schema_version = 2\n").unwrap();
-        write_registry(&path, &registry).unwrap();
+        std::fs::write(&path, format!("schema_version = 2\n\n{REGISTRY_ONLY}")).unwrap();
         drop_bare_registry(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn init_writes_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new("sapphire-initapp")));
+        let result = init_workspace(ctx, dir.path()).unwrap();
+        assert!(result.created);
+        let workspace = Workspace::from_root(ctx, dir.path()).unwrap();
+        assert!(workspace.marker_dir().is_dir());
+        assert!(!workspace.config_path().exists());
     }
 }

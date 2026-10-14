@@ -9,6 +9,13 @@
 //!
 //! Opening the underlying [`WorkspaceState`] stays the caller's job — it needs
 //! the app's `AppContext` and workspace marker, which are application concerns.
+//!
+//! Deprecated (#217): all of this chooses among several workspaces on the client
+//! side, which an app server serving one workspace — chosen with `workspace
+//! select` — no longer needs. A client reaches the workspace through
+//! [`IpcBackend`](crate::IpcBackend). It goes once the apps have moved off it.
+
+#![allow(deprecated)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Error, LocalBackend, Result, WorkspaceBackend};
 
 /// A parsed workspace reference.
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceLocator {
     /// A local filesystem workspace root.
@@ -50,11 +58,13 @@ impl WorkspaceLocator {
 }
 
 /// The registry id of the default workspace.
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 pub const DEFAULT_ID: &str = "default";
 
 /// One registered workspace: a local path. Serialised as a
 /// `[workspace.<id>]` TOML table so the CLI config and the GUI share one
 /// representation across apps (timer / journal / ledger).
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceEntry {
     /// Display name (defaults to the registry id when absent).
@@ -87,12 +97,14 @@ impl WorkspaceEntry {
 /// A set of named workspaces, keyed by id. Embed in an app's config with
 /// `#[serde(default)] pub workspace: WorkspaceRegistry` so it reads as
 /// `[workspace.<id>]` tables.
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct WorkspaceRegistry(pub IndexMap<String, WorkspaceEntry>);
 
 /// A caller's workspace choice: ad-hoc CLI arguments plus an optional registry
 /// id. Passed to [`WorkspaceRegistry::resolve`].
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 #[derive(Clone, Debug, Default)]
 pub struct WorkspaceSelection<'a> {
     /// `--workspace <id>`: look this id up in the registry.
@@ -163,6 +175,7 @@ impl WorkspaceRegistry {
 }
 
 /// Opened resources for a workspace, ready to become a backend.
+#[deprecated(note = "the server serves one workspace, chosen with `workspace select`")]
 pub enum WorkspaceSource {
     /// A local workspace, driven directly.
     Local {

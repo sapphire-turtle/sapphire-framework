@@ -37,6 +37,7 @@ pub use sapphire_server_api::{BackendEvent, FileSearchResult, SearchMode};
 pub use error::{Error, Result};
 pub use ipc::IpcBackend;
 pub use local::LocalBackend;
+#[allow(deprecated)]
 pub use source::{
     DEFAULT_ID, WorkspaceEntry, WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection,
     WorkspaceSource,

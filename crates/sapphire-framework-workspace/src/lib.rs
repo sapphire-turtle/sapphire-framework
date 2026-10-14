@@ -14,11 +14,12 @@ mod error;
 mod test_env;
 
 pub use app_dirs::AppKind;
+#[allow(deprecated)]
 pub use args::WorkspaceArgs;
 pub use error::{Error, Result};
 
-// Re-exported so apps can depend on this crate alone: `WorkspaceArgs` below is
-// a clap `Args`, and `context` resolves platform directories through `dirs`
+// Re-exported so apps can depend on this crate alone: apps build their CLI with
+// clap, and `context` resolves platform directories through `dirs`
 // (issues #128/#129). Apps that depend on this crate alone get the same
 // clap/serde/dirs versions it builds with.
 pub use clap;

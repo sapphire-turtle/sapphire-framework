@@ -1,18 +1,24 @@
-//! The shared workspace-directory CLI argument (issue #128).
+//! The shared workspace-directory CLI argument (issue #128), deprecated (#227).
 //!
-//! Apps embed this with `#[command(flatten)]`. The flag is uniform
-//! (`--workspace-dir`); the per-app historical names are accepted as clap
-//! aliases for one deprecation cycle. Env resolution stays in the caller —
-//! pass this value to `Workspace::resolve`, which applies the per-app
-//! `SAPPHIRE_<APP>_DIR` fallback (and the deprecated `SAPPHIRE_WORKSPACE_DIR`).
+//! The app server serves one workspace, chosen with `workspace select` and kept
+//! in its `workspace.toml`; a client command runs against that workspace over
+//! IPC, so naming a directory on the client side has nothing to pick. Apps stop
+//! flattening this into their CLI; it goes once they have.
+
+#![allow(deprecated)]
 
 use std::path::PathBuf;
 
-/// Shared `--workspace-dir` argument: the explicit workspace root, overriding
-/// the upward marker search.
+/// Shared `--workspace-dir` argument: a workspace root named on the command line.
+///
+/// Deprecated: the server serves the workspace `workspace select` chose, and a
+/// client command never names one.
+#[deprecated(
+    note = "the server serves the workspace `workspace select` chose; a client command does not name one"
+)]
 #[derive(clap::Args)]
 pub struct WorkspaceArgs {
-    /// Workspace root directory. Overrides the automatic upward search.
+    /// Workspace root directory.
     #[arg(
         long = "workspace-dir",
         alias = "journal-dir",

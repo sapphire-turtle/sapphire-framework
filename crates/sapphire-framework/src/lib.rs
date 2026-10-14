@@ -45,8 +45,7 @@ pub use sapphire_framework_workspace as workspace;
 
 // The dependency re-exports ride in on the `workspace` feature: apps depend on
 // this facade alone and get the same `clap`/`serde`/`dirs` versions the
-// workspace crate builds `WorkspaceArgs` and the directory helpers with
-// (issue #128).
+// workspace crate builds the directory helpers with (issue #128).
 #[cfg(feature = "workspace")]
 pub use sapphire_framework_workspace::{clap, dirs, serde};
 
@@ -100,12 +99,14 @@ pub use sapphire_framework_frontmatter as frontmatter;
 /// What is available depends on the enabled features.
 pub mod prelude {
     #[cfg(feature = "workspace")]
+    #[allow(deprecated)]
     pub use crate::workspace::{
         AppContext, AppKind, FileSearchResult, RetrieveConfig, RetrieveParams, SearchMode,
         Workspace, WorkspaceArgs, WorkspaceState,
     };
 
     #[cfg(feature = "backend")]
+    #[allow(deprecated)]
     pub use crate::backend::{
         BackendEvent, LocalBackend, SyncSummary, WorkspaceBackend, WorkspaceEntry,
         WorkspaceLocator, WorkspaceRegistry, WorkspaceSelection, WorkspaceSource,

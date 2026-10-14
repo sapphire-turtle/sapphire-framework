@@ -1,6 +1,7 @@
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 
+#[allow(deprecated)]
 use crate::app_dirs::workspace_dir_env_var;
 use crate::context::AppContext;
 use crate::error::{Error, Result};
@@ -124,13 +125,20 @@ impl Workspace {
 
     /// Resolve the workspace directory (no marker required):
     /// 1. `explicit` parameter (no confirmation prompt)
-    /// 2. the per-app env var `SAPPHIRE_<APP-UPPER>_DIR` (see
-    ///    [`workspace_dir_env_var`](crate::app_dirs::workspace_dir_env_var)),
+    /// 2. the per-app env var `SAPPHIRE_<APP-UPPER>_DIR`,
     ///    falling back to the deprecated `SAPPHIRE_WORKSPACE_DIR`
     /// 3. Current working directory (TTY: ask for confirmation; non-TTY: use directly)
     ///
     /// An env var that is set but empty is treated as unset: the per-app env var
     /// falls through to the deprecated global, and that to the cwd.
+    ///
+    /// Deprecated: this order is the old client-side design. The server serves the
+    /// workspace `workspace select` chose (#227), so open a known root with
+    /// [`from_root`](Self::from_root) instead.
+    #[deprecated(
+        note = "the server serves the workspace `workspace select` chose; open a known root with `Workspace::from_root`"
+    )]
+    #[allow(deprecated)]
     pub fn resolve(ctx: &'static AppContext, explicit: Option<&Path>) -> Result<Self> {
         let root = match explicit {
             Some(dir) => dir.canonicalize().map_err(|e| Error::Access {
@@ -313,6 +321,7 @@ mod registry_path_tests {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod resolve_tests {
     use super::*;
     use crate::test_env::TestEnv;

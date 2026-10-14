@@ -96,12 +96,26 @@ app_field() {
   printf '%s\n' "$APPS" | awk -v app="$1" -v col="$2" '$1 == app { print $col }'
 }
 
+# github_api <path>: a GitHub API response. Unauthenticated requests share a
+# low per-address rate limit (CI runners hit it); GITHUB_TOKEN or GH_TOKEN, when
+# set, lifts it.
+github_api() {
+  token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [ -n "$token" ]; then
+    curl -fsSL -H "Authorization: Bearer $token" "https://api.github.com/$1"
+  else
+    curl -fsSL "https://api.github.com/$1"
+  fi
+}
+
 # latest_version <repo> <tag prefix>: the highest x.y.z among the repository's
 # releases tagged <prefix>x.y.z. Not `releases/latest`: a repository that tags
 # several binaries has one "latest" among all of them. Pre-release versions
 # (x.y.z-…) are skipped, as `update` skips them.
 latest_version() {
-  curl -fsSL "https://api.github.com/repos/${OWNER}/$1/releases?per_page=100" \
+  releases=$(github_api "repos/${OWNER}/$1/releases?per_page=100") \
+    || err "could not list the releases of ${OWNER}/$1 (rate-limited? set GITHUB_TOKEN)"
+  printf '%s\n' "$releases" \
     | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
     | awk -v prefix="$2" '
         index($0, prefix) == 1 {

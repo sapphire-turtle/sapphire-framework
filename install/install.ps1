@@ -71,7 +71,16 @@ if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -
 # among all of them. Pre-release versions (x.y.z-...) are skipped, as `update`
 # skips them.
 function Get-LatestVersion([string] $Repo, [string] $Prefix) {
-    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases?per_page=100"
+    # Unauthenticated requests share a low per-address rate limit (CI runners
+    # hit it); GITHUB_TOKEN or GH_TOKEN, when set, lifts it.
+    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }
+    $headers = @{}
+    if ($token) { $headers['Authorization'] = "Bearer $token" }
+    try {
+        $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Owner/$Repo/releases?per_page=100" -Headers $headers
+    } catch {
+        throw "could not list the releases of $Owner/$Repo (rate-limited? set GITHUB_TOKEN): $_"
+    }
     $versions = foreach ($r in $releases) {
         if ($r.draft -or $r.prerelease) { continue }
         if (-not $r.tag_name.StartsWith($Prefix)) { continue }

@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install sync and, with it, the bridge
+        env:
+          # The runners share the unauthenticated API rate limit.
+          GITHUB_TOKEN: ${{ github.token }}
         run: sh install/install.sh --dir "$RUNNER_TEMP/bin" sync
       - name: The installed binaries run
         run: |
@@ -40,6 +43,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Install sync and, with it, the bridge
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" sync
       - name: The installed binaries run
         shell: pwsh

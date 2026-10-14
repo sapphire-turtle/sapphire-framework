@@ -1,13 +1,7 @@
 name: Release sapphire-bridge binaries
 
-# Builds the cross-platform sapphire-bridge binaries, signs them with minisign
-# and uploads both onto an existing GitHub release. `sapphire-bridge update`
-# installs only a binary whose `.minisig` verifies against the public key built
-# into it (BRIDGE_RELEASE_KEY) and whose trusted comment is "<asset> <version>".
-#
-# The build jobs have no write access and never see the key: they hand their
-# binaries to the sign job as workflow artifacts, so nothing in the release is
-# signed that this run did not build.
+# Builds the cross-platform sapphire-bridge binaries and uploads them as
+# assets onto an existing GitHub release.
 #
 # Called from release-plz.yml right after the `v{version}` tag and release
 # are created, plus workflow_dispatch for retroactive uploads and manual
@@ -19,9 +13,6 @@ on:
         required: true
         type: string
         description: 'Existing release tag to attach binaries to (e.g. v0.16.0).'
-    secrets:
-      MINISIGN_SECRET_KEY:
-        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -56,7 +47,7 @@ jobs:
             continue-on-error: true
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -85,50 +76,8 @@ jobs:
         shell: bash
         run: cp target/release/${{ matrix.binary }} ${{ matrix.asset_name }}
 
-      - name: Hand the binary to the sign job
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}
-          if-no-files-found: error
-          retention-days: 1
-
-  sign:
-    # Whatever built: a macOS or Windows failure must not hold back the Linux binaries.
-    needs: build
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Install minisign
-        run: sudo apt-get update && sudo apt-get install -y minisign
-
-      # The trusted comment is signed with the file: "<asset> <version>" ties each
-      # signature to exactly this binary of exactly this release.
-      - name: Sign
-        env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
-          TAG: ${{ inputs.tag }}
-        run: |
-          umask 077
-          key="$RUNNER_TEMP/minisign.key"
-          trap 'rm -f "$key"' EXIT
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
-          version="${TAG#v}"
-          for f in dist/*; do
-            name="$(basename "$f")"
-            minisign -S -s "$key" -m "$f" -t "$name $version" < /dev/null
-          done
-          ls -l dist
-
       - name: Upload to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: ${{ matrix.asset_name }}

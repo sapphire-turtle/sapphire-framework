@@ -11,7 +11,7 @@ use crate::{Error, Result};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where a binary's releases are published: a GitHub repository whose releases are tagged
-/// `<prefix><version>`, and — for the `update` command — the files and key in them.
+/// `<prefix><version>`, and — for the `update` command — the file in them.
 #[derive(Clone, Debug)]
 pub struct ReleaseSource {
     owner: String,
@@ -19,7 +19,6 @@ pub struct ReleaseSource {
     tag_prefix: String,
     api_base: String,
     asset: Option<String>,
-    public_key: Option<String>,
     cargo_crate: Option<String>,
 }
 
@@ -32,7 +31,6 @@ impl ReleaseSource {
             tag_prefix: "v".to_owned(),
             api_base: "https://api.github.com".to_owned(),
             asset: None,
-            public_key: None,
             cargo_crate: None,
         }
     }
@@ -50,17 +48,10 @@ impl ReleaseSource {
         self
     }
 
-    /// The binary is published as `<name>-<os>-<arch>` (`.exe` on Windows), signed in
-    /// `<that>.minisig`: what `update` downloads. Without it, `update` only reports.
+    /// The binary is published as `<name>-<os>-<arch>` (`.exe` on Windows): what `update`
+    /// downloads. Without it, `update` only reports.
     pub fn asset(mut self, name: impl Into<String>) -> ReleaseSource {
         self.asset = Some(name.into());
-        self
-    }
-
-    /// The minisign public key the releases are signed with, as the second line of a
-    /// `minisign.pub` file (`RW…`). `update` installs nothing it cannot verify with it.
-    pub fn public_key(mut self, key: impl Into<String>) -> ReleaseSource {
-        self.public_key = Some(key.into());
         self
     }
 
@@ -78,10 +69,6 @@ impl ReleaseSource {
 
     pub(crate) fn asset_base(&self) -> Option<&str> {
         self.asset.as_deref()
-    }
-
-    pub(crate) fn key(&self) -> Option<&str> {
-        self.public_key.as_deref()
     }
 
     pub(crate) fn crate_name(&self) -> Option<&str> {

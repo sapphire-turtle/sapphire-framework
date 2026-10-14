@@ -61,7 +61,7 @@ pub enum BridgeCommand {
     /// Install, remove or report this host's bridge service.
     #[command(subcommand)]
     Service(ServiceCommand),
-    /// Replace this executable with the newest release, after verifying its signature.
+    /// Replace this executable with the newest release.
     /// Restart the service afterwards to run it.
     Update(sapphire_framework_update::UpdateArgs),
     /// What the workgroup contains — read-only.
@@ -97,17 +97,11 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
     }
 }
 
-/// The minisign public key `sapphire-bridge` releases are signed with: the second line of
-/// the release key's `minisign.pub`. The secret half is the `MINISIGN_SECRET_KEY` secret
-/// of `release-bridge.yml`, and nowhere else.
-pub const BRIDGE_RELEASE_KEY: &str = "RWSIr9UckMp9ey1+5938ncXG7gdWUa4mtOMbsr3RrPz6+V803uSlaTST";
-
 /// Where `sapphire-bridge` is released: this repository's `v<version>` releases, as
-/// `sapphire-bridge-<os>-<arch>`, signed with [`BRIDGE_RELEASE_KEY`].
+/// `sapphire-bridge-<os>-<arch>`.
 pub fn bridge_release_source() -> sapphire_framework_update::ReleaseSource {
     sapphire_framework_update::ReleaseSource::github("sapphire-turtle", "sapphire-framework")
         .asset("sapphire-bridge")
-        .public_key(BRIDGE_RELEASE_KEY)
         .cargo_crate("sapphire-bridge")
 }
 
@@ -890,23 +884,6 @@ mod tests {
     struct Probe {
         #[command(subcommand)]
         command: BridgeCommand,
-    }
-
-    #[test]
-    fn the_release_key_is_a_minisign_public_key() {
-        // An empty signature fails to decode only after the key has parsed.
-        let err = sapphire_framework_update::verify(
-            BRIDGE_RELEASE_KEY,
-            b"",
-            "",
-            "sapphire-bridge",
-            &"0.1.0".parse().unwrap(),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, sapphire_framework_update::Error::Signature(_)),
-            "{err}"
-        );
     }
 
     #[test]

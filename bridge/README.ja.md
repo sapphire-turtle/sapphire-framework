@@ -38,11 +38,11 @@ $ sapphire-bridge device list
 
 ```sh
 $ sapphire-bridge update --check   # 新しいリリースがあるかだけを表示
-$ sapphire-bridge update           # 確認のうえ、ダウンロード・検証・インストール
+$ sapphire-bridge update           # 確認のうえ、ダウンロードしてインストール
 ```
 
-`update` はバイナリを最新リリースのものに置き換えます。ただし、minisign 署名がこのバイナリに
-組み込まれた公開鍵で検証できた場合に限ります。ダウングレードはせず、`cargo install` や
+`update` はバイナリを、最新の GitHub リリースにあるこのプラットフォーム向けのファイルに
+置き換えます（HTTPS でダウンロード）。ダウングレードはせず、`cargo install` や
 パッケージマネージャで入れたバイナリは置き換えません（代わりに実行するコマンドを表示します）。
 新しいバージョンを動かすには、そのあとサービスを再起動してください。
 

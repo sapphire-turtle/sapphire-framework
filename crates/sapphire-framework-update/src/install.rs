@@ -1,4 +1,4 @@
-//! Replacing the running executable with a newer, verified release.
+//! Replacing the running executable with a newer release.
 
 use std::io::{BufRead, Write as _};
 use std::path::{Path, PathBuf};
@@ -79,38 +79,6 @@ pub fn asset_name(base: &str) -> String {
     format!("{base}-{}{}", platform(), std::env::consts::EXE_SUFFIX)
 }
 
-/// The trusted comment a release signs `asset` of `version` with. Being signed, it ties the
-/// signature to exactly this file of exactly this release.
-fn trusted_comment(asset: &str, version: &semver::Version) -> String {
-    format!("{asset} {version}")
-}
-
-/// Check that `signature` (a `.minisig` file's text) is `public_key`'s over `bytes`, and that
-/// its trusted comment names `asset` at `version`.
-pub fn verify(
-    public_key: &str,
-    bytes: &[u8],
-    signature: &str,
-    asset: &str,
-    version: &semver::Version,
-) -> Result<()> {
-    let key = minisign_verify::PublicKey::from_base64(public_key.trim())
-        .map_err(|e| Error::NotConfigured(format!("the built-in public key is unusable: {e}")))?;
-    let signature = minisign_verify::Signature::decode(signature)
-        .map_err(|e| Error::Signature(format!("reading {asset}.minisig: {e}")))?;
-    // Legacy (not prehashed) signatures are refused: every current minisign prehashes.
-    key.verify(bytes, &signature, false)
-        .map_err(|e| Error::Signature(e.to_string()))?;
-    let expected = trusted_comment(asset, version);
-    if signature.trusted_comment() != expected {
-        return Err(Error::Signature(format!(
-            "it vouches for {:?}, not {expected:?}",
-            signature.trusted_comment()
-        )));
-    }
-    Ok(())
-}
-
 /// Write `bytes` beside `exe` and hand the new file to `replace`, which puts it in `exe`'s
 /// place. The staging file is removed afterwards, whatever `replace` did.
 ///
@@ -167,35 +135,29 @@ async fn download(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
-/// Download `release`'s file for this machine and its signature, and verify them.
-async fn fetch_verified(
+/// Download `release`'s file for this machine.
+async fn fetch(
     client: &reqwest::Client,
     source: &ReleaseSource,
     release: &Release,
     base: &str,
-    public_key: &str,
 ) -> Result<Vec<u8>> {
     let name = asset_name(base);
-    let find = |wanted: &str| {
-        release
-            .assets
-            .iter()
-            .find(|a| a.name == wanted)
-            .ok_or_else(|| {
-                Error::NoAsset(format!(
-                    "{} {} has no {wanted}",
-                    source.repository(),
-                    release.version
-                ))
-            })
-    };
-    let binary = find(&name)?;
-    let signature = find(&format!("{name}.minisig"))?;
-    let signature = download(client, &signature.download_url).await?;
-    let signature = String::from_utf8(signature)
-        .map_err(|_| Error::Signature(format!("{name}.minisig is not text")))?;
+    let binary = release
+        .assets
+        .iter()
+        .find(|a| a.name == name)
+        .ok_or_else(|| {
+            Error::NoAsset(format!(
+                "{} {} has no {name}",
+                source.repository(),
+                release.version
+            ))
+        })?;
     let bytes = download(client, &binary.download_url).await?;
-    verify(public_key, &bytes, &signature, &name, &release.version)?;
+    if bytes.is_empty() {
+        return Err(Error::Http(format!("{name} downloaded empty")));
+    }
     Ok(bytes)
 }
 
@@ -255,7 +217,7 @@ pub async fn run(
         return Ok(0);
     }
 
-    let (Some(base), Some(key)) = (source.asset_base(), source.key()) else {
+    let Some(base) = source.asset_base() else {
         println!(
             "{name} does not update itself; {}",
             manual_advice(source, &release, &InstallMethod::Release)
@@ -284,10 +246,10 @@ pub async fn run(
         println!("not updated");
         return Ok(1);
     }
-    let bytes = fetch_verified(&client, source, &release, base, key).await?;
+    let bytes = fetch(&client, source, &release, base).await?;
     install(&bytes, &exe, |staged| self_replace::self_replace(staged))?;
     println!(
-        "installed {name} {} (signature verified); restart the {name} service to run it",
+        "installed {name} {}; restart the {name} service to run it",
         release.version
     );
     Ok(0)
@@ -309,59 +271,8 @@ fn confirm(question: &str) -> Result<bool> {
 mod tests {
     use super::*;
 
-    /// A fresh key pair and the minisign public key line for it.
-    fn keypair() -> (minisign::KeyPair, String) {
-        let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-        let public = pair.pk.to_base64();
-        (pair, public)
-    }
-
-    fn sign(pair: &minisign::KeyPair, bytes: &[u8], comment: &str) -> String {
-        minisign::sign(
-            Some(&pair.pk),
-            &pair.sk,
-            std::io::Cursor::new(bytes),
-            Some(comment),
-            None,
-        )
-        .unwrap()
-        .into_string()
-    }
-
     fn v(s: &str) -> semver::Version {
         semver::Version::parse(s).unwrap()
-    }
-
-    #[test]
-    fn a_signed_file_verifies_with_its_asset_and_version() {
-        let (pair, public) = keypair();
-        let sig = sign(&pair, b"binary", "app-linux-x86_64 0.20.0");
-        verify(&public, b"binary", &sig, "app-linux-x86_64", &v("0.20.0")).unwrap();
-    }
-
-    #[test]
-    fn a_tampered_file_or_another_key_does_not_verify() {
-        let (pair, public) = keypair();
-        let sig = sign(&pair, b"binary", "app-linux-x86_64 0.20.0");
-        let err = verify(&public, b"binarY", &sig, "app-linux-x86_64", &v("0.20.0")).unwrap_err();
-        assert!(matches!(err, Error::Signature(_)), "{err}");
-
-        let (_, other) = keypair();
-        let err = verify(&other, b"binary", &sig, "app-linux-x86_64", &v("0.20.0")).unwrap_err();
-        assert!(matches!(err, Error::Signature(_)), "{err}");
-    }
-
-    #[test]
-    fn a_signature_of_another_release_or_platform_does_not_verify() {
-        // Correctly signed, but for 0.19.0: replaying an old binary into a new release.
-        let (pair, public) = keypair();
-        let sig = sign(&pair, b"old", "app-linux-x86_64 0.19.0");
-        let err = verify(&public, b"old", &sig, "app-linux-x86_64", &v("0.20.0")).unwrap_err();
-        assert!(err.to_string().contains("vouches for"), "{err}");
-        // Correctly signed, but the macOS binary under the Linux name.
-        let sig = sign(&pair, b"mac", "app-macos-aarch64 0.20.0");
-        let err = verify(&public, b"mac", &sig, "app-linux-x86_64", &v("0.20.0")).unwrap_err();
-        assert!(err.to_string().contains("vouches for"), "{err}");
     }
 
     #[test]
@@ -445,64 +356,46 @@ mod tests {
 
     const RELEASES: &str = "/repos/o/r/releases?per_page=100";
 
-    /// A repository with release 0.20.0 of `app`: its file for this machine, signed by
-    /// `pair` with `comment`.
-    async fn repository(pair: &minisign::KeyPair, binary: &[u8], comment: &str) -> String {
+    /// A repository with release 0.20.0 of `app`: its file for this machine.
+    async fn repository(binary: &[u8]) -> String {
         let name = asset_name("app");
-        let sig = sign(pair, binary, comment);
         let binary = binary.to_vec();
         serve(move |root| {
             let releases = format!(
                 r#"[{{"tag_name":"v0.20.0","html_url":"{root}/r/v0.20.0","assets":[
-                    {{"name":"{name}","browser_download_url":"{root}/dl/{name}"}},
-                    {{"name":"{name}.minisig","browser_download_url":"{root}/dl/{name}.minisig"}}]}}]"#
+                    {{"name":"{name}","browser_download_url":"{root}/dl/{name}"}}]}}]"#
             );
             vec![
                 (RELEASES.to_owned(), releases.into_bytes()),
                 (format!("/dl/{name}"), binary),
-                (format!("/dl/{name}.minisig"), sig.into_bytes()),
             ]
         })
         .await
     }
 
     #[tokio::test]
-    async fn a_release_is_fetched_and_verified_end_to_end() {
-        let (pair, public) = keypair();
-        let name = asset_name("app");
-        let root = repository(&pair, b"new binary", &format!("{name} 0.20.0")).await;
-        let source = ReleaseSource::github("o", "r")
-            .api_base(&root)
-            .asset("app")
-            .public_key(&public);
+    async fn a_release_is_fetched_end_to_end() {
+        let root = repository(b"new binary").await;
+        let source = ReleaseSource::github("o", "r").api_base(&root).asset("app");
         let client = crate::client("test/0.0.0").unwrap();
         let release = latest_release(&client, &source).await.unwrap();
         assert_eq!(release.version, v("0.20.0"));
-        let bytes = fetch_verified(&client, &source, &release, "app", &public)
-            .await
-            .unwrap();
+        let bytes = fetch(&client, &source, &release, "app").await.unwrap();
         assert_eq!(bytes, b"new binary");
     }
 
     #[tokio::test]
-    async fn a_release_signed_for_another_version_is_refused_end_to_end() {
-        let (pair, public) = keypair();
-        let name = asset_name("app");
-        let root = repository(&pair, b"old binary", &format!("{name} 0.19.0")).await;
-        let source = ReleaseSource::github("o", "r")
-            .api_base(&root)
-            .asset("app")
-            .public_key(&public);
+    async fn an_empty_download_is_refused() {
+        let root = repository(b"").await;
+        let source = ReleaseSource::github("o", "r").api_base(&root).asset("app");
         let client = crate::client("test/0.0.0").unwrap();
         let release = latest_release(&client, &source).await.unwrap();
-        let err = fetch_verified(&client, &source, &release, "app", &public)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::Signature(_)), "{err}");
+        let err = fetch(&client, &source, &release, "app").await.unwrap_err();
+        assert!(matches!(err, Error::Http(_)), "{err}");
     }
 
     #[tokio::test]
-    async fn a_release_without_this_platforms_signature_is_refused() {
+    async fn a_release_without_this_platforms_file_is_refused() {
         let root = serve(|_| {
             vec![(
                 RELEASES.to_owned(),
@@ -511,16 +404,10 @@ mod tests {
             )]
         })
         .await;
-        let (_, public) = keypair();
-        let source = ReleaseSource::github("o", "r")
-            .api_base(&root)
-            .asset("app")
-            .public_key(&public);
+        let source = ReleaseSource::github("o", "r").api_base(&root).asset("app");
         let client = crate::client("test/0.0.0").unwrap();
         let release = latest_release(&client, &source).await.unwrap();
-        let err = fetch_verified(&client, &source, &release, "app", &public)
-            .await
-            .unwrap_err();
+        let err = fetch(&client, &source, &release, "app").await.unwrap_err();
         assert!(matches!(err, Error::NoAsset(_)), "{err}");
     }
 }

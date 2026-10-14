@@ -318,7 +318,7 @@ impl AppServer {
     /// The server looks there for newer ones once at start and once a day after, unless
     /// `server.toml` says `[update] check = false`; `status` and the GUI show what it found.
     /// The `update` command installs from there, when `source` names the release's
-    /// [asset](ReleaseSource::asset) and [public key](ReleaseSource::public_key).
+    /// [asset](ReleaseSource::asset).
     pub fn releases(mut self, source: ReleaseSource) -> AppServer {
         self.releases = Some(source);
         self

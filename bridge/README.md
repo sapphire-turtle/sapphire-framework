@@ -38,11 +38,11 @@ exits non-zero.
 
 ```sh
 $ sapphire-bridge update --check   # only say whether a newer release exists
-$ sapphire-bridge update           # download, verify and install it, after asking
+$ sapphire-bridge update           # download and install it, after asking
 ```
 
-`update` replaces the binary with the newest release's, but only after its minisign signature
-verifies against the key built into this binary. It never downgrades, and it leaves a binary
+`update` replaces the binary with this platform's file from the newest GitHub release,
+downloaded over HTTPS. It never downgrades, and it leaves a binary
 installed with `cargo install` or a package manager alone (it says what to run instead).
 Restart the service afterwards to run the new version.
 

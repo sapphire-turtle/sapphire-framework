@@ -2,15 +2,14 @@
 name = "sapphire-framework-update"
 version.workspace = true
 edition.workspace = true
-description = "Find newer GitHub releases of a sapphire-framework binary, and replace it with a minisign-verified one"
+description = "Find newer GitHub releases of a sapphire-framework binary, and replace it with one"
 license.workspace = true
 repository.workspace = true
-keywords = ["update", "self-update", "minisign", "release"]
+keywords = ["update", "self-update", "release", "github"]
 categories = ["command-line-utilities"]
 
 [dependencies]
 clap.workspace = true
-minisign-verify = "0.3"
 reqwest.workspace = true
 self-replace = "1.5"
 semver = "1"
@@ -20,6 +19,4 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# Signs the fixtures the tests verify; the crate itself only verifies.
-minisign = "0.10"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }

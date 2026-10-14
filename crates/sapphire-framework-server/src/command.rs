@@ -31,7 +31,7 @@ pub enum FrameworkCommand {
     /// Install, remove or report this application's operating-system service.
     #[command(subcommand)]
     Service(ServiceCommand),
-    /// Replace this executable with the newest release, after verifying its signature.
+    /// Replace this executable with the newest release.
     /// Restart the service afterwards to run it.
     Update(sapphire_framework_update::UpdateArgs),
     /// Create, select, show and map this application's workspace. The server serves one

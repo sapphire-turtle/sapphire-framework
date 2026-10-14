@@ -6,11 +6,8 @@
 //! further and replaces the running executable with the release's, but only:
 //!
 //! - with a newer version: never a downgrade;
-//! - with the asset for this platform, `<asset>-<os>-<arch>[.exe]`;
-//! - when its `.minisig` verifies against the public key built into the binary
-//!   ([`ReleaseSource::public_key`]), and the signature's trusted comment names exactly that
-//!   asset and version, so a correctly signed file of another release or another platform
-//!   cannot be passed off as this one;
+//! - with the asset for this platform, `<asset>-<os>-<arch>[.exe]`, downloaded over HTTPS
+//!   from the repository's own release: GitHub is the authority on what was released;
 //! - when the executable was placed by hand, not by `cargo install` or a package manager,
 //!   whose own bookkeeping a replaced file would contradict ([`InstallMethod`]).
 //!
@@ -21,12 +18,10 @@
 mod install;
 mod release;
 
-pub use install::{
-    InstallMethod, UpdateArgs, asset_name, install, install_method, platform, run, verify,
-};
+pub use install::{InstallMethod, UpdateArgs, asset_name, install, install_method, platform, run};
 pub use release::{Asset, Release, ReleaseSource, client, latest_release};
 
-/// Errors from finding, fetching, verifying or installing a release.
+/// Errors from finding, fetching or installing a release.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// Talking to GitHub failed.
@@ -35,13 +30,10 @@ pub enum Error {
     /// The repository has no release this source matches.
     #[error("{0}")]
     NoRelease(String),
-    /// The release has no file for this platform, or no signature for it.
+    /// The release has no file for this platform.
     #[error("{0}")]
     NoAsset(String),
-    /// The download is not what the release's signature vouches for.
-    #[error("the signature does not verify: {0}")]
-    Signature(String),
-    /// The binary does not say where its releases are, or how they are signed.
+    /// The binary does not say where its releases are, or its own version is unusable.
     #[error("{0}")]
     NotConfigured(String),
     /// Reading the executable or writing its replacement failed.

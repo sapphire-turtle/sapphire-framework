@@ -1,0 +1,160 @@
+name: Shared Rust CI
+
+# The pull request CI every sapphire-turtle Rust repository runs. Call it from a
+# repository's own `ci.yml` (see ci/templates/ci.yml):
+#
+#   jobs:
+#     ci:
+#       uses: sapphire-turtle/sapphire-framework/.github/workflows/shared-rust-ci.yml@main
+#
+# The toolchain, clippy and rustfmt come from the caller's rust-toolchain.toml,
+# so CI and a local checkout always build with the same compiler.
+#
+# Three jobs, reported as `<caller job> / fmt`, `<caller job> / test` and
+# `<caller job> / test-platforms (<os>)`:
+#
+# - fmt: formatting, which needs no build, so it fails in seconds.
+# - test: clippy and the tests on linux-x86_64. Not a matrix, so the check a
+#   ruleset requires keeps a fixed name.
+# - test-platforms: the same on the other three release platforms, so a
+#   platform-only break (and the `#[cfg(windows)]` / `#[cfg(unix)]` code Linux
+#   never compiles) shows up on the pull request instead of in a release run.
+#
+# Every input must keep a default that preserves today's behaviour: all the
+# callers follow `@main`.
+on:
+  workflow_call:
+    inputs:
+      linux-packages:
+        description: 'Extra apt packages to install on Linux, space separated. protoc is always installed.'
+        type: string
+        default: ''
+      packages:
+        description: 'Which packages clippy and the tests cover, as cargo arguments.'
+        type: string
+        default: '--workspace'
+      features:
+        description: 'Which features clippy and the tests enable, as cargo arguments.'
+        type: string
+        default: '--all-features'
+      platforms:
+        description: 'Also run test-platforms (Linux aarch64, macOS aarch64, Windows x86_64).'
+        type: boolean
+        default: true
+      pre-build:
+        description: 'A bash script run after the cargo cache is restored, before anything builds.'
+        type: string
+        default: ''
+      post-test:
+        description: 'A bash script run at the end of the test job (Linux x86_64 only), for repository-specific checks.'
+        type: string
+        default: ''
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # rustup installs the rust-toolchain.toml toolchain on first use; do that
+      # in its own step so the download does not land in the middle of another.
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Install dependencies
+        env:
+          PACKAGES: ${{ inputs.linux-packages }}
+        run: |
+          sudo apt-get update
+          # Unquoted on purpose: PACKAGES is a list.
+          sudo apt-get install -y protobuf-compiler $PACKAGES
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Pre-build
+        if: inputs.pre-build != ''
+        env:
+          SCRIPT: ${{ inputs.pre-build }}
+        run: eval "$SCRIPT"
+
+      - name: Clippy
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          FEATURES: ${{ inputs.features }}
+        run: cargo clippy $PACKAGES --all-targets $FEATURES --locked -- -D warnings
+
+      - name: Test
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          FEATURES: ${{ inputs.features }}
+        run: cargo test $PACKAGES $FEATURES --locked
+
+      - name: Post-test
+        if: inputs.post-test != ''
+        env:
+          SCRIPT: ${{ inputs.post-test }}
+        run: eval "$SCRIPT"
+
+  test-platforms:
+    if: inputs.platforms
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm has no `-latest` alias; macos-latest is Apple Silicon.
+        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PACKAGES: ${{ inputs.linux-packages }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler $PACKAGES
+      # cmake (aws-lc-sys) is preinstalled on the macOS and Windows runners.
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install protoc -y
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Pre-build
+        if: inputs.pre-build != ''
+        env:
+          SCRIPT: ${{ inputs.pre-build }}
+        run: eval "$SCRIPT"
+
+      - name: Clippy
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          FEATURES: ${{ inputs.features }}
+        run: cargo clippy $PACKAGES --all-targets $FEATURES --locked -- -D warnings
+
+      - name: Test
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          FEATURES: ${{ inputs.features }}
+        run: cargo test $PACKAGES $FEATURES --locked

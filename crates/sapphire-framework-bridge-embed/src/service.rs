@@ -382,8 +382,13 @@ mod tests {
     async fn the_model_unloads_when_idle_and_reloads_on_demand() {
         let h = harness(Duration::from_millis(50));
         h.service.embed(texts(&["a"])).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!h.service.loaded());
+        // The worker is a std thread on a real-time timeout; a busy runner can schedule it
+        // late, so wait for the unload rather than for a fixed time.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.service.loaded() {
+            assert!(Instant::now() < deadline, "the model was not unloaded");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         h.service.embed(texts(&["b"])).await.unwrap();
         assert!(h.service.loaded());
         assert_eq!(h.loads.load(Ordering::SeqCst), 2);

@@ -357,6 +357,13 @@ impl AppServer {
         &self.host
     }
 
+    /// The sync runtime, once [`sync`](Self::sync) or [`sync_via_bridge`](Self::sync_via_bridge)
+    /// has set one (#250): for an application's own code that reads sync state — status
+    /// rows, or which device is the workspace's primary.
+    pub fn sync_runtime(&self) -> Option<&Arc<SyncRuntime>> {
+        self.sync.as_ref()
+    }
+
     /// Listen until told to stop, or until a signal arrives.
     pub async fn run(self) -> Result<()> {
         let AppServer {
@@ -818,6 +825,16 @@ mod tests {
     /// subscriber and the file layer are the process's, installed by `CTX.init`
     /// and `run` — so what lands in the file is exactly what a journald-less
     /// host would otherwise never see.
+    #[test]
+    fn the_runtime_sync_via_bridge_mounts_is_the_applications_to_read() {
+        // #250: an application reads sync state (status rows, placement) from the
+        // runtime `sync_via_bridge` built, rather than building its own to keep one.
+        assert!(AppServer::new(&CTX, "0.0.0").sync_runtime().is_none());
+        let server = AppServer::new(&CTX, "0.0.0").sync_via_bridge().unwrap();
+        let runtime = server.sync_runtime().expect("a runtime");
+        assert!(!runtime.is_connected(), "nothing connects before `run`");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn a_running_server_writes_its_log_file() {
         let f = prepared();

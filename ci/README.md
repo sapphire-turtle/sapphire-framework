@@ -15,7 +15,6 @@ Call them as `sapphire-turtle/sapphire-framework/.github/workflows/<file>@main`.
 | [`shared-release-plz.yml`](../.github/workflows/shared-release-plz.yml) | release-plz `release` and `release-pr`, with `RELEASE_PLZ_TOKEN`; outputs which packages were released and their tags |
 | [`shared-release-binary.yml`](../.github/workflows/shared-release-binary.yml) | Builds one binary for the four release platforms and attaches `<asset>-<os>-<arch>[.exe]` to a release |
 | [`shared-cargo-deny.yml`](../.github/workflows/shared-cargo-deny.yml) | `cargo deny check` against the repository's `deny.toml` |
-| [`shared-dependabot-auto-merge.yml`](../.github/workflows/shared-dependabot-auto-merge.yml) | Auto-merge for Dependabot patch updates, requiring the `cargo-patch` group for Cargo |
 
 Each one's inputs are documented at the top of its file.
 
@@ -45,6 +44,8 @@ that cannot be, lands together with the pull requests that adapt the callers.
   them. This repository is all libraries and keeps `LICENSE-MIT` / `LICENSE-APACHE` at the root.
 - **Secrets**: `RELEASE_PLZ_TOKEN` and, for a repository that publishes to crates.io,
   `CARGO_REGISTRY_TOKEN`.
+- **Dependabot**: Cargo patch updates are grouped into one `cargo-patch` pull request. Dependabot
+  pull requests are reviewed and merged by hand; nothing auto-merges them.
 - **Labels**: `release` (release PRs), and `dependencies`, `github_actions`, `rust`
   (Dependabot).
 
@@ -56,7 +57,6 @@ Copy from [`templates/`](templates/):
 |---|---|
 | `.github/workflows/ci.yml` | Set `linux-packages`, and `packages` / `post-test` if needed |
 | `.github/workflows/cargo-deny.yml` | As is |
-| `.github/workflows/dependabot-auto-merge.yml` | As is |
 | `.github/workflows/release-plz.yml`, `release-binaries.yml` | For an application with a CLI and a desktop app; replace `<app>` |
 | `.github/dependabot.yml` | As is |
 | `rust-toolchain.toml` | As is |

@@ -451,11 +451,19 @@ impl SyncRuntime {
         // In the background, so the answer does not wait on it: a peer that is offline
         // holds a dial up to `open_timeout`, longer than a client waits for `sync.enable`
         // (#228).
+        //
+        // Scan first: a file already on disk when the workspace is enabled — a folder that
+        // existed before sync was turned on, or an edit made while the server was down —
+        // fires no watcher, so without this it is never recorded and the session has
+        // nothing to send. Logged, not fatal: the session still fetches what peers have.
         let runtime = Arc::clone(self);
         let mut dials = self.first_dials.lock().expect("first dials");
         // Reap the finished ones, so the set holds only what is running.
         while dials.try_join_next().is_some() {}
         dials.spawn(async move {
+            if let Err(err) = runtime.scan(&key).await {
+                tracing::warn!(root = %key.display(), "the first scan after enabling failed: {err}");
+            }
             if let Err(err) = runtime.sync_now(&key).await {
                 tracing::warn!(root = %key.display(), "the first session after enabling failed: {err}");
             }
@@ -2228,6 +2236,23 @@ mod tests {
             .disable(&f.root)
             .await
             .expect("disabling twice is fine");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_already_on_disk_is_recorded_on_enable() {
+        // No watcher fires for a file written before the workspace was enabled; without a
+        // scan on enable it was never recorded, and every session sent nothing.
+        let f = fixture().await;
+        std::fs::write(f.root.join("a.md"), "content").unwrap();
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+
+        let replica = f.runtime.replica_of(&f.root).await.unwrap();
+        let states = replica.lock().await.states().unwrap();
+        assert!(
+            states.iter().any(|(path, _)| path == "a.md"),
+            "a file on disk before enable must be recorded: {states:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

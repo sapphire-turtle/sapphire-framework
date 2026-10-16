@@ -9,14 +9,14 @@
 //! ```no_run
 //! use sapphire_framework_gui::app::{self, AppOptions, AppSetup};
 //! use sapphire_framework_gui::client::AppIdentity;
-//! use sapphire_framework_gui::{SyncPanel, eframe};
+//! use sapphire_framework_gui::{Settings, eframe};
 //!
 //! const APP: AppIdentity = AppIdentity {
 //!     app_name: "sapphire-example",
 //!     version: "0.1.0",
 //! };
 //!
-//! struct Example(SyncPanel);
+//! struct Example(Settings);
 //!
 //! impl eframe::App for Example {
 //!     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -27,7 +27,7 @@
 //! fn main() -> eframe::Result<()> {
 //!     app::run(
 //!         AppOptions::new(APP, "Sapphire Example").inner_size([900.0, 600.0]),
-//!         |setup: AppSetup<'_>| Box::new(Example(SyncPanel::new(setup.framework))),
+//!         |setup: AppSetup<'_>| Box::new(Example(Settings::new(setup.framework))),
 //!     )
 //! }
 //! ```

@@ -45,6 +45,6 @@ pub(crate) fn unavailable(ui: &mut egui::Ui, what: &str) {
     ui.add_space(12.0);
     ui.vertical_centered(|ui| {
         ui.label(format!("{what} is not available."));
-        ui.small("See the status line above.");
+        ui.small("See Settings → About.");
     });
 }

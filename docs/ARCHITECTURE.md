@@ -151,7 +151,13 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
   同じクライアントが発行する。更新は 5 秒、コマンドは 30 秒（参加のみ 90 秒）で打ち切る
   （`ClientConfig::{fetch_timeout, command_timeout}` で変更可）— 相手が応答しなくても UI は固まらない。
   `views::*` はスナップショットから表示用の行・文言を作る**純関数**で、egui なしでテストできる。
-- **表示層**: `SyncPanel` が上記を egui で描く（workgroup / デバイス / ワークスペースの管理）。
+- **表示層**: `Settings` が上記を egui で描く（アプリが追加するセクション、Sync — ワークスペース /
+  デバイス / workgroup / 外部デバイス / 埋め込み — 、About）。幅が広いときは一覧＋ページ、狭いときは
+  一覧 → ページの遷移。`Shell` は全アプリ共通の画面の枠で、アプリ固有の画面を左のナビゲーション
+  レール（狭いときは下のバー）に並べ、その下端に Settings とサービス状態のドットを置く。状態は
+  `Health` で、問題があるときだけ全画面共通のバナーを出す。同期していないワークスペースでは bridge が
+  無くても問題としない（`bridge_needed`）。アイコンは Lucide（`icons`、各アプリと同じ）。
+  旧名 `SyncPanel` は `Settings` の deprecated な別名。
   invite チケットは画面にのみ出し、`tracing` には渡さない。`pub use egui` で利用側は egui の版を
   合わせられる。
 - **フォント**: `fonts::system_cjk_font()` / `add_system_cjk_fallback(&mut FontDefinitions)` /
@@ -263,7 +269,7 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
    AVX2 が無ければ off、リモートは on）とキャッシュ置き場を `<bridge dir>/embedding.toml` に、
    リモートの API キーを `<bridge dir>/embedding.key`（0600）に置く。使うのはリモートが on なら
    リモート、でなければローカル。設定は `embedding` コマンド（bridge とアプリの CLI）、
-   SyncPanel の Embedding 画面、制御面の `embed.settings` / `embed.model_set` /
+   Settings の Embedding 画面、制御面の `embed.settings` / `embed.model_set` /
    `embed.device_set` / `embed.key_set` / `embed.key_clear` で変える。bridge は設定が変わると
    その場でプロバイダを作り直し（設定の呼び出し後と、ステータス周期 5 秒ごと — 他デバイスが
    変えたモデルは同期された workgroup root から届く）、アプリは `sync_and_embed` のたびに
@@ -298,7 +304,7 @@ CLI は `sapphire-bridge`（`serve` / `status` / `service` / `workspace` / `work
 （行は残す）・restore・rotate（id は維持）がある。アプリの HTTP 層は `protect` で Bearer
 トークンを受け、bridge の `external_device.authenticate` に自分のアプリ名と一緒に確かめる（成功は
 30 秒キャッシュ。bridge に聞けなければ 503）。管理は `sapphire-bridge external-device …`、各アプリの
-`external-device …`（`add` は既定でそのアプリ）、SyncPanel の External devices 画面。サーバーごとの
+`external-device …`（`add` は既定でそのアプリ）、Settings の External devices 画面。サーバーごとの
 `KeyStore`（生トークンの `keys.toml`）は廃止した。設計は
 `superpowers/specs/2026-10-11-external-devices-design.md`。
 

@@ -175,6 +175,20 @@ impl std::fmt::Debug for BridgeConnector {
     }
 }
 
+/// What [`SyncRuntime::reclaim`] found of a replica `disable` let go of.
+enum Reclaimed {
+    /// Still held: here it is.
+    Open(Arc<Mutex<Replica>>),
+    /// Let go of since, so its store may be closing still.
+    Closing,
+    /// Nothing to take back.
+    Closed,
+}
+
+/// How often, and how far apart, `enable` tries to open a store that may still be closing.
+const CLOSING_RETRIES: u32 = 50;
+const CLOSING_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Replication for one application's workspaces.
 pub struct SyncRuntime {
     ctx: &'static AppContext,
@@ -198,6 +212,13 @@ pub struct SyncRuntime {
     exe_path: PathBuf,
     managed_by: ManagedBy,
     synced: Mutex<HashMap<PathBuf, Synced>>,
+    /// The replicas [`disable`](SyncRuntime::disable) let go of, by canonical root, for as
+    /// long as something else still holds one: a scan, a session or the first dial that
+    /// began before. The store is a redb database, open until its last holder drops it, so
+    /// a re-enable meanwhile could not open it again; [`enable`](SyncRuntime::enable)
+    /// takes the open one back instead. [`release`](SyncRuntime::release) puts nothing
+    /// here: its store is about to be moved or deleted.
+    stopped: std::sync::Mutex<HashMap<PathBuf, std::sync::Weak<Mutex<Replica>>>>,
     /// This host's device id. Asked of the bridge once, on the first [`enable`], and never
     /// again: a second registration with an empty workspace list would briefly clear this
     /// application's routes.
@@ -312,6 +333,7 @@ impl SyncRuntime {
             exe_path,
             managed_by,
             synced: Mutex::new(HashMap::new()),
+            stopped: std::sync::Mutex::new(HashMap::new()),
             device_id: OnceCell::new(),
             watcher: OnceCell::new(),
             host: OnceCell::new(),
@@ -409,17 +431,40 @@ impl SyncRuntime {
             if let Some(existing) = synced.get(&key) {
                 return Ok(existing.workspace_id);
             }
-            let device_id = self.device_id().await?;
-            let state_dir = self.state_dir(&key)?;
-            std::fs::create_dir_all(&state_dir).map_err(Error::Io)?;
-            let config = ReplicaConfig::new(self.ctx.app_name, key.clone(), device_id, &state_dir);
-            let replica = Replica::open(config, Arc::new(SystemClock))
-                .map_err(|e| Error::Sync(e.to_string()))?;
+            // A replica disabled a moment ago may still be open; it is this root's, with this
+            // runtime's one device id, so it is taken back rather than opened a second time.
+            let replica = match self.reclaim(&key) {
+                Reclaimed::Open(replica) => replica,
+                reclaimed => {
+                    let device_id = self.device_id().await?;
+                    let state_dir = self.state_dir(&key)?;
+                    std::fs::create_dir_all(&state_dir).map_err(Error::Io)?;
+                    let config =
+                        ReplicaConfig::new(self.ctx.app_name, key.clone(), device_id, &state_dir);
+                    // The last holder let go between the two: its store closes as the replica
+                    // drops, just after it can no longer be taken back. Give it that moment.
+                    let mut tries = match reclaimed {
+                        Reclaimed::Closing => CLOSING_RETRIES,
+                        _ => 0,
+                    };
+                    let replica = loop {
+                        match Replica::open(config.clone(), Arc::new(SystemClock)) {
+                            Ok(replica) => break replica,
+                            Err(_) if tries > 0 => {
+                                tries -= 1;
+                                tokio::time::sleep(CLOSING_RETRY_DELAY).await;
+                            }
+                            Err(err) => return Err(Error::Sync(err.to_string())),
+                        }
+                    };
+                    Arc::new(Mutex::new(replica))
+                }
+            };
             synced.insert(
                 key.clone(),
                 Synced {
                     workspace_id,
-                    replica: Arc::new(Mutex::new(replica)),
+                    replica,
                     paused: None,
                     last_error: None,
                 },
@@ -451,11 +496,19 @@ impl SyncRuntime {
         // In the background, so the answer does not wait on it: a peer that is offline
         // holds a dial up to `open_timeout`, longer than a client waits for `sync.enable`
         // (#228).
+        //
+        // Scan first: a file already on disk when the workspace is enabled — a folder that
+        // existed before sync was turned on, or an edit made while the server was down —
+        // fires no watcher, so without this it is never recorded and the session has
+        // nothing to send. Logged, not fatal: the session still fetches what peers have.
         let runtime = Arc::clone(self);
         let mut dials = self.first_dials.lock().expect("first dials");
         // Reap the finished ones, so the set holds only what is running.
         while dials.try_join_next().is_some() {}
         dials.spawn(async move {
+            if let Err(err) = runtime.scan(&key).await {
+                tracing::warn!(root = %key.display(), "the first scan after enabling failed: {err}");
+            }
             if let Err(err) = runtime.sync_now(&key).await {
                 tracing::warn!(root = %key.display(), "the first session after enabling failed: {err}");
             }
@@ -465,8 +518,19 @@ impl SyncRuntime {
 
     /// Stop syncing `root`. Files and the sync id stay, so re-enabling rejoins the same
     /// workspace rather than creating a second one.
+    ///
+    /// Something that began before — a scan, a session, the first dial — may still hold the
+    /// replica open; a re-enable meanwhile takes it back (see [`reclaim`](Self::reclaim)).
     pub async fn disable(&self, root: &Path) -> Result<()> {
-        self.stop(root).await.1
+        let (replica, unregistered) = self.stop(root).await;
+        if let Some(replica) = replica {
+            let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            let mut stopped = self.stopped.lock().expect("stopped replicas");
+            // Forget the ones nothing holds any more, so the map stays small.
+            stopped.retain(|_, replica| replica.strong_count() > 0);
+            stopped.insert(key, Arc::downgrade(&replica));
+        }
+        unregistered
     }
 
     /// Stop syncing `root`, like [`disable`](Self::disable), then wait up to `limit` until
@@ -1621,6 +1685,18 @@ impl SyncRuntime {
         });
     }
 
+    /// The replica [`disable`](Self::disable) let go of for `key`, if something still holds it
+    /// open.
+    fn reclaim(&self, key: &Path) -> Reclaimed {
+        let stopped = self.stopped.lock().expect("stopped replicas").remove(key);
+        match stopped {
+            None => Reclaimed::Closed,
+            Some(replica) => replica
+                .upgrade()
+                .map_or(Reclaimed::Closing, Reclaimed::Open),
+        }
+    }
+
     /// The replica of a synced `root`.
     async fn replica_of(&self, root: &Path) -> Result<Arc<Mutex<Replica>>> {
         let key = root.canonicalize().map_err(Error::Io)?;
@@ -2228,6 +2304,75 @@ mod tests {
             .disable(&f.root)
             .await
             .expect("disabling twice is fine");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_already_on_disk_is_recorded_on_enable() {
+        // No watcher fires for a file written before the workspace was enabled; without a
+        // scan on enable it was never recorded, and every session sent nothing.
+        let f = fixture().await;
+        std::fs::write(f.root.join("a.md"), "content").unwrap();
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+
+        let replica = f.runtime.replica_of(&f.root).await.unwrap();
+        let states = replica.lock().await.states().unwrap();
+        assert!(
+            states.iter().any(|(path, _)| path == "a.md"),
+            "a file on disk before enable must be recorded: {states:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn re_enabling_while_the_replica_is_still_held_takes_it_back() {
+        // The first scan after enabling runs in the background; a disable and a re-enable
+        // can both land while it still holds the store, which redb opens only once.
+        let f = fixture().await;
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+        let held = f.runtime.replica_of(&f.root).await.unwrap();
+
+        f.runtime.disable(&f.root).await.unwrap();
+        f.runtime
+            .enable(&f.root)
+            .await
+            .expect("a re-enable must not open the store a second time");
+
+        let again = f.runtime.replica_of(&f.root).await.unwrap();
+        assert!(Arc::ptr_eq(&held, &again), "the open replica is taken back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn re_enabling_while_the_replica_is_still_closing_waits_for_it() {
+        // The last holder let go just before the re-enable: the replica can no longer be
+        // taken back, and its store closes a moment later, as it drops.
+        let f = fixture().await;
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+        let config = {
+            let replica = f.runtime.replica_of(&f.root).await.unwrap();
+            replica.lock().await.config().clone()
+        };
+        f.runtime.disable(&f.root).await.unwrap();
+
+        // The store, open still, with nothing left to take back.
+        let closing = Replica::open(config, Arc::new(SystemClock)).unwrap();
+        let key = f.root.canonicalize().unwrap();
+        f.runtime
+            .stopped
+            .lock()
+            .unwrap()
+            .insert(key, std::sync::Weak::new());
+        let closed = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(closing);
+        });
+
+        f.runtime
+            .enable(&f.root)
+            .await
+            .expect("a re-enable must wait for a store that is closing");
+        closed.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

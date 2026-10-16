@@ -40,7 +40,7 @@ mod test_support;
 
 pub use health::{Health, bridge_needed};
 pub use settings::{COMPACT_WIDTH, Settings, SettingsSection};
-pub use shell::{Destination, Shell};
+pub use shell::{Action, Destination, Shell};
 
 /// The sync screens on their own: now [`Settings`], which adds the app's sections and
 /// About to them.

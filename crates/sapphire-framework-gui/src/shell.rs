@@ -1,5 +1,5 @@
-//! [`Shell`]: every app's window frame — its screens on a rail, Settings at the rail's
-//! foot, and the services' state beside it.
+//! [`Shell`]: every app's window frame — its screens on a rail, its actions under them,
+//! Settings at the rail's foot, and the services' state beside it.
 //!
 //! Wide, the rail runs down the left (as Obsidian's does); narrower than
 //! [`COMPACT_WIDTH`], it becomes a bar along the bottom, as on a phone. The width decides,
@@ -37,6 +37,32 @@ impl<D> Destination<D> {
     }
 }
 
+/// A button of the app's on the rail that does something — "New entry" — rather than
+/// open a screen. [`Shell::take_action`] says which one was clicked.
+pub struct Action {
+    /// What [`Shell::take_action`] returns when it is clicked.
+    pub id: &'static str,
+    /// A Lucide icon, as for a [`Destination`].
+    pub icon: egui::ImageSource<'static>,
+    /// What it does, shown when the icon is hovered.
+    pub label: String,
+}
+
+impl Action {
+    /// A button called `label`, drawn as `icon`, reported as `id`.
+    pub fn new(
+        id: &'static str,
+        icon: egui::ImageSource<'static>,
+        label: impl Into<String>,
+    ) -> Action {
+        Action {
+            id,
+            icon,
+            label: label.into(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Open<D> {
     Screen(D),
@@ -67,6 +93,12 @@ enum Open<D> {
 /// ```
 pub struct Shell<D> {
     destinations: Vec<Destination<D>>,
+    actions: Vec<Action>,
+    /// The action clicked and not yet taken.
+    clicked: Option<&'static str>,
+    /// Where each action was last drawn, for the tests to click.
+    #[cfg(test)]
+    action_rects: Vec<egui::Rect>,
     open: Open<D>,
     settings: Settings,
     /// Whether the SVG loader has been put in place.
@@ -83,10 +115,26 @@ impl<D: Copy + PartialEq> Shell<D> {
             .map_or(Open::Settings, |d| Open::Screen(d.id));
         Shell {
             destinations,
+            actions: Vec::new(),
+            clicked: None,
+            #[cfg(test)]
+            action_rects: Vec::new(),
             open,
             settings,
             loaders: false,
         }
+    }
+
+    /// Put `actions` on the rail, under the screens (on the bottom bar, after them).
+    pub fn with_actions(mut self, actions: Vec<Action>) -> Shell<D> {
+        self.actions = actions;
+        self
+    }
+
+    /// The [`Action`] clicked in the last [`ui`](Self::ui), once: call it after `ui`
+    /// every frame and do what it names.
+    pub fn take_action(&mut self) -> Option<&'static str> {
+        self.clicked.take()
     }
 
     /// The app's screen that is open; `None` while Settings is.
@@ -144,6 +192,14 @@ impl<D: Copy + PartialEq> Shell<D> {
             for i in 0..self.destinations.len() {
                 self.destination_ui(ui, i);
             }
+            if !self.actions.is_empty() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                for i in 0..self.actions.len() {
+                    self.action_ui(ui, i);
+                }
+            }
         });
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
             ui.add_space(4.0);
@@ -152,18 +208,21 @@ impl<D: Copy + PartialEq> Shell<D> {
         });
     }
 
-    /// The phone layout: one cell per screen, Settings last.
+    /// The phone layout: one cell per screen, then one per action, Settings last.
     ///
     /// Every screen gets a cell for now. When an app has more than a bar can hold, the ones
     /// that do not fit move to a separate list of all of them (with a choice of which stay
     /// on the bar) — not into Settings (#275).
     fn bar_ui(&mut self, ui: &mut egui::Ui, health: Health) {
-        let cells = self.destinations.len() + 1;
+        let screens = self.destinations.len();
+        let cells = screens + self.actions.len() + 1;
         ui.columns(cells, |columns| {
             for (i, column) in columns.iter_mut().enumerate() {
                 column.vertical_centered(|ui| {
-                    if i < self.destinations.len() {
+                    if i < screens {
                         self.destination_ui(ui, i);
+                    } else if i < cells - 1 {
+                        self.action_ui(ui, i - screens);
                     } else {
                         ui.horizontal(|ui| {
                             self.settings_button_ui(ui);
@@ -183,6 +242,20 @@ impl<D: Copy + PartialEq> Shell<D> {
             .clicked()
         {
             self.open = Open::Screen(d.id);
+        }
+    }
+
+    fn action_ui(&mut self, ui: &mut egui::Ui, i: usize) {
+        let a = &self.actions[i];
+        let response = icon_button(ui, false, a.icon.clone()).on_hover_text(&a.label);
+        #[cfg(test)]
+        {
+            self.action_rects
+                .resize(self.actions.len(), egui::Rect::NOTHING);
+            self.action_rects[i] = response.rect;
+        }
+        if response.clicked() {
+            self.clicked = Some(a.id);
         }
     }
 
@@ -275,6 +348,67 @@ mod tests {
         }
         shell.open(Screen::Summary);
         assert_eq!(shell.current(), Some(Screen::Summary));
+    }
+
+    #[test]
+    fn actions_are_drawn_in_both_layouts_and_report_nothing_unclicked() {
+        let (shell, _rt) = shell();
+        let mut shell = shell.with_actions(vec![Action::new(
+            "new",
+            crate::icons::settings(),
+            "New entry",
+        )]);
+        for size in [[900.0, 600.0], [400.0, 700.0]] {
+            shell.action_rects.clear();
+            render(size, |ui| {
+                shell.ui(ui, |ui, _| {
+                    egui::CentralPanel::default().show(ui, |ui| ui.label("entries"));
+                })
+            });
+            assert!(shell.action_rects[0].is_positive(), "{size:?}");
+            assert_eq!(shell.take_action(), None);
+        }
+        assert_eq!(shell.current(), Some(Screen::Entries));
+    }
+
+    #[test]
+    fn a_clicked_action_is_taken_once_and_opens_nothing() {
+        let (shell, _rt) = shell();
+        let mut shell = shell.with_actions(vec![Action::new(
+            "new",
+            crate::icons::settings(),
+            "New entry",
+        )]);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let frame = |events: Vec<egui::Event>, shell: &mut Shell<Screen>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                shell.ui(ui, |ui, _| {
+                    egui::CentralPanel::default().show(ui, |ui| ui.label("entries"));
+                })
+            });
+            output.textures_delta.clear();
+        };
+        frame(vec![], &mut shell);
+        frame(vec![], &mut shell);
+        let pos = shell.action_rects[0].center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(pos)], &mut shell);
+        frame(vec![button(true)], &mut shell);
+        frame(vec![button(false)], &mut shell);
+        assert_eq!(shell.take_action(), Some("new"));
+        assert_eq!(shell.take_action(), None);
+        assert_eq!(shell.current(), Some(Screen::Entries));
     }
 
     #[test]

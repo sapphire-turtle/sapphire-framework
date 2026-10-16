@@ -63,6 +63,28 @@ impl MobileOptions {
     }
 }
 
+/// Whether the app has started in this process.
+///
+/// A phone app starts once per process: the directories are set through the environment,
+/// the bridge holds its lock, the server its database, and winit's event loop cannot be
+/// made twice. Android may still call the entry again in the same process — when it
+/// recreates the activity for a configuration change the manifest does not handle — and
+/// the only clean answer to that is a fresh process.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) struct EntryGuard(std::sync::atomic::AtomicBool);
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+impl EntryGuard {
+    pub(crate) const fn new() -> EntryGuard {
+        EntryGuard(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// `true` the first time it is asked, `false` ever after.
+    pub(crate) fn first(&self) -> bool {
+        !self.0.swap(true, std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// The directory new workspaces go in, under the app's storage `base`.
 pub fn workspaces_dir(base: &Path) -> PathBuf {
     base.join("workspaces")
@@ -142,6 +164,14 @@ pub fn phone_log_filter(app_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_first_entry_starts_the_app() {
+        let guard = EntryGuard::new();
+        assert!(guard.first());
+        assert!(!guard.first(), "a second android_main in the process");
+        assert!(!guard.first());
+    }
 
     #[test]
     fn the_phone_filter_keeps_typed_text_out_of_the_log() {

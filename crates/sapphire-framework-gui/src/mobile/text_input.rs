@@ -29,11 +29,34 @@ pub struct TextInputBridge {
     settled: String,
     /// The composing text as last read; empty when nothing is composing.
     composing: String,
+    /// After a refocus, how many more reads may still show the old field's text before the
+    /// platform's clear is taken to have been lost. `None` when no clear is pending.
+    awaiting_clear: Option<u32>,
 }
+
+/// How many reads (frames) a refocus waits for the platform to clear its buffer. The clear
+/// is queued for Android's main thread and lands within a frame or two.
+pub const REFOCUS_PATIENCE: u32 = 30;
 
 impl TextInputBridge {
     /// What changed since the last read, as egui events.
     pub fn translate(&mut self, buffer: &Buffer) -> Vec<egui::Event> {
+        // A clear is on its way: the buffer still holds the old field's text, which must be
+        // neither typed into the new field nor deleted from it.
+        if let Some(left) = self.awaiting_clear {
+            if buffer.text.is_empty() {
+                self.awaiting_clear = None;
+                return Vec::new();
+            }
+            if left > 0 {
+                self.awaiting_clear = Some(left - 1);
+                return Vec::new();
+            }
+            // The clear never landed: what is there now is the baseline, not new text.
+            self.awaiting_clear = None;
+            self.adopt(buffer);
+            return Vec::new();
+        }
         let region = buffer
             .compose
             .and_then(|(a, b)| byte_range(&buffer.text, a.min(b), a.max(b)))
@@ -74,10 +97,30 @@ impl TextInputBridge {
     }
 
     /// Focus moved to another field: forget the buffer. The caller clears the platform's
-    /// buffer too, so the old field's text is not taken back from the new one.
+    /// buffer too; that clear lands later, and until it reads back empty (or
+    /// [`REFOCUS_PATIENCE`] reads pass) the old text is ignored.
     pub fn refocus(&mut self) {
         self.settled.clear();
         self.composing.clear();
+        self.awaiting_clear = Some(REFOCUS_PATIENCE - 1);
+    }
+
+    /// Take `buffer` as the baseline without emitting anything.
+    fn adopt(&mut self, buffer: &Buffer) {
+        let region = buffer
+            .compose
+            .and_then(|(a, b)| byte_range(&buffer.text, a.min(b), a.max(b)))
+            .filter(|r| !r.is_empty());
+        match region {
+            Some(r) => {
+                self.settled = buffer.text[..r.start].to_owned();
+                self.composing = buffer.text[r.start..r.end].to_owned();
+            }
+            None => {
+                self.settled = buffer.text.clone();
+                self.composing.clear();
+            }
+        }
     }
 }
 
@@ -228,8 +271,24 @@ mod tests {
         let mut bridge = TextInputBridge::default();
         bridge.translate(&buf("ticket", None));
         bridge.refocus();
-        // The platform's buffer was cleared with it: typing starts afresh, deleting nothing.
+        // The platform applies the clear later: reads of the old text change nothing.
+        assert!(bridge.translate(&buf("ticket", None)).is_empty());
+        assert!(bridge.translate(&buf("ticket", None)).is_empty());
+        // Once it reads back empty, typing starts afresh, deleting nothing.
+        assert!(bridge.translate(&buf("", None)).is_empty());
         assert_eq!(bridge.translate(&buf("p", None)), vec![text("p")]);
+    }
+
+    #[test]
+    fn a_clear_that_never_lands_is_given_up_without_retyping() {
+        let mut bridge = TextInputBridge::default();
+        bridge.translate(&buf("ticket", None));
+        bridge.refocus();
+        for _ in 0..REFOCUS_PATIENCE {
+            assert!(bridge.translate(&buf("ticket", None)).is_empty());
+        }
+        // The stale text became the baseline: only what is typed after it is new.
+        assert_eq!(bridge.translate(&buf("ticketx", None)), vec![text("x")]);
     }
 
     #[test]

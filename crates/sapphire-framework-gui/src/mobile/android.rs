@@ -8,23 +8,44 @@ use std::time::{Duration, Instant};
 use android_activity::input::{TextInputState, TextSpan};
 
 use super::text_input::{Buffer, TextInputBridge};
-use super::{BuildServer, MobileOptions, prepare_dirs, start_services};
+use super::{BuildServer, EntryGuard, MobileOptions, prepare_dirs, start_services};
 use crate::app::{AppSetup, gpu, open_window};
 use crate::client::ClientConfig;
 
-/// Run the app until Android destroys its activity: the directories under the app's
-/// internal storage, the bridge and the server in-process, and the window.
+static ENTRY: EntryGuard = EntryGuard::new();
+
+/// Run the app, then end the process: the directories under the app's internal storage,
+/// the bridge and the server in-process, and the window.
 ///
-/// Call it from the app's `android_main`. Everything it started stops when it returns;
-/// Android may call `android_main` again in the same process, and it then starts afresh.
+/// Call it from the app's `android_main`. It never returns. The app starts once per
+/// process (see [`EntryGuard`]), so when the window closes the process ends, and an entry
+/// Android makes again in the same process — after recreating the activity — ends it too;
+/// the next launch then starts afresh.
 pub fn run_android(
+    android_app: AndroidApp,
+    options: MobileOptions,
+    server: BuildServer,
+    create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
+) -> ! {
+    let app_name = options.app.app_name;
+    super::logcat::install(app_name);
+    if !ENTRY.first() {
+        tracing::warn!("{app_name} was started again in the same process; restarting it");
+        std::process::exit(0);
+    }
+    if let Err(err) = run_once(android_app, options, server, create) {
+        tracing::error!("{app_name} could not run: {err}");
+    }
+    std::process::exit(0);
+}
+
+fn run_once(
     android_app: AndroidApp,
     options: MobileOptions,
     server: BuildServer,
     create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
 ) -> eframe::Result<()> {
     let MobileOptions { app, title, fonts } = options;
-    super::logcat::install(app.app_name);
     gpu::install_panic_hook();
     let creation = |e: Box<dyn std::error::Error + Send + Sync>| eframe::Error::AppCreation(e);
 

@@ -1,5 +1,9 @@
 //! Shared egui components for sapphire-framework apps.
 //!
+//! [`Shell`] is every app's window frame: the app's screens on a rail (a bottom bar when
+//! narrow, as on a phone), and [`Settings`] at its foot — the app's own sections, the
+//! framework's sync screens and About — with the services' [`Health`] beside it.
+//!
 //! [`views::WorkspacePicker`] shows the workspace the app server serves and switches it
 //! through the server. [`WorkspaceManager`], a list + management screen over the shared
 //! [`WorkspaceRegistry`](sapphire_backend::WorkspaceRegistry), predates the server serving
@@ -25,10 +29,23 @@ pub mod app;
 
 pub mod client;
 pub mod fonts;
-mod panel;
+mod health;
+pub mod icons;
+mod settings;
+mod shell;
 pub mod views;
 
-pub use panel::SyncPanel;
+#[cfg(test)]
+mod test_support;
+
+pub use health::{Health, bridge_needed};
+pub use settings::{COMPACT_WIDTH, Settings, SettingsSection};
+pub use shell::{Destination, Shell};
+
+/// The sync screens on their own: now [`Settings`], which adds the app's sections and
+/// About to them.
+#[deprecated(note = "renamed to `Settings`; put it in a `Shell` for the rail and the status")]
+pub type SyncPanel = Settings;
 
 mod manager;
 #[allow(deprecated)]

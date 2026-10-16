@@ -4,7 +4,9 @@ use crate::client::{Command, CommandOutput, Conn, ServerState, ServiceTarget};
 
 use super::{ViewCtx, error_line};
 
-/// The top status line: is the bridge up, is the app server up.
+/// The status line: is the bridge up, is the app server up. The shell shows it when
+/// something is wrong ([`Health::Problem`](crate::Health::Problem)), and Settings shows it
+/// under About.
 #[derive(Default)]
 pub struct ServiceStatusBanner {
     error: Option<String>,
@@ -21,7 +23,12 @@ impl ServiceStatusBanner {
             });
             return None;
         }
-        let bridge = describe(&cx.snapshot.bridge, |b| format!("v{}", b.status.version));
+        let mut bridge = describe(&cx.snapshot.bridge, |b| format!("v{}", b.status.version));
+        if !crate::health::bridge_needed(cx.snapshot) && !matches!(cx.snapshot.bridge, Conn::Up(_))
+        {
+            // Not a fault: the workspace is not synced (see `Health`).
+            bridge.push_str(" — needed only to sync");
+        }
         let server = describe(&cx.snapshot.server, |s| {
             format!("v{}", s.info.version.clone().unwrap_or_default())
         });

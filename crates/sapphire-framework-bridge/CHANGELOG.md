@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.20.0...sapphire-framework-bridge-v0.21.0) - 2026-10-16
+
+### Fixed
+
+- *(bridge)* bound the data-plane header read and time it out
+
 ## [0.20.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.19.0...sapphire-framework-bridge-v0.20.0) - 2026-10-14
 
 ### Added

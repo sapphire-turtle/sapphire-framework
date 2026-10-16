@@ -30,6 +30,8 @@ bridge = ["dep:sapphire-framework-bridge"]
 bridge-embed = ["bridge", "dep:sapphire-framework-bridge-embed"]
 backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
+# `gui::app::run`: a desktop app's window on eframe + wgpu, started the same way for every app.
+eframe = ["gui", "sapphire-framework-gui/eframe"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
 # The app server's HTTP listener (`AppServer::http`), every route behind an external device's token.

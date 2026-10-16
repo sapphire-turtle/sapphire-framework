@@ -13,6 +13,6 @@ jobs:
       # neighbours enabled: a manifest test sees the text, a compile proves the
       # promise each feature makes on its own.
       post-test: |
-        for f in workspace retrieve track sync session ipc server http mcp frontmatter bridge keys service registry backend; do
+        for f in workspace retrieve track sync session ipc server http mcp frontmatter bridge keys service registry backend eframe; do
           cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
         done

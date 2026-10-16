@@ -35,6 +35,7 @@
 //! | `bridge-embed` | [`bridge_embed`] | `sapphire-framework-bridge-embed` (for apps that embed the bridge in-process, e.g. mobile; not in `native`) |
 //! | `backend` | [`backend`] | `sapphire-framework-backend` |
 //! | `gui` | [`gui`] | `sapphire-framework-gui` |
+//! | `eframe` | `gui::app`, `gui::eframe` | `sapphire-framework-gui` with its `eframe` feature: a desktop window started the same way for every app |
 //! | `service` | [`service`] | `sapphire-framework-service` |
 //! | `http` | — | the app server's HTTP listener (`AppServer::http`) |
 //! | `frontmatter` | [`frontmatter`] | `sapphire-framework-frontmatter` |

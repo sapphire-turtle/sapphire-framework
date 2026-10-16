@@ -105,7 +105,17 @@ static WIRE: OnceLock<Wire> = OnceLock::new();
 /// event; the wire still exists, so [`install`] keeps working for a caller that wants a
 /// writer anyway.
 pub fn install_console(app_name: &'static str) {
-    WIRE.get_or_init(|| build_subscriber(app_name));
+    WIRE.get_or_init(|| build_subscriber(app_name, default_log_filter(app_name)));
+}
+
+/// As [`install_console`], with `filter` printed when `RUST_LOG` asks for nothing.
+///
+/// For a process whose console is all the log it has: a desktop app is not
+/// service-managed and keeps no file, so it wants more than the framework's and the app's
+/// own targets — its renderer's warnings, say. Call it before [`AppContext::init`], whose
+/// [`install_console`] then changes nothing. The file layer keeps its own targets.
+pub fn install_console_with_filter(app_name: &'static str, filter: &str) {
+    WIRE.get_or_init(|| build_subscriber(app_name, filter.to_owned()));
 }
 
 /// Route the app's log file for `ctx`'s data directory, rotating at [`LOG_MAX_BYTES`].
@@ -131,7 +141,8 @@ pub fn install(ctx: &AppContext) -> Result<LogGuard> {
 pub fn install_with_limit(ctx: &AppContext, limit: u64) -> Result<LogGuard> {
     // Build the subscriber once; every later install only re-routes the file layer. A
     // caller that never ran `install_console` gets the subscriber here.
-    let wire = WIRE.get_or_init(|| build_subscriber(ctx.app_name));
+    let wire =
+        WIRE.get_or_init(|| build_subscriber(ctx.app_name, default_log_filter(ctx.app_name)));
 
     // A context whose data directory was never resolved has nowhere to put a log:
     // the file layer keeps draining events — to a sink — but nothing lands on disk.
@@ -155,8 +166,8 @@ pub fn install_with_limit(ctx: &AppContext, limit: u64) -> Result<LogGuard> {
 }
 
 /// Build the subscriber the process prints through: the console layer, and the file layer
-/// routing through [`WIRE`].
-fn build_subscriber(app_name: &'static str) -> Wire {
+/// routing through [`WIRE`]. `console_filter` applies when `RUST_LOG` is unset.
+fn build_subscriber(app_name: &'static str, console_filter: String) -> Wire {
     let wire: Wire = Arc::new(RwLock::new(None));
 
     // The console layer is built here rather than left to the caller: this subscriber is
@@ -166,8 +177,7 @@ fn build_subscriber(app_name: &'static str) -> Wire {
     let console = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(default_log_filter(app_name))),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(console_filter)),
         );
     let file = tracing_subscriber::fmt::layer()
         // A file any process reads wants text, not terminal escapes.

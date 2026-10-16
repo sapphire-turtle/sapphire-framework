@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use grain_id::GrainId;
 use sapphire_bridge_api::{DataAck, DataHeader, INCOMING, IncomingParams, ManagedBy};
 use sapphire_ipc::{Endpoint, RawStream};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::Bridge;
 use crate::error::{Error, Result};
@@ -115,6 +115,12 @@ fn expired(pending: &Pending) -> bool {
     pending.created.elapsed() >= TICKET_TTL
 }
 
+/// The longest header line the data endpoint reads. A real one is a few hundred bytes.
+const MAX_HEADER_LINE: u64 = 4 * 1024;
+
+/// How long a data-plane connection may take to send its header.
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Read the header line, without consuming any of the bytes that follow it.
 pub(crate) async fn read_header<S>(stream: &mut S) -> Result<DataHeader>
 where
@@ -124,7 +130,19 @@ where
     // reader is not kept afterwards, because the bytes after the newline belong to the relay.
     let mut reader = BufReader::with_capacity(1, stream);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    // `read_line` grows its buffer until it sees a newline, so it is bounded here, as the
+    // peer request line is in `iroh::read_request` (#279): a connection that never sends one
+    // must not be able to make the bridge allocate without limit. One byte over, so a line
+    // that fits exactly still reads.
+    let read = (&mut reader)
+        .take(MAX_HEADER_LINE + 1)
+        .read_line(&mut line)
+        .await?;
+    if read as u64 > MAX_HEADER_LINE {
+        return Err(Error::Protocol(format!(
+            "the data-plane header is longer than {MAX_HEADER_LINE} bytes"
+        )));
+    }
     serde_json::from_str(line.trim())
         .map_err(|e| Error::Protocol(format!("bad data-plane header: {e}")))
 }
@@ -200,7 +218,11 @@ pub(crate) async fn listen(bridge: Arc<Bridge>, endpoint: Endpoint) -> Result<()
 
 /// Answer one data-plane connection.
 async fn serve(bridge: Arc<Bridge>, mut stream: RawStream) -> Result<()> {
-    let header = match read_header(&mut stream).await {
+    // A connection that sends nothing would otherwise hold its task and socket for ever.
+    let header = match tokio::time::timeout(HEADER_TIMEOUT, read_header(&mut stream))
+        .await
+        .unwrap_or_else(|_| Err(Error::Protocol("no data-plane header in time".to_owned())))
+    {
         Ok(header) => header,
         // There is no header to answer: whatever arrived was too mangled to name a reason to.
         Err(err) => {
@@ -694,6 +716,23 @@ mod tests {
         drop(theirs);
         let err = read_header(&mut mine).await.unwrap_err();
         assert!(err.to_string().contains("header"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_header_with_no_newline_is_refused_rather_than_buffered() {
+        // #279: an unbounded `read_line` would keep growing for as long as bytes arrive.
+        let (mut mine, mut theirs) = tokio::io::duplex(1024);
+        let writer = tokio::spawn(async move {
+            let junk = [b'x'; 1024];
+            while theirs.write_all(&junk).await.is_ok() {}
+        });
+        let err = tokio::time::timeout(Duration::from_secs(5), read_header(&mut mine))
+            .await
+            .expect("an over-long header must be refused, not read for ever")
+            .unwrap_err();
+        assert!(err.to_string().contains("longer than"), "{err}");
+        drop(mine);
+        writer.await.unwrap();
     }
 
     #[tokio::test]

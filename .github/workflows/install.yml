@@ -27,29 +27,39 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install sync and, with it, the bridge
+      - name: Install the CLIs and, with them, the bridge
         env:
           # The runners share the unauthenticated API rate limit.
           GITHUB_TOKEN: ${{ github.token }}
-        run: sh install/install.sh --dir "$RUNNER_TEMP/bin" sync
+        run: sh install/install.sh --dir "$RUNNER_TEMP/bin" sync journal agent
       - name: The installed binaries run
         run: |
-          "$RUNNER_TEMP/bin/sapphire-bridge" --version
-          "$RUNNER_TEMP/bin/sapphire-sync" --version
+          for bin in sapphire-bridge sapphire-sync sapphire-journal; do
+            "$RUNNER_TEMP/bin/$bin" --version
+          done
+          # sapphire-agent has no --version.
+          "$RUNNER_TEMP/bin/sapphire-agent" --help > /dev/null
+      - name: A retired name points to its replacement
+        run: |
+          if sh install/install.sh --dir "$RUNNER_TEMP/bin" agent-cli 2>err; then exit 1; fi
+          grep -q 'install agent instead' err
 
   install-ps1:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install sync and, with it, the bridge
+      - name: Install the CLIs and, with them, the bridge
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" sync
+        run: ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" sync journal agent
       - name: The installed binaries run
         shell: pwsh
         run: |
-          & "$env:RUNNER_TEMP\bin\sapphire-bridge.exe" --version
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          & "$env:RUNNER_TEMP\bin\sapphire-sync.exe" --version
+          foreach ($bin in 'sapphire-bridge', 'sapphire-sync', 'sapphire-journal') {
+            & "$env:RUNNER_TEMP\bin\$bin.exe" --version
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+          # sapphire-agent has no --version.
+          & "$env:RUNNER_TEMP\bin\sapphire-agent.exe" --help | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

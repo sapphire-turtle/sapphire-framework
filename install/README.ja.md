@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 | アプリ | 入るもの |
 |---|---|
 | `bridge` | `sapphire-bridge` のみ |
-| `agent`, `agent-cli`, `agent-desktop` | `sapphire-agent-server`, `sapphire-agent-cli`, `sapphire-agent-desktop` |
+| `agent`, `agent-desktop` | `sapphire-agent`, `sapphire-agent-desktop` |
 | `journal`, `journal-desktop` | `sapphire-journal`, `sapphire-journal-desktop` |
 | `sync`, `sync-desktop` | `sapphire-sync`, `sapphire-sync-desktop` |
 

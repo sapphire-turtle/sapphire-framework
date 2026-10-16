@@ -32,13 +32,17 @@ $Owner = 'sapphire-turtle'
 # install.sh and with each application's release-plz.toml.
 $Apps = [ordered]@{
     'bridge'          = @('sapphire-framework', 'sapphire-bridge', 'v')
-    'agent'           = @('sapphire-agent', 'sapphire-agent-server', 'sapphire-agent-server-v')
-    'agent-cli'       = @('sapphire-agent', 'sapphire-agent-cli', 'sapphire-agent-cli-v')
+    'agent'           = @('sapphire-agent', 'sapphire-agent', 'v')
     'agent-desktop'   = @('sapphire-agent', 'sapphire-agent-desktop', 'desktop-v')
-    'journal'         = @('sapphire-journal', 'sapphire-journal', 'cli-v')
+    'journal'         = @('sapphire-journal', 'sapphire-journal', 'v')
     'journal-desktop' = @('sapphire-journal', 'sapphire-journal-desktop', 'desktop-v')
     'sync'            = @('sapphire-sync', 'sapphire-sync', 'v')
     'sync-desktop'    = @('sapphire-sync', 'sapphire-sync-desktop', 'desktop-v')
+}
+
+# Names an application no longer has, and the app that replaces each.
+$Retired = @{
+    'agent-cli' = 'agent'
 }
 
 function Show-Usage {
@@ -60,6 +64,7 @@ if ($App.Count -eq 0) { Show-Usage; exit 2 }
 $Version = $Version.TrimStart('v')
 if ($Version -and $App.Count -gt 1) { throw '-Version applies to one app at a time' }
 foreach ($name in $App) {
+    if ($Retired.Contains($name)) { throw "$name is now part of $($Retired[$name]): install $($Retired[$name]) instead" }
     if (-not $Apps.Contains($name)) { throw "unknown app: $name (see -Help)" }
 }
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') {

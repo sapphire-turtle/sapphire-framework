@@ -17,13 +17,16 @@ set -eu
 # install.ps1 and with each application's release-plz.toml.
 APPS="
 bridge          sapphire-framework  sapphire-bridge          v
-agent           sapphire-agent      sapphire-agent-server    sapphire-agent-server-v
-agent-cli       sapphire-agent      sapphire-agent-cli       sapphire-agent-cli-v
+agent           sapphire-agent      sapphire-agent           v
 agent-desktop   sapphire-agent      sapphire-agent-desktop   desktop-v
-journal         sapphire-journal    sapphire-journal         cli-v
+journal         sapphire-journal    sapphire-journal         v
 journal-desktop sapphire-journal    sapphire-journal-desktop desktop-v
 sync            sapphire-sync       sapphire-sync            v
 sync-desktop    sapphire-sync       sapphire-sync-desktop    desktop-v
+"
+# Names an application no longer has: name, and the app that replaces it.
+RETIRED="
+agent-cli       agent
 "
 OWNER="sapphire-turtle"
 
@@ -71,6 +74,8 @@ if [ -n "$VERSION" ] && [ $# -gt 1 ]; then
   err "--version applies to one app at a time"
 fi
 for app in $REQUESTED; do
+  now=$(printf '%s\n' "$RETIRED" | awk -v app="$app" '$1 == app { print $2 }')
+  [ -z "$now" ] || err "$app is now part of $now: install $now instead"
   printf '%s\n' "$APPS" | awk -v app="$app" '$1 == app { found = 1 } END { exit !found }' \
     || err "unknown app: $app (see --help)"
 done

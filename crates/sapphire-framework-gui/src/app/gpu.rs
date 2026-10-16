@@ -11,7 +11,7 @@
 use eframe::{egui_wgpu, wgpu};
 
 /// Renderer configuration for [`eframe::NativeOptions`].
-pub(super) fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+pub(crate) fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
     let mut options = egui_wgpu::WgpuConfiguration::default();
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
         setup.instance_descriptor.backends = backends();
@@ -26,10 +26,14 @@ fn backends() -> wgpu::Backends {
 
 /// Vulkan on Windows, where DX12 loses its device on every Remote Desktop
 /// reconnect; wgpu's primary backends (Vulkan, Metal, DX12, browser WebGPU)
-/// everywhere else, so macOS gets Metal and Linux picks what it has.
+/// everywhere else, so macOS gets Metal and Linux picks what it has. Android adds GLES.
 fn default_backends() -> wgpu::Backends {
     if cfg!(windows) {
         wgpu::Backends::VULKAN
+    } else if cfg!(target_os = "android") {
+        // Vulkan where the device has a usable driver, GLES where it does not (older
+        // phones, and emulators whose host GPU is not passed through).
+        wgpu::Backends::VULKAN | wgpu::Backends::GL
     } else {
         wgpu::Backends::PRIMARY
     }
@@ -38,7 +42,7 @@ fn default_backends() -> wgpu::Backends {
 /// Report which adapter was chosen and arm the device-loss callback.
 ///
 /// The startup line is how you confirm which backend actually took effect.
-pub(super) fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
+pub(crate) fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
     let Some(render_state) = render_state else {
         tracing::warn!("no wgpu render state; skipping GPU diagnostics");
         return;
@@ -66,7 +70,7 @@ pub(super) fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
 ///
 /// The hook only adds an explanation; the previous hook still runs, so the
 /// original message and any backtrace are preserved.
-pub(super) fn install_panic_hook() {
+pub(crate) fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some(explanation) = panic_message(info).and_then(device_lost_explanation) {

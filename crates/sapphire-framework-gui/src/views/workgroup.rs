@@ -35,7 +35,16 @@ impl JoinDialog {
     /// Render the form inline. Returns [`Command::WorkgroupJoin`] on submit.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
         let mut out = None;
-        ui.label("Ticket");
+        ui.horizontal(|ui| {
+            ui.label("Ticket");
+            // Where egui has no clipboard of its own (Android), a ticket is pasted from here.
+            if crate::platform::needs_paste_button()
+                && ui.small_button("Paste").clicked()
+                && let Some(text) = crate::platform::clipboard_text()
+            {
+                self.ticket = text;
+            }
+        });
         ui.add(
             egui::TextEdit::multiline(&mut self.ticket)
                 .desired_rows(3)

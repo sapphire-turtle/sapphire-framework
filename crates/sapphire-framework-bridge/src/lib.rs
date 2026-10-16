@@ -42,7 +42,7 @@ use grain_id::GrainId;
 use sapphire_bridge_api::{BRIDGE_DATA_NAME, BRIDGE_NAME, ManagedBy, WorkspaceRegistration};
 use sapphire_ipc::{Endpoint, ServerInfo};
 
-pub use command::{BridgeCommand, bridge_release_source, bridge_service_spec};
+pub use command::{BridgeCommand, bridge_release_source, bridge_service_spec, serve_in_process};
 // The CLI's `service install | uninstall | status`: re-exported so the binary needs this
 // crate alone and the whole command surface sits in one place.
 pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};

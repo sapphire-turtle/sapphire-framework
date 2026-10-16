@@ -91,6 +91,9 @@ pub struct AppServer {
     /// Where the application's releases are published: what the server looks for newer
     /// ones in, and what `update` installs from.
     releases: Option<ReleaseSource>,
+    /// Whether `run` stops on SIGTERM and ctrl-c. Off where the server is not the process's
+    /// own (a phone app hosting it in-process).
+    signals: bool,
     /// Where the HTTP listener binds when `server.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
@@ -152,6 +155,25 @@ impl Sigterm {
     }
 }
 
+/// ctrl-c, when the server listens for signals; never otherwise.
+async fn interrupted(signals: bool) {
+    if signals {
+        // An error means no handler could be installed: nothing will arrive.
+        if tokio::signal::ctrl_c().await.is_ok() {
+            return;
+        }
+    }
+    std::future::pending::<()>().await
+}
+
+/// SIGTERM, when the server listens for signals; never otherwise.
+async fn terminated(sigterm: &mut Option<Sigterm>) {
+    match sigterm {
+        Some(sigterm) => sigterm.recv().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
 impl AppServer {
     /// A server for `ctx`'s application, reporting `version` in its handshake.
     pub fn new(ctx: &'static AppContext, version: &'static str) -> AppServer {
@@ -167,6 +189,7 @@ impl AppServer {
             app_api: None,
             config: None,
             releases: None,
+            signals: true,
             #[cfg(feature = "http")]
             http_listen: None,
             #[cfg(feature = "http")]
@@ -189,6 +212,16 @@ impl AppServer {
     /// Listen somewhere other than the application's default endpoint. Used by tests.
     pub fn endpoint(mut self, endpoint: Endpoint) -> AppServer {
         self.endpoint = Some(endpoint);
+        self
+    }
+
+    /// Stop on SIGTERM and ctrl-c (`true`, the default), or leave signals to the process.
+    ///
+    /// A host that runs the server inside a larger process — a phone app, with the bridge
+    /// and the GUI beside it — turns this off: the signals are the process's to handle,
+    /// and the server stops when the task running it is dropped.
+    pub fn signals(mut self, on: bool) -> AppServer {
+        self.signals = on;
         self
     }
 
@@ -378,6 +411,7 @@ impl AppServer {
             app_api,
             config,
             releases,
+            signals,
             #[cfg(feature = "http")]
             http_listen,
             #[cfg(feature = "http")]
@@ -509,9 +543,9 @@ impl AppServer {
         // listened to only through `ctrl_c` (which swallows the default handler on both
         // platforms): a Unix `SignalKind::interrupt()` stream would double-fire for ^C.
         #[cfg(unix)]
-        let mut sigterm = Sigterm::new()?;
+        let mut sigterm = if signals { Some(Sigterm::new()?) } else { None };
         #[cfg(not(unix))]
-        let mut sigterm = Sigterm;
+        let mut sigterm = signals.then_some(Sigterm);
 
         #[cfg(unix)]
         let listener = sapphire_ipc::bind(&endpoint).await?;
@@ -627,11 +661,11 @@ impl AppServer {
                         break;
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
+                _ = interrupted(signals) => {
                     tracing::info!("interrupted; shutting down");
                     break;
                 }
-                _ = sigterm.recv() => {
+                _ = terminated(&mut sigterm) => {
                     tracing::info!("terminated; shutting down");
                     break;
                 }

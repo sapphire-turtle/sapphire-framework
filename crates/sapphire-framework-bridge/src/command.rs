@@ -336,6 +336,31 @@ async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Resul
     Ok(0)
 }
 
+/// Start this host's bridge inside the calling process, on the current tokio runtime: what
+/// `serve` does, for a host with no separate daemon (a phone app, which runs the bridge
+/// beside its own server and GUI).
+///
+/// The directory and the endpoints are the standard ones, so the caller points them where
+/// it wants with `SAPPHIRE_BRIDGE_DIR` and `SAPPHIRE_RUNTIME_DIR` (and chooses the IPC
+/// carrier) first. The single-instance lock is held by the returned task for as long as the
+/// bridge runs. The bridge's own log file is not installed: the host's subscriber is the
+/// process's. No embedding provider is offered.
+pub async fn serve_in_process(
+    version: &'static str,
+) -> Result<tokio::task::JoinHandle<Result<()>>> {
+    let dir = BridgeDir::open()?;
+    let lock = InstanceLock::acquire(&dir)?;
+    tracing::info!(
+        target: crate::logging::BRIDGE_TARGET,
+        "sapphire-bridge {version} starting in-process"
+    );
+    let bridge = build_bridge(dir, version).await?;
+    Ok(tokio::spawn(async move {
+        let _lock = lock;
+        bridge.run().await
+    }))
+}
+
 /// The bridge this host should run: the iroh transport, over the directory's configuration.
 #[cfg(feature = "node")]
 async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {

@@ -175,6 +175,20 @@ impl std::fmt::Debug for BridgeConnector {
     }
 }
 
+/// What [`SyncRuntime::reclaim`] found of a replica `disable` let go of.
+enum Reclaimed {
+    /// Still held: here it is.
+    Open(Arc<Mutex<Replica>>),
+    /// Let go of since, so its store may be closing still.
+    Closing,
+    /// Nothing to take back.
+    Closed,
+}
+
+/// How often, and how far apart, `enable` tries to open a store that may still be closing.
+const CLOSING_RETRIES: u32 = 50;
+const CLOSING_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Replication for one application's workspaces.
 pub struct SyncRuntime {
     ctx: &'static AppContext,
@@ -420,15 +434,29 @@ impl SyncRuntime {
             // A replica disabled a moment ago may still be open; it is this root's, with this
             // runtime's one device id, so it is taken back rather than opened a second time.
             let replica = match self.reclaim(&key) {
-                Some(replica) => replica,
-                None => {
+                Reclaimed::Open(replica) => replica,
+                reclaimed => {
                     let device_id = self.device_id().await?;
                     let state_dir = self.state_dir(&key)?;
                     std::fs::create_dir_all(&state_dir).map_err(Error::Io)?;
                     let config =
                         ReplicaConfig::new(self.ctx.app_name, key.clone(), device_id, &state_dir);
-                    let replica = Replica::open(config, Arc::new(SystemClock))
-                        .map_err(|e| Error::Sync(e.to_string()))?;
+                    // The last holder let go between the two: its store closes as the replica
+                    // drops, just after it can no longer be taken back. Give it that moment.
+                    let mut tries = match reclaimed {
+                        Reclaimed::Closing => CLOSING_RETRIES,
+                        _ => 0,
+                    };
+                    let replica = loop {
+                        match Replica::open(config.clone(), Arc::new(SystemClock)) {
+                            Ok(replica) => break replica,
+                            Err(_) if tries > 0 => {
+                                tries -= 1;
+                                tokio::time::sleep(CLOSING_RETRY_DELAY).await;
+                            }
+                            Err(err) => return Err(Error::Sync(err.to_string())),
+                        }
+                    };
                     Arc::new(Mutex::new(replica))
                 }
             };
@@ -1659,12 +1687,14 @@ impl SyncRuntime {
 
     /// The replica [`disable`](Self::disable) let go of for `key`, if something still holds it
     /// open.
-    fn reclaim(&self, key: &Path) -> Option<Arc<Mutex<Replica>>> {
-        self.stopped
-            .lock()
-            .expect("stopped replicas")
-            .remove(key)?
-            .upgrade()
+    fn reclaim(&self, key: &Path) -> Reclaimed {
+        let stopped = self.stopped.lock().expect("stopped replicas").remove(key);
+        match stopped {
+            None => Reclaimed::Closed,
+            Some(replica) => replica
+                .upgrade()
+                .map_or(Reclaimed::Closing, Reclaimed::Open),
+        }
     }
 
     /// The replica of a synced `root`.
@@ -2310,6 +2340,39 @@ mod tests {
 
         let again = f.runtime.replica_of(&f.root).await.unwrap();
         assert!(Arc::ptr_eq(&held, &again), "the open replica is taken back");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn re_enabling_while_the_replica_is_still_closing_waits_for_it() {
+        // The last holder let go just before the re-enable: the replica can no longer be
+        // taken back, and its store closes a moment later, as it drops.
+        let f = fixture().await;
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+        let config = {
+            let replica = f.runtime.replica_of(&f.root).await.unwrap();
+            replica.lock().await.config().clone()
+        };
+        f.runtime.disable(&f.root).await.unwrap();
+
+        // The store, open still, with nothing left to take back.
+        let closing = Replica::open(config, Arc::new(SystemClock)).unwrap();
+        let key = f.root.canonicalize().unwrap();
+        f.runtime
+            .stopped
+            .lock()
+            .unwrap()
+            .insert(key, std::sync::Weak::new());
+        let closed = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(closing);
+        });
+
+        f.runtime
+            .enable(&f.root)
+            .await
+            .expect("a re-enable must wait for a store that is closing");
+        closed.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

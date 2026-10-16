@@ -12,12 +12,8 @@ const ANDROID_LOG_INFO: i32 = 4;
 /// default filter (or `RUST_LOG`). The first subscriber wins: the framework's own console
 /// subscriber, installed later, finds this one in place and changes nothing.
 pub(super) fn install(app_name: &'static str) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new(format!(
-            "warn,{},sapphire_framework_gui=info",
-            sapphire_workspace::logging::default_log_filter(app_name)
-        ))
-    });
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(super::phone_log_filter(app_name)));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)

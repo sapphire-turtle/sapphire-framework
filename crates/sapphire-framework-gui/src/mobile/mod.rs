@@ -13,6 +13,9 @@
 mod android;
 #[cfg(target_os = "android")]
 mod logcat;
+// Used by the Android entry; kept platform-free so its tests run on a desktop.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod text_input;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -125,9 +128,29 @@ pub async fn start_services(version: &'static str, build: BuildServer) {
     }
 }
 
+/// What a phone app logs when `RUST_LOG` says nothing: the framework's default, the GUI's
+/// start-up lines, and every other target's warnings — except winit's Android backend,
+/// whose warning for the keyboard events it drops carries the whole text typed (an invite
+/// ticket, say) into a log any debugging tool can read.
+pub fn phone_log_filter(app_name: &str) -> String {
+    format!(
+        "warn,{},sapphire_framework_gui=info,winit::platform_impl::android=error",
+        sapphire_workspace::logging::default_log_filter(app_name)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phone_filter_keeps_typed_text_out_of_the_log() {
+        let filter = phone_log_filter("sapphire-mobiletest");
+        assert!(filter.starts_with("warn,"));
+        assert!(filter.contains("sapphire_mobiletest=info"));
+        assert!(filter.contains("sapphire_framework_gui=info"));
+        assert!(filter.ends_with(",winit::platform_impl::android=error"));
+    }
 
     #[test]
     fn prepare_dirs_sets_every_variable() {

@@ -91,6 +91,25 @@ pub fn clipboard_text() -> Option<String> {
     }
 }
 
+/// The margins the window must leave for the system's bars and the keyboard, in physical
+/// pixels (left, top, right, bottom), where the window is drawn edge to edge under them.
+pub fn window_insets() -> Option<[i32; 4]> {
+    #[cfg(target_os = "android")]
+    {
+        android::window_insets()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        None
+    }
+}
+
+/// Tell the platform layer which activity the window belongs to (Android).
+#[cfg(target_os = "android")]
+pub(crate) fn set_android_activity(activity: *mut std::ffi::c_void) {
+    android::set_activity(activity);
+}
+
 /// Does this platform need [`clipboard_text`] (a Paste button) rather than egui's paste?
 pub fn needs_paste_button() -> bool {
     cfg!(target_os = "android")

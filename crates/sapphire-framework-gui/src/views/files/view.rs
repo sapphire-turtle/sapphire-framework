@@ -277,11 +277,11 @@ impl<T: Clone> Clone for Slot<T> {
 
 fn entry_label(entry: &Entry) -> String {
     if entry.is_dir {
-        format!("📁 {}", entry.name)
+        format!("🗀 {}", entry.name)
     } else if entry.is_symlink {
         format!("↪ {}", entry.name)
     } else {
-        format!("📄 {}  ({})", entry.name, human_size(entry.size))
+        format!("🗋 {}  ({})", entry.name, human_size(entry.size))
     }
 }
 

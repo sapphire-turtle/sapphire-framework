@@ -198,6 +198,13 @@ pub struct SyncRuntime {
     exe_path: PathBuf,
     managed_by: ManagedBy,
     synced: Mutex<HashMap<PathBuf, Synced>>,
+    /// The replicas [`disable`](SyncRuntime::disable) let go of, by canonical root, for as
+    /// long as something else still holds one: a scan, a session or the first dial that
+    /// began before. The store is a redb database, open until its last holder drops it, so
+    /// a re-enable meanwhile could not open it again; [`enable`](SyncRuntime::enable)
+    /// takes the open one back instead. [`release`](SyncRuntime::release) puts nothing
+    /// here: its store is about to be moved or deleted.
+    stopped: std::sync::Mutex<HashMap<PathBuf, std::sync::Weak<Mutex<Replica>>>>,
     /// This host's device id. Asked of the bridge once, on the first [`enable`], and never
     /// again: a second registration with an empty workspace list would briefly clear this
     /// application's routes.
@@ -312,6 +319,7 @@ impl SyncRuntime {
             exe_path,
             managed_by,
             synced: Mutex::new(HashMap::new()),
+            stopped: std::sync::Mutex::new(HashMap::new()),
             device_id: OnceCell::new(),
             watcher: OnceCell::new(),
             host: OnceCell::new(),
@@ -409,17 +417,26 @@ impl SyncRuntime {
             if let Some(existing) = synced.get(&key) {
                 return Ok(existing.workspace_id);
             }
-            let device_id = self.device_id().await?;
-            let state_dir = self.state_dir(&key)?;
-            std::fs::create_dir_all(&state_dir).map_err(Error::Io)?;
-            let config = ReplicaConfig::new(self.ctx.app_name, key.clone(), device_id, &state_dir);
-            let replica = Replica::open(config, Arc::new(SystemClock))
-                .map_err(|e| Error::Sync(e.to_string()))?;
+            // A replica disabled a moment ago may still be open; it is this root's, with this
+            // runtime's one device id, so it is taken back rather than opened a second time.
+            let replica = match self.reclaim(&key) {
+                Some(replica) => replica,
+                None => {
+                    let device_id = self.device_id().await?;
+                    let state_dir = self.state_dir(&key)?;
+                    std::fs::create_dir_all(&state_dir).map_err(Error::Io)?;
+                    let config =
+                        ReplicaConfig::new(self.ctx.app_name, key.clone(), device_id, &state_dir);
+                    let replica = Replica::open(config, Arc::new(SystemClock))
+                        .map_err(|e| Error::Sync(e.to_string()))?;
+                    Arc::new(Mutex::new(replica))
+                }
+            };
             synced.insert(
                 key.clone(),
                 Synced {
                     workspace_id,
-                    replica: Arc::new(Mutex::new(replica)),
+                    replica,
                     paused: None,
                     last_error: None,
                 },
@@ -473,8 +490,19 @@ impl SyncRuntime {
 
     /// Stop syncing `root`. Files and the sync id stay, so re-enabling rejoins the same
     /// workspace rather than creating a second one.
+    ///
+    /// Something that began before — a scan, a session, the first dial — may still hold the
+    /// replica open; a re-enable meanwhile takes it back (see [`reclaim`](Self::reclaim)).
     pub async fn disable(&self, root: &Path) -> Result<()> {
-        self.stop(root).await.1
+        let (replica, unregistered) = self.stop(root).await;
+        if let Some(replica) = replica {
+            let key = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+            let mut stopped = self.stopped.lock().expect("stopped replicas");
+            // Forget the ones nothing holds any more, so the map stays small.
+            stopped.retain(|_, replica| replica.strong_count() > 0);
+            stopped.insert(key, Arc::downgrade(&replica));
+        }
+        unregistered
     }
 
     /// Stop syncing `root`, like [`disable`](Self::disable), then wait up to `limit` until
@@ -1629,6 +1657,16 @@ impl SyncRuntime {
         });
     }
 
+    /// The replica [`disable`](Self::disable) let go of for `key`, if something still holds it
+    /// open.
+    fn reclaim(&self, key: &Path) -> Option<Arc<Mutex<Replica>>> {
+        self.stopped
+            .lock()
+            .expect("stopped replicas")
+            .remove(key)?
+            .upgrade()
+    }
+
     /// The replica of a synced `root`.
     async fn replica_of(&self, root: &Path) -> Result<Arc<Mutex<Replica>>> {
         let key = root.canonicalize().map_err(Error::Io)?;
@@ -2253,6 +2291,25 @@ mod tests {
             states.iter().any(|(path, _)| path == "a.md"),
             "a file on disk before enable must be recorded: {states:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn re_enabling_while_the_replica_is_still_held_takes_it_back() {
+        // The first scan after enabling runs in the background; a disable and a re-enable
+        // can both land while it still holds the store, which redb opens only once.
+        let f = fixture().await;
+        f.runtime.enable(&f.root).await.unwrap();
+        f.runtime.settle_dials().await;
+        let held = f.runtime.replica_of(&f.root).await.unwrap();
+
+        f.runtime.disable(&f.root).await.unwrap();
+        f.runtime
+            .enable(&f.root)
+            .await
+            .expect("a re-enable must not open the store a second time");
+
+        let again = f.runtime.replica_of(&f.root).await.unwrap();
+        assert!(Arc::ptr_eq(&held, &again), "the open replica is taken back");
     }
 
     #[tokio::test(flavor = "multi_thread")]

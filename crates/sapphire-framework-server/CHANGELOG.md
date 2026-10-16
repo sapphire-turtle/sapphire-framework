@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.20.0...sapphire-framework-server-v0.21.0) - 2026-10-16
+
+### Fixed
+
+- *(server)* wait for a replica store that is still closing on re-enable
+- *(server)* take a still-open replica back when a workspace is re-enabled
+- *(server)* scan a workspace when sync is enabled
+
 ## [0.20.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.19.0...sapphire-framework-server-v0.20.0) - 2026-10-14
 
 ### Added

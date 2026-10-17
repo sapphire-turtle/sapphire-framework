@@ -24,6 +24,10 @@ ignore = [
     # Unmaintained, with no vulnerability and no safe upgrade.
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (author-declared); a proc-macro reached via fastembed > candle > gemm (bridge-embed) and iroh > netwatch > netlink-packet-core. No drop-in replacement upstream." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained (author-declared); the gui crate reads font files with it directly and through fontdb. The suggested alternative (skrifa) is a different font stack." },
+    # Vulnerable only in code paths the dependency never takes, with no upgrade it accepts yet.
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 keeps SUID/SGID bits in ZipArchive::extract. Reached via fastembed > candle-core 0.11 (bridge-embed), the latest candle, which pins zip ^8.6 and only opens archives to read entries by name (pickle/npy), never extract. Drop when candle moves to zip >= 9." },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8's ZipArchive::extract follows symlink targets outside the destination. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8's extract applies permissions through symlinks. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
 ]
 
 [licenses]

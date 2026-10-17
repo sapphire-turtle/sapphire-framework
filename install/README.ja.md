@@ -30,8 +30,20 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 
 - リリースがあるのは Linux x86_64 / aarch64、macOS aarch64、Windows x86_64 です。
 - 「最新」は、そのアプリのタグ接頭辞が付いたリリースのうち最大の `x.y.z` です（`update` コマンドと同じ規則）。
-- すでに `cargo install`（Linux / macOS ではパッケージマネージャも）で入っているものには触れません。同じ方法で更新してください。
+- すでに `cargo install` や `cargo binstall`（Linux / macOS ではパッケージマネージャも）で入っているものには触れません。同じ方法で更新してください。
 - `install.ps1` はディレクトリをユーザーの `PATH` に追加します。`install.sh` は `PATH` にないときに知らせます。
+
+## cargo で入れる
+
+開発に使うマシンのように `PATH` で `~/.cargo/bin` が先に来る環境では、代わりに
+[`cargo binstall`](https://github.com/cargo-bins/cargo-binstall) でそこへ入れてください。
+同じリリースファイルをビルドせずにダウンロードし、`update` もそれを再実行するよう案内します。
+
+```sh
+cargo binstall sapphire-bridge sapphire-journal
+# デスクトップアプリは crates.io にない
+cargo binstall --git https://github.com/sapphire-turtle/sapphire-journal sapphire-journal-desktop
+```
 
 ## アプリを追加するには
 

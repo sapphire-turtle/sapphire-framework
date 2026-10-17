@@ -14,6 +14,7 @@ reqwest.workspace = true
 self-replace = "1.5"
 semver = "1"
 serde.workspace = true
+serde_json.workspace = true
 tempfile = "3"
 thiserror.workspace = true
 tracing.workspace = true

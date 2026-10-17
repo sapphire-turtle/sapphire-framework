@@ -34,6 +34,12 @@ that cannot be, lands together with the pull requests that adapt the callers.
 - **Release files**: `<binary>-linux-x86_64`, `-linux-aarch64`, `-macos-aarch64`,
   `-windows-x86_64.exe`, the names `sapphire-framework-update` and the install script look
   for.
+- **cargo binstall**: every crate with a released binary carries
+  `[package.metadata.binstall]` pointing at those files, so `cargo binstall` installs the
+  release instead of building it: copy the block from
+  [`bridge/Cargo.toml`](../bridge/Cargo.toml), with the desktop app's `desktop-v` tag prefix.
+  A crate not on crates.io (the desktop apps) installs with
+  `cargo binstall --git https://github.com/sapphire-turtle/<repo> <crate>`.
 - **Licenses**: libraries, CLIs and MCP servers are `MIT OR Apache-2.0`. An application's
   desktop and mobile apps (`<app>-desktop`, `<app>-mobile`) and the GUI library they share
   (`<app>-gui`) are `GPL-3.0-or-later` with an app store exception (sapphire-journal's

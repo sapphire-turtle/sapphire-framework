@@ -32,10 +32,23 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 - Releases exist for Linux x86_64 / aarch64, macOS aarch64 and Windows x86_64.
 - The latest version is the highest `x.y.z` among the repository's releases with the
   application's tag prefix, the same rule as the `update` command.
-- A binary already installed by `cargo install` (or, on Linux and macOS, by a package manager)
-  is left alone; update it the same way.
+- A binary already installed by `cargo install` or `cargo binstall` (or, on Linux and macOS,
+  by a package manager) is left alone; update it the same way.
 - `install.ps1` adds the directory to the user `PATH`; `install.sh` tells you when it is not on
   `PATH`.
+
+## With cargo
+
+Where `~/.cargo/bin` comes first on `PATH`, as on a machine you develop on, install the
+releases there with [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall) instead:
+it downloads the same release files rather than building them, and `update` tells you to run
+it again.
+
+```sh
+cargo binstall sapphire-bridge sapphire-journal
+# The desktop apps are not on crates.io
+cargo binstall --git https://github.com/sapphire-turtle/sapphire-journal sapphire-journal-desktop
+```
 
 ## Adding an application
 

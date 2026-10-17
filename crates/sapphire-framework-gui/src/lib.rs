@@ -10,7 +10,9 @@
 //! one workspace; it is deprecated (#217) and goes once the apps have moved off it.
 //!
 //! With the `eframe` feature, [`app::run`] starts an app's desktop window the same way for
-//! every app.
+//! every app; with `mobile`, [`mobile`] starts it on a phone, with the bridge and the app
+//! server in the same process. [`views::FileBrowser`] shows the workspace's files, which a
+//! phone's user has no other way to see.
 //!
 //! The [`client`] module is the egui-free half: a background task that keeps a snapshot of
 //! the bridge and the app server current and carries out the commands the views (workspace,
@@ -31,6 +33,9 @@ pub mod client;
 pub mod fonts;
 mod health;
 pub mod icons;
+#[cfg(feature = "mobile")]
+pub mod mobile;
+pub mod platform;
 mod settings;
 mod shell;
 pub mod views;

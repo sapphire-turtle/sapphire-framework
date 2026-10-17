@@ -3,7 +3,8 @@
 //! A sapphire app's cache is a redb database, which only one process may open. The app's
 //! **server** is therefore the only process that touches it, and its CLI, stdio MCP server
 //! and desktop UI reach it through this crate: framed JSON-RPC 2.0 over a Unix domain
-//! socket, a Windows named pipe, or an in-process channel.
+//! socket, a Windows named pipe, or — when the whole host is one process, as on a phone — an
+//! in-process pipe ([`Carrier::InProcess`]).
 //!
 //! See `docs/superpowers/specs/2026-09-16-process-architecture-design.md` §2.
 //!
@@ -12,11 +13,13 @@
 
 #![warn(missing_docs)]
 
+mod carrier;
 mod client;
 mod conn;
 mod endpoint;
 mod error;
 mod handshake;
+mod inproc;
 mod message;
 mod raw;
 mod router;
@@ -26,6 +29,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub use carrier::{Carrier, Listener, bind, bind_with, carrier, set_carrier};
 pub use client::{Client, NOTIFICATION_CAPACITY};
 pub use conn::{Connection, Sender};
 pub use endpoint::{BRIDGE_NAME, Endpoint, RUNTIME_DIR_ENV, runtime_dir};
@@ -36,9 +40,9 @@ pub use raw::{RawIo, RawStream};
 pub use router::{HANDSHAKE_METHOD, HandlerFuture, PeerHandle, RequestCtx, Router, serve};
 pub use spawn::{SHUTDOWN_METHOD, connect, connect_or_absent, connect_raw, probe};
 #[cfg(unix)]
-pub use unix::{UnixListenerHandle, bind, peer_uid};
+pub use unix::{UnixListenerHandle, peer_uid};
 #[cfg(windows)]
-pub use windows::{PipeListener, bind, current_user_sid};
+pub use windows::{PipeListener, current_user_sid};
 
 /// The IPC protocol version this build speaks. Bumped on a breaking change to the
 /// envelope or the handshake.

@@ -302,9 +302,7 @@ impl WorkspaceManager {
         registry: &mut WorkspaceRegistry,
         host: &dyn WorkspaceHost,
     ) -> Option<WorkspaceAction> {
-        let path = rfd::FileDialog::new()
-            .set_title("Open workspace folder")
-            .pick_folder()?;
+        let path = crate::platform::pick_folder("Open workspace folder")?;
         if !path.join(format!(".{}", host.app_name())).is_dir() {
             self.error = Some(format!(
                 "'{}' is not a {} workspace",

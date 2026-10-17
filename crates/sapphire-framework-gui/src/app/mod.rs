@@ -32,7 +32,7 @@
 //! }
 //! ```
 
-mod gpu;
+pub(crate) mod gpu;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ use sapphire_workspace::logging::{default_log_filter, install_console_with_filte
 use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient};
 
 /// Sets the egui context's fonts, once, before the app is built.
-type InstallFonts = Box<dyn FnOnce(&egui::Context)>;
+pub(crate) type InstallFonts = Box<dyn FnOnce(&egui::Context)>;
 
 /// What [`run`] needs to know about the app and its window.
 pub struct AppOptions {
@@ -134,7 +134,6 @@ pub fn run(
         .build()
         .map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let config = ClientConfig::new(app).map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
-    let endpoints = config.endpoints.clone();
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -144,9 +143,34 @@ pub fn run(
         wgpu_options: gpu::wgpu_options(),
         ..Default::default()
     };
-    let handle = runtime.handle().clone();
-    let result = eframe::run_native(
+    let result = open_window(
         &title,
+        native,
+        runtime.handle().clone(),
+        config,
+        data_dir,
+        fonts,
+        create,
+    );
+    // The clients' tasks end with the runtime, after the window that used them.
+    drop(runtime);
+    result
+}
+
+/// Run eframe with `native`, building the app with `create` once the window exists: the
+/// part of starting up a desktop window and a phone's share.
+pub(crate) fn open_window(
+    title: &str,
+    native: eframe::NativeOptions,
+    handle: tokio::runtime::Handle,
+    config: ClientConfig,
+    data_dir: PathBuf,
+    fonts: Option<InstallFonts>,
+    create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
+) -> eframe::Result<()> {
+    let endpoints = config.endpoints.clone();
+    eframe::run_native(
+        title,
         native,
         Box::new(move |cc| {
             gpu::on_render_state(cc.wgpu_render_state.as_ref());
@@ -168,10 +192,7 @@ pub fn run(
                 data_dir,
             }))
         }),
-    );
-    // The clients' tasks end with the runtime, after the window that used them.
-    drop(runtime);
-    result
+    )
 }
 
 /// The console filter a desktop app prints with when `RUST_LOG` asks for nothing.

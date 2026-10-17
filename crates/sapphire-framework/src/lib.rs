@@ -36,6 +36,7 @@
 //! | `backend` | [`backend`] | `sapphire-framework-backend` |
 //! | `gui` | [`gui`] | `sapphire-framework-gui` |
 //! | `eframe` | `gui::app`, `gui::eframe` | `sapphire-framework-gui` with its `eframe` feature: a desktop window started the same way for every app |
+//! | `mobile` | `gui::mobile` | `sapphire-framework-gui` with its `mobile` feature: a phone app hosting its bridge and server in-process (implies `eframe`, `server`, `bridge`, `ipc`) |
 //! | `service` | [`service`] | `sapphire-framework-service` |
 //! | `http` | — | the app server's HTTP listener (`AppServer::http`) |
 //! | `frontmatter` | [`frontmatter`] | `sapphire-framework-frontmatter` |

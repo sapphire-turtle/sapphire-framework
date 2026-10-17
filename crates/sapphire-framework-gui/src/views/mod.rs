@@ -7,6 +7,7 @@ mod banner;
 mod devices;
 mod embedding;
 mod external;
+pub mod files;
 mod workgroup;
 mod workspaces;
 
@@ -14,6 +15,7 @@ pub use banner::ServiceStatusBanner;
 pub use devices::{DeviceList, InviteDialog};
 pub use embedding::EmbeddingView;
 pub use external::ExternalDeviceList;
+pub use files::FileBrowser;
 pub use workgroup::{JoinDialog, WorkgroupView};
 pub use workspaces::WorkspacePicker;
 
@@ -32,11 +34,12 @@ pub struct ViewCtx<'a> {
 /// The dismissible red error line every view uses.
 pub(crate) fn error_line(ui: &mut egui::Ui, error: &mut Option<String>) {
     let Some(msg) = error.clone() else { return };
-    ui.horizontal(|ui| {
-        ui.colored_label(egui::Color32::LIGHT_RED, msg);
+    // Wrapped: a phone is narrower than most messages.
+    ui.horizontal_wrapped(|ui| {
         if ui.small_button("×").clicked() {
             *error = None;
         }
+        ui.add(egui::Label::new(egui::RichText::new(msg).color(egui::Color32::LIGHT_RED)).wrap());
     });
 }
 

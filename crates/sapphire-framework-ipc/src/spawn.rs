@@ -18,8 +18,12 @@ use crate::raw::RawStream;
 /// implements it.
 pub const SHUTDOWN_METHOD: &str = "server.shutdown";
 
-/// Connect to `endpoint` using this platform's carrier.
+/// Connect to `endpoint`: in this process when it is served here (or the process's
+/// [`Carrier`](crate::Carrier) is in-process), otherwise over this platform's socket or pipe.
 pub async fn connect(endpoint: &Endpoint) -> Result<Connection> {
+    if crate::carrier::served_in_process(endpoint) {
+        return crate::inproc::connect(endpoint).await;
+    }
     #[cfg(unix)]
     {
         crate::unix::connect(endpoint).await
@@ -35,6 +39,9 @@ pub async fn connect(endpoint: &Endpoint) -> Result<Connection> {
 /// The bridge's data plane speaks one JSON line and then raw bytes, so it cannot use
 /// [`Connection`](crate::Connection).
 pub async fn connect_raw(endpoint: &Endpoint) -> Result<RawStream> {
+    if crate::carrier::served_in_process(endpoint) {
+        return crate::inproc::connect_raw(endpoint).await;
+    }
     #[cfg(unix)]
     {
         crate::unix::connect_raw(endpoint).await
@@ -48,6 +55,9 @@ pub async fn connect_raw(endpoint: &Endpoint) -> Result<RawStream> {
 /// Is a server listening on `endpoint`? Never removes anything: a dead server's Unix socket
 /// file is cleared by the next `bind` (#235).
 pub async fn probe(endpoint: &Endpoint) -> Result<bool> {
+    if crate::carrier::served_in_process(endpoint) {
+        return Ok(crate::inproc::is_bound(endpoint));
+    }
     #[cfg(unix)]
     {
         crate::unix::probe(endpoint).await

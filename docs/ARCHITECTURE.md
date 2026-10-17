@@ -209,7 +209,7 @@ redb のキャッシュは排他ロックで 1 プロセスしか開けない。
 | デバイスの同一性（`node.key`）・workgroup 台帳・ペアリング | bridge |
 
 つまり各アプリの **サーバ** がワークスペースを所有する。CLI・stdio MCP・desktop は
-`sapphire-framework-ipc` 経由でサーバに接続する（UDS / named pipe / プロセス内チャネル上の
+`sapphire-framework-ipc` 経由でサーバに接続する（UDS / named pipe / プロセス内キャリア上の
 NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix はピア uid を検査して切断する）。
 1 アプリ 1 サーバ、**1 サーバ 1 ワークスペース**（#215）。サーバは SIGTERM/SIGINT
 まで常駐し、OS サービス（systemd / LaunchAgent / タスクスケジューラ）として走る。CLI は
@@ -218,6 +218,16 @@ NDJSON JSON-RPC。**同一 OS ユーザー前提でトークンなし** — Unix
 骨格は `AppServer`（`workspace.*` 名前空間は framework 所有、アプリは `<app>.<method>` を追加）。
 CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / `workspace` / `workgroup` /
 `device` を `FrameworkCommand` として自分のサブコマンドの隣に flatten する（issue #142）。
+
+モバイル（ファサード feature `mobile`、`gui::mobile`）ではサービスマネージャも共有ディレクトリも
+無いので、アプリが **bridge とサーバを自プロセス内でホスト**し、GUI と同居させる。IPC は
+`sapphire_ipc::set_carrier(Carrier::InProcess)` でプロセス内キャリアに切り替える — エンドポイント
+（`dir` + `name`）をプロセス内テーブルのキーとし、接続ごとに `tokio::io::duplex` を渡す。UDS の
+パス長制限（iOS のコンテナパスは UUID を含み `sun_path` を超える）を避けつつ、フレーミング・
+ハンドシェイク・データプレーンの生バイト列はソケット時と同じコードを通る。ディレクトリは
+`dirs` が解決できないため、`SAPPHIRE_RUNTIME_DIR` / `SAPPHIRE_BRIDGE_DIR` /
+`SAPPHIRE_<APP>_{DATA,CACHE,CONFIG}_DIR` をアプリの private storage 配下に向ける
+（設計: `docs/superpowers/specs/2026-10-16-mobile-android-design.md`）。
 制御面の路由は所有権に従う: `workspace` コマンドはアプリのサーバへ、`workgroup` / `device`
 コマンドは bridge へ直接。`status` の報告書は CLI と IPC `server.info` が同じ
 `StatusReport` 型を共有する（`sapphire-framework-server-api` にあり、`backend::protocol` として

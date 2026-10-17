@@ -32,6 +32,9 @@ backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
 # `gui::app::run`: a desktop app's window on eframe + wgpu, started the same way for every app.
 eframe = ["gui", "sapphire-framework-gui/eframe"]
+# `gui::mobile`: an app on a phone, hosting its bridge and server in-process over the
+# in-process IPC carrier (Android now, iOS to follow).
+mobile = ["eframe", "server", "bridge", "ipc", "sapphire-framework-gui/mobile"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
 # The app server's HTTP listener (`AppServer::http`), every route behind an external device's token.

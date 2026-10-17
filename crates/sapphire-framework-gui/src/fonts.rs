@@ -117,6 +117,10 @@ fn pick<'a>(faces: &'a [Candidate], preferred: &[&str]) -> Option<&'a Candidate>
 pub fn system_cjk_font() -> Option<SystemFont> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
+    // fontdb knows no Android font directory; the system's fonts, Noto CJK among them, are
+    // all here.
+    #[cfg(target_os = "android")]
+    db.load_fonts_dir("/system/fonts");
     let faces: Vec<&fontdb::FaceInfo> = db.faces().collect();
 
     let candidate = |(i, f): (usize, &&fontdb::FaceInfo)| Candidate {

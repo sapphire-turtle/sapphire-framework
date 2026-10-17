@@ -6,6 +6,7 @@ use super::model::{
     Badge, badge, bring_target, display_name, display_path, move_target, new_target_ok, others,
 };
 use super::{ViewCtx, error_line, unavailable};
+use crate::platform;
 
 /// The remove confirmation: whether to delete the folder too, the name to type when it
 /// does, and the last failure.
@@ -26,6 +27,8 @@ struct RemoveConfirm {
 pub struct WorkspacePicker {
     confirm: Option<RemoveConfirm>,
     error: Option<String>,
+    /// The name typed for a new workspace, where there is no folder dialog.
+    new_name: String,
 }
 
 impl WorkspacePicker {
@@ -78,29 +81,32 @@ impl WorkspacePicker {
                                         ..RemoveConfirm::default()
                                     });
                                 }
-                                if ui
-                                    .add_enabled(
-                                        current.reachable && !cx.busy,
-                                        egui::Button::new("Move…"),
-                                    )
-                                    .clicked()
-                                    && let Some(dir) = rfd::FileDialog::new()
-                                        .set_title(format!(
-                                            "Choose where to move {} (it keeps its folder name)",
-                                            display_name(current)
-                                        ))
-                                        .pick_folder()
+                                if platform::folder_picker_available()
+                                    && ui
+                                        .add_enabled(
+                                            current.reachable && !cx.busy,
+                                            egui::Button::new("Move…"),
+                                        )
+                                        .clicked()
+                                    && let Some(dir) = platform::pick_folder(&format!(
+                                        "Choose where to move {} (it keeps its folder name)",
+                                        display_name(current)
+                                    ))
                                 {
                                     match move_target(&dir, &current.root) {
                                         Ok(dir) => out = Some(Command::WorkspaceMove { dir }),
                                         Err(e) => self.error = Some(e),
                                     }
                                 }
-                                if ui
-                                    .add_enabled(current.reachable, egui::Button::new("Open folder"))
-                                    .clicked()
+                                if platform::file_manager_available()
+                                    && ui
+                                        .add_enabled(
+                                            current.reachable,
+                                            egui::Button::new("Open folder"),
+                                        )
+                                        .clicked()
                                 {
-                                    open_folder(&display_path(&current.root));
+                                    platform::open_in_file_manager(&display_path(&current.root));
                                 }
                                 let (label, cmd) = if current.sync.enabled {
                                     ("Stop sync", Command::SyncDisable)
@@ -125,13 +131,16 @@ impl WorkspacePicker {
             ui.add_space(12.0);
             ui.strong("Switch to another workspace");
             ui.small("Only the selected workspace syncs on this device.");
+            if let Some(storage) = platform::app_storage().filter(|_| !platform::folder_picker_available()) {
+                if let Some(c) = self.new_in_storage_ui(ui, cx, storage) {
+                    out = Some(c);
+                }
+            } else {
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(!cx.busy, egui::Button::new("Open folder…"))
                     .clicked()
-                    && let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Open a workspace folder")
-                        .pick_folder()
+                    && let Some(dir) = platform::pick_folder("Open a workspace folder")
                 {
                     out = Some(if dir.join(format!(".{}", cx.app_name)).is_dir() {
                         Command::WorkspaceSelect { dir }
@@ -143,9 +152,8 @@ impl WorkspacePicker {
                 if ui
                     .add_enabled(!cx.busy, egui::Button::new("New…"))
                     .clicked()
-                    && let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Choose an empty folder for the new workspace")
-                        .pick_folder()
+                    && let Some(dir) =
+                        platform::pick_folder("Choose an empty folder for the new workspace")
                 {
                     match new_target_ok(&dir, cx.app_name) {
                         Ok(()) => out = Some(Command::WorkspaceInit { dir, sync: true }),
@@ -153,6 +161,7 @@ impl WorkspacePicker {
                     }
                 }
             });
+            }
 
             ui.add_space(12.0);
             ui.strong("From the workgroup");
@@ -176,12 +185,7 @@ impl WorkspacePicker {
                                             egui::Button::new("Bring to this host…"),
                                         )
                                         .clicked()
-                                        && let Some(dir) = rfd::FileDialog::new()
-                                            .set_title(format!(
-                                                "Choose where to put {0} (a folder named {0} is created inside)",
-                                                w.name
-                                            ))
-                                            .pick_folder()
+                                        && let Some(dir) = bring_into(&w.name)
                                     {
                                         out = Some(Command::WorkspaceMap {
                                             workspace_id: w.workspace_id,
@@ -198,6 +202,43 @@ impl WorkspacePicker {
         if let Some(c) = self.confirm_ui(ui, cx) {
             out = Some(c);
         }
+        out
+    }
+
+    /// "New workspace" without a folder dialog: a name, and a folder of that name in the
+    /// app's storage.
+    fn new_in_storage_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        cx: &ViewCtx,
+        storage: &std::path::Path,
+    ) -> Option<Command> {
+        let mut out = None;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_name)
+                    .hint_text("New workspace name")
+                    .desired_width(180.0),
+            );
+            let name = self.new_name.trim();
+            let valid = platform::valid_workspace_name(name);
+            if ui
+                .add_enabled(valid && !cx.busy, egui::Button::new("Create"))
+                .clicked()
+            {
+                let dir = storage.join(name);
+                if dir.exists() && !dir.join(format!(".{}", cx.app_name)).is_dir() {
+                    self.error = Some(format!("{name} already exists"));
+                } else {
+                    out = Some(if dir.exists() {
+                        Command::WorkspaceSelect { dir }
+                    } else {
+                        Command::WorkspaceInit { dir, sync: true }
+                    });
+                    self.new_name.clear();
+                }
+            }
+        });
         out
     }
 
@@ -276,15 +317,16 @@ impl WorkspacePicker {
     }
 }
 
-/// Open `path` in the platform's file manager. Failures are ignored: it is a convenience.
-fn open_folder(path: &std::path::Path) {
-    #[cfg(windows)]
-    let program = "explorer";
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let program = "xdg-open";
-    let _ = std::process::Command::new(program).arg(path).spawn();
+/// Where to bring workspace `name`: a folder the user picks, or — without a folder dialog —
+/// the app's storage, where it gets a folder of its own.
+fn bring_into(name: &str) -> Option<std::path::PathBuf> {
+    if platform::folder_picker_available() {
+        platform::pick_folder(&format!(
+            "Choose where to put {name} (a folder named {name} is created inside)"
+        ))
+    } else {
+        platform::app_storage().map(std::path::Path::to_path_buf)
+    }
 }
 
 #[cfg(test)]

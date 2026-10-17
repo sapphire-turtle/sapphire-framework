@@ -4,6 +4,8 @@ use std::io::{BufRead, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Deserialize;
+
 use crate::release::{Release, ReleaseSource, latest_release};
 use crate::{Error, Result};
 
@@ -34,18 +36,48 @@ pub enum InstallMethod {
     /// `cargo install`, under `$CARGO_HOME/bin`: cargo's records would no longer match a
     /// replaced file, so `update` says to run `cargo install` instead.
     Cargo,
+    /// `cargo binstall`, under `$CARGO_HOME/bin` and recorded in
+    /// `$CARGO_HOME/binstall/crates-v1.json`: `update` says to run `cargo binstall` again.
+    Binstall {
+        /// The crate it was installed from.
+        crate_name: String,
+        /// Where that crate came from.
+        source: BinstallSource,
+    },
     /// A system or package-manager location (`/usr/bin`, the Nix store, Homebrew): the
     /// package manager updates it.
     PackageManager,
 }
 
-/// How the executable at `exe` was installed, judged by where it is. `cargo_home` is
-/// `$CARGO_HOME`, or `~/.cargo` when unset.
+/// Where `cargo binstall` took a crate from, which decides how to run it again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BinstallSource {
+    /// crates.io: `cargo binstall <crate>`.
+    Registry,
+    /// A git repository, by its URL without the commit: `cargo binstall --git <url> <crate>`.
+    /// The crates that are only released on GitHub, such as the desktop apps.
+    Git(String),
+    /// A local manifest, or a source this does not know.
+    Other,
+}
+
+/// How the executable at `exe` was installed, judged by where it is and, under
+/// `$CARGO_HOME/bin`, by `cargo binstall`'s records. `cargo_home` is `$CARGO_HOME`, or
+/// `~/.cargo` when unset.
 pub fn install_method(exe: &Path, cargo_home: Option<&Path>) -> InstallMethod {
     if let Some(home) = cargo_home
         && exe.starts_with(home.join("bin"))
     {
-        return InstallMethod::Cargo;
+        let records = std::fs::read_to_string(home.join("binstall").join("crates-v1.json"));
+        let bin = exe.file_name().and_then(|name| name.to_str()).map(|name| {
+            name.strip_suffix(std::env::consts::EXE_SUFFIX)
+                .unwrap_or(name)
+        });
+        return match (records, bin) {
+            (Ok(records), Some(bin)) => binstalled(&records, bin),
+            _ => None,
+        }
+        .unwrap_or(InstallMethod::Cargo);
     }
     // `/usr/local` is where binaries placed by hand go; the rest of `/usr` is the
     // distribution's.
@@ -65,6 +97,50 @@ pub fn install_method(exe: &Path, cargo_home: Option<&Path>) -> InstallMethod {
         return InstallMethod::PackageManager;
     }
     InstallMethod::Release
+}
+
+/// One crate in `$CARGO_HOME/binstall/crates-v1.json`, as far as this reads it.
+#[derive(Deserialize)]
+struct BinstallRecord {
+    name: String,
+    #[serde(default)]
+    source: Option<BinstallRecordSource>,
+    #[serde(default)]
+    bins: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct BinstallRecordSource {
+    source_type: String,
+    url: String,
+}
+
+/// How `cargo binstall` installed the binary `bin`, from `records`, the contents of
+/// `$CARGO_HOME/binstall/crates-v1.json`: one JSON object per crate, one after another. `None`
+/// when binstall did not install it, which leaves `cargo install`.
+///
+/// A binary binstall installed and `cargo install` replaced afterwards still reads as
+/// binstall's; running binstall again puts the release back, which is what `update` is for.
+fn binstalled(records: &str, bin: &str) -> Option<InstallMethod> {
+    serde_json::Deserializer::from_str(records)
+        .into_iter::<BinstallRecord>()
+        .map_while(std::result::Result::ok)
+        .filter(|record| record.bins.iter().any(|b| b == bin))
+        .last()
+        .map(|record| InstallMethod::Binstall {
+            source: match record.source {
+                Some(source) if source.source_type == "Registry" => BinstallSource::Registry,
+                Some(source) if source.source_type == "Git" => {
+                    let url = source
+                        .url
+                        .split_once('#')
+                        .map_or(source.url.as_str(), |(u, _)| u);
+                    BinstallSource::Git(url.to_owned())
+                }
+                _ => BinstallSource::Other,
+            },
+            crate_name: record.name,
+        })
 }
 
 /// This machine as release files name it: `linux-x86_64`, `macos-aarch64`,
@@ -170,6 +246,17 @@ fn manual_advice(source: &ReleaseSource, release: &Release, method: &InstallMeth
         (InstallMethod::Cargo, None) => {
             "installed with cargo; update it with cargo install".to_owned()
         }
+        (InstallMethod::Binstall { crate_name, source }, _) => match source {
+            BinstallSource::Registry => {
+                format!("installed with cargo binstall; run: cargo binstall {crate_name}")
+            }
+            BinstallSource::Git(url) => format!(
+                "installed with cargo binstall; run: cargo binstall --git {url} {crate_name}"
+            ),
+            BinstallSource::Other => {
+                "installed with cargo binstall; update it with cargo binstall".to_owned()
+            }
+        },
         (InstallMethod::PackageManager, _) => {
             "installed by a package manager; update it with that".to_owned()
         }
@@ -291,6 +378,59 @@ mod tests {
         );
         assert_eq!(method("/usr/local/bin/app"), InstallMethod::Release);
         assert_eq!(method("/home/u/.local/bin/app"), InstallMethod::Release);
+    }
+
+    #[test]
+    fn binstall_s_records_name_the_crate_and_where_it_came_from() {
+        let records = concat!(
+            r#"{"name":"dioxus-cli","version_req":"*","current_version":"0.7.3","#,
+            r#""source":{"source_type":"Registry","url":"https://github.com/rust-lang/crates.io-index"},"#,
+            r#""target":"x86_64-unknown-linux-gnu","bins":["dx"]}"#,
+            r#"{"name":"sapphire-journal-desktop","version_req":"*","current_version":"0.3.0","#,
+            r#""source":{"source_type":"Git","url":"https://github.com/sapphire-turtle/sapphire-journal#b05d5c2"},"#,
+            r#""target":"x86_64-unknown-linux-gnu","bins":["sapphire-journal-desktop"]}"#,
+        );
+        assert_eq!(
+            binstalled(records, "dx"),
+            Some(InstallMethod::Binstall {
+                crate_name: "dioxus-cli".to_owned(),
+                source: BinstallSource::Registry,
+            })
+        );
+        assert_eq!(
+            binstalled(records, "sapphire-journal-desktop"),
+            Some(InstallMethod::Binstall {
+                crate_name: "sapphire-journal-desktop".to_owned(),
+                source: BinstallSource::Git(
+                    "https://github.com/sapphire-turtle/sapphire-journal".to_owned()
+                ),
+            })
+        );
+        assert_eq!(binstalled(records, "sapphire-journal"), None);
+        assert_eq!(binstalled("", "dx"), None);
+    }
+
+    #[test]
+    fn a_binary_under_cargo_s_bin_is_binstall_s_only_when_it_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp
+            .path()
+            .join("bin")
+            .join(format!("dx{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(install_method(&exe, Some(tmp.path())), InstallMethod::Cargo);
+        std::fs::create_dir(tmp.path().join("binstall")).unwrap();
+        std::fs::write(
+            tmp.path().join("binstall").join("crates-v1.json"),
+            r#"{"name":"dioxus-cli","source":{"source_type":"Registry","url":""},"bins":["dx"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            install_method(&exe, Some(tmp.path())),
+            InstallMethod::Binstall {
+                crate_name: "dioxus-cli".to_owned(),
+                source: BinstallSource::Registry,
+            }
+        );
     }
 
     #[test]

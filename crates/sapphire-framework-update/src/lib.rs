@@ -8,8 +8,8 @@
 //! - with a newer version: never a downgrade;
 //! - with the asset for this platform, `<asset>-<os>-<arch>[.exe]`, downloaded over HTTPS
 //!   from the repository's own release: GitHub is the authority on what was released;
-//! - when the executable was placed by hand, not by `cargo install` or a package manager,
-//!   whose own bookkeeping a replaced file would contradict ([`InstallMethod`]).
+//! - when the executable was placed by hand, not by `cargo install`, `cargo binstall` or a
+//!   package manager, whose own bookkeeping a replaced file would contradict ([`InstallMethod`]).
 //!
 //! Restarting the running server or service afterwards stays with the user.
 
@@ -18,7 +18,9 @@
 mod install;
 mod release;
 
-pub use install::{InstallMethod, UpdateArgs, asset_name, install, install_method, platform, run};
+pub use install::{
+    BinstallSource, InstallMethod, UpdateArgs, asset_name, install, install_method, platform, run,
+};
 pub use release::{Asset, Release, ReleaseSource, client, latest_release};
 
 /// Errors from finding, fetching or installing a release.

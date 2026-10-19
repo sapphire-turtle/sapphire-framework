@@ -99,9 +99,18 @@ pub(crate) fn describe() {
     describe_gauge!(SYNC_ERROR, "1 if the last sync attempt failed.");
     describe_gauge!(SYNC_PEERS, "The workgroup's other devices.");
     describe_gauge!(SYNC_LIVE_SESSIONS, "Live sessions with peers now.");
-    describe_gauge!(EMBEDDING_VECTORS, "Documents with a vector.");
-    describe_gauge!(EMBEDDING_PENDING, "Documents still without a vector.");
-    describe_gauge!(EMBEDDING_RUNNING, "1 while an embedding pass runs.");
+    describe_gauge!(
+        EMBEDDING_VECTORS,
+        "Documents with a vector; 0 once embedding stops being reported."
+    );
+    describe_gauge!(
+        EMBEDDING_PENDING,
+        "Documents still without a vector; 0 once embedding stops being reported."
+    );
+    describe_gauge!(
+        EMBEDDING_RUNNING,
+        "1 while an embedding pass runs; 0 once embedding stops being reported."
+    );
     describe_gauge!(
         UPDATE_AVAILABLE,
         "1 if a newer release is known; absent when the check is off or has no answer yet."
@@ -120,6 +129,15 @@ pub(crate) fn describe() {
     );
 }
 
+/// Whether the embedding gauges have been set in this process.
+///
+/// Once they have, a server that stops reporting embedding (its workspace closed, say) sets
+/// them to 0 rather than leaving the last values to go stale. A host that never embedded
+/// leaves them unset, so they stay absent. Process-wide, like the recorder they are set on.
+#[cfg(feature = "metrics")]
+static EMBEDDING_REPORTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// A flag as a gauge value.
 #[cfg(feature = "metrics")]
 fn flag(on: bool) -> f64 {
@@ -130,8 +148,9 @@ fn flag(on: bool) -> f64 {
 ///
 /// Sync state is what `sync.status` answers for the current workspace and update state is
 /// the update check's shared status. Free-text states (`paused`, `last_error`) become flags,
-/// so no text reaches the page. Embedding and update gauges are left unset when there is
-/// nothing to say, which a scraper sees as absent.
+/// so no text reaches the page. Update gauges are left unset when there is nothing to say,
+/// which a scraper sees as absent; embedding gauges likewise until they are first set, and
+/// 0 afterwards (see [`EMBEDDING_REPORTED`]).
 #[cfg(feature = "metrics")]
 pub(crate) async fn refresh_state(
     current: &crate::current::Current,
@@ -153,9 +172,14 @@ pub(crate) async fn refresh_state(
     };
     gauge!(SYNC_LIVE_SESSIONS).set(live as f64);
     if let Some(embedding) = &status.embedding {
+        EMBEDDING_REPORTED.store(true, std::sync::atomic::Ordering::Relaxed);
         gauge!(EMBEDDING_VECTORS).set(embedding.vectors as f64);
         gauge!(EMBEDDING_PENDING).set(embedding.pending as f64);
         gauge!(EMBEDDING_RUNNING).set(flag(embedding.running));
+    } else if EMBEDDING_REPORTED.load(std::sync::atomic::Ordering::Relaxed) {
+        gauge!(EMBEDDING_VECTORS).set(0.0);
+        gauge!(EMBEDDING_PENDING).set(0.0);
+        gauge!(EMBEDDING_RUNNING).set(0.0);
     }
     // Copied out so the lock is not held across an await, or past this line.
     let (enabled, known, available) = {

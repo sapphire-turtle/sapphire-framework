@@ -226,6 +226,10 @@ async fn app_routes_stay_behind_the_token() {
     assert_eq!(res.text().await.unwrap(), "app");
     let res = get_from(port, "/metrics", None).await;
     assert_eq!(res.status(), reqwest::StatusCode::OK);
+    // A path nobody serves falls through the public routes to the protected ones, so it is
+    // refused for want of a token rather than answered with a 404 that would map the routes.
+    let res = get_from(port, "/nope", None).await;
+    assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     stop(&CTX_APP, &endpoint, task).await;
 }
@@ -374,6 +378,11 @@ async fn reindexing_is_counted_and_timed() {
     assert!(ok.is_some_and(|v| v >= 1.0), "{body}");
     assert!(
         body.contains("sapphire_reindex_duration_seconds_count"),
+        "{body}"
+    );
+    // Buckets, not quantiles: the duration is a histogram a scraper can aggregate.
+    assert!(
+        body.contains("sapphire_reindex_duration_seconds_bucket"),
         "{body}"
     );
 

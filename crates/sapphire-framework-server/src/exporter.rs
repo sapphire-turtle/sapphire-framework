@@ -16,6 +16,9 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
+use crate::current::Current;
+use crate::update;
+
 /// The content type of Prometheus's text exposition format.
 const CONTENT_TYPE_TEXT: &str = "text/plain; version=0.0.4";
 
@@ -29,8 +32,8 @@ pub(crate) fn install() -> Option<&'static PrometheusHandle> {
         .get_or_init(|| match PrometheusBuilder::new().install_recorder() {
             Ok(handle) => {
                 // Help texts are registered with the recorder, so they wait until it is in.
-                // The framework's own descriptions join these here.
                 metrics_process::Collector::default().describe();
+                crate::instrument::describe();
                 Some(handle)
             }
             Err(err) => {
@@ -47,11 +50,16 @@ pub(crate) fn install() -> Option<&'static PrometheusHandle> {
 pub(crate) struct Scrape {
     /// The process's CPU, memory and file descriptors, read from the operating system.
     pub(crate) process: metrics_process::Collector,
+    /// The workspace and sync state that the state gauges report.
+    pub(crate) current: Arc<Current>,
+    /// What the update check has found so far.
+    pub(crate) update: update::SharedStatus,
 }
 
 impl Scrape {
     /// Refresh every value the scrape owns.
-    fn refresh(&self) {
+    async fn refresh(&self) {
+        crate::instrument::refresh_state(&self.current, &self.update).await;
         self.process.collect();
     }
 }
@@ -64,7 +72,7 @@ pub(crate) fn routes(handle: &'static PrometheusHandle, scrape: Arc<Scrape>) -> 
     axum::Router::new().route(
         "/metrics",
         get(move || async move {
-            scrape.refresh();
+            scrape.refresh().await;
             // Without the exporter's own HTTP server nothing else runs upkeep, which drains
             // the histograms' buckets; once per scrape is as often as anyone reads them.
             handle.run_upkeep();

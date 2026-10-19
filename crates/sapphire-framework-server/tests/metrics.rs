@@ -20,6 +20,9 @@ static CTX_ALONE: AppContext = AppContext::new("sapphire-metricstest-alone");
 static CTX_TOKEN: AppContext = AppContext::new("sapphire-metricstest-token");
 static CTX_APP: AppContext = AppContext::new("sapphire-metricstest-app");
 static CTX_OFF: AppContext = AppContext::new("sapphire-metricstest-off");
+static CTX_BEFORE: AppContext = AppContext::new("sapphire-metricstest-before");
+static CTX_AFTER: AppContext = AppContext::new("sapphire-metricstest-after");
+static CTX_NAMES: AppContext = AppContext::new("sapphire-metricstest-names");
 
 /// The one token the fake verifier accepts.
 const TOKEN: &str = "sapphire-ed-good";
@@ -241,4 +244,82 @@ async fn metrics_off_serves_no_route() {
     assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
 
     stop(&CTX_OFF, &endpoint, task).await;
+}
+
+/// Start a metrics server for `ctx` under `tmp` and give back its port, endpoint and task.
+async fn start_metrics(
+    ctx: &'static AppContext,
+    tmp: &std::path::Path,
+) -> (u16, Endpoint, tokio::task::JoinHandle<()>) {
+    std::fs::create_dir_all(tmp.join("run")).unwrap();
+    let endpoint = Endpoint::in_dir(ctx.app_name, tmp.join("run"));
+    let port = free_port();
+    let server = AppServer::new(ctx, "0.0.0").config(metrics_config(port, true));
+    let task = start(server, &endpoint).await;
+    (port, endpoint, task)
+}
+
+/// Select a new workspace at `dir` over IPC; `workspace.init` wants the directory to exist.
+async fn init_workspace(ctx: &'static AppContext, endpoint: &Endpoint, dir: &std::path::Path) {
+    std::fs::create_dir_all(dir).unwrap();
+    let c = client(ctx, endpoint).await;
+    let _: Value = c
+        .call(
+            proto::WORKSPACE_INIT,
+            proto::WorkspaceInitParams {
+                dir: dir.to_path_buf(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn state_before_a_workspace_is_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_BEFORE, tmp.path());
+    let (port, endpoint, task) = start_metrics(&CTX_BEFORE, tmp.path()).await;
+
+    let body = get_from(port, "/metrics", None).await.text().await.unwrap();
+    assert!(body.contains("sapphire_workspace_selected 0"), "{body}");
+    assert!(body.contains("sapphire_sync_enabled 0"), "{body}");
+    assert!(!body.contains("sapphire_embedding_"), "{body}");
+
+    stop(&CTX_BEFORE, &endpoint, task).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn state_after_a_workspace_is_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_AFTER, tmp.path());
+    let (port, endpoint, task) = start_metrics(&CTX_AFTER, tmp.path()).await;
+    init_workspace(&CTX_AFTER, &endpoint, &tmp.path().join("ws")).await;
+
+    let body = get_from(port, "/metrics", None).await.text().await.unwrap();
+    assert!(body.contains("sapphire_workspace_selected 1"), "{body}");
+    assert!(body.contains("# HELP sapphire_sync_peers"), "{body}");
+
+    stop(&CTX_AFTER, &endpoint, task).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn output_names_no_path_or_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_NAMES, tmp.path());
+    let (port, endpoint, task) = start_metrics(&CTX_NAMES, tmp.path()).await;
+    let ws = tmp.path().join("ws");
+    init_workspace(&CTX_NAMES, &endpoint, &ws).await;
+
+    let body = get_from(port, "/metrics", None).await.text().await.unwrap();
+    assert!(!body.contains(tmp.path().to_str().unwrap()), "{body}");
+    // Only when sync is on does the marker hold an id; a workspace without one has none to
+    // leak, so that half of the check is skipped rather than asserted vacuously.
+    let marker = ws.join(format!(".{}", CTX_NAMES.app_name));
+    if let Ok(id) =
+        std::fs::read_to_string(marker.join(sapphire_framework_server::sync::SYNC_ID_FILE))
+    {
+        assert!(!body.contains(id.trim()), "{body}");
+    }
+
+    stop(&CTX_NAMES, &endpoint, task).await;
 }

@@ -49,6 +49,7 @@ mod handlers;
 mod host;
 #[cfg(feature = "http")]
 mod http;
+mod instrument;
 mod selection;
 pub mod sync;
 #[cfg(test)]
@@ -613,13 +614,15 @@ impl AppServer {
                 && let Some(handle) = exporter::install()
             {
                 metrics::gauge!(
-                    "sapphire_build_info",
+                    instrument::BUILD_INFO,
                     "app" => ctx.app_name,
                     "version" => version,
                 )
                 .set(1.0);
                 let scrape = Arc::new(exporter::Scrape {
                     process: metrics_process::Collector::default(),
+                    current: Arc::clone(&current),
+                    update: Arc::clone(&update_status),
                 });
                 public = Some(exporter::routes(handle, scrape));
             }

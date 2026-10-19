@@ -52,6 +52,11 @@ dirs = "7"
 getrandom = "0.4"
 async-trait = "0.1"
 axum = "0.8"
+metrics = "0.24"
+# Rendering only: the route is mounted on the server's own axum listener, so no hyper
+# server and no push gateway.
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-process = "2.4"
 base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 sha2 = "0.11"

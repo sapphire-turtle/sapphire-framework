@@ -41,6 +41,7 @@
 //! | `http` | — | the app server's HTTP listener (`AppServer::http`) |
 //! | `frontmatter` | [`frontmatter`] | `sapphire-framework-frontmatter` |
 //! | `mcp` | [`mcp`] | `sapphire-framework-mcp`, plus the `mcp` subcommand and `/mcp` on the app server |
+//! | `metrics` | — | Prometheus metrics at `/metrics` on the app server's HTTP listener |
 
 #[cfg(feature = "workspace")]
 pub use sapphire_framework_workspace as workspace;

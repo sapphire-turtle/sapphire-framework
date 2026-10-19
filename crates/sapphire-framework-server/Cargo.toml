@@ -20,6 +20,8 @@ http = ["dep:axum", "dep:sapphire-framework-keys", "dep:tokio-util"]
 # The MCP tools: the `mcp` subcommand (stdio, through the IPC endpoint) and `/mcp` on the
 # HTTP listener when server.toml turns it on.
 mcp = ["http", "dep:sapphire-framework-mcp"]
+# Prometheus metrics at /metrics on the HTTP listener when server.toml turns them on; the one route not behind a token.
+metrics = ["http", "dep:metrics-exporter-prometheus", "dep:metrics-process"]
 
 [[bin]]
 name = "server-test-app"
@@ -29,6 +31,10 @@ required-features = ["test-util"]
 [[test]]
 name = "mcp"
 required-features = ["mcp"]
+
+[[test]]
+name = "metrics"
+required-features = ["metrics"]
 
 [dependencies]
 sapphire-backend = { package = "sapphire-framework-backend", version = "0.21.0", path = "../sapphire-framework-backend", default-features = false }
@@ -43,6 +49,11 @@ sapphire-framework-keys = { version = "0.21.0", path = "../sapphire-framework-ke
 sapphire-framework-mcp = { version = "0.21.0", path = "../sapphire-framework-mcp", optional = true }
 axum = { workspace = true, optional = true }
 tokio-util = { version = "0.7", default-features = false, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
+metrics-process = { workspace = true, optional = true }
+# The facade, not optional: without an installed recorder its macros do nothing, so the
+# instrumented code needs no `#[cfg]`.
+metrics.workspace = true
 clap.workspace = true
 grain-id.workspace = true
 indexmap.workspace = true

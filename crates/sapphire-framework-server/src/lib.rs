@@ -43,6 +43,8 @@ mod config;
 mod current;
 mod error;
 mod events;
+#[cfg(feature = "metrics")]
+mod exporter;
 mod handlers;
 mod host;
 #[cfg(feature = "http")]
@@ -456,6 +458,13 @@ impl AppServer {
                 ctx.app_name
             );
         }
+        #[cfg(not(feature = "metrics"))]
+        if config.http.metrics.enabled {
+            tracing::warn!(
+                "server.toml turns metrics on, but this build of {} has no metrics",
+                ctx.app_name
+            );
+        }
 
         let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
 
@@ -559,7 +568,7 @@ impl AppServer {
         // The HTTP listener, when anything is served over it. Started once the IPC socket
         // is bound, for the same reason as the sync tasks below. `/mcp`'s tools reach this
         // server the way the `mcp` subcommand's do — over IPC — on an in-process connection
-        // served like any other.
+        // served like any other. `/metrics` is the one public route, served without a token.
         #[cfg(feature = "http")]
         let http_stop = tokio_util::sync::CancellationToken::new();
         #[cfg(feature = "http")]
@@ -597,21 +606,41 @@ impl AppServer {
                     None => mcp_routes,
                 });
             }
-            match (routes, config.http.listen.or(http_listen)) {
-                (None, _) => None,
-                (Some(_), None) => {
+            #[allow(unused_mut)]
+            let mut public: Option<axum::Router> = None;
+            #[cfg(feature = "metrics")]
+            if config.http.metrics.enabled
+                && let Some(handle) = exporter::install()
+            {
+                metrics::gauge!(
+                    "sapphire_build_info",
+                    "app" => ctx.app_name,
+                    "version" => version,
+                )
+                .set(1.0);
+                let scrape = Arc::new(exporter::Scrape {
+                    process: metrics_process::Collector::default(),
+                });
+                public = Some(exporter::routes(handle, scrape));
+            }
+            match (
+                routes.is_some() || public.is_some(),
+                config.http.listen.or(http_listen),
+            ) {
+                (false, _) => None,
+                (true, None) => {
                     tracing::error!(
                         "nothing to bind HTTP to: set `[http] listen` in {SERVER_CONFIG_FILE}"
                     );
                     None
                 }
-                (Some(routes), Some(addr)) => {
+                (true, Some(addr)) => {
                     let auth = http_auth.unwrap_or_else(|| {
                         sapphire_framework_keys::AuthConfig::new(Arc::new(
                             sapphire_framework_keys::BridgeVerifier::new(ctx.app_name, version),
                         ))
                     });
-                    http::start(addr, routes, auth, http_stop.clone()).await
+                    http::start(addr, routes, public, auth, http_stop.clone()).await
                 }
             }
         };

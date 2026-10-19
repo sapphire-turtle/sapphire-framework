@@ -32,6 +32,8 @@ pub use live::{LiveSession, open_live_session};
 pub use message::Message;
 pub use session::{HELLO_TIMEOUT, SessionOutcome, run_session};
 
+use std::time::Duration;
+
 /// The session format this build speaks. Sent in the first message and checked.
 ///
 /// 2 carries content as `BLOB_START`, chunks and `BLOB_END`; a format 1 peer is refused.
@@ -51,3 +53,15 @@ pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 /// Most content one `BLOB_CHUNK` frame carries, in bytes. The sender reads, and the
 /// receiver holds, at most this much of a file at a time.
 pub const CHUNK: usize = 256 * 1024;
+
+/// How long the initial exchange goes without progress before it gives up on the peer.
+///
+/// Progress is a frame read from the peer or a frame written to it, and both directions
+/// count: a side sending a 1 GiB file hears nothing from the peer for as long as that
+/// takes, and must not give up on it for that. A bound on silence rather than on total
+/// time is what lets one large file take minutes while a peer that has stopped altogether
+/// is still let go of.
+///
+/// The `Hello` wait has its own bound, [`HELLO_TIMEOUT`], and the live phase after the
+/// exchange has none.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);

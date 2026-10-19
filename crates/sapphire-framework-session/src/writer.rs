@@ -156,6 +156,7 @@ where
         }
         while let Ok(msg) = urgent.try_recv() {
             write_control(w, &msg).await?;
+            progress.touch();
         }
         hasher.update(&buf[..n]);
         write_blob_chunk(w, &buf[..n]).await?;

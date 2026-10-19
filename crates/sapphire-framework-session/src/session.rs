@@ -16,6 +16,18 @@
 //!    and everything is simply resent next time; committing earlier would make the replica
 //!    claim versions whose content never arrived.
 //!
+//! # Locking and giving up
+//!
+//! The replica is locked per step, not across the exchange: to build this side's pages, to
+//! apply each page that arrives (and work out what it still needs), to answer each `Want`,
+//! and to materialise at the end. Content frames take no lock at all — they go straight to
+//! the staging directory — so a scan, or another session, runs while a large file is in
+//! flight. That is safe because `apply` joins path states, which commutes with a scan's own
+//! records, and committing only merges the peer's version vector.
+//!
+//! With one file able to take minutes, the exchange is bounded by silence, not by total
+//! time: it gives up once nothing has been read or written for [`IDLE_TIMEOUT`].
+//!
 //! The exchange is one function, [`initial_exchange`], because two callers start here:
 //! `run_session` finishes a session from what it returns, and `open_live_session` (in
 //! `live.rs`) keeps the stream and applies `Live` pushes on it.
@@ -57,6 +69,7 @@ use sapphire_sync::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::error::{Error, Result};
 use crate::frame::{Frame, read_frame};
@@ -64,7 +77,7 @@ use crate::incoming::Incoming;
 use crate::message::Message;
 use crate::progress::Progress;
 use crate::writer::{Out, Outbox, spawn_writer};
-use crate::{INLINE_LIMIT, SESSION_FORMAT_VERSION};
+use crate::{IDLE_TIMEOUT, INLINE_LIMIT, SESSION_FORMAT_VERSION};
 
 /// How many path states travel in one `Updates` message.
 const PAGE: usize = 256;
@@ -78,10 +91,9 @@ const PAGE: usize = 256;
 /// claimed it, or a peer that went away between the dial and its first frame on a transport
 /// with no half-close to report it with.
 ///
-/// Waiting for ever is not an option, because the caller holds the replica's lock across the
-/// exchange: one silent peer would pin this host's replica for the rest of the process's
-/// life, and no scan, no commit and no other session would get through. The same reasoning
-/// the bridge's workgroup driver applies to a whole session.
+/// Waiting for ever is not an option: one silent peer would pin a session, its stream and
+/// whatever drives it for the rest of the process's life. The same reasoning
+/// [`IDLE_TIMEOUT`] applies to the rest of the exchange.
 ///
 /// Generous on purpose, and a bound rather than a pace: a peer's bridge may hold a stream
 /// parked for about a minute while it starts a stopped app server, which is waiting that is
@@ -153,11 +165,13 @@ pub(crate) struct Exchange<S> {
 /// side asked for has been answered — with the bytes, or with `Missing`. A stream that ends
 /// first returns without an error, but commits nothing.
 ///
-/// `replica` is locked only from after the peer's `Hello` is in through to the end of the
-/// exchange — not while waiting for it (issue #163). A caller that used to pre-lock a
-/// `Mutex<Replica>` around the whole call should stop: passing the mutex itself is what lets
-/// a peer merely taking its time with `Hello` (up to [`HELLO_TIMEOUT`]) leave the replica
-/// free for a scan or another session meanwhile.
+/// `replica` is locked for each step that touches it, never across a wait on the peer — not
+/// for its `Hello` (issue #163), and not while content is in flight. A caller that used to
+/// pre-lock a `Mutex<Replica>` around the whole call should stop: passing the mutex itself
+/// is what leaves the replica free for a scan or another session meanwhile.
+///
+/// A peer that stops making progress is given up on after [`IDLE_TIMEOUT`] with
+/// [`Error::Protocol`]; nothing bounds the session's total length.
 ///
 /// `S` must be `'static` because the write half is moved into a task; a stream owned by the
 /// caller (a socket, a spliced pipe, a duplex) is.
@@ -218,12 +232,14 @@ where
 /// interrupted exchange leaves the version vector where it was. An error means the exchange
 /// never reached its end markers, and `run_session`'s own error mapping is the caller's job.
 ///
-/// `replica` is locked twice, not once for the whole call (issue #163): briefly at the very
-/// start, to read the two values this side's own `Hello` needs, and again once the peer's
-/// `Hello` is in, held from there through the rest of the exchange — which does need it
-/// continuously, applying and committing each page as it arrives. The gap between the two is
-/// the point: nothing from here to the peer's `Hello` touches the replica, so a peer that
-/// merely takes its time (up to [`HELLO_TIMEOUT`]) must not pin it while this side waits.
+/// `replica` is locked per step, never across a wait on the peer: briefly at the very start,
+/// to read the two values this side's own `Hello` needs (issue #163); once the peer's `Hello`
+/// is in, to build this side's pages; then for each page that arrives (`apply` and
+/// `needed`) and each `Want` (`content_path`). Content frames go to staging and take no
+/// lock, so a scan or another session gets through while a large file is in flight.
+///
+/// After the `Hello`, the read loop gives up once nothing has been read or written for
+/// [`IDLE_TIMEOUT`].
 pub(crate) async fn initial_exchange<S>(
     stream: S,
     replica: &Mutex<Replica>,
@@ -235,8 +251,9 @@ where
     let (mut reader, writer) = tokio::io::split(stream);
 
     // The writer task owns the write half, so the read loop is never blocked by a peer that
-    // is slow to read.
-    let (out_tx, writer_task) = spawn_writer(writer, Progress::new());
+    // is slow to read. It marks `progress` as it writes, and the read loop as it reads.
+    let progress = Progress::new();
+    let (out_tx, writer_task) = spawn_writer(writer, progress.clone());
 
     // 1. Hello, before anything else. Reading `replica_id`/`vv` is instantaneous, so the
     // lock is released again immediately — nothing below here needs the replica until the
@@ -260,7 +277,12 @@ where
     // The queue is dropped rather than drained, because a peer that did not send a `Hello`
     // cannot be expected to be reading either.
     let hello = match tokio::time::timeout(HELLO_TIMEOUT, read_frame(&mut reader)).await {
-        Ok(frame) => frame,
+        // Progress like any other frame read: the idle clock starts here, not at the
+        // dial, so a `Hello` that took its time does not count against `IDLE_TIMEOUT`.
+        Ok(frame) => {
+            progress.touch();
+            frame
+        }
         Err(_) => {
             abort(out_tx, writer_task);
             return Err(Error::Protocol(format!(
@@ -327,36 +349,34 @@ where
         }
     };
 
-    // The peer's `Hello` is in: from here to the end of the exchange, every step reads or
-    // writes the replica, so the lock is held continuously rather than re-taken per step.
-    let mut replica = replica.lock().await;
-    let mut incoming = Incoming::new(replica.stager());
-
     // 2. Build the outgoing side as owned data, then hand it to a task. Computing it up
-    //    front keeps the read loop free while it is written.
-    let delta = replica
-        .delta_for(&peer_vv)
-        .map_err(|e| Error::Sync(e.to_string()))?;
-    let sent_vv = replica.vv().clone();
-    let sent = delta.len();
-    let mut outgoing: Vec<Out> = Vec::new();
-    for page in delta.chunks(PAGE) {
-        for update in page {
-            for entry in &update.versions {
-                let Content::File { hash, len } = entry.content else {
-                    continue;
-                };
-                if len as usize > INLINE_LIMIT {
-                    continue;
-                }
-                if let Ok(Some((path, len))) = replica.content_path(&hash) {
-                    outgoing.push(Out::Blob { hash, path, len });
+    //    front, in one short hold of the lock, keeps the read loop free while it is written.
+    let (mut incoming, sent_vv, sent, outgoing) = {
+        let replica = replica.lock().await;
+        let incoming = Incoming::new(replica.stager());
+        let delta = replica
+            .delta_for(&peer_vv)
+            .map_err(|e| Error::Sync(e.to_string()))?;
+        let mut outgoing: Vec<Out> = Vec::new();
+        for page in delta.chunks(PAGE) {
+            for update in page {
+                for entry in &update.versions {
+                    let Content::File { hash, len } = entry.content else {
+                        continue;
+                    };
+                    if len as usize > INLINE_LIMIT {
+                        continue;
+                    }
+                    if let Ok(Some((path, len))) = replica.content_path(&hash) {
+                        outgoing.push(Out::Blob { hash, path, len });
+                    }
                 }
             }
+            outgoing.push(Out::Control(Message::Updates(page.to_vec())));
         }
-        outgoing.push(Out::Control(Message::Updates(page.to_vec())));
-    }
-    outgoing.push(Out::Control(Message::Done));
+        outgoing.push(Out::Control(Message::Done));
+        (incoming, replica.vv().clone(), delta.len(), outgoing)
+    };
 
     let sender = out_tx.clone();
     let send_task = tokio::spawn(async move {
@@ -380,19 +400,31 @@ where
         if peer_done && peer_settled && wanted.is_empty() {
             break Stop::Complete;
         }
-        let Some(frame) = read_frame(&mut reader).await? else {
-            break Stop::Gone;
+        // A read that fails — a broken stream, or a peer gone quiet for `IDLE_TIMEOUT` —
+        // takes the writer with it: the peer cannot be expected to read what is queued.
+        let frame = match read_or_idle(&mut reader, &progress).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break Stop::Gone,
+            Err(e) => {
+                send_task.abort();
+                abort(out_tx, writer_task);
+                return Err(e);
+            }
         };
         match frame {
             Frame::Control(Message::Updates(updates)) => {
                 received_count += updates.len();
                 // The join is idempotent, so a redelivered page costs nothing.
-                let page = replica
-                    .apply(&updates, &NoContent)
-                    .map_err(|e| Error::Sync(e.to_string()))?;
-                merge_report(&mut report, page);
+                let need = {
+                    let mut replica = replica.lock().await;
+                    let page = replica
+                        .apply(&updates, &NoContent)
+                        .map_err(|e| Error::Sync(e.to_string()))?;
+                    merge_report(&mut report, page);
+                    needed(&replica, &updates)?
+                };
                 // Ask for content the page needs that this session does not have.
-                for hash in needed(&replica, &updates)? {
+                for hash in need {
                     if wanted.insert(hash) {
                         send(&out_tx, Out::Control(Message::Want(hash))).await?;
                     }
@@ -401,7 +433,9 @@ where
             Frame::Control(Message::Done) => peer_done = true,
             Frame::Control(Message::Settled) => peer_settled = true,
             Frame::Control(Message::Want(hash)) => {
-                send(&out_tx, answer(&replica, hash)).await?;
+                // Locate under the lock; queue without it, as the queue may be full.
+                let reply = answer(&*replica.lock().await, hash);
+                send(&out_tx, reply).await?;
             }
             Frame::Control(Message::Missing(hash)) => {
                 // The peer does not have it either. Another peer may; the path simply stays
@@ -471,6 +505,37 @@ where
         },
         stop,
     })
+}
+
+/// Read the peer's next frame, or fail once the session has made no progress — nothing
+/// read and nothing written — for [`IDLE_TIMEOUT`].
+///
+/// The writer task marks `progress` as it writes, so a side busy sending a large file is
+/// not cut off for hearing nothing back. Each frame read marks it too.
+pub(crate) async fn read_or_idle<R: AsyncRead + Unpin>(
+    r: &mut R,
+    progress: &Progress,
+) -> Result<Option<Frame>> {
+    // `read_frame` is not cancel-safe: dropping it mid-frame would lose the bytes it has
+    // read. One pinned future survives every re-armed deadline below.
+    let read = read_frame(r);
+    tokio::pin!(read);
+    loop {
+        let deadline = Instant::now() + IDLE_TIMEOUT.saturating_sub(progress.idle_for());
+        tokio::select! {
+            frame = &mut read => {
+                progress.touch();
+                return frame;
+            }
+            // The writer may have moved since the deadline was set; only a full
+            // `IDLE_TIMEOUT` of nothing ends the session.
+            _ = tokio::time::sleep_until(deadline) => {
+                if progress.idle_for() >= IDLE_TIMEOUT {
+                    return Err(Error::Protocol(format!("no progress for {IDLE_TIMEOUT:?}")));
+                }
+            }
+        }
+    }
 }
 
 /// Materialise what was waiting on content, then commit.

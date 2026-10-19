@@ -119,9 +119,11 @@ struct Pending {
 /// and `Settled` — "we are caught up" — while the session itself keeps going until a side
 /// closes it or the stream ends.
 ///
-/// The replica is locked once the peer's `Hello` is in — not while waiting for it (issue
-/// #163) — and held from there through the exchange and for every arriving batch, so a scan
-/// or a local commit on this side waits behind one batch rather than behind the session.
+/// The replica is locked per step — never while waiting for the peer's `Hello` (issue #163)
+/// or for content in flight: for each page and `Want` of the exchange, and then for each
+/// arriving batch — so a scan or a local commit on this side waits behind one step rather
+/// than behind the session. The exchange gives up on a peer that makes no progress for
+/// [`IDLE_TIMEOUT`](crate::IDLE_TIMEOUT); the live phase after it has no such bound.
 /// Nothing is committed when the peer goes away or breaks the protocol: the error says which
 /// happened, and the replica's version vector is left where it was.
 ///

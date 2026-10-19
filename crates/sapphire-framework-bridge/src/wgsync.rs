@@ -66,13 +66,6 @@ pub(crate) const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// How long the longest the driver stays away from a peer that keeps refusing.
 const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 
-/// How long one driver-initiated session may run before it is given up on.
-///
-/// A session between two caught-up replicas is a few frames; one that outlives this is a
-/// peer that stopped cooperating, and holding the replica's lock for it would stall every
-/// later scan and every inbound session behind it.
-const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// How long the driver waits after the `attempt`-th failure to reach a peer.
 ///
 /// Doubling from one second, capped at [`BACKOFF_MAX`] — the same curve the app server's
@@ -138,10 +131,9 @@ impl WorkgroupReplica {
 
     /// Record every unrecorded edit under the workgroup root.
     ///
-    /// The replication core is held exclusively across a session — which waits on a peer —
-    /// so a scan arriving meanwhile waits up to [`SCAN_WAIT`] for it and then gives up with
-    /// an error rather than blocking its caller's thread for the length of a stalled
-    /// session. A scan that loses the race is retried by whatever wanted it; nothing is
+    /// A session locks the replication core for each step that touches it, so a scan
+    /// arriving meanwhile waits up to [`SCAN_WAIT`] for the step to finish and then gives up
+    /// with an error rather than blocking its caller's thread behind a stalled one. A scan that loses the race is retried by whatever wanted it; nothing is
     /// lost, because a scan only records what is still there.
     pub fn scan(&self) -> Result<()> {
         let outcome = {
@@ -171,9 +163,9 @@ impl WorkgroupReplica {
     ///
     /// The session is symmetric: this side sends what the peer lacks and applies what it is
     /// sent, so the same method serves a stream dialed to a peer and one a peer dialed to
-    /// the bridge. `run_session` locks the replica itself, only from after the peer's
-    /// `Hello` is in through to the end of the exchange — not while waiting for it (issue
-    /// #163) — so a peer that merely takes its time with `Hello` does not pin this host's
+    /// the bridge. `run_session` locks the replica itself, once per step that touches it —
+    /// not while waiting for the peer's `Hello` (issue #163), and not while content is in
+    /// flight — so neither a peer that takes its time nor a large file pins this host's
     /// replica against a concurrent [`scan`](WorkgroupReplica::scan) or another session.
     pub async fn session<S>(&self, stream: S) -> Result<()>
     where
@@ -431,20 +423,16 @@ async fn drive(
                 continue;
             }
         };
-        match tokio::time::timeout(SESSION_TIMEOUT, replica.session(stream)).await {
-            Ok(Ok(())) => {
+        // No bound on the whole session here: a large file may take minutes, and the
+        // session gives up by itself on a peer that stops making progress
+        // (`IDLE_TIMEOUT`).
+        match replica.session(stream).await {
+            Ok(()) => {
                 failures.remove(&device.id);
                 waiting.remove(&device.id);
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 tracing::debug!(peer = %device.name, "a workgroup session failed: {err}");
-                hold_back(failures, waiting, device.id, now);
-            }
-            Err(_) => {
-                tracing::warn!(
-                    peer = %device.name,
-                    "a workgroup session ran over {SESSION_TIMEOUT:?}"
-                );
                 hold_back(failures, waiting, device.id, now);
             }
         }

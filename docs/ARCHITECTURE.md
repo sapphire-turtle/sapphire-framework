@@ -331,7 +331,7 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
   再送しない）。stdout はプロトコルなので、ログは stderr に出す（#232 — 下記）。
 - **HTTP（サーバ側）**: サーバの HTTP リスナー上の `/mcp`（全アプリ共通のパス）。external device の
   Bearer トークンを `protect` で確かめる。**既定で無効**で、`<config dir>/server.toml` の
-  `[mcp] http = true` で有効になる（読むのは起動時）。bind 先は `[http] listen`、なければアプリの既定
+  `[http.mcp] enabled = true` で有効になる（読むのは起動時）。bind 先は `[http] listen`、なければアプリの既定
   （`AppServer::http_listen`）。ツールはプロセス内チャネル（`Connection::pair`）でサーバ自身の
   ルーターに IPC 接続する — stdio と同じ経路なので、同じツール実装がそのまま動く。bind に失敗しても
   サーバは止めず、エラーを記録して IPC と同期を続ける。`[http] allowed_hosts` は rmcp の Host

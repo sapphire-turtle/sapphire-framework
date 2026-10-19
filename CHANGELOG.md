@@ -22,6 +22,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `sapphire-bridge` with no subcommand prints the help instead of starting the bridge; start it with `sapphire-bridge serve` (the installed service unit already names `serve`). `BridgeCommand` and `FrameworkCommand` no longer implement `Default`, so an app CLI that started its server on a bare invocation with `unwrap_or_default()` no longer compiles: make the subcommand required and add `#[command(arg_required_else_help = true)]` to print the help instead.
 
 - `workspace init` (`workspace.init`) no longer writes a `[workspace.<id>]` registry entry into the marker's `config.toml`, and `workspace move` no longer rewrites one (#217). It keyed the apps' `--workspace <id>` selectors, which went with the server serving one workspace. `WorkspaceInitResult::workspace_id` stays — still the root's directory name, slugified — but nothing keys by it. The first `sync.map` of a directory still deletes a `config.toml` an older `init` left holding nothing but `[workspace]`.
+- **Breaking:** `server.toml`'s `[mcp] http` moved to `[http.mcp] enabled`; a file that still has `[mcp]` fails to load and says where the setting went. `ServerConfig::mcp` and `McpConfig` are gone; `HttpConfig` gains `mcp: HttpMcpConfig` and `metrics: HttpMetricsConfig`.
 
 ### Deprecated
 

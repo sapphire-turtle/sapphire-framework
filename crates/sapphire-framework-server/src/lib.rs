@@ -57,7 +57,9 @@ pub use command::{
     AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
     WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
 };
-pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig};
+pub use config::{
+    HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,
+};
 pub use current::Current;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
@@ -448,7 +450,7 @@ impl AppServer {
             None => ServerConfig::load_for_app(ctx)?,
         };
         #[cfg(not(feature = "mcp"))]
-        if config.mcp.http {
+        if config.http.mcp.enabled {
             tracing::warn!(
                 "server.toml turns MCP over HTTP on, but this build of {} has no MCP",
                 ctx.app_name
@@ -564,7 +566,7 @@ impl AppServer {
         let _http = {
             let mut routes = http_routes;
             #[cfg(feature = "mcp")]
-            if config.mcp.http {
+            if config.http.mcp.enabled {
                 let (ours, theirs) = sapphire_ipc::Connection::pair();
                 {
                     let router = Arc::clone(&router);

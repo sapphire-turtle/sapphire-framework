@@ -106,7 +106,7 @@ pub struct SessionOutcome {
 pub(crate) struct NoContent;
 
 impl ContentSource for NoContent {
-    fn fetch(&self, _: &ContentHash) -> Option<Vec<u8>> {
+    fn locate(&self, _: &ContentHash) -> Option<std::path::PathBuf> {
         None
     }
 }

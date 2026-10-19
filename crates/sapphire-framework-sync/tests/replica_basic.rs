@@ -377,3 +377,51 @@ fn content_path_finds_staged_content() {
         Some((a.replica.config().staging_dir.join(hash.to_hex()), 5))
     );
 }
+
+#[test]
+fn a_staged_file_is_used_without_rehashing() {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&a, "a.txt", "hello");
+    scan(&mut a);
+    let hash = ContentHash::of_bytes(b"hello");
+    let mut w = b.replica.stager().writer(hash, 5).unwrap();
+    w.write(b"hello").unwrap();
+    let staged = w.finish().unwrap();
+    assert!(staged.is_file());
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    // Nothing else can supply the bytes: the staged blob alone materialises the file.
+    b.replica.apply(&updates, &MapSource::default()).unwrap();
+    assert_eq!(read(&b, "a.txt").as_deref(), Some("hello"));
+    assert!(!staged.exists());
+}
+
+#[test]
+fn a_file_above_64_mib_is_recorded_by_default() {
+    let mut a = node(1);
+    let path = a.root.join("big.bin");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(64 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    let report = scan(&mut a);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let recorded: Vec<&str> = report.recorded.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(recorded, ["big.bin"]);
+}
+
+#[test]
+fn a_conflict_copy_of_a_large_loser_is_written() {
+    let (mut a, mut b) = (node(1), node(2));
+    let big = "x".repeat(100 * 1024);
+    write(&a, "a.txt", &big);
+    scan(&mut a);
+    b.clock.set(9_000_000);
+    write(&b, "a.txt", "from b");
+    scan(&mut b);
+    // The loser's bytes are only reachable through the source's path.
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    let source = MapSource::default().with(big.as_bytes());
+    let report = b.replica.apply(&updates, &source).unwrap();
+    assert_eq!(report.conflicts.len(), 1);
+    assert_eq!(read(&b, "a.txt").as_deref(), Some("from b"));
+    assert_eq!(read(&b, &report.conflicts[0].copy_path), Some(big));
+}

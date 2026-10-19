@@ -24,14 +24,18 @@ use crate::store::{Meta, ReplicaStore};
 use crate::vv::{Dot, VersionVector};
 
 /// Files larger than this are not synced unless configured otherwise.
-pub const DEFAULT_MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 
 /// A file whose mtime is this close to when it was checked is re-hashed.
 const RACY_NS: i64 = 2_000_000_000;
 
-/// Where a replica gets bytes it does not have: a peer, in practice.
+/// Where a replica gets content it does not have: a peer, in practice.
+///
+/// Content is handed over by path so that it is never held in memory whole.
 pub trait ContentSource {
-    fn fetch(&self, hash: &ContentHash) -> Option<Vec<u8>>;
+    /// A file holding exactly the content `hash`, if there is one. The replica copies
+    /// it through a verifying staging writer, so a wrong file is refused, not trusted.
+    fn locate(&self, hash: &ContentHash) -> Option<PathBuf>;
 }
 
 /// How a replica is set up.
@@ -131,7 +135,7 @@ fn place(staged: &Path, dest: &Path) -> Result<()> {
 
 /// Lookups over the stored path states that would otherwise be a full store read per
 /// path: `case_twin` on a case-insensitive filesystem runs for every path of a first
-/// scan, and `read_content` runs for every file materialized from a peer. Built once
+/// scan, and `content_path` runs for every file materialized from a peer. Built once
 /// per `scan`/`apply`/`fetch_missing` and kept current as states are committed, so it
 /// never goes stale within a call.
 #[derive(Debug, Default)]
@@ -463,7 +467,15 @@ impl Replica {
     /// finished staged content. A file whose length and mtime still match what was
     /// recorded (and are not racy) is trusted; any other is re-hashed first.
     pub fn content_path(&self, hash: &ContentHash) -> Result<Option<(PathBuf, u64)>> {
-        let index = StoreIndex::build(&self.store.all()?);
+        self.content_path_with(hash, &StoreIndex::build(&self.store.all()?))
+    }
+
+    /// [`Self::content_path`] against an index the caller already holds.
+    fn content_path_with(
+        &self,
+        hash: &ContentHash,
+        index: &StoreIndex,
+    ) -> Result<Option<(PathBuf, u64)>> {
         for rel in index.paths_with(hash) {
             let Some(state) = self.store.get(rel)? else {
                 continue;
@@ -485,28 +497,6 @@ impl Replica {
             && let Ok(meta) = fs::metadata(&path)
         {
             return Ok(Some((path, meta.len())));
-        }
-        Ok(None)
-    }
-
-    /// Bytes with `hash` from a file on disk or the staging directory.
-    pub fn read_content(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>> {
-        self.content_with(hash, &StoreIndex::build(&self.store.all()?))
-    }
-
-    /// [`Self::read_content`] against an index the caller already holds.
-    fn content_with(&self, hash: &ContentHash, index: &StoreIndex) -> Result<Option<Vec<u8>>> {
-        for rel in index.paths_with(hash) {
-            if let Ok(bytes) = fs::read(paths::to_native(&self.config.root, rel))
-                && ContentHash::of_bytes(&bytes) == *hash
-            {
-                return Ok(Some(bytes));
-            }
-        }
-        if let Ok(bytes) = fs::read(self.config.staging_dir.join(hash.to_hex()))
-            && ContentHash::of_bytes(&bytes) == *hash
-        {
-            return Ok(Some(bytes));
         }
         Ok(None)
     }
@@ -787,30 +777,25 @@ impl Replica {
                 // error here must propagate rather than be swallowed as unavailable
                 // content: `settle` would otherwise overwrite the only local copy of
                 // the loser's bytes.
-                let on_disk = if state.disk.hash == Some(hash) {
-                    Some(fs::read(paths::to_native(&self.config.root, rel))?)
+                let from = if state.disk.hash == Some(hash) {
+                    Some(paths::to_native(&self.config.root, rel))
                 } else {
-                    None
+                    match self.content_path_with(&hash, index)? {
+                        Some((path, _)) => Some(path),
+                        None => source.and_then(|s| s.locate(&hash)),
+                    }
                 };
-                let bytes = match on_disk {
-                    Some(bytes) => Some(bytes),
-                    None => match self.content_with(&hash, index)? {
-                        Some(bytes) => Some(bytes),
-                        None => source.and_then(|s| s.fetch(&hash)),
-                    },
+                let staged = match from {
+                    Some(from) => self.stage_from(&from, &hash)?,
+                    None => None,
                 };
-                let Some(bytes) = bytes.filter(|b| ContentHash::of_bytes(b) == hash) else {
+                let Some(staged) = staged else {
                     report.skipped.push(Skipped {
                         path: copy_rel,
                         reason: SkipReason::ContentUnavailable,
                     });
                     continue;
                 };
-                let staged = self
-                    .config
-                    .staging_dir
-                    .join(format!("{}.copy", hash.to_hex()));
-                fs::write(&staged, &bytes)?;
                 place(&staged, &copy_abs)?;
                 report.conflicts.push(Conflict {
                     path: rel.to_owned(),
@@ -988,29 +973,49 @@ impl Replica {
         source: Option<&dyn ContentSource>,
         index: &StoreIndex,
     ) -> Result<Option<PathBuf>> {
-        let staged = self.config.staging_dir.join(hash.to_hex());
-        if staged.is_file() && ContentHash::of_file(&staged)? == *hash {
+        // Anything staged under its hash was verified when it was finished.
+        if let Some(staged) = self.stager().staged(hash) {
             return Ok(Some(staged));
         }
-        let bytes = match self.content_with(hash, index)? {
-            Some(bytes) => Some(bytes),
-            None => source.and_then(|s| s.fetch(hash)),
+        let from = match self.content_path_with(hash, index)? {
+            Some((path, _)) => path,
+            None => match source.and_then(|s| s.locate(hash)) {
+                Some(path) => path,
+                None => return Ok(None),
+            },
         };
-        let Some(bytes) = bytes else {
-            return Ok(None);
+        self.stage_from(&from, hash)
+    }
+
+    /// Copy the file `from` into the staging directory as the content `hash`. Content
+    /// that is over the size limit or does not hash to `hash` is logged and treated as
+    /// unavailable; a failure to read `from` or write the copy is an error.
+    fn stage_from(&self, from: &Path, hash: &ContentHash) -> Result<Option<PathBuf>> {
+        let mut file = fs::File::open(from)?;
+        let len = file.metadata()?.len();
+        let mut writer = match self.stager().writer(*hash, len) {
+            Ok(writer) => writer,
+            Err(Error::TooLarge { len, max }) => {
+                tracing::warn!(%hash, len, max, "content is over the size limit");
+                return Ok(None);
+            }
+            Err(e) => return Err(e),
         };
-        if ContentHash::of_bytes(&bytes) != *hash {
-            tracing::warn!(%hash, "content source returned bytes with the wrong hash");
-            return Ok(None);
+        std::io::copy(&mut file, &mut writer)?;
+        match writer.finish() {
+            Ok(path) => Ok(Some(path)),
+            Err(Error::ContentMismatch { .. }) => {
+                tracing::warn!(%hash, "content did not match its hash");
+                Ok(None)
+            }
+            Err(e) => Err(e),
         }
-        fs::write(&staged, &bytes)?;
-        Ok(Some(staged))
     }
 }
 
 impl ContentSource for Replica {
-    fn fetch(&self, hash: &ContentHash) -> Option<Vec<u8>> {
-        self.read_content(hash).ok().flatten()
+    fn locate(&self, hash: &ContentHash) -> Option<PathBuf> {
+        self.content_path(hash).ok().flatten().map(|(path, _)| path)
     }
 }
 

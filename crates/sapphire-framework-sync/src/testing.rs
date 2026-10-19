@@ -1,6 +1,6 @@
 //! Helpers for tests (feature `test-util`).
 
-use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,20 +32,32 @@ impl Clock for ManualClock {
     }
 }
 
-/// A content source backed by a map.
-#[derive(Debug, Default)]
-pub struct MapSource(pub HashMap<ContentHash, Vec<u8>>);
+/// A content source backed by files in a temporary directory, named by hash.
+#[derive(Debug)]
+pub struct MapSource {
+    dir: tempfile::TempDir,
+}
+
+impl Default for MapSource {
+    fn default() -> Self {
+        Self {
+            dir: tempfile::tempdir().expect("create a temporary directory"),
+        }
+    }
+}
 
 impl MapSource {
-    pub fn with(mut self, bytes: &[u8]) -> Self {
-        self.0.insert(ContentHash::of_bytes(bytes), bytes.to_vec());
+    pub fn with(self, bytes: &[u8]) -> Self {
+        let hash = ContentHash::of_bytes(bytes);
+        std::fs::write(self.dir.path().join(hash.to_hex()), bytes).expect("write source content");
         self
     }
 }
 
 impl ContentSource for MapSource {
-    fn fetch(&self, hash: &ContentHash) -> Option<Vec<u8>> {
-        self.0.get(hash).cloned()
+    fn locate(&self, hash: &ContentHash) -> Option<PathBuf> {
+        let path = self.dir.path().join(hash.to_hex());
+        path.is_file().then_some(path)
     }
 }
 

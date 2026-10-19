@@ -18,6 +18,7 @@ use crate::id::ReplicaId;
 use crate::merge;
 use crate::paths;
 use crate::report::{Conflict, PauseReason, Report, ScanOutcome, SkipReason, Skipped};
+use crate::staging::{self, Stager};
 use crate::state::{DiskState, PathState};
 use crate::store::{Meta, ReplicaStore};
 use crate::vv::{Dot, VersionVector};
@@ -221,6 +222,7 @@ impl Replica {
         id: Option<ReplicaId>,
     ) -> Result<Self> {
         fs::create_dir_all(&config.staging_dir)?;
+        staging::clear_partials(&config.staging_dir)?;
         let root = config.root.to_string_lossy().into_owned();
         let store = ReplicaStore::open_with_id(&config.store_path, &root, id)?;
         let meta = store.meta()?;
@@ -450,6 +452,41 @@ impl Replica {
             tolerate_io(result, &rel, &mut report)?;
         }
         Ok(report)
+    }
+
+    /// A [`Stager`] over this replica's staging directory and size limit.
+    pub fn stager(&self) -> Stager {
+        Stager::new(self.config.staging_dir.clone(), self.config.max_file_size)
+    }
+
+    /// A file holding the content `hash`, and its length: a synced file on disk, else
+    /// finished staged content. A file whose length and mtime still match what was
+    /// recorded (and are not racy) is trusted; any other is re-hashed first.
+    pub fn content_path(&self, hash: &ContentHash) -> Result<Option<(PathBuf, u64)>> {
+        let index = StoreIndex::build(&self.store.all()?);
+        for rel in index.paths_with(hash) {
+            let Some(state) = self.store.get(rel)? else {
+                continue;
+            };
+            let path = paths::to_native(&self.config.root, rel);
+            let Ok(meta) = fs::metadata(&path) else {
+                continue;
+            };
+            let (mtime_ns, len) = stamp_of(&meta);
+            let disk = &state.disk;
+            let trusted = disk.hash.as_ref() == Some(hash)
+                && (mtime_ns, len) == (disk.mtime_ns, disk.len)
+                && !is_racy(disk);
+            if trusted || ContentHash::of_file(&path).is_ok_and(|h| h == *hash) {
+                return Ok(Some((path, len)));
+            }
+        }
+        if let Some(path) = self.stager().staged(hash)
+            && let Ok(meta) = fs::metadata(&path)
+        {
+            return Ok(Some((path, meta.len())));
+        }
+        Ok(None)
     }
 
     /// Bytes with `hash` from a file on disk or the staging directory.

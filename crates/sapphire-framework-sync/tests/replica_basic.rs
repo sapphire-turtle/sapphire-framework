@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use sapphire_framework_sync::testing::MapSource;
-use sapphire_framework_sync::{Content, PathUpdate, SkipReason, VersionVector};
+use sapphire_framework_sync::{Content, ContentHash, PathUpdate, SkipReason, VersionVector};
 
 #[test]
 fn a_new_file_propagates() {
@@ -323,4 +323,57 @@ fn an_ignored_path_is_reported_when_a_peer_sends_it() {
         "{report:?}"
     );
     assert_eq!(read(&b, "build.log"), None);
+}
+
+#[test]
+fn open_clears_leftover_partials() {
+    let a = node(1);
+    let staging = a.replica.config().staging_dir.clone();
+    std::fs::write(staging.join("x.partial"), b"junk").unwrap();
+    std::fs::write(staging.join("kept"), b"done").unwrap();
+    let a = reopen(a);
+    assert!(!staging.join("x.partial").exists());
+    assert!(staging.join("kept").exists());
+    drop(a);
+}
+
+#[test]
+fn content_path_trusts_an_unchanged_file() {
+    let mut a = node(1);
+    write(&a, "a.bin", "hello");
+    scan(&mut a);
+    let hash = ContentHash::of_bytes(b"hello");
+    assert_eq!(
+        a.replica.content_path(&hash).unwrap(),
+        Some((a.root.join("a.bin"), 5))
+    );
+    assert_eq!(
+        a.replica
+            .content_path(&ContentHash::of_bytes(b"other"))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn content_path_rehashes_a_file_whose_stamp_changed() {
+    let mut a = node(1);
+    write(&a, "a.bin", "hello");
+    scan(&mut a);
+    write(&a, "a.bin", "world");
+    let hash = ContentHash::of_bytes(b"hello");
+    assert_eq!(a.replica.content_path(&hash).unwrap(), None);
+}
+
+#[test]
+fn content_path_finds_staged_content() {
+    let a = node(1);
+    let hash = ContentHash::of_bytes(b"hello");
+    let mut w = a.replica.stager().writer(hash, 5).unwrap();
+    w.write(b"hello").unwrap();
+    w.finish().unwrap();
+    assert_eq!(
+        a.replica.content_path(&hash).unwrap(),
+        Some((a.replica.config().staging_dir.join(hash.to_hex()), 5))
+    );
 }

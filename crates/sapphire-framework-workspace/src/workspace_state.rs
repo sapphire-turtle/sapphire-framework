@@ -308,7 +308,9 @@ impl WorkspaceState {
     ///
     /// Reads the file from disk and upserts it into the retrieve DB. The file
     /// is indexed whole, whatever its extension: when it changes, the whole
-    /// file is re-indexed and re-embedded.
+    /// file is re-indexed and re-embedded. A file whose content is not UTF-8
+    /// (an image, audio, …) is not indexed, and any document it left from
+    /// earlier text content is removed.
     pub fn on_file_updated(&self, path: &Path) -> Result<()> {
         let resolved = self.resolve_path(path)?;
         if !resolved.is_internal() {
@@ -319,7 +321,9 @@ impl WorkspaceState {
 
         let stamp = file_stamp(abs);
 
-        let doc = build_document_from_disk(abs, path_to_doc_id(abs))?;
+        let Some(doc) = build_document_from_disk(abs, path_to_doc_id(abs))? else {
+            return self.remove_from_index(abs);
+        };
 
         // Index first, then record the stamp (see the atomicity note in
         // `indexer::sync_inner`).
@@ -341,15 +345,15 @@ impl WorkspaceState {
         if !resolved.is_internal() {
             return Ok(());
         }
-        let abs = resolved.as_path();
-        let path_str = abs.to_string_lossy().into_owned();
-        let doc_id = path_to_doc_id(abs);
+        self.remove_from_index(resolved.as_path())
+    }
 
+    /// Remove the document and track entry for the internal path `abs`, if any.
+    fn remove_from_index(&self, abs: &Path) -> Result<()> {
         let db = self.retrieve_db();
-        db.remove_document(doc_id)?;
+        db.remove_document(path_to_doc_id(abs))?;
         db.rebuild_fts()?;
-        self.track_db().remove(&path_str)?;
-
+        self.track_db().remove(&abs.to_string_lossy())?;
         Ok(())
     }
 
@@ -363,7 +367,8 @@ impl WorkspaceState {
     /// The hook does **not** see or modify the indexed [`Document`]; the
     /// workspace always reads the file from disk and indexes it whole.
     /// Non-indexable extensions and external paths short-circuit
-    /// without invoking the hook.
+    /// without invoking the hook, as does content that is not UTF-8 (which
+    /// also removes any document left from earlier text content).
     pub fn on_file_updated_with_hook<H: IndexHook>(
         &self,
         path: &Path,
@@ -382,12 +387,17 @@ impl WorkspaceState {
         let path_str = abs.to_string_lossy().into_owned();
         let stamp = file_stamp(abs);
 
+        let doc_id = path_to_doc_id(abs);
+        let Some(doc) = build_document_from_disk(abs, doc_id)
+            .map_err(|e| SyncWithHookError::Workspace(Error::from(e)))?
+        else {
+            return self
+                .remove_from_index(abs)
+                .map_err(SyncWithHookError::Workspace);
+        };
+
         hook.on_changed(abs, stamp.mtime_ns)
             .map_err(SyncWithHookError::Hook)?;
-
-        let doc_id = path_to_doc_id(abs);
-        let doc = build_document_from_disk(abs, doc_id)
-            .map_err(|e| SyncWithHookError::Workspace(Error::from(e)))?;
 
         let db = self.retrieve_db();
         db.upsert_document(&doc).map_err(map_retrieve_err)?;
@@ -527,6 +537,30 @@ impl WorkspaceState {
     /// Overwrites the file if it already exists.
     /// For internal files, updates the retrieve index and sync backend.
     pub fn write_file(&self, path: &Path, content: &str) -> Result<()> {
+        let resolved = self.resolve_path(path)?;
+        let abs = resolved.as_path();
+        if let Some(parent) = abs.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(abs, content)?;
+        if resolved.is_internal() {
+            self.on_file_updated(abs)?;
+        }
+        Ok(())
+    }
+
+    /// Read a file's raw bytes, for binary content such as images or audio.
+    pub fn read_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        let resolved = self.resolve_path(path)?;
+        Ok(std::fs::read(resolved.as_path())?)
+    }
+
+    /// Write raw bytes to a file, for binary content such as images or audio.
+    ///
+    /// Behaves like [`write_file`](Self::write_file): missing parent
+    /// directories are created and an existing file is overwritten. Content
+    /// that is not UTF-8 is synced but not indexed.
+    pub fn write_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
         let resolved = self.resolve_path(path)?;
         let abs = resolved.as_path();
         if let Some(parent) = abs.parent() {
@@ -1176,6 +1210,71 @@ mod tests {
                 hook.removed[0]
             );
             assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
+        }
+
+        /// Not UTF-8: a PNG signature.
+        const BINARY: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe];
+
+        #[test]
+        fn on_file_updated_skips_a_binary_file() {
+            let (tmp, state) = make_state();
+            let file = tmp.path().join("photo.png");
+            fs::write(&file, BINARY).unwrap();
+
+            state.on_file_updated(&file).unwrap();
+
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
+        }
+
+        #[test]
+        fn on_file_updated_drops_a_text_file_overwritten_with_binary() {
+            let (tmp, state) = make_state();
+            let file = tmp.path().join("note.txt");
+            fs::write(&file, "text").unwrap();
+            state.on_file_updated(&file).unwrap();
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 1);
+
+            fs::write(&file, BINARY).unwrap();
+            state.on_file_updated(&file).unwrap();
+
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
+            assert_eq!(state.track_db().count().unwrap(), 0);
+        }
+
+        #[test]
+        fn on_file_updated_with_hook_skips_a_binary_file() {
+            let (tmp, state) = make_state();
+            let file = tmp.path().join("garbled.md");
+            fs::write(&file, BINARY).unwrap();
+
+            let mut hook = RecordingHook::new();
+            state.on_file_updated_with_hook(&file, &mut hook).unwrap();
+
+            assert!(hook.changed.is_empty());
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
+        }
+
+        #[test]
+        fn write_bytes_round_trips_through_read_bytes() {
+            let (tmp, state) = make_state();
+            let rel = Path::new("voices/alice.wav");
+
+            state.write_bytes(rel, BINARY).unwrap();
+
+            assert_eq!(fs::read(tmp.path().join(rel)).unwrap(), BINARY);
+            assert_eq!(state.read_bytes(rel).unwrap(), BINARY);
+            assert_eq!(state.retrieve_db().document_count().unwrap(), 0);
+        }
+
+        #[test]
+        fn write_bytes_rejects_a_path_outside_the_workspace() {
+            let (_tmp, state) = make_state();
+
+            let err = state
+                .write_bytes(Path::new("../escaped.bin"), BINARY)
+                .unwrap_err();
+
+            assert!(matches!(err, Error::PathEscapesWorkspace { .. }), "{err:?}");
         }
 
         fn reopen(tmp: &tempfile::TempDir) -> WorkspaceState {

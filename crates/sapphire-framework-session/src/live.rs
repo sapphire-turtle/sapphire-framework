@@ -156,6 +156,7 @@ where
         reader,
         out,
         writer: _,
+        progress: _,
         peer_vv,
         sent_vv,
         mut incoming,

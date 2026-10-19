@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_framework_session::{
-    CHUNK, Error, Frame, Message, SESSION_FORMAT_VERSION, read_frame, run_session,
+    CHUNK, Error, Frame, IDLE_TIMEOUT, Message, SESSION_FORMAT_VERSION, read_frame, run_session,
     write_blob_chunk, write_blob_end, write_blob_start, write_control,
 };
 use sapphire_sync::{ContentHash, Replica, ReplicaConfig, ReplicaId, SystemClock, VersionVector};
@@ -219,6 +219,37 @@ async fn a_peer_that_asks_and_never_reads_is_given_up_on() {
     assert!(
         matches!(&err, Error::Protocol(why) if why.contains("no progress")),
         "got {err:?}"
+    );
+    drop((r, w));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_finishes_and_stops_reading_does_not_hang_the_close() {
+    let ws = grain_id::GrainId::random();
+    let a = replica();
+    let content = patterned(2 * CHUNK);
+    let hash = ContentHash::of_bytes(&content);
+    std::fs::write(a.root.join("big.bin"), &content).unwrap();
+    a.replica.lock().await.scan().unwrap();
+
+    // The peer asks for the file and completes its side of the exchange, then holds the
+    // stream open without reading: the session is done, but its writer is stuck on a tail
+    // far larger than the pipe.
+    let (mine, r, mut w) = fake_peer();
+    write_control(&mut w, &hello(ws)).await.unwrap();
+    write_control(&mut w, &Message::Want(hash)).await.unwrap();
+    write_control(&mut w, &Message::Done).await.unwrap();
+    write_control(&mut w, &Message::Settled).await.unwrap();
+
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(600), run_session(mine, &a.replica, ws))
+        .await
+        .expect("closing waited on a writer the peer never drains")
+        .unwrap();
+    assert!(
+        started.elapsed() >= IDLE_TIMEOUT,
+        "gave up on the writer after {:?}, while it might still have moved",
+        started.elapsed()
     );
     drop((r, w));
 }

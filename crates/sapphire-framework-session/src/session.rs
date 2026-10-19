@@ -145,6 +145,8 @@ pub(crate) struct Exchange<S> {
     pub(crate) out: Outbox,
     /// The task owning the write half.
     pub(crate) writer: JoinHandle<()>,
+    /// When the session last moved bytes, marked by the writer task and the read loop.
+    pub(crate) progress: Progress,
     /// Everything the peer said it has, as of its `Hello`.
     pub(crate) peer_vv: VersionVector,
     /// Everything this side had when it worked out what to send: the peer has all of it
@@ -185,6 +187,7 @@ where
     let Exchange {
         out,
         writer,
+        progress,
         peer_vv,
         outcome,
         stop,
@@ -199,7 +202,7 @@ where
                 let mut locked = replica.lock().await;
                 materialise(&mut locked, &peer_vv, outcome)
             };
-            close(out, writer, result).await
+            close(out, writer, &progress, result).await
         }
         // The peer is gone or has misbehaved, so there is nothing to deliver and a write
         // may never complete. Abort: nothing is committed either way, and everything is
@@ -348,19 +351,20 @@ where
         let delta = replica
             .delta_for(&peer_vv)
             .map_err(|e| Error::Sync(e.to_string()))?;
+        // Small content goes inline, ahead of the page that needs it. Looked up in one
+        // batch: a lookup per hash would rebuild the store index each time.
+        let inline = replica
+            .content_paths(&inline_hashes(&delta))
+            .unwrap_or_default();
         let mut outgoing: Vec<Out> = Vec::new();
         for page in delta.chunks(PAGE) {
-            for update in page {
-                for entry in &update.versions {
-                    let Content::File { hash, len } = entry.content else {
-                        continue;
-                    };
-                    if len as usize > INLINE_LIMIT {
-                        continue;
-                    }
-                    if let Ok(Some((path, len))) = replica.content_path(&hash) {
-                        outgoing.push(Out::Blob { hash, path, len });
-                    }
+            for hash in inline_hashes(page) {
+                if let Some((path, len)) = inline.get(&hash) {
+                    outgoing.push(Out::Blob {
+                        hash,
+                        path: path.clone(),
+                        len: *len,
+                    });
                 }
             }
             outgoing.push(Out::Control(Message::Updates(page.to_vec())));
@@ -483,6 +487,7 @@ where
         reader,
         out: out_tx,
         writer: writer_task,
+        progress,
         peer_vv,
         incoming,
         outcome: SessionOutcome {
@@ -577,13 +582,33 @@ pub(crate) fn reason(err: Error) -> String {
 ///
 /// Dropping the sender is what ends the writer task; it drains first, so a `Refused` or a
 /// `Settled` queued moments ago still reaches the peer before the stream goes away.
+///
+/// The wait is bounded like the exchange: a peer that holds the stream open but stops
+/// reading would otherwise keep the writer, and this call, waiting for ever. Once the
+/// writer has moved nothing for [`IDLE_TIMEOUT`] it is aborted; `result` stands either
+/// way, since the session's work is already done.
 async fn close(
     out_tx: Outbox,
-    writer: JoinHandle<()>,
+    mut writer: JoinHandle<()>,
+    progress: &Progress,
     result: Result<SessionOutcome>,
 ) -> Result<SessionOutcome> {
     drop(out_tx);
-    let _ = writer.await;
+    loop {
+        let deadline = Instant::now() + IDLE_TIMEOUT.saturating_sub(progress.idle_for());
+        tokio::select! {
+            _ = &mut writer => break,
+            // The writer may have moved since the deadline was set; only a full
+            // `IDLE_TIMEOUT` of nothing gives up on it.
+            _ = tokio::time::sleep_until(deadline) => {
+                if progress.idle_for() >= IDLE_TIMEOUT {
+                    tracing::debug!("the peer stopped reading; dropping what was still queued");
+                    writer.abort();
+                    break;
+                }
+            }
+        }
+    }
     result
 }
 
@@ -606,24 +631,33 @@ pub(crate) fn abort(out_tx: Outbox, writer: JoinHandle<()>) {
     writer.abort();
 }
 
+/// The hashes of the content in `updates` small enough to send inline.
+fn inline_hashes(updates: &[PathUpdate]) -> Vec<ContentHash> {
+    updates
+        .iter()
+        .flat_map(|update| &update.versions)
+        .filter_map(|entry| match entry.content {
+            Content::File { hash, len } if len as usize <= INLINE_LIMIT => Some(hash),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Hashes these updates need that neither a file on disk nor the staging directory holds.
 pub(crate) fn needed(replica: &Replica, updates: &[PathUpdate]) -> Result<Vec<ContentHash>> {
-    let mut out = Vec::new();
-    for update in updates {
-        for entry in &update.versions {
-            let Some(hash) = entry.content.hash() else {
-                continue;
-            };
-            let have = replica
-                .content_path(&hash)
-                .map_err(|e| Error::Sync(e.to_string()))?
-                .is_some();
-            if !have {
-                out.push(hash);
-            }
-        }
-    }
-    Ok(out)
+    let hashes: Vec<ContentHash> = updates
+        .iter()
+        .flat_map(|update| &update.versions)
+        .filter_map(|entry| entry.content.hash())
+        .collect();
+    // One batch per page: a lookup per hash would rebuild the store index each time.
+    let have = replica
+        .content_paths(&hashes)
+        .map_err(|e| Error::Sync(e.to_string()))?;
+    Ok(hashes
+        .into_iter()
+        .filter(|hash| !have.contains_key(hash))
+        .collect())
 }
 
 pub(crate) fn merge_report(into: &mut Report, from: Report) {

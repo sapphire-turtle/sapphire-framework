@@ -470,6 +470,26 @@ impl Replica {
         self.content_path_with(hash, &StoreIndex::build(&self.store.all()?))
     }
 
+    /// [`Self::content_path`] for each of `hashes`, building the store index once for
+    /// all of them rather than once per hash. A hash no file or staged content holds is
+    /// left out of the map.
+    pub fn content_paths(
+        &self,
+        hashes: &[ContentHash],
+    ) -> Result<HashMap<ContentHash, (PathBuf, u64)>> {
+        let index = StoreIndex::build(&self.store.all()?);
+        let mut found = HashMap::new();
+        for hash in hashes {
+            if found.contains_key(hash) {
+                continue;
+            }
+            if let Some(hit) = self.content_path_with(hash, &index)? {
+                found.insert(*hash, hit);
+            }
+        }
+        Ok(found)
+    }
+
     /// [`Self::content_path`] against an index the caller already holds.
     fn content_path_with(
         &self,

@@ -379,6 +379,34 @@ fn content_path_finds_staged_content() {
 }
 
 #[test]
+fn content_paths_answers_as_content_path_does_for_each_hash() {
+    let mut a = node(1);
+    write(&a, "a.bin", "on disk");
+    write(&a, "b.bin", "changed");
+    scan(&mut a);
+    write(&a, "b.bin", "changed after the scan");
+    let staged = ContentHash::of_bytes(b"staged");
+    let mut w = a.replica.stager().writer(staged, 6).unwrap();
+    w.write(b"staged").unwrap();
+    w.finish().unwrap();
+    let hashes = [
+        ContentHash::of_bytes(b"on disk"),
+        ContentHash::of_bytes(b"changed"),
+        staged,
+        ContentHash::of_bytes(b"absent"),
+    ];
+    let found = a.replica.content_paths(&hashes).unwrap();
+    for hash in &hashes {
+        assert_eq!(
+            found.get(hash).cloned(),
+            a.replica.content_path(hash).unwrap(),
+            "{hash:?}"
+        );
+    }
+    assert_eq!(found.len(), 2, "only the file on disk and the staged one");
+}
+
+#[test]
 fn a_staged_file_is_used_without_rehashing() {
     let (mut a, mut b) = (node(1), node(2));
     write(&a, "a.txt", "hello");

@@ -26,6 +26,11 @@ pub enum Message {
     Want(ContentHash),
     /// The sender does not have the content behind this hash either.
     Missing(ContentHash),
+    /// The sender started this content and could not finish it: the file changed under it.
+    ///
+    /// Sent in place of the content's `BLOB_END`. The receiver discards what it got and
+    /// treats the hash as [`Message::Missing`].
+    Aborted(ContentHash),
     /// The sender will ask for nothing further, and has answered every `Want` it will get.
     ///
     /// Sent after the peer's `Done`, once this side's want list is empty — at which point it
@@ -84,6 +89,15 @@ mod tests {
             format!("{:?}", round_trip(&Message::Missing(hash))),
             format!("{:?}", Message::Missing(hash))
         );
+    }
+
+    #[test]
+    fn an_abort_round_trips() {
+        let hash = ContentHash::of_bytes(b"content");
+        match round_trip(&Message::Aborted(hash)) {
+            Message::Aborted(back) => assert_eq!(back, hash),
+            other => panic!("got {other:?}"),
+        }
     }
 
     #[test]

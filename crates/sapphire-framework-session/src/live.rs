@@ -8,15 +8,16 @@
 //! a client.
 //!
 //! Content does not travel inside a `Live` message. A batch that names a file this side does
-//! not have is answered with `Want` on the same stream, and the peer's `Blob` settles it
-//! through the machinery the exchange already uses. A batch is published only once every
+//! not have is answered with `Want` on the same stream, and the peer's content settles it
+//! through the machinery the exchange already uses: the same writer streams it, and the
+//! same `Incoming` stages it. A batch is published only once every
 //! hash it was waiting on has been answered, so a host that forwards what it receives never
 //! announces an entry it cannot serve.
 //!
 //! # A dead peer must not stall the others
 //!
-//! The write half belongs to one task fed by a bounded channel, so a peer that stopped
-//! reading only fills its own queue. [`LiveSession::push`] fails at once once the session has
+//! The write half belongs to one task fed by bounded queues, so a peer that stopped reading
+//! only fills its own. [`LiveSession::push`] fails at once once the session has
 //! closed, so a caller looping over peers moves on to the next one instead of waiting on one
 //! that went away.
 
@@ -27,13 +28,14 @@ use std::sync::{Arc, Mutex};
 use grain_id::GrainId;
 use sapphire_sync::{ContentHash, PathUpdate, Replica, VersionVector};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
 use crate::frame::{Frame, read_frame};
 use crate::message::Message;
-use crate::session::{self, Exchange, Out, SessionOutcome, Stop, send};
+use crate::session::{self, Exchange, NoContent, SessionOutcome, Stop, send};
+use crate::writer::{Out, Outbox};
 
 /// How many batches may wait for a subscriber before the oldest is dropped. Applies to the
 /// broadcast of received updates, not to the wire.
@@ -43,7 +45,7 @@ const LIVE_QUEUE: usize = 64;
 ///
 /// Dropping it closes the session; `close` is the same thing said out loud.
 pub struct LiveSession {
-    out: mpsc::Sender<Out>,
+    out: Outbox,
     updates: broadcast::Sender<Vec<PathUpdate>>,
     peer_vv: Arc<Mutex<VersionVector>>,
     open: Arc<AtomicBool>,
@@ -157,7 +159,7 @@ where
         queued,
         peer_vv,
         sent_vv,
-        mut received,
+        mut incoming,
         outcome,
         stop: _,
     } = exchange;
@@ -170,7 +172,7 @@ where
     // `run_session` does at this point.
     let outcome = {
         let mut locked = replica.lock().await;
-        session::materialise(&mut locked, &received, &peer_vv, outcome)?
+        session::materialise(&mut locked, &peer_vv, outcome)?
     };
 
     // The peer has what it said it had and everything this side sent it. Starting from both,
@@ -213,11 +215,11 @@ where
                         let missing = {
                             let mut locked = replica.lock().await;
                             // The join is idempotent, so a repeated batch costs nothing.
-                            if let Err(err) = locked.apply(&batch, &received) {
+                            if let Err(err) = locked.apply(&batch, &NoContent) {
                                 tracing::warn!("a live batch was not applied: {err}");
                                 break;
                             }
-                            match session::needed(&locked, &batch, &received) {
+                            match session::needed(&locked, &batch) {
                                 Ok(missing) => missing,
                                 Err(err) => {
                                     tracing::warn!("a live batch could not be checked: {err}");
@@ -239,33 +241,48 @@ where
                         pending.push(Pending { batch, outstanding });
                     }
                     Ok(Some(Frame::Control(Message::Want(hash)))) => {
-                        let answer = {
-                            let locked = replica.lock().await;
-                            match locked.read_content(&hash) {
-                                Ok(Some(bytes)) => Out::Blob(hash, bytes),
-                                _ => Out::Control(Message::Missing(hash)),
-                            }
-                        };
+                        let answer = session::answer(&*replica.lock().await, hash);
                         if send(&out, answer).await.is_err() {
                             break;
                         }
                     }
-                    Ok(Some(Frame::Blob { hash, bytes })) => {
-                        // Verify before storing: content is addressed by hash, so a peer
-                        // that sent the wrong bytes under one must not be able to plant
-                        // them.
-                        if ContentHash::of_bytes(&bytes) != hash {
-                            tracing::warn!("content does not match {hash}");
+                    // Content is verified before it is staged: it is addressed by hash, so a
+                    // peer that sent the wrong bytes under one must not be able to plant
+                    // them.
+                    Ok(Some(Frame::BlobStart { hash, len })) => {
+                        if let Err(err) = incoming.start(hash, len) {
+                            tracing::warn!("{err}");
                             break;
                         }
-                        remember(&mut wanted, &mut pending, hash);
-                        received.0.insert(hash, bytes);
-                        wrote_content = true;
                     }
+                    Ok(Some(Frame::BlobChunk(bytes))) => {
+                        if let Err(err) = incoming.chunk(&bytes) {
+                            tracing::warn!("{err}");
+                            break;
+                        }
+                    }
+                    Ok(Some(Frame::BlobEnd)) => match incoming.end() {
+                        Ok(hash) => {
+                            remember(&mut wanted, &mut pending, hash);
+                            wrote_content = true;
+                        }
+                        Err(err) => {
+                            tracing::warn!("{err}");
+                            break;
+                        }
+                    },
                     // The peer does not have it either. Another peer may; the path simply
                     // stays unmaterialised until one does, and the batches that wanted it
                     // can be announced without it.
                     Ok(Some(Frame::Control(Message::Missing(hash)))) => {
+                        remember(&mut wanted, &mut pending, hash);
+                    }
+                    // The peer's file changed under it mid-send: as good as `Missing`.
+                    Ok(Some(Frame::Control(Message::Aborted(hash)))) => {
+                        if let Err(err) = incoming.aborted(hash) {
+                            tracing::warn!("{err}");
+                            break;
+                        }
                         remember(&mut wanted, &mut pending, hash);
                     }
                     // The exchange is over and frames arrive in order, so `Done`, `Settled`,
@@ -285,7 +302,7 @@ where
                     // Write the bytes to disk before any batch that names them is
                     // announced: a subscriber reads the file, not the store.
                     let mut locked = replica.lock().await;
-                    if let Err(err) = locked.fetch_missing(&received) {
+                    if let Err(err) = locked.fetch_missing(&NoContent) {
                         tracing::warn!("fetched content did not settle: {err}");
                         break;
                     }

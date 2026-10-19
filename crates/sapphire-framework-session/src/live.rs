@@ -16,10 +16,10 @@
 //!
 //! # A dead peer must not stall the others
 //!
-//! The write half belongs to one task fed by bounded queues, so a peer that stopped reading
-//! only fills its own. [`LiveSession::push`] fails at once once the session has
-//! closed, so a caller looping over peers moves on to the next one instead of waiting on one
-//! that went away.
+//! The write half belongs to one task fed by unbounded queues (see `writer.rs` for why), so
+//! queueing for a peer that stopped reading never waits: [`LiveSession::push`] returns at
+//! once, and fails once the session has closed, so a caller looping over peers moves on to
+//! the next one instead of waiting on one that went away.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +63,6 @@ impl LiveSession {
         }
         self.out
             .send(Out::Control(Message::Live(updates)))
-            .await
             .map_err(|_| Error::Protocol("the session is closed".to_owned()))
     }
 
@@ -149,7 +148,6 @@ where
             Stop::Protocol(why) => Error::Protocol(why.clone()),
             Stop::Complete => unreachable!("checked above"),
         };
-        exchange.queued.abort();
         session::abort(exchange.out, exchange.writer);
         return Err(why);
     }
@@ -158,17 +156,12 @@ where
         reader,
         out,
         writer: _,
-        queued,
         peer_vv,
         sent_vv,
         mut incoming,
         outcome,
         stop: _,
     } = exchange;
-
-    // The peer is still reading, so what this side queued during the exchange — its last
-    // pages, its `Done` — has to reach the wire before the live phase starts writing.
-    let _ = queued.await;
 
     // Caught up: materialise what was waiting on content and commit, exactly as
     // `run_session` does at this point.
@@ -234,7 +227,7 @@ where
                         let mut outstanding = HashSet::new();
                         for hash in missing {
                             if wanted.insert(hash)
-                                && send(&out, Out::Control(Message::Want(hash))).await.is_err()
+                                && send(&out, Out::Control(Message::Want(hash))).is_err()
                             {
                                 return;
                             }
@@ -244,7 +237,7 @@ where
                     }
                     Ok(Some(Frame::Control(Message::Want(hash)))) => {
                         let answer = session::answer(&*replica.lock().await, hash);
-                        if send(&out, answer).await.is_err() {
+                        if send(&out, answer).is_err() {
                             break;
                         }
                     }

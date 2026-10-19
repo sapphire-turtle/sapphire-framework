@@ -194,3 +194,31 @@ async fn a_hello_that_took_its_time_does_not_count_as_idleness() {
     run_session(mine, &b.replica, ws).await.unwrap();
     drop(peer.await.unwrap());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_asks_and_never_reads_is_given_up_on() {
+    let ws = grain_id::GrainId::random();
+    let a = replica();
+    let content = patterned(2 * CHUNK);
+    let hash = ContentHash::of_bytes(&content);
+    std::fs::write(a.root.join("big.bin"), &content).unwrap();
+    a.replica.lock().await.scan().unwrap();
+
+    // More `Want`s than any queue once held, and not a byte read: the session's writer
+    // stalls on the full pipe, and its read loop must not stall behind it.
+    let (mine, r, mut w) = fake_peer();
+    write_control(&mut w, &hello(ws)).await.unwrap();
+    for _ in 0..80 {
+        write_control(&mut w, &Message::Want(hash)).await.unwrap();
+    }
+
+    let err = tokio::time::timeout(Duration::from_secs(600), run_session(mine, &a.replica, ws))
+        .await
+        .expect("the session hung behind a peer that stopped reading")
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Protocol(why) if why.contains("no progress")),
+        "got {err:?}"
+    );
+    drop((r, w));
+}

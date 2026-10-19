@@ -14,6 +14,7 @@ use sapphire_framework_session::{
     write_blob_end, write_blob_start, write_control,
 };
 use sapphire_sync::{ContentHash, Replica, ReplicaConfig, ReplicaId, SystemClock, VersionVector};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, oneshot};
 
 fn replica() -> Replica {
@@ -85,6 +86,43 @@ fn files(root: &Path) -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
     walk(root, root, &mut out);
     out
+}
+
+/// Carry a session between `a` and `b`, holding b's first `Want` back: `wanted` is told
+/// when it arrives, and it goes on to `a` once `go` says so.
+async fn relay(
+    a: tokio::io::DuplexStream,
+    b: tokio::io::DuplexStream,
+    wanted: oneshot::Sender<()>,
+    go: oneshot::Receiver<()>,
+) {
+    let (mut a_r, mut a_w) = tokio::io::split(a);
+    let (mut b_r, mut b_w) = tokio::io::split(b);
+    let forward = tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut a_r, &mut b_w).await;
+        let _ = b_w.shutdown().await;
+    });
+    let mut hold = Some((wanted, go));
+    while let Ok(Some(frame)) = read_frame(&mut b_r).await {
+        if matches!(frame, Frame::Control(Message::Want(_)))
+            && let Some((wanted, go)) = hold.take()
+        {
+            wanted.send(()).unwrap();
+            go.await.unwrap();
+        }
+        let written = match frame {
+            Frame::Control(msg) => write_control(&mut a_w, &msg).await,
+            Frame::BlobStart { hash, len } => write_blob_start(&mut a_w, &hash, len).await,
+            Frame::BlobChunk(bytes) => write_blob_chunk(&mut a_w, &bytes).await,
+            Frame::BlobEnd => write_blob_end(&mut a_w).await,
+        };
+        if written.is_err() {
+            break;
+        }
+    }
+    assert!(hold.is_none(), "b never asked for content");
+    let _ = a_w.shutdown().await;
+    forward.await.unwrap();
 }
 
 async fn sync(a: &Fixture, b: &Fixture, ws: grain_id::GrainId) {
@@ -215,19 +253,39 @@ async fn a_scan_between_pages_still_converges() {
         let replica = Arc::clone(&b.replica);
         let stop = Arc::clone(&stop);
         tokio::spawn(async move {
-            let mut scans = 0usize;
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 replica.lock().await.scan().unwrap();
-                scans += 1;
                 tokio::task::yield_now().await;
             }
-            scans
         })
     };
-    sync(&a, &b, ws).await;
+
+    // And one scan that is sure to land mid-exchange: b's first `Want` means it has applied
+    // a page, and b cannot finish before that `Want` is answered, so it is held at the
+    // proxy until the scan is done.
+    let (a_end, a_proxy) = tokio::io::duplex(64 * 1024);
+    let (b_end, b_proxy) = tokio::io::duplex(64 * 1024);
+    let (wanted_tx, wanted_rx) = oneshot::channel();
+    let (scanned_tx, scanned_rx) = oneshot::channel();
+    let proxy = tokio::spawn(relay(a_proxy, b_proxy, wanted_tx, scanned_rx));
+    let mid = {
+        let replica = Arc::clone(&b.replica);
+        tokio::spawn(async move {
+            wanted_rx.await.unwrap();
+            replica.lock().await.scan().unwrap();
+            scanned_tx.send(()).unwrap();
+        })
+    };
+    let (x, y) = tokio::join!(
+        run_session(a_end, &a.replica, ws),
+        run_session(b_end, &b.replica, ws)
+    );
+    x.unwrap();
+    y.unwrap();
+    mid.await.unwrap();
+    proxy.await.unwrap();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    let scans = scanning.await.unwrap();
-    assert!(scans > 0);
+    scanning.await.unwrap();
 
     // Whatever a scan recorded mid-exchange, a second session settles it.
     sync(&a, &b, ws).await;

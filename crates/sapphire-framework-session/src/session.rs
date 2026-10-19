@@ -51,8 +51,9 @@
 //! # Writers
 //!
 //! Everything this side sends goes through one task (`writer.rs`), so the read loop never
-//! blocks on a write. Two `run_session` calls facing each other would otherwise deadlock the
-//! moment both wrote more than the socket buffer while each waited to read.
+//! blocks on a write, and its queues are unbounded, so queueing never waits on that task
+//! either. Two `run_session` calls facing each other would otherwise deadlock the moment
+//! both wrote more than the socket buffer, or filled a queue, while each waited to read.
 //!
 //! # Content
 //!
@@ -144,8 +145,6 @@ pub(crate) struct Exchange<S> {
     pub(crate) out: Outbox,
     /// The task owning the write half.
     pub(crate) writer: JoinHandle<()>,
-    /// The task queueing this side's pages and its `Done`.
-    pub(crate) queued: JoinHandle<()>,
     /// Everything the peer said it has, as of its `Hello`.
     pub(crate) peer_vv: VersionVector,
     /// Everything this side had when it worked out what to send: the peer has all of it
@@ -186,7 +185,6 @@ where
     let Exchange {
         out,
         writer,
-        queued,
         peer_vv,
         outcome,
         stop,
@@ -197,7 +195,6 @@ where
             // The peer is still reading: it exits only once it has seen this side's
             // `Settled`, which is queued but not yet written. Draining the writer delivers
             // `Done`, `Settled` and every pending answer.
-            let _ = queued.await;
             let result = {
                 let mut locked = replica.lock().await;
                 materialise(&mut locked, &peer_vv, outcome)
@@ -208,17 +205,14 @@ where
         // may never complete. Abort: nothing is committed either way, and everything is
         // resent next session.
         Stop::Gone => {
-            queued.abort();
             abort(out, writer);
             Ok(outcome)
         }
         Stop::Refused(why) => {
-            queued.abort();
             abort(out, writer);
             Err(Error::Refused(why))
         }
         Stop::Protocol(why) => {
-            queued.abort();
             abort(out, writer);
             Err(Error::Protocol(why))
         }
@@ -270,8 +264,7 @@ where
             replica_id,
             vv,
         }),
-    )
-    .await?;
+    )?;
 
     // A peer that never speaks is given up on rather than waited out: see [`HELLO_TIMEOUT`].
     // The queue is dropped rather than drained, because a peer that did not send a `Hello`
@@ -304,8 +297,7 @@ where
                     Out::Control(Message::Refused(format!(
                         "session format {format}, expected {SESSION_FORMAT_VERSION}"
                     ))),
-                )
-                .await;
+                );
                 return refuse(
                     out_tx,
                     writer_task,
@@ -322,8 +314,7 @@ where
                     Out::Control(Message::Refused(format!(
                         "this stream is for workspace {workspace_id}, not {theirs}"
                     ))),
-                )
-                .await;
+                );
                 return refuse(
                     out_tx,
                     writer_task,
@@ -378,15 +369,6 @@ where
         (incoming, replica.vv().clone(), delta.len(), outgoing)
     };
 
-    let sender = out_tx.clone();
-    let send_task = tokio::spawn(async move {
-        for item in outgoing {
-            if sender.send(item).await.is_err() {
-                break;
-            }
-        }
-    });
-
     // 3. Read until the peer is done and settled and every hash we asked for has been
     //    answered.
     let mut wanted: HashSet<ContentHash> = HashSet::new();
@@ -396,97 +378,103 @@ where
     let mut peer_settled = false;
     let mut settled = false;
 
-    let stop = loop {
-        if peer_done && peer_settled && wanted.is_empty() {
-            break Stop::Complete;
+    // Every error out of the loop comes out of this block, so that one place below takes the
+    // writer down with it: the peer cannot be expected to read what is still queued.
+    let looped: Result<Stop> = async {
+        for item in outgoing {
+            send(&out_tx, item)?;
         }
-        // A read that fails — a broken stream, or a peer gone quiet for `IDLE_TIMEOUT` —
-        // takes the writer with it: the peer cannot be expected to read what is queued.
-        let frame = match read_or_idle(&mut reader, &progress).await {
-            Ok(Some(frame)) => frame,
-            Ok(None) => break Stop::Gone,
-            Err(e) => {
-                send_task.abort();
-                abort(out_tx, writer_task);
-                return Err(e);
+        Ok(loop {
+            if peer_done && peer_settled && wanted.is_empty() {
+                break Stop::Complete;
             }
-        };
-        match frame {
-            Frame::Control(Message::Updates(updates)) => {
-                received_count += updates.len();
-                // The join is idempotent, so a redelivered page costs nothing.
-                let need = {
-                    let mut replica = replica.lock().await;
-                    let page = replica
-                        .apply(&updates, &NoContent)
-                        .map_err(|e| Error::Sync(e.to_string()))?;
-                    merge_report(&mut report, page);
-                    needed(&replica, &updates)?
-                };
-                // Ask for content the page needs that this session does not have.
-                for hash in need {
-                    if wanted.insert(hash) {
-                        send(&out_tx, Out::Control(Message::Want(hash))).await?;
+            let Some(frame) = read_or_idle(&mut reader, &progress).await? else {
+                break Stop::Gone;
+            };
+            match frame {
+                Frame::Control(Message::Updates(updates)) => {
+                    received_count += updates.len();
+                    // The join is idempotent, so a redelivered page costs nothing.
+                    let need = {
+                        let mut replica = replica.lock().await;
+                        let page = replica
+                            .apply(&updates, &NoContent)
+                            .map_err(|e| Error::Sync(e.to_string()))?;
+                        merge_report(&mut report, page);
+                        needed(&replica, &updates)?
+                    };
+                    // Ask for content the page needs that this session does not have.
+                    for hash in need {
+                        if wanted.insert(hash) {
+                            send(&out_tx, Out::Control(Message::Want(hash)))?;
+                        }
                     }
                 }
-            }
-            Frame::Control(Message::Done) => peer_done = true,
-            Frame::Control(Message::Settled) => peer_settled = true,
-            Frame::Control(Message::Want(hash)) => {
-                // Locate under the lock; queue without it, as the queue may be full.
-                let reply = answer(&*replica.lock().await, hash);
-                send(&out_tx, reply).await?;
-            }
-            Frame::Control(Message::Missing(hash)) => {
-                // The peer does not have it either. Another peer may; the path simply stays
-                // unmaterialised until one does.
-                wanted.remove(&hash);
-            }
-            Frame::Control(Message::Aborted(hash)) => {
-                // The peer's file changed under it: as good as `Missing`.
-                if let Err(e) = incoming.aborted(hash) {
-                    break Stop::Protocol(reason(e));
+                Frame::Control(Message::Done) => peer_done = true,
+                Frame::Control(Message::Settled) => peer_settled = true,
+                Frame::Control(Message::Want(hash)) => {
+                    let reply = answer(&*replica.lock().await, hash);
+                    send(&out_tx, reply)?;
                 }
-                wanted.remove(&hash);
-            }
-            Frame::Control(Message::Live(_)) => {
-                // A `Live` push travels only after both sides have left the exchange, and
-                // frames from one peer arrive in order, so a compliant peer cannot send one
-                // here.
-                break Stop::Protocol(
-                    "a Live push before the initial exchange finished".to_owned(),
-                );
-            }
-            Frame::Control(Message::Refused(why)) => {
-                break Stop::Refused(why);
-            }
-            Frame::Control(Message::Hello { .. }) => {
-                break Stop::Protocol("a second Hello".to_owned());
-            }
-            // Content is verified before it is staged: it is addressed by hash, so a peer that
-            // sent the wrong bytes under one must not be able to plant them.
-            Frame::BlobStart { hash, len } => {
-                if let Err(e) = incoming.start(hash, len) {
-                    break Stop::Protocol(reason(e));
-                }
-            }
-            Frame::BlobChunk(bytes) => {
-                if let Err(e) = incoming.chunk(&bytes) {
-                    break Stop::Protocol(reason(e));
-                }
-            }
-            Frame::BlobEnd => match incoming.end() {
-                Ok(hash) => {
+                Frame::Control(Message::Missing(hash)) => {
+                    // The peer does not have it either. Another peer may; the path simply stays
+                    // unmaterialised until one does.
                     wanted.remove(&hash);
                 }
-                Err(e) => break Stop::Protocol(reason(e)),
-            },
-        }
-        // The peer's pages are all in, so this side's want list can no longer grow: settling
-        // tells the peer it may close as soon as it wants nothing more either.
-        if peer_done && wanted.is_empty() && !settled {
-            settled = true;
-            send(&out_tx, Out::Control(Message::Settled)).await?;
+                Frame::Control(Message::Aborted(hash)) => {
+                    // The peer's file changed under it: as good as `Missing`.
+                    if let Err(e) = incoming.aborted(hash) {
+                        break Stop::Protocol(reason(e));
+                    }
+                    wanted.remove(&hash);
+                }
+                Frame::Control(Message::Live(_)) => {
+                    // A `Live` push travels only after both sides have left the exchange, and
+                    // frames from one peer arrive in order, so a compliant peer cannot send one
+                    // here.
+                    break Stop::Protocol(
+                        "a Live push before the initial exchange finished".to_owned(),
+                    );
+                }
+                Frame::Control(Message::Refused(why)) => {
+                    break Stop::Refused(why);
+                }
+                Frame::Control(Message::Hello { .. }) => {
+                    break Stop::Protocol("a second Hello".to_owned());
+                }
+                // Content is verified before it is staged: it is addressed by hash, so a peer that
+                // sent the wrong bytes under one must not be able to plant them.
+                Frame::BlobStart { hash, len } => {
+                    if let Err(e) = incoming.start(hash, len) {
+                        break Stop::Protocol(reason(e));
+                    }
+                }
+                Frame::BlobChunk(bytes) => {
+                    if let Err(e) = incoming.chunk(&bytes) {
+                        break Stop::Protocol(reason(e));
+                    }
+                }
+                Frame::BlobEnd => match incoming.end() {
+                    Ok(hash) => {
+                        wanted.remove(&hash);
+                    }
+                    Err(e) => break Stop::Protocol(reason(e)),
+                },
+            }
+            // The peer's pages are all in, so this side's want list can no longer grow: settling
+            // tells the peer it may close as soon as it wants nothing more either.
+            if peer_done && wanted.is_empty() && !settled {
+                settled = true;
+                send(&out_tx, Out::Control(Message::Settled))?;
+            }
+        })
+    }
+    .await;
+    let stop = match looped {
+        Ok(stop) => stop,
+        Err(e) => {
+            abort(out_tx, writer_task);
+            return Err(e);
         }
     };
 
@@ -495,7 +483,6 @@ where
         reader,
         out: out_tx,
         writer: writer_task,
-        queued: send_task,
         peer_vv,
         incoming,
         outcome: SessionOutcome {
@@ -565,8 +552,8 @@ pub(crate) fn materialise(
 }
 
 /// Queue one frame, or report that the writer is gone.
-pub(crate) async fn send(out: &Outbox, item: Out) -> Result<()> {
-    out.send(item).await
+pub(crate) fn send(out: &Outbox, item: Out) -> Result<()> {
+    out.send(item)
 }
 
 /// The answer to the peer's `Want(hash)`: the content, streamed from the file that holds

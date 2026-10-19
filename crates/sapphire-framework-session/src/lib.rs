@@ -62,6 +62,9 @@ pub const CHUNK: usize = 256 * 1024;
 /// time is what lets one large file take minutes while a peer that has stopped altogether
 /// is still let go of.
 ///
+/// Progress counts whole frames, so a peer draining slower than about one [`CHUNK`] per
+/// `IDLE_TIMEOUT` (some 4 KiB/s) is given up on even though bytes are still moving.
+///
 /// The `Hello` wait has its own bound, [`HELLO_TIMEOUT`], and the live phase after the
 /// exchange has none.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);

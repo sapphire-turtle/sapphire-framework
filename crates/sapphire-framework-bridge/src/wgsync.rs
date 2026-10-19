@@ -133,8 +133,9 @@ impl WorkgroupReplica {
     ///
     /// A session locks the replication core for each step that touches it, so a scan
     /// arriving meanwhile waits up to [`SCAN_WAIT`] for the step to finish and then gives up
-    /// with an error rather than blocking its caller's thread behind a stalled one. A scan that loses the race is retried by whatever wanted it; nothing is
-    /// lost, because a scan only records what is still there.
+    /// with an error rather than blocking its caller's thread behind a stalled one. A scan
+    /// that loses the race is retried by whatever wanted it; nothing is lost, because a scan
+    /// only records what is still there.
     pub fn scan(&self) -> Result<()> {
         let outcome = {
             let mut replica = self.lock_for_scan()?;

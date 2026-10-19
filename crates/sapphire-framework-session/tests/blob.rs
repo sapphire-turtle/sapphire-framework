@@ -296,3 +296,37 @@ async fn an_aborted_blob_leaves_the_path_for_the_next_session() {
     sync(&a, &b, ws).await;
     assert!(std::fs::read(b.root.join("big.bin")).unwrap() == rewritten);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn many_wants_both_ways_do_not_deadlock() {
+    let ws = grain_id::GrainId::random();
+    let a = replica("a", DEFAULT_MAX_FILE_SIZE);
+    let b = replica("b", DEFAULT_MAX_FILE_SIZE);
+
+    // Each side holds more files over the inline limit than a queue once held, so each
+    // answers a long run of `Want`s while the 64 KiB pipe pushes back both ways.
+    let len = sapphire_framework_session::INLINE_LIMIT + 1;
+    for (fixture, side) in [(&a, 1u8), (&b, 2u8)] {
+        for i in 0..80u8 {
+            let mut bytes = patterned(len);
+            bytes[0] = side;
+            bytes[1] = i;
+            std::fs::write(fixture.root.join(format!("{side}-{i:02}.bin")), bytes).unwrap();
+        }
+        scan(fixture).await;
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(120), sync(&a, &b, ws))
+        .await
+        .expect("the session deadlocked");
+    for side in [1u8, 2] {
+        for i in 0..80u8 {
+            let rel = format!("{side}-{i:02}.bin");
+            assert_eq!(
+                std::fs::read(a.root.join(&rel)).unwrap(),
+                std::fs::read(b.root.join(&rel)).unwrap(),
+                "{rel}"
+            );
+        }
+    }
+}

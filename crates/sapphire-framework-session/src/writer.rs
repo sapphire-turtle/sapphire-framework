@@ -1,6 +1,6 @@
 //! The one task that writes a session's half of the stream.
 //!
-//! Everything a side sends goes through an [`Outbox`] into two bounded queues:
+//! Everything a side sends goes through an [`Outbox`] into two queues:
 //!
 //! - **bulk**, in order: content, `Updates` pages and `Done`. Order matters — an inline blob
 //!   must reach the peer before the page that references it, and `Done` after the last page.
@@ -14,6 +14,15 @@
 //! Content is streamed from the file named in [`Out::Blob`], one [`CHUNK`] at a time and
 //! hashed as it goes: memory does not grow with the file, and a file that changed between
 //! being located and being sent is answered with `Aborted` rather than wrong bytes.
+//!
+//! # Why the queues are unbounded
+//!
+//! Queueing never waits, so a session's read loop never waits on its own writer. A bound
+//! would let a peer that stops reading stall the read loop behind a full queue, out of reach
+//! of the idle timeout — and two honest peers each answering a long run of `Want`s could
+//! deadlock, both readers waiting on full queues and both writers on the wire. What waits
+//! in a queue is a page already in memory or the path of a file, never content, so the cost
+//! is small; a peer that stops reading altogether is given up on by the idle timeout.
 
 use std::fs::File;
 use std::io::Read;
@@ -29,10 +38,6 @@ use crate::error::{Error, Result};
 use crate::frame::{write_blob_chunk, write_blob_end, write_blob_start, write_control};
 use crate::message::Message;
 use crate::progress::Progress;
-
-/// How many items each queue holds before a sender waits. Bounds how far one peer can make
-/// the other buffer by asking faster than it reads.
-const QUEUE: usize = 64;
 
 /// One thing to put on the wire.
 pub(crate) enum Out {
@@ -50,19 +55,21 @@ pub(crate) enum Out {
 /// is gone and both queues are drained.
 #[derive(Clone)]
 pub(crate) struct Outbox {
-    urgent: mpsc::Sender<Message>,
-    bulk: mpsc::Sender<Out>,
+    urgent: mpsc::UnboundedSender<Message>,
+    bulk: mpsc::UnboundedSender<Out>,
 }
 
 impl Outbox {
     /// Queue `out` on the queue it belongs to, or report that the writer is gone.
-    pub(crate) async fn send(&self, out: Out) -> Result<()> {
+    ///
+    /// Never waits: the queues are unbounded (see the module docs).
+    pub(crate) fn send(&self, out: Out) -> Result<()> {
         let sent = match out {
             Out::Control(msg @ (Message::Updates(_) | Message::Done)) => {
-                self.bulk.send(Out::Control(msg)).await.is_ok()
+                self.bulk.send(Out::Control(msg)).is_ok()
             }
-            Out::Control(msg) => self.urgent.send(msg).await.is_ok(),
-            blob @ Out::Blob { .. } => self.bulk.send(blob).await.is_ok(),
+            Out::Control(msg) => self.urgent.send(msg).is_ok(),
+            blob @ Out::Blob { .. } => self.bulk.send(blob).is_ok(),
         };
         if sent {
             Ok(())
@@ -80,8 +87,8 @@ pub(crate) fn spawn_writer<W>(w: W, progress: Progress) -> (Outbox, JoinHandle<(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let (urgent_tx, urgent) = mpsc::channel(QUEUE);
-    let (bulk_tx, bulk) = mpsc::channel(QUEUE);
+    let (urgent_tx, urgent) = mpsc::unbounded_channel();
+    let (bulk_tx, bulk) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         // A write error means the peer is gone; there is nobody to report it to.
         let _ = run(w, urgent, bulk, progress).await;
@@ -97,8 +104,8 @@ where
 
 async fn run<W>(
     mut w: W,
-    mut urgent: mpsc::Receiver<Message>,
-    mut bulk: mpsc::Receiver<Out>,
+    mut urgent: mpsc::UnboundedReceiver<Message>,
+    mut bulk: mpsc::UnboundedReceiver<Out>,
     progress: Progress,
 ) -> Result<()>
 where
@@ -129,7 +136,7 @@ where
 /// answered with `Missing` instead.
 async fn stream_blob<W>(
     w: &mut W,
-    urgent: &mut mpsc::Receiver<Message>,
+    urgent: &mut mpsc::UnboundedReceiver<Message>,
     progress: &Progress,
     hash: ContentHash,
     path: &Path,
@@ -242,7 +249,7 @@ mod tests {
         let (outbox, task) = spawn_writer(w, Progress::new());
         let reading = tokio::spawn(read_all(r));
         for item in items {
-            outbox.send(item).await.unwrap();
+            outbox.send(item).unwrap();
         }
         drop(outbox);
         task.await.unwrap();
@@ -347,11 +354,11 @@ mod tests {
         // A pipe that holds one chunk: the writer is still mid-blob when the `Want` comes.
         let (w, mut r) = tokio::io::duplex(CHUNK);
         let (outbox, task) = spawn_writer(w, Progress::new());
-        outbox.send(blob(hash, path, bytes.len())).await.unwrap();
+        outbox.send(blob(hash, path, bytes.len())).unwrap();
 
         let first = read_frame(&mut r).await.unwrap().unwrap();
         assert!(matches!(first, Frame::BlobStart { .. }), "got {first:?}");
-        outbox.send(Out::Control(want.clone())).await.unwrap();
+        outbox.send(Out::Control(want.clone())).unwrap();
         drop(outbox);
 
         let (frames, _) = read_all(r).await;

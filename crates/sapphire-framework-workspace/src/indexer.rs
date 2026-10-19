@@ -49,16 +49,23 @@ pub fn path_to_doc_id(path: &Path) -> i64 {
 /// Build a [`Document`] for `path` by reading the file from disk. Every file
 /// is indexed whole and verbatim, whatever its extension.
 ///
-/// Returns the `io::Error` from `read_to_string` if the file cannot be read.
-/// Bulk walkers call this and silently drop failures via `.ok()`; the
-/// single-file `on_file_updated_*` methods propagate the error.
-pub(crate) fn build_document_from_disk(path: &Path, doc_id: i64) -> std::io::Result<Document> {
-    let raw = std::fs::read_to_string(path)?;
-    Ok(Document {
+/// Returns `Ok(None)` if the content is not UTF-8 (an image, audio, …): such a
+/// file is synced but is not a document. Returns the `io::Error` if the file
+/// cannot be read. Bulk walkers silently drop both; the single-file
+/// `on_file_updated_*` methods remove a stale document on `None` and
+/// propagate the error.
+pub(crate) fn build_document_from_disk(
+    path: &Path,
+    doc_id: i64,
+) -> std::io::Result<Option<Document>> {
+    let Ok(raw) = String::from_utf8(std::fs::read(path)?) else {
+        return Ok(None);
+    };
+    Ok(Some(Document {
         id: doc_id,
         body: raw,
         path: path.to_string_lossy().into_owned(),
-    })
+    }))
 }
 
 /// Recursively walk `workspace` and upsert all text files into `retrieve_db`.
@@ -258,8 +265,8 @@ fn sync_inner<H: IndexHook>(
         hook.on_changed(path, stamp.mtime_ns)
             .map_err(SyncWithHookError::Hook)?;
 
-        let Ok(doc) = build_document_from_disk(path, doc_id) else {
-            // Unreadable file — leave the existing DB row untouched and move on.
+        let Ok(Some(doc)) = build_document_from_disk(path, doc_id) else {
+            // Unreadable or not text — leave the existing DB row untouched and move on.
             continue;
         };
 
@@ -447,7 +454,7 @@ mod tests {
         ] {
             let p = dir.path().join(name);
             std::fs::write(&p, body).unwrap();
-            let d = build_document_from_disk(&p, 7).unwrap();
+            let d = build_document_from_disk(&p, 7).unwrap().unwrap();
             assert_eq!(d.body, body, "{name} is indexed whole and verbatim");
             assert_eq!(d.id, 7);
         }

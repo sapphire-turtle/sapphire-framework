@@ -1,17 +1,41 @@
 //! Verified staging of incoming content.
 //!
-//! Incoming bytes are streamed into `<hex>.partial`, checked against the announced
-//! length and hash, and only then renamed to `<hex>`. A file named by a bare hash in
-//! the staging directory is therefore always complete and correct.
+//! Incoming bytes are streamed into a partial file of their own, checked against the
+//! announced length and hash, and only then renamed to `<hex>`. A file named by a bare
+//! hash in the staging directory is therefore always complete and correct.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{Error, Result};
 use crate::hash::{ContentHash, ContentHasher};
 
 const PARTIAL_SUFFIX: &str = ".partial";
+
+/// Tells apart the partial files of writers in this process; the pid tells apart
+/// processes.
+static NEXT_PARTIAL: AtomicU64 = AtomicU64::new(0);
+
+/// Create a partial file for `hash` in `dir` that no other writer has, as
+/// `<hex>.<pid>-<n>.partial`.
+fn create_partial(dir: &Path, hash: &ContentHash) -> io::Result<(File, PathBuf)> {
+    loop {
+        let n = NEXT_PARTIAL.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(
+            "{}.{}-{n}{PARTIAL_SUFFIX}",
+            hash.to_hex(),
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => return Ok((file, path)),
+            // Left by an earlier process that had the same pid.
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
 
 /// A staging directory that only ever holds verified content under its hash.
 #[derive(Clone, Debug)]
@@ -26,16 +50,16 @@ impl Stager {
         Self { dir, max }
     }
 
-    /// Start receiving the content `hash` of `len` bytes. An earlier `<hex>.partial`
-    /// is truncated. Fails with [`Error::TooLarge`] before touching the disk when
-    /// `len` is over the limit.
+    /// Start receiving the content `hash` of `len` bytes into a partial file of the
+    /// writer's own, so writers for the same hash (two sessions, or a session and a
+    /// scan's conflict copy) never share one. Fails with [`Error::TooLarge`] before
+    /// touching the disk when `len` is over the limit.
     pub fn writer(&self, hash: ContentHash, len: u64) -> Result<StagingWriter> {
         if len > self.max {
             return Err(Error::TooLarge { len, max: self.max });
         }
         fs::create_dir_all(&self.dir)?;
-        let partial = self.dir.join(format!("{}{PARTIAL_SUFFIX}", hash.to_hex()));
-        let file = File::create(&partial)?;
+        let (file, partial) = create_partial(&self.dir, &hash)?;
         Ok(StagingWriter {
             file,
             hasher: ContentHasher::new(),
@@ -56,8 +80,8 @@ impl Stager {
     }
 }
 
-/// Receives one blob into `<hex>.partial`, verifying it on [`finish`](Self::finish).
-/// Dropping it unfinished removes the partial file.
+/// Receives one blob into its own partial file, verifying it on
+/// [`finish`](Self::finish). Dropping it unfinished removes that file.
 pub struct StagingWriter {
     file: File,
     hasher: ContentHasher,
@@ -87,7 +111,9 @@ impl StagingWriter {
     }
 
     /// Check the length and hash, then move the file to `<hex>` and return its path.
-    /// Anything other than the announced content is [`Error::ContentMismatch`].
+    /// Anything other than the announced content is [`Error::ContentMismatch`]. If
+    /// another writer staged the same hash meanwhile, the rename replaces its file
+    /// with identical content.
     pub fn finish(mut self) -> Result<PathBuf> {
         if self.written != self.len || self.hasher.clone().finish() != self.hash {
             return Err(Error::ContentMismatch {
@@ -261,6 +287,77 @@ mod tests {
         let result = w.write(b"hello").and_then(|()| w.finish().map(|_| ()));
         assert!(result.is_err());
         assert!(!dir.exists());
+    }
+
+    /// Two writers for one hash, as two sessions or a session and a scan's conflict
+    /// copy can be. `a_first` picks which one finishes first.
+    fn two_writers_for_one_hash(a_first: bool) {
+        let (_t, dir) = dir();
+        let stager = Stager::new(dir.clone(), 100);
+        let hash = ContentHash::of_bytes(b"hello");
+        let mut a = stager.writer(hash, 5).unwrap();
+        a.write(b"hel").unwrap();
+        let mut b = stager.writer(hash, 5).unwrap();
+        b.write(b"h").unwrap();
+        a.write(b"lo").unwrap();
+        b.write(b"el").unwrap();
+        // `a` is complete, `b` is behind; one finishes before the other has.
+        let path = if a_first {
+            let path = a.finish().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+            b.write(b"lo").unwrap();
+            b.finish().unwrap()
+        } else {
+            b.write(b"lo").unwrap();
+            let path = b.finish().unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+            a.finish().unwrap()
+        };
+        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+        assert_eq!(stager.staged(&hash), Some(path));
+        assert_eq!(entries(&dir), 1, "no .partial left");
+    }
+
+    #[test]
+    fn two_writers_for_one_hash_finishing_first_to_last() {
+        two_writers_for_one_hash(true);
+    }
+
+    #[test]
+    fn two_writers_for_one_hash_finishing_last_to_first() {
+        two_writers_for_one_hash(false);
+    }
+
+    #[test]
+    fn dropping_one_writer_leaves_the_other_alone() {
+        let (_t, dir) = dir();
+        let stager = Stager::new(dir.clone(), 100);
+        let hash = ContentHash::of_bytes(b"hello");
+        let mut a = stager.writer(hash, 5).unwrap();
+        a.write(b"he").unwrap();
+        let mut b = stager.writer(hash, 5).unwrap();
+        b.write(b"h").unwrap();
+        drop(b);
+        a.write(b"llo").unwrap();
+        let path = a.finish().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"hello");
+        assert_eq!(entries(&dir), 1);
+    }
+
+    #[test]
+    fn clear_partials_removes_the_partials_of_abandoned_writers() {
+        let (_t, dir) = dir();
+        let stager = Stager::new(dir.clone(), 100);
+        let hash = ContentHash::of_bytes(b"hello");
+        for _ in 0..2 {
+            let mut w = stager.writer(hash, 5).unwrap();
+            w.write(b"he").unwrap();
+            // A crash: the writer never gets to clean up.
+            std::mem::forget(w);
+        }
+        assert_eq!(entries(&dir), 2, "each writer has its own partial");
+        clear_partials(&dir).unwrap();
+        assert_eq!(entries(&dir), 0);
     }
 
     #[test]

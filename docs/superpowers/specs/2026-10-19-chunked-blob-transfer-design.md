@@ -171,7 +171,8 @@ impl StagingWriter {
     pub fn write(&mut self, bytes: &[u8]) -> Result<()>; // appends and hashes; errs past `len`
     pub fn finish(self) -> Result<PathBuf>;              // checks len + hash, renames to staging/<hash>
 }
-// Drop without `finish` removes `staging/<hash>.partial`.
+// Each writer streams into its own `staging/<hash>.<unique>.partial` (never shared, never
+// truncated); Drop without `finish` removes only that file.
 ```
 
 `Stager` does not borrow the replica, so the session takes one while it holds the lock and

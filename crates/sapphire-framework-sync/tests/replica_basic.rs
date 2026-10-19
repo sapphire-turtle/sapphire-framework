@@ -388,10 +388,13 @@ fn a_staged_file_is_used_without_rehashing() {
     w.write(b"hello").unwrap();
     let staged = w.finish().unwrap();
     assert!(staged.is_file());
+    // Pin trust-on-existence: only `finish` ever writes `staging/<hex>`, so the file is
+    // placed as it stands, not re-hashed. Same length, different bytes: if it were
+    // re-hashed it would be refused instead of placed.
+    std::fs::write(&staged, b"jello").unwrap();
     let updates = a.replica.delta_for(b.replica.vv()).unwrap();
-    // Nothing else can supply the bytes: the staged blob alone materialises the file.
     b.replica.apply(&updates, &MapSource::default()).unwrap();
-    assert_eq!(read(&b, "a.txt").as_deref(), Some("hello"));
+    assert_eq!(read(&b, "a.txt").as_deref(), Some("jello"));
     assert!(!staged.exists());
 }
 
@@ -424,4 +427,88 @@ fn a_conflict_copy_of_a_large_loser_is_written() {
     assert_eq!(report.conflicts.len(), 1);
     assert_eq!(read(&b, "a.txt").as_deref(), Some("from b"));
     assert_eq!(read(&b, &report.conflicts[0].copy_path), Some(big));
+}
+
+/// b holds a local, recorded `a.txt` ("from b ...", over 4 bytes) as the loser of a
+/// conflict with a's newer one-byte "A", and b's size limit has since dropped to 4.
+fn loser_on_disk_over_a_lowered_limit() -> (Node, Node, Vec<PathUpdate>) {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&b, "a.txt", "from b, longer than the new limit");
+    scan(&mut b);
+    let b = reopen_with(b, |c| c.max_file_size = 4);
+    a.clock.set(9_000_000);
+    write(&a, "a.txt", "A");
+    scan(&mut a);
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    (a, b, updates)
+}
+
+#[test]
+fn an_on_disk_loser_over_a_lowered_limit_still_gets_its_conflict_copy() {
+    let (a, mut b, updates) = loser_on_disk_over_a_lowered_limit();
+    let report = b.replica.apply(&updates, &a.replica).unwrap();
+    assert_eq!(report.conflicts.len(), 1, "{:?}", report.skipped);
+    assert_eq!(
+        read(&b, &report.conflicts[0].copy_path).as_deref(),
+        Some("from b, longer than the new limit")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_on_disk_loser_is_an_io_skip_and_stays_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let (a, mut b, updates) = loser_on_disk_over_a_lowered_limit();
+    let path = b.root.join("a.txt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&path).is_ok() {
+        // Running with privileges that ignore file modes.
+        return;
+    }
+    // `apply` reports a per-path I/O error as a skip rather than failing the batch.
+    let result = b.replica.apply(&updates, &a.replica);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let report = result.unwrap();
+    assert!(report.conflicts.is_empty());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| matches!(s.reason, SkipReason::Io(_))),
+        "{:?}",
+        report.skipped
+    );
+    assert_eq!(
+        read(&b, "a.txt").as_deref(),
+        Some("from b, longer than the new limit")
+    );
+}
+
+/// A source whose file does not hold the bytes its name promises.
+struct LyingSource(std::path::PathBuf);
+
+impl sapphire_framework_sync::ContentSource for LyingSource {
+    fn locate(&self, _: &ContentHash) -> Option<std::path::PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn a_located_file_with_the_wrong_bytes_is_unavailable_not_placed() {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&a, "a.txt", "hello");
+    scan(&mut a);
+    let dir = tempfile::tempdir().unwrap();
+    let wrong = dir.path().join("wrong");
+    std::fs::write(&wrong, "jello").unwrap();
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    let report = b.replica.apply(&updates, &LyingSource(wrong)).unwrap();
+    assert_eq!(report.skipped[0].reason, SkipReason::ContentUnavailable);
+    assert_eq!(read(&b, "a.txt"), None);
+    let staging = &b.replica.config().staging_dir;
+    assert!(
+        std::fs::read_dir(staging)
+            .map(|d| d.count() == 0)
+            .unwrap_or(true)
+    );
 }

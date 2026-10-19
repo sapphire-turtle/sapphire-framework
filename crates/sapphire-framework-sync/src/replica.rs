@@ -777,17 +777,23 @@ impl Replica {
                 // error here must propagate rather than be swallowed as unavailable
                 // content: `settle` would otherwise overwrite the only local copy of
                 // the loser's bytes.
-                let from = if state.disk.hash == Some(hash) {
-                    Some(paths::to_native(&self.config.root, rel))
+                //
+                // The file on disk is copied whatever its size: the limit may have
+                // been lowered since it was recorded, and the copy is what keeps the
+                // loser from being overwritten.
+                let staged = if state.disk.hash == Some(hash) {
+                    let unbounded = Stager::new(self.config.staging_dir.clone(), u64::MAX);
+                    let from = paths::to_native(&self.config.root, rel);
+                    Self::stage_with(&unbounded, &from, &hash)?
                 } else {
-                    match self.content_path_with(&hash, index)? {
+                    let from = match self.content_path_with(&hash, index)? {
                         Some((path, _)) => Some(path),
                         None => source.and_then(|s| s.locate(&hash)),
+                    };
+                    match from {
+                        Some(from) => self.stage_from(&from, &hash)?,
+                        None => None,
                     }
-                };
-                let staged = match from {
-                    Some(from) => self.stage_from(&from, &hash)?,
-                    None => None,
                 };
                 let Some(staged) = staged else {
                     report.skipped.push(Skipped {
@@ -987,13 +993,19 @@ impl Replica {
         self.stage_from(&from, hash)
     }
 
-    /// Copy the file `from` into the staging directory as the content `hash`. Content
-    /// that is over the size limit or does not hash to `hash` is logged and treated as
-    /// unavailable; a failure to read `from` or write the copy is an error.
+    /// Copy the file `from` into the staging directory as the content `hash`, within
+    /// the size limit. Content that is over the limit or does not hash to `hash` is
+    /// logged and treated as unavailable; a failure to read `from` or write the copy
+    /// is an error.
     fn stage_from(&self, from: &Path, hash: &ContentHash) -> Result<Option<PathBuf>> {
+        Self::stage_with(&self.stager(), from, hash)
+    }
+
+    /// [`Self::stage_from`] through the given stager.
+    fn stage_with(stager: &Stager, from: &Path, hash: &ContentHash) -> Result<Option<PathBuf>> {
         let mut file = fs::File::open(from)?;
         let len = file.metadata()?.len();
-        let mut writer = match self.stager().writer(*hash, len) {
+        let mut writer = match stager.writer(*hash, len) {
             Ok(writer) => writer,
             Err(Error::TooLarge { len, max }) => {
                 tracing::warn!(%hash, len, max, "content is over the size limit");
@@ -1001,7 +1013,16 @@ impl Replica {
             }
             Err(e) => return Err(e),
         };
-        std::io::copy(&mut file, &mut writer)?;
+        // A file that grows after its length was read overruns the writer mid-copy.
+        if let Err(e) = std::io::copy(&mut file, &mut writer) {
+            return match e.get_ref().and_then(|i| i.downcast_ref::<Error>()) {
+                Some(Error::TooLarge { .. } | Error::ContentMismatch { .. }) => {
+                    tracing::warn!(%hash, "content changed while it was copied");
+                    Ok(None)
+                }
+                _ => Err(e.into()),
+            };
+        }
         match writer.finish() {
             Ok(path) => Ok(Some(path)),
             Err(Error::ContentMismatch { .. }) => {

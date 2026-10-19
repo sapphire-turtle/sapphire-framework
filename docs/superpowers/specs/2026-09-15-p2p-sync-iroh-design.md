@@ -8,7 +8,7 @@
   apps and elected by a lock, but a separate daemon, `sapphire-bridge`, with each app's
   workspaces owned by that app's server. A substitution table at the head of §3 says how to
   read those sections; §5.6's implementation order is replaced by §9 of the
-  process-architecture spec. Decisions 8, 11, 13 and 14 below carry a note.
+  process-architecture spec. Decisions 8, 11, 12, 13 and 14 below carry a note.
 - Scope: `sapphire-framework` — new crates `sapphire-framework-sync`, `-keys`, `-service`;
   changes to `-registry`, `-backend`, the facade; removal of `-rpc`, `-remote-client`,
   `-remote-server`, `-blob`. (`-net` was planned here and is not created; see the
@@ -106,6 +106,8 @@ Agreed during brainstorming on 2026-09-15:
 12. **Any file type is synced, with a size cap.** Content is addressed by hash for all
     files; whole-file transfer only (default cap 64 MiB); chunked/resumable transfer is
     deferred.
+    **Note**: content now travels chunked on `sapphire/ws/1` (see
+    `2026-10-19-chunked-blob-transfer-design.md`, issue #292); `sapphire/blob/1` will not be added.
 13. **A sync-only app, `sapphire-sync` (Syncthing-like), is built before migrating the
     existing apps.** It is the reference implementation, the headless node for servers
     (it can serve as the production always-on peer), and the dedicated background sync
@@ -489,6 +491,9 @@ ALPNs are common to every app:
 | `sapphire/sync/1` | replication (§3.7) |
 | `sapphire/blob/1` | `{workspace_id, hash}` → bytes; requester verifies SHA-256 |
 | `sapphire/pair/1` | joining a workgroup (§3.6) |
+
+**Note**: file content travels chunked on `sapphire/ws/1` (see
+`2026-10-19-chunked-blob-transfer-design.md`, issue #292); `sapphire/blob/1` will not be added.
 
 Messages are length-delimited postcard frames.
 

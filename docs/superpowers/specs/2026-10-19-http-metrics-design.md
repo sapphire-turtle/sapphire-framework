@@ -136,10 +136,12 @@ Embedding gauges are absent when this host does not embed.
 | `sapphire_ipc_connections_total` | counter | IPC connections accepted |
 | `sapphire_reindex_total{result}` | counter | re-index runs |
 | `sapphire_reindex_duration_seconds` | histogram | re-index duration |
-| `sapphire_sync_sessions_total{result}` | counter | sync sessions with a peer that ended |
+| `sapphire_sync_sessions_total{result}` | counter | live sessions with a peer whose opening exchange finished |
 
-The implementation plan decides the exact site of `sapphire_sync_sessions_total` (the end of
-a live session) after reading the sync code. Requests to `/metrics` are not counted.
+A session is counted once, inbound or outbound: `ok` when its opening exchange has
+finished and it is kept (after the catch-up), and `error` when the exchange fails. A
+stream dropped by the tie-break between two dials is not a session and is not counted.
+Requests to `/metrics` are not counted.
 
 ### 6. Application extension
 

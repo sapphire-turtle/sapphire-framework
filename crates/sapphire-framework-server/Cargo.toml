@@ -14,8 +14,8 @@ redb-store = ["sapphire-backend/redb-store"]
 # Builds the test-only app server binary used by the integration tests, and the
 # `sync::testing::StubBridge` a caller without a real bridge can drive the runtime with.
 test-util = []
-# The HTTP listener (`AppServer::http`, `[http]` in server.toml), every route behind an
-# external device's token.
+# The HTTP listener (`AppServer::http`, `[http]` in server.toml), every route but /metrics
+# behind an external device's token.
 http = ["dep:axum", "dep:sapphire-framework-keys", "dep:tokio-util"]
 # The MCP tools: the `mcp` subcommand (stdio, through the IPC endpoint) and `/mcp` on the
 # HTTP listener when server.toml turns it on.

@@ -37,7 +37,8 @@ eframe = ["gui", "sapphire-framework-gui/eframe"]
 mobile = ["eframe", "server", "bridge", "ipc", "sapphire-framework-gui/mobile"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
-# The app server's HTTP listener (`AppServer::http`), every route behind an external device's token.
+# The app server's HTTP listener (`AppServer::http`), every route but `/metrics` behind an
+# external device's token.
 http = ["server", "sapphire-framework-server/http"]
 # MCP: the shared tools, the `mcp` subcommand (stdio, through the server's IPC endpoint) and
 # `/mcp` on the HTTP listener when the server's config turns it on. Not in `native`: an app

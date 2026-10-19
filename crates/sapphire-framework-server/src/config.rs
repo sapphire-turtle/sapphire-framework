@@ -16,7 +16,7 @@
 //! enabled = true
 //!
 //! [http.metrics]
-//! # Serve Prometheus metrics at /metrics, behind an external device's token.
+//! # Serve Prometheus metrics at /metrics, without a token (counts and states only).
 //! enabled = true
 //!
 //! [update]
@@ -50,8 +50,8 @@ pub struct ServerConfig {
 
 /// The `[http]` table: the listener every HTTP route shares.
 ///
-/// The listener binds only when something is served over it. Every route on it is behind
-/// an external device's bearer token (`sapphire-framework-keys`).
+/// The listener binds only when something is served over it. Every route on it but
+/// `/metrics` is behind an external device's bearer token (`sapphire-framework-keys`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {

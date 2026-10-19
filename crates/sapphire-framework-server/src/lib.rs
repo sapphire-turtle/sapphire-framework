@@ -265,6 +265,9 @@ impl AppServer {
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
     /// `/mcp` only when `server.toml` turns it on.
+    ///
+    /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
+    /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
     #[cfg(feature = "http")]
     pub fn http(mut self, routes: axum::Router) -> AppServer {
         self.http_routes = Some(routes);
@@ -362,7 +365,9 @@ impl AppServer {
     /// Set the application's own gauges on every scrape of `/metrics`.
     ///
     /// `collect` runs once per scrape, after the framework has refreshed its own state and
-    /// before the response is rendered; collectors run in the order they were added. Set
+    /// before the response is rendered; collectors run in the order they were added. It runs
+    /// inside the async `/metrics` handler, so keep it cheap and non-blocking — read values
+    /// already held rather than doing I/O or waiting on a lock — and it must not panic. Set
     /// state with `sapphire_framework::metrics::gauge!`, and prefix each name with the
     /// application's own, as in `sapphire_journal_entries`, so it cannot collide with the
     /// framework's `sapphire_*` names. Labels carry no identifiers, paths or names: the

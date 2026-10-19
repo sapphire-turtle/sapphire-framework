@@ -863,17 +863,21 @@ impl SyncRuntime {
         // One sweep at a time: two sessions that finish together would otherwise both walk
         // the workspace through the same retrieve store.
         let _serialised = self.reindexing.lock().await;
+        // Timed from here, so a run waiting for the one before it is not charged its wait.
+        let started = std::time::Instant::now();
         // Opening the workspace is itself blocking work, and it is where the exclusive
         // retrieve-store lock is taken, so it happens here rather than inside the sweep.
         let backend = match host.backend_at(&root).await {
             Ok(backend) => backend,
             Err(err) => {
+                crate::instrument::reindexed(started, false);
                 tracing::warn!(root = %root.display(), "re-indexing after a session failed: {err}");
                 return;
             }
         };
         let state = Arc::clone(backend.state());
         let result = tokio::task::spawn_blocking(move || state.sync_retrieve()).await;
+        crate::instrument::reindexed(started, matches!(result, Ok(Ok(_))));
         match result {
             Ok(Ok(report)) => {
                 tracing::debug!(root = %root.display(), ?report, "re-indexed after a session");
@@ -1212,6 +1216,7 @@ impl SyncRuntime {
                 {
                     Ok(started) => started,
                     Err(err) => {
+                        crate::instrument::sync_session(false);
                         tracing::warn!("an inbound session failed: {err}");
                         return;
                     }
@@ -1226,6 +1231,7 @@ impl SyncRuntime {
                     return;
                 };
                 table.catch_up(peer, &replica).await;
+                crate::instrument::sync_session(true);
                 // This is the receiving side: the files are on disk now and nobody else will
                 // index them.
                 driver.reindex(&key).await;
@@ -1620,7 +1626,10 @@ impl SyncRuntime {
             workspace_id,
         )
         .await
-        .map_err(|e| Error::Sync(e.to_string()))?;
+        .map_err(|e| {
+            crate::instrument::sync_session(false);
+            Error::Sync(e.to_string())
+        })?;
         let Some((key, table)) = self.live_peers_or_create(root).await else {
             return Ok(());
         };
@@ -1632,6 +1641,7 @@ impl SyncRuntime {
             return Ok(());
         };
         table.catch_up(device, &replica).await;
+        crate::instrument::sync_session(true);
         // The session wrote files during the exchange; the index has to catch up before the
         // workspace is searchable again.
         self.reindex(&key).await;

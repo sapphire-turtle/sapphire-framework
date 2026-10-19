@@ -705,10 +705,14 @@ impl AppServer {
                 }
                 accepted = listener.accept() => {
                     let conn = accepted?;
+                    // Moved into the task, so the connection stops counting as open when it
+                    // ends, or when the reaping below aborts it.
+                    let counted = instrument::IpcConnection::open();
                     let router = Arc::clone(&router);
                     let app = ctx.app_name;
                     let info = info.clone();
                     connections.spawn(async move {
+                        let _counted = counted;
                         let _ = serve(conn, router, app, info).await;
                     });
                 }

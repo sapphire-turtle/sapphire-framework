@@ -175,10 +175,10 @@ pub fn workspace_router(current: Arc<Current>) -> Router {
             let current = Arc::clone(&reindex);
             async move {
                 let backend = current.host().backend().await.map_err(|e| rpc_error(&e))?;
-                let summary = backend
-                    .sync()
-                    .await
-                    .map_err(|e| rpc_error(&Error::Backend(e)))?;
+                let started = std::time::Instant::now();
+                let summary = backend.sync().await;
+                crate::instrument::reindexed(started, summary.is_ok());
+                let summary = summary.map_err(|e| rpc_error(&Error::Backend(e)))?;
                 ok(proto::ReindexResult {
                     upserted: summary.upserted,
                     removed: summary.removed,

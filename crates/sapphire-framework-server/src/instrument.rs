@@ -33,17 +33,52 @@ const EMBEDDING_RUNNING: &str = "sapphire_embedding_running";
 const UPDATE_AVAILABLE: &str = "sapphire_update_available";
 
 // The event metrics are recorded where the event happens, in builds without the exporter
-// too; only `describe` needs them under the feature, hence the allowance.
-#[cfg_attr(not(feature = "metrics"), allow(dead_code))]
+// too.
 pub(crate) const IPC_CONNECTIONS: &str = "sapphire_ipc_connections";
-#[cfg_attr(not(feature = "metrics"), allow(dead_code))]
 pub(crate) const IPC_CONNECTIONS_TOTAL: &str = "sapphire_ipc_connections_total";
-#[cfg_attr(not(feature = "metrics"), allow(dead_code))]
 pub(crate) const REINDEX_TOTAL: &str = "sapphire_reindex_total";
-#[cfg_attr(not(feature = "metrics"), allow(dead_code))]
 pub(crate) const REINDEX_DURATION_SECONDS: &str = "sapphire_reindex_duration_seconds";
-#[cfg_attr(not(feature = "metrics"), allow(dead_code))]
 pub(crate) const SYNC_SESSIONS_TOTAL: &str = "sapphire_sync_sessions_total";
+
+/// The `result` label's value: one of two, so the label stays bounded.
+fn result(ok: bool) -> &'static str {
+    if ok { "ok" } else { "error" }
+}
+
+/// One accepted IPC connection, counted for as long as it is held.
+///
+/// The accept loop opens one and moves it into the task that serves the connection, so the
+/// open-connections gauge falls when that task ends, however it ends.
+pub(crate) struct IpcConnection(());
+
+impl IpcConnection {
+    /// Count a connection that was just accepted.
+    pub(crate) fn open() -> Self {
+        metrics::counter!(IPC_CONNECTIONS_TOTAL).increment(1);
+        metrics::gauge!(IPC_CONNECTIONS).increment(1.0);
+        Self(())
+    }
+}
+
+impl Drop for IpcConnection {
+    fn drop(&mut self) {
+        metrics::gauge!(IPC_CONNECTIONS).decrement(1.0);
+    }
+}
+
+/// Record a re-index run that began at `started` and has just finished.
+pub(crate) fn reindexed(started: std::time::Instant, ok: bool) {
+    metrics::counter!(REINDEX_TOTAL, "result" => result(ok)).increment(1);
+    metrics::histogram!(REINDEX_DURATION_SECONDS).record(started.elapsed().as_secs_f64());
+}
+
+/// Record a live session with a peer whose opening exchange has finished, or failed.
+///
+/// A stream dropped by the tie-break between two dials is not a session, so callers record
+/// nothing for it.
+pub(crate) fn sync_session(ok: bool) {
+    metrics::counter!(SYNC_SESSIONS_TOTAL, "result" => result(ok)).increment(1);
+}
 
 /// Register a help text for every framework metric.
 ///

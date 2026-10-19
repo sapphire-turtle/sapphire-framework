@@ -23,6 +23,8 @@ static CTX_OFF: AppContext = AppContext::new("sapphire-metricstest-off");
 static CTX_BEFORE: AppContext = AppContext::new("sapphire-metricstest-before");
 static CTX_AFTER: AppContext = AppContext::new("sapphire-metricstest-after");
 static CTX_NAMES: AppContext = AppContext::new("sapphire-metricstest-names");
+static CTX_IPC: AppContext = AppContext::new("sapphire-metricstest-ipc");
+static CTX_REINDEX: AppContext = AppContext::new("sapphire-metricstest-reindex");
 
 /// The one token the fake verifier accepts.
 const TOKEN: &str = "sapphire-ed-good";
@@ -322,4 +324,56 @@ async fn output_names_no_path_or_id() {
     }
 
     stop(&CTX_NAMES, &endpoint, task).await;
+}
+
+/// The value on the line that starts with `prefix` and a space, or `None` if there is none.
+///
+/// The recorder is shared by every test in this binary, so a counter holds what they all
+/// recorded: callers assert a lower bound, never an exact value.
+fn value(body: &str, prefix: &str) -> Option<f64> {
+    body.lines()
+        .find(|line| {
+            line.strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with(' '))
+        })
+        .and_then(|line| line.split_whitespace().last())
+        .map(|v| v.parse().unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ipc_connections_are_counted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_IPC, tmp.path());
+    let (port, endpoint, task) = start_metrics(&CTX_IPC, tmp.path()).await;
+    // Held open across the scrape, so the open-connections gauge has this one in it.
+    let open = client(&CTX_IPC, &endpoint).await;
+
+    let body = get_from(port, "/metrics", None).await.text().await.unwrap();
+    let total = value(&body, "sapphire_ipc_connections_total");
+    assert!(total.is_some_and(|v| v >= 1.0), "{body}");
+    let now = value(&body, "sapphire_ipc_connections");
+    assert!(now.is_some_and(|v| v >= 1.0), "{body}");
+
+    drop(open);
+    stop(&CTX_IPC, &endpoint, task).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reindexing_is_counted_and_timed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_REINDEX, tmp.path());
+    let (port, endpoint, task) = start_metrics(&CTX_REINDEX, tmp.path()).await;
+    init_workspace(&CTX_REINDEX, &endpoint, &tmp.path().join("ws")).await;
+    let c = client(&CTX_REINDEX, &endpoint).await;
+    let _: Value = c.call(proto::REINDEX, json!({})).await.unwrap();
+
+    let body = get_from(port, "/metrics", None).await.text().await.unwrap();
+    let ok = value(&body, "sapphire_reindex_total{result=\"ok\"}");
+    assert!(ok.is_some_and(|v| v >= 1.0), "{body}");
+    assert!(
+        body.contains("sapphire_reindex_duration_seconds_count"),
+        "{body}"
+    );
+
+    stop(&CTX_REINDEX, &endpoint, task).await;
 }

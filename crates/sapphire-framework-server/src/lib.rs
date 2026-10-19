@@ -76,6 +76,10 @@ pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_ro
 #[cfg(feature = "mcp")]
 pub use sapphire_framework_mcp as mcp;
 
+/// The `metrics` crate, for an application's own metrics: the macros it records with, and
+/// the types [`AppServer::metrics_collector`] sets them from.
+pub use metrics;
+
 /// An application's server.
 pub struct AppServer {
     ctx: &'static AppContext,
@@ -99,6 +103,9 @@ pub struct AppServer {
     /// Whether `run` stops on SIGTERM and ctrl-c. Off where the server is not the process's
     /// own (a phone app hosting it in-process).
     signals: bool,
+    /// What the application sets on every scrape of `/metrics`. Kept in a build without
+    /// feature `metrics` too, so the builder method needs no gate; `run` never calls them there.
+    metrics_collectors: Vec<Arc<dyn Fn() + Send + Sync>>,
     /// Where the HTTP listener binds when `server.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
@@ -195,6 +202,7 @@ impl AppServer {
             config: None,
             releases: None,
             signals: true,
+            metrics_collectors: Vec::new(),
             #[cfg(feature = "http")]
             http_listen: None,
             #[cfg(feature = "http")]
@@ -351,6 +359,22 @@ impl AppServer {
         self
     }
 
+    /// Set the application's own gauges on every scrape of `/metrics`.
+    ///
+    /// `collect` runs once per scrape, after the framework has refreshed its own state and
+    /// before the response is rendered; collectors run in the order they were added. Set
+    /// state with `sapphire_framework::metrics::gauge!`, and prefix each name with the
+    /// application's own, as in `sapphire_journal_entries`, so it cannot collide with the
+    /// framework's `sapphire_*` names. Labels carry no identifiers, paths or names: the
+    /// endpoint is served without a token, so anything in a label is public.
+    ///
+    /// A build without feature `metrics`, or a server whose `server.toml` leaves
+    /// `[http.metrics]` off, never calls it.
+    pub fn metrics_collector(mut self, collect: Arc<dyn Fn() + Send + Sync>) -> AppServer {
+        self.metrics_collectors.push(collect);
+        self
+    }
+
     /// Where this application's releases are published.
     ///
     /// The server looks there for newer ones once at start and once a day after, unless
@@ -417,6 +441,7 @@ impl AppServer {
             config,
             releases,
             signals,
+            metrics_collectors,
             #[cfg(feature = "http")]
             http_listen,
             #[cfg(feature = "http")]
@@ -426,6 +451,9 @@ impl AppServer {
             #[cfg(feature = "mcp")]
             mcp,
         } = self;
+        // Without the exporter nothing scrapes, so there is nothing to call them from.
+        #[cfg(not(feature = "metrics"))]
+        let _ = metrics_collectors;
 
         let endpoint = match endpoint {
             Some(e) => e,
@@ -574,9 +602,8 @@ impl AppServer {
         let http_stop = tokio_util::sync::CancellationToken::new();
         #[cfg(feature = "http")]
         let _http = {
-            let mut routes = http_routes;
             #[cfg(feature = "mcp")]
-            if config.http.mcp.enabled {
+            let routes = if config.http.mcp.enabled {
                 let (ours, theirs) = sapphire_ipc::Connection::pair();
                 {
                     let router = Arc::clone(&router);
@@ -602,15 +629,17 @@ impl AppServer {
                 );
                 let mcp_routes =
                     mcp.http_router(tools, &config.http.allowed_hosts, http_stop.child_token());
-                routes = Some(match routes {
+                Some(match http_routes {
                     Some(routes) => routes.merge(mcp_routes),
                     None => mcp_routes,
-                });
-            }
-            #[allow(unused_mut)]
-            let mut public: Option<axum::Router> = None;
+                })
+            } else {
+                http_routes
+            };
+            #[cfg(not(feature = "mcp"))]
+            let routes = http_routes;
             #[cfg(feature = "metrics")]
-            if config.http.metrics.enabled
+            let public = if config.http.metrics.enabled
                 && let Some(handle) = exporter::install()
             {
                 metrics::gauge!(
@@ -623,9 +652,14 @@ impl AppServer {
                     process: metrics_process::Collector::default(),
                     current: Arc::clone(&current),
                     update: Arc::clone(&update_status),
+                    collectors: metrics_collectors,
                 });
-                public = Some(exporter::routes(handle, scrape));
-            }
+                Some(exporter::routes(handle, scrape))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "metrics"))]
+            let public: Option<axum::Router> = None;
             match (
                 routes.is_some() || public.is_some(),
                 config.http.listen.or(http_listen),

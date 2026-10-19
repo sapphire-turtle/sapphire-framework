@@ -54,6 +54,8 @@ pub(crate) struct Scrape {
     pub(crate) current: Arc<Current>,
     /// What the update check has found so far.
     pub(crate) update: update::SharedStatus,
+    /// The application's own collectors, run in the order it added them.
+    pub(crate) collectors: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Scrape {
@@ -61,6 +63,9 @@ impl Scrape {
     async fn refresh(&self) {
         crate::instrument::refresh_state(&self.current, &self.update).await;
         self.process.collect();
+        for collect in &self.collectors {
+            collect();
+        }
     }
 }
 

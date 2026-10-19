@@ -6,6 +6,7 @@
 //! application's `sapphire_build_info` line.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::routing::get;
@@ -25,6 +26,7 @@ static CTX_AFTER: AppContext = AppContext::new("sapphire-metricstest-after");
 static CTX_NAMES: AppContext = AppContext::new("sapphire-metricstest-names");
 static CTX_IPC: AppContext = AppContext::new("sapphire-metricstest-ipc");
 static CTX_REINDEX: AppContext = AppContext::new("sapphire-metricstest-reindex");
+static CTX_COLLECT: AppContext = AppContext::new("sapphire-metricstest-collect");
 
 /// The one token the fake verifier accepts.
 const TOKEN: &str = "sapphire-ed-good";
@@ -376,4 +378,34 @@ async fn reindexing_is_counted_and_timed() {
     );
 
     stop(&CTX_REINDEX, &endpoint, task).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_application_collector_runs_on_each_scrape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_COLLECT, tmp.path());
+    std::fs::create_dir_all(tmp.path().join("run")).unwrap();
+    let endpoint = Endpoint::in_dir(CTX_COLLECT.app_name, tmp.path().join("run"));
+    let port = free_port();
+
+    let scrapes = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&scrapes);
+    let server = AppServer::new(&CTX_COLLECT, "0.0.0")
+        .config(metrics_config(port, true))
+        .metrics_collector(Arc::new(move || {
+            let n = counted.fetch_add(1, Ordering::SeqCst) + 1;
+            sapphire_framework_server::metrics::gauge!("sapphire_metricstest_scrapes")
+                .set(n as f64);
+        }));
+    let task = start(server, &endpoint).await;
+
+    let first = get_from(port, "/metrics", None).await.text().await.unwrap();
+    assert!(first.contains("sapphire_metricstest_scrapes 1"), "{first}");
+    let second = get_from(port, "/metrics", None).await.text().await.unwrap();
+    assert!(
+        second.contains("sapphire_metricstest_scrapes 2"),
+        "{second}"
+    );
+
+    stop(&CTX_COLLECT, &endpoint, task).await;
 }

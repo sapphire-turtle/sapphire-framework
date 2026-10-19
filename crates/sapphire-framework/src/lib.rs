@@ -70,6 +70,11 @@ pub use sapphire_framework_ipc as ipc;
 #[cfg(feature = "server")]
 pub use sapphire_framework_server as server;
 
+/// The `metrics` crate, for an application's own metrics (see
+/// `AppServer::metrics_collector`); the same crate the server records its own with.
+#[cfg(feature = "server")]
+pub use sapphire_framework_server::metrics;
+
 #[cfg(feature = "keys")]
 pub use sapphire_framework_keys as keys;
 

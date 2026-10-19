@@ -336,6 +336,13 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
   ルーターに IPC 接続する — stdio と同じ経路なので、同じツール実装がそのまま動く。bind に失敗しても
   サーバは止めず、エラーを記録して IPC と同期を続ける。`[http] allowed_hosts` は rmcp の Host
   検査（DNS rebinding 対策）に足す名前で、ループバックは常に許可。
+- **メトリクス（Prometheus）**: 同じリスナー上の `GET /metrics`（feature `metrics`）。**既定で無効**で、
+  `server.toml` の `[http.metrics] enabled = true` で有効になる。トークンで守られない唯一のルートで、
+  プロセス指標、`sapphire_build_info`、ワークスペース・同期・埋め込み・更新の状態、IPC 接続数、
+  再インデックスと同期セッションの回数を返す。ラベルは `app` / `version` / `result` だけで、識別子・
+  パス・名前は載せない。アプリは `sapphire_framework::metrics` で自前の指標を作り、
+  `AppServer::metrics_collector` に渡したクロージャでスクレイプごとにゲージを更新できる
+  （名前はアプリ自身の接頭辞を付ける。例: `sapphire_journal_entries`）。
 
 フレームワークのツールは CLI の共通語彙から、エージェントに渡してよい読み取り系だけを取る:
 `status` / `workspace_show` / `workspace_search` / `workspace_read_file` / `workspace_list_dir` /

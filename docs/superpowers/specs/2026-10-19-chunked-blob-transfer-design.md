@@ -87,10 +87,17 @@ the chunks, then:
 
 A file that cannot be opened is answered with `Missing(hash)` instead of a `BLOB_START`.
 
-The writer has **two queues**: control and blob. It selects with control first, and checks
-the control queue between chunks, so `Want`, `Settled` and `Live` overtake a large
-transfer instead of waiting behind it. Exactly one blob is in flight at a time: the
-receiver never has more than one partial file open.
+The writer has **two queues**:
+
+- **bulk**, in order: blobs, `Updates` pages and `Done`. Order matters here — inline blobs
+  must reach the peer before the page that references them, and `Done` after the last page.
+- **urgent**: every other control message (`Hello`, `Want`, `Missing`, `Settled`, `Live`,
+  `Refused`).
+
+It selects with urgent first, and drains the urgent queue between chunks, so `Want`,
+`Settled` and `Live` overtake a large transfer instead of waiting behind it. Exactly one
+blob is in flight at a time: the receiver never has more than one partial file open. The
+writer exits once both queues are closed and drained.
 
 Memory per session no longer depends on file size: one `CHUNK` buffer on each side, plus
 the queues.
@@ -155,7 +162,10 @@ One place writes into the staging directory:
 
 ```rust
 impl Replica {
-    pub fn staging_writer(&self, hash: ContentHash, len: u64) -> Result<StagingWriter>;
+    pub fn stager(&self) -> Stager; // staging dir + max_file_size; Clone, no borrow
+}
+impl Stager {
+    pub fn writer(&self, hash: ContentHash, len: u64) -> Result<StagingWriter>; // errs if len > max
 }
 impl StagingWriter {
     pub fn write(&mut self, bytes: &[u8]) -> Result<()>; // appends and hashes; errs past `len`
@@ -164,8 +174,8 @@ impl StagingWriter {
 // Drop without `finish` removes `staging/<hash>.partial`.
 ```
 
-`StagingWriter` does not borrow the replica — it holds the staging directory path and
-`max_file_size` — so the session can write chunks without the replica's lock.
+`Stager` does not borrow the replica, so the session takes one while it holds the lock and
+writes chunks without it.
 
 Users:
 

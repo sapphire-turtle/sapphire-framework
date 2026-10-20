@@ -17,6 +17,9 @@ pub enum Message {
         replica_id: ReplicaId,
         /// Everything the sender already has.
         vv: VersionVector,
+        /// The largest file the sender writes, in bytes. The peer sends nothing larger
+        /// unasked: content over it would be refused as a protocol error.
+        max_file_size: u64,
     },
     /// A page of path states the peer's version vector does not cover.
     Updates(Vec<PathUpdate>),
@@ -65,6 +68,7 @@ mod tests {
             workspace_id: GrainId::random(),
             replica_id: ReplicaId::new(),
             vv,
+            max_file_size: 1024,
         };
         assert_eq!(format!("{:?}", round_trip(&msg)), format!("{msg:?}"));
     }

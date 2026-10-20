@@ -61,6 +61,12 @@ A frame keeps its shape: one tag byte, a four-byte big-endian length, then the p
 `Message` gains `Aborted(ContentHash)`: the sender started a blob it could not finish
 (see §2).
 
+`Hello` gains `max_file_size` (u64), the sender's own limit. A side never sends content
+over the peer's limit unasked: it inlines only content of `min(INLINE_LIMIT,
+max_file_size)` or less, and never asks for content over its own limit (`needed()` leaves
+it out). That is what lets `BLOB_START` over the limit stay a protocol error even between
+devices configured with different limits.
+
 Every piece of content travels as `BLOB_START`, chunks, `BLOB_END` (or `Aborted`),
 whatever its size. Inlining — content of `INLINE_LIMIT` (64 KiB) or less sent ahead of the
 page that references it — is kept; only its framing changes.
@@ -120,7 +126,9 @@ The read loop keeps at most one blob open:
   between chunk frames, and that is what lets control messages overtake a transfer.
 
 If the stream ends or the session errors with a blob open, the partial file is removed and
-nothing is committed, as today.
+nothing is committed, as today. A write that fails because the stream is gone ends the
+session the same way as the read side seeing it close (`Error::Closed` → `Stop::Gone`),
+whichever notices first.
 
 `Received` goes. Content lands in the staging directory as it arrives, and `stage()` (§4)
 finds it there, so `apply` and `fetch_missing` are passed an empty source by the session.

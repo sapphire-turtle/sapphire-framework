@@ -255,9 +255,13 @@ where
     // 1. Hello, before anything else. Reading `replica_id`/`vv` is instantaneous, so the
     // lock is released again immediately — nothing below here needs the replica until the
     // peer's own `Hello` is in.
-    let (replica_id, vv) = {
+    let (replica_id, vv, max_file_size) = {
         let locked = replica.lock().await;
-        (locked.replica_id(), locked.vv().clone())
+        (
+            locked.replica_id(),
+            locked.vv().clone(),
+            locked.config().max_file_size,
+        )
     };
     send(
         &out_tx,
@@ -266,6 +270,7 @@ where
             workspace_id,
             replica_id,
             vv,
+            max_file_size,
         }),
     )?;
 
@@ -287,11 +292,12 @@ where
         }
     };
 
-    let peer_vv = match hello? {
+    let (peer_vv, peer_max) = match hello? {
         Some(Frame::Control(Message::Hello {
             format,
             workspace_id: theirs,
             vv,
+            max_file_size,
             ..
         })) => {
             if format != SESSION_FORMAT_VERSION {
@@ -328,7 +334,7 @@ where
                 )
                 .await;
             }
-            vv
+            (vv, max_file_size)
         }
         Some(Frame::Control(Message::Refused(why))) => {
             return refuse(out_tx, writer_task, Error::Refused(why)).await;
@@ -351,14 +357,16 @@ where
         let delta = replica
             .delta_for(&peer_vv)
             .map_err(|e| Error::Sync(e.to_string()))?;
-        // Small content goes inline, ahead of the page that needs it. Looked up in one
-        // batch: a lookup per hash would rebuild the store index each time.
+        // Small content goes inline, ahead of the page that needs it — but none over the
+        // peer's size limit, which it would refuse. Looked up in one batch: a lookup per
+        // hash would rebuild the store index each time.
+        let inline_max = (INLINE_LIMIT as u64).min(peer_max);
         let inline = replica
-            .content_paths(&inline_hashes(&delta))
+            .content_paths(&inline_hashes(&delta, inline_max))
             .unwrap_or_default();
         let mut outgoing: Vec<Out> = Vec::new();
         for page in delta.chunks(PAGE) {
-            for hash in inline_hashes(page) {
+            for hash in inline_hashes(page, inline_max) {
                 if let Some((path, len)) = inline.get(&hash) {
                     outgoing.push(Out::Blob {
                         hash,
@@ -476,6 +484,9 @@ where
     .await;
     let stop = match looped {
         Ok(stop) => stop,
+        // The writer failed to write, so the stream is gone: the same end as the read side
+        // seeing it close, whichever of the two notices first.
+        Err(Error::Closed) => Stop::Gone,
         Err(e) => {
             abort(out_tx, writer_task);
             return Err(e);
@@ -631,24 +642,31 @@ pub(crate) fn abort(out_tx: Outbox, writer: JoinHandle<()>) {
     writer.abort();
 }
 
-/// The hashes of the content in `updates` small enough to send inline.
-fn inline_hashes(updates: &[PathUpdate]) -> Vec<ContentHash> {
+/// The hashes of the content in `updates` of `max` bytes or less, to send inline.
+fn inline_hashes(updates: &[PathUpdate], max: u64) -> Vec<ContentHash> {
     updates
         .iter()
         .flat_map(|update| &update.versions)
         .filter_map(|entry| match entry.content {
-            Content::File { hash, len } if len as usize <= INLINE_LIMIT => Some(hash),
+            Content::File { hash, len } if len <= max => Some(hash),
             _ => None,
         })
         .collect()
 }
 
 /// Hashes these updates need that neither a file on disk nor the staging directory holds.
+///
+/// Content over this replica's size limit is never needed: it is recorded but not
+/// written, and the peer's `BLOB_START` for it would be refused as a protocol error.
 pub(crate) fn needed(replica: &Replica, updates: &[PathUpdate]) -> Result<Vec<ContentHash>> {
+    let max = replica.config().max_file_size;
     let hashes: Vec<ContentHash> = updates
         .iter()
         .flat_map(|update| &update.versions)
-        .filter_map(|entry| entry.content.hash())
+        .filter_map(|entry| match entry.content {
+            Content::File { hash, len } if len <= max => Some(hash),
+            _ => None,
+        })
         .collect();
     // One batch per page: a lookup per hash would rebuild the store index each time.
     let have = replica

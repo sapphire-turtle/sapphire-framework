@@ -85,6 +85,7 @@ fn hello(ws: grain_id::GrainId, format: u32, vv: VersionVector) -> Message {
         workspace_id: ws,
         replica_id: ReplicaId::new(),
         vv,
+        max_file_size: DEFAULT_MAX_FILE_SIZE,
     }
 }
 
@@ -329,4 +330,37 @@ async fn many_wants_both_ways_do_not_deadlock() {
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_over_the_receivers_limit_is_not_asked_for() {
+    let ws = grain_id::GrainId::random();
+    let a = replica("a", DEFAULT_MAX_FILE_SIZE);
+    let b = replica("b", 1024);
+    // Over the inline limit, so it would travel only on b's `Want`.
+    let big = patterned(sapphire_framework_session::INLINE_LIMIT + 1000);
+    std::fs::write(a.root.join("big.bin"), &big).unwrap();
+    scan(&a).await;
+
+    // Asking would bring a `BLOB_START` over b's limit, which b refuses as a protocol
+    // error: the session has to complete, with the path recorded but not written.
+    sync(&a, &b, ws).await;
+    assert!(!b.root.join("big.bin").exists());
+    assert!(b.replica.lock().await.state("big.bin").unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_inlined_file_over_the_receivers_limit_does_not_fail_the_session() {
+    let ws = grain_id::GrainId::random();
+    let a = replica("a", DEFAULT_MAX_FILE_SIZE);
+    let b = replica("b", 1024);
+    // Small enough for a to send inline, unasked, and still over b's limit.
+    std::fs::write(a.root.join("small.bin"), patterned(2000)).unwrap();
+    std::fs::write(a.root.join("tiny.txt"), b"fits").unwrap();
+    scan(&a).await;
+
+    sync(&a, &b, ws).await;
+    assert!(!b.root.join("small.bin").exists());
+    assert_eq!(std::fs::read(b.root.join("tiny.txt")).unwrap(), b"fits");
+    assert!(partials(&b.staging).is_empty());
 }

@@ -204,6 +204,7 @@ mod tests {
             workspace_id: grain_id::GrainId::random(),
             replica_id: sapphire_sync::ReplicaId::new(),
             vv: VersionVector::new(),
+            max_file_size: sapphire_sync::DEFAULT_MAX_FILE_SIZE,
         }
     }
 

@@ -166,6 +166,32 @@ pub(crate) fn clear_partials(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The finished content in `dir`: each file named by a bare hash, with its metadata.
+/// Partial files and anything else are left out. A missing `dir` holds nothing.
+pub(crate) fn finished(dir: &Path) -> io::Result<Vec<(ContentHash, PathBuf, fs::Metadata)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let Some(hash) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<ContentHash>().ok())
+        else {
+            continue;
+        };
+        let meta = entry.metadata()?;
+        if meta.is_file() {
+            found.push((hash, entry.path(), meta));
+        }
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

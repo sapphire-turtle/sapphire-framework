@@ -5,7 +5,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use grain_id::GrainId;
 
@@ -102,6 +102,9 @@ fn stamp_of(meta: &fs::Metadata) -> (i64, u64) {
         .unwrap_or(0);
     (mtime, meta.len())
 }
+
+/// How long staged content is kept whatever it holds; see [`Replica::collect_staging`].
+pub const STAGING_GRACE: Duration = Duration::from_secs(60 * 60);
 
 fn is_racy(disk: &DiskState) -> bool {
     disk.mtime_ns.saturating_add(RACY_NS) >= disk.checked_ns
@@ -230,7 +233,7 @@ impl Replica {
         let root = config.root.to_string_lossy().into_owned();
         let store = ReplicaStore::open_with_id(&config.store_path, &root, id)?;
         let meta = store.meta()?;
-        Ok(Self {
+        let replica = Self {
             config,
             store,
             meta,
@@ -239,7 +242,9 @@ impl Replica {
             fault: None,
             #[cfg(any(test, feature = "test-util"))]
             reconcile_hook: None,
-        })
+        };
+        replica.collect_staging_quietly();
+        Ok(replica)
     }
 
     pub fn replica_id(&self) -> ReplicaId {
@@ -373,6 +378,7 @@ impl Replica {
             tolerate_io(result, &rel, &mut report)?;
             self.run_reconcile_hook();
         }
+        self.collect_staging_quietly();
         Ok(ScanOutcome::Scanned(report))
     }
 
@@ -506,6 +512,81 @@ impl Replica {
             }
         }
         Ok(missing)
+    }
+
+    /// Remove staged content nothing needs any more, returning how many files went.
+    ///
+    /// Staged content is kept while some stored version refers to it and no workspace
+    /// file holds it: the replica may still write it, or be asked for it. Placing content
+    /// moves it out of staging, so what this removes is content staged and never placed —
+    /// a version superseded first, a second copy from another session, inline content of
+    /// a page that never came. A workspace file counts as holding the content only when
+    /// its recorded stamp still matches and is not racy; nothing is re-hashed here.
+    ///
+    /// Files younger than [`STAGING_GRACE`] are kept whatever they hold: a session stages
+    /// inline content before the page that refers to it arrives, and runs alongside this.
+    pub fn collect_staging(&self) -> Result<usize> {
+        let staged = staging::finished(&self.config.staging_dir)?;
+        if staged.is_empty() {
+            return Ok(0);
+        }
+        let states = self.store.all()?;
+        let referenced: BTreeSet<ContentHash> = states
+            .iter()
+            .flat_map(|(_, state)| &state.versions)
+            .filter_map(|v| v.content.hash())
+            .collect();
+        let index = StoreIndex::build(&states);
+        let now = SystemTime::now();
+        let mut removed = 0;
+        for (hash, path, meta) in staged {
+            let young = meta
+                .modified()
+                .ok()
+                .and_then(|m| now.duration_since(m).ok())
+                .is_none_or(|age| age < STAGING_GRACE);
+            if young {
+                continue;
+            }
+            if referenced.contains(&hash) && !self.held_in_workspace(&hash, &index)? {
+                continue;
+            }
+            match fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::debug!(path = %path.display(), "could not remove staged content: {e}")
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    /// [`Self::collect_staging`], logging rather than returning a failure: collecting is
+    /// housekeeping, and must not fail the open or scan it follows.
+    fn collect_staging_quietly(&self) {
+        match self.collect_staging() {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!(removed = n, "collected staged content"),
+            Err(e) => tracing::warn!("could not collect staged content: {e}"),
+        }
+    }
+
+    /// Whether a workspace file holds `hash`, judged by its recorded stamp alone.
+    fn held_in_workspace(&self, hash: &ContentHash, index: &StoreIndex) -> Result<bool> {
+        for rel in index.paths_with(hash) {
+            let Some(state) = self.store.get(rel)? else {
+                continue;
+            };
+            let disk = &state.disk;
+            if !is_racy(disk)
+                && fs::metadata(paths::to_native(&self.config.root, rel))
+                    .is_ok_and(|meta| stamp_of(&meta) == (disk.mtime_ns, disk.len))
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// A [`Stager`] over this replica's staging directory and size limit.

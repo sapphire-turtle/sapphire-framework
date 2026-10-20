@@ -112,12 +112,16 @@ fn is_racy(disk: &DiskState) -> bool {
 
 /// Move a verified staged file into place, falling back to copy + rename when the
 /// staging directory is on another volume.
+///
+/// The placement is durable when this returns: the caller commits the path's state next,
+/// and a committed state whose file a crash then lost would read as a local delete on
+/// the next scan — and spread to every peer as one.
 fn place(staged: &Path, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
     match fs::rename(staged, dest) {
-        Ok(()) => return Ok(()),
+        Ok(()) => return sync_parent(dest),
         Err(e) if e.kind() == ErrorKind::CrossesDevices => {}
         Err(e) => return Err(e.into()),
     }
@@ -126,13 +130,29 @@ fn place(staged: &Path, dest: &Path) -> Result<()> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let tmp = dest.with_file_name(format!(".{name}.sapphire-tmp"));
-    if let Err(e) = fs::copy(staged, &tmp).and_then(|_| fs::rename(&tmp, dest)) {
+    let copied = fs::copy(staged, &tmp)
+        .and_then(|_| fs::File::open(&tmp)?.sync_all())
+        .and_then(|()| fs::rename(&tmp, dest));
+    if let Err(e) = copied {
         let _ = fs::remove_file(&tmp);
         return Err(e.into());
     }
+    sync_parent(dest)?;
     // The file is in place; the staged copy is a cache. Failing to remove it must not
     // turn a completed placement into an error and leave the state uncommitted.
     let _ = fs::remove_file(staged);
+    Ok(())
+}
+
+/// Make a rename into `path`'s directory durable. Unix only: std cannot open a
+/// directory to sync on Windows, where this is left to the filesystem.
+fn sync_parent(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

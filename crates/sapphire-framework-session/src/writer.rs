@@ -74,7 +74,7 @@ impl Outbox {
         if sent {
             Ok(())
         } else {
-            Err(Error::Protocol("the stream closed".to_owned()))
+            Err(Error::Closed)
         }
     }
 }

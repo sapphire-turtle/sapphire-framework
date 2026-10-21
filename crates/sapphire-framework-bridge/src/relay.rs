@@ -1,7 +1,7 @@
-//! Relay configuration, merged from the host's `net.toml` and the workgroup's published one.
+//! Relay configuration, merged from the host's `[net]` and the workgroup's published one.
 //!
 //! Two files decide which relays a device uses, and neither overrides the other. The host's
-//! `net.toml` is local preference; the workgroup's is what a self-hosted server announces to
+//! `[net]` is local preference; the workgroup's is what a self-hosted server announces to
 //! its devices, synced with the rest of the workgroup root. They are **merged**: a device
 //! keeps its own relays and gains the workgroup's, because a device that lost its own relay
 //! when it joined a workgroup would be worse off than before. The public relays go off only
@@ -31,7 +31,7 @@ pub struct RelayConfig {
 
 /// Merge the host's relay configuration with the workgroup's published one.
 ///
-/// The host's `net.toml` is local preference; the workgroup's is what a self-hosted server
+/// The host's `[net]` is local preference; the workgroup's is what a self-hosted server
 /// announces. A device without a workgroup, or whose workgroup has published nothing yet,
 /// simply uses its own configuration — the defaults keep the public relays on.
 ///
@@ -67,14 +67,14 @@ pub fn relays(host: &NetConfig, workgroup: Option<&Workgroup>) -> Result<RelayCo
 /// Whether this host runs a relay for its workgroup, and where.
 ///
 /// Off by default — most hosts have neither a publicly reachable address nor a certificate —
-/// and turned on by naming this section in `net.toml`:
+/// and turned on by naming this section in the device's `config.toml`:
 ///
 /// ```toml
-/// [embedded_relay]
+/// [net.embedded_relay]
 /// bind = "0.0.0.0:80"
 /// hostname = "relay.example.com"
 ///
-/// [embedded_relay.tls]
+/// [net.embedded_relay.tls]
 /// cert_path = "/etc/letsencrypt/live/relay.example.com/fullchain.pem"
 /// key_path = "/etc/letsencrypt/live/relay.example.com/privkey.pem"
 /// https_bind = "0.0.0.0:443"
@@ -329,7 +329,7 @@ mod tests {
         }
     }
 
-    /// A workgroup whose root publishes `net` under `root/net.toml`.
+    /// A workgroup whose root publishes `net` as `[net]` of `root/config.toml`.
     ///
     /// The returned temporaries must stay alive for the workgroup to stay on disk.
     fn workgroup_with_net(net: &NetConfig) -> (tempfile::TempDir, BridgeDir, Workgroup) {
@@ -435,18 +435,19 @@ mod embedded_relay_tests {
 
     #[test]
     fn no_embedded_relay_is_the_default() {
-        // A relay must be asked for, never inherited: it is off unless `net.toml` names it.
+        // A relay must be asked for, never inherited: it is off unless `[net]` names it.
         assert!(NetConfig::default().embedded_relay.is_none());
     }
 
     #[test]
     fn an_embedded_relay_round_trips_through_the_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("net.toml");
+        let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "relays = [\"https://relay.example/\"]\n\
-             [embedded_relay]\n\
+            "[net]\n\
+             relays = [\"https://relay.example/\"]\n\
+             [net.embedded_relay]\n\
              bind = \"0.0.0.0:80\"\n\
              hostname = \"relay.example.com\"\n",
         )
@@ -464,13 +465,13 @@ mod embedded_relay_tests {
     #[test]
     fn a_certificate_and_key_round_trip_through_the_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("net.toml");
+        let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "[embedded_relay]\n\
+            "[net.embedded_relay]\n\
              bind = \"0.0.0.0:80\"\n\
              hostname = \"relay.example.com\"\n\
-             [embedded_relay.tls]\n\
+             [net.embedded_relay.tls]\n\
              cert_path = \"/etc/relay/cert.pem\"\n\
              key_path = \"/etc/relay/key.pem\"\n\
              https_bind = \"0.0.0.0:443\"\n",
@@ -490,7 +491,7 @@ mod embedded_relay_tests {
         assert_eq!(tls.https_bind.unwrap(), "0.0.0.0:443".parse().unwrap());
     }
 
-    /// A `net.toml` with no relay must survive being written back out, which is what
+    /// A `[net]` with no relay must survive being written back out, which is what
     /// `Workgroup::publish_net` does when a workgroup announces its configuration. TOML has
     /// no way to spell `None`, so an unset relay has to be left out of the output.
     #[test]

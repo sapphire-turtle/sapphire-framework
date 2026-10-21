@@ -278,15 +278,7 @@ async fn embedding(version: &str, command: EmbeddingCommand) -> Result<i32> {
 /// Carry out `request` on the files of `dir`, and report what they resolve to. Nothing is
 /// loaded, so the report says only whether the bridge would embed.
 fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSettingsResult> {
-    match request {
-        EmbedRequest::Show => {}
-        EmbedRequest::ModelSet(params) => embed_settings::set_model(dir, params)?,
-        EmbedRequest::DeviceSet(params) => {
-            embed_settings::set_device(dir, params.slot, params.enabled)?
-        }
-        EmbedRequest::KeySet(key) => embed_settings::set_key(dir, &key)?,
-        EmbedRequest::KeyClear => embed_settings::clear_key(dir)?,
-    }
+    embed_settings::apply(dir, request)?;
     let (resolved, _) = embed_settings::load(dir, embed_settings::avx2())?;
     let info = EmbedInfoResult {
         enabled: resolved.active.is_some(),
@@ -305,7 +297,7 @@ fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSett
 async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Result<i32> {
     let dir = BridgeDir::open()?;
     // Held for as long as the bridge runs; dropping it frees the next start. The lock is
-    // taken before anything reads `net.toml` or `node.key`, so a directory of a newer format
+    // taken before anything reads `config.toml` or `node.key`, so a directory of a newer format
     // stops us here rather than after a new identity has been minted (see `BridgeDir::at`).
     let _lock = match InstanceLock::acquire(&dir) {
         Ok(lock) => lock,
@@ -365,9 +357,9 @@ pub async fn serve_in_process(
 #[cfg(feature = "node")]
 async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {
     // Read once, and hand the same configuration to the bridge: it would otherwise read
-    // `net.toml` again when it starts its loops, and the two reads could disagree.
-    let net = NetConfig::load(&dir.net_toml())?;
-    // The workgroup's published `net.toml` is read inside `new_with_relays`, so a
+    // `[net]` again when it starts its loops, and the two reads could disagree.
+    let net = NetConfig::load(&dir.config_toml())?;
+    // The workgroup's published `[net]` is read inside `new_with_relays`, so a
     // publish that landed between the two reads is not split across them either.
     let transport = Arc::new(
         crate::iroh::IrohTransport::new_with_relays(

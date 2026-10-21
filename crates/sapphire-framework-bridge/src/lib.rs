@@ -95,7 +95,7 @@ pub struct Bridge {
     version: &'static str,
     control: Endpoint,
     data: Endpoint,
-    /// `None` means "read `net.toml` when `run` starts", which is what a real caller wants:
+    /// `None` means "read `[net]` of `config.toml` when `run` starts", which is what a real caller wants:
     /// the file may have been edited since this bridge was built. Tests set it outright.
     net: Option<NetConfig>,
     /// The routing table, held in memory rather than re-read per call: two app servers
@@ -133,7 +133,7 @@ impl Bridge {
     /// A bridge over `dir`, reaching other devices through `transport`, reporting `version`.
     ///
     /// The endpoints default to the built-in ones in this user's runtime directory, and the
-    /// network configuration to whatever `net.toml` says. Tests override all three.
+    /// network configuration to whatever `[net]` says. Tests override all three.
     pub fn new(
         dir: BridgeDir,
         transport: Arc<dyn PeerTransport>,
@@ -175,7 +175,7 @@ impl Bridge {
         self
     }
 
-    /// Use this network configuration instead of reading `net.toml`.
+    /// Use this network configuration instead of reading `[net]`.
     pub fn net(mut self, net: NetConfig) -> Bridge {
         self.net = Some(net);
         self
@@ -202,7 +202,7 @@ impl Bridge {
             Some(net) => net,
             // Read up front rather than at the first peer request, so an unreadable file is
             // reported when the bridge starts.
-            None => NetConfig::load(&self.dir.net_toml())?,
+            None => NetConfig::load(&self.dir.config_toml())?,
         };
         Arc::new(self).run_shared(net).await
     }

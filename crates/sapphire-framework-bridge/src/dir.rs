@@ -88,8 +88,11 @@ impl BridgeDir {
         self.root.join("bridge.lock")
     }
 
-    /// Host-local network configuration.
-    pub fn net_toml(&self) -> PathBuf {
+    /// The format-1 network configuration, now `[net]` of [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    #[allow(dead_code)] // The migration to format 2 reads it (#314).
+    pub(crate) fn legacy_net_toml(&self) -> PathBuf {
         self.root.join("net.toml")
     }
 
@@ -98,9 +101,12 @@ impl BridgeDir {
         self.root.join("config.toml")
     }
 
-    /// This device's embedding settings (not synced).
-    pub fn embedding_toml(&self) -> PathBuf {
-        self.root.join(crate::embed_settings::SETTINGS_FILE)
+    /// The format-1 embedding settings, now `[embed]` of [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    #[allow(dead_code)] // The migration to format 2 reads it (#314).
+    pub(crate) fn legacy_embedding_toml(&self) -> PathBuf {
+        self.root.join("embedding.toml")
     }
 
     /// The remote embedding model's API key, readable by the owner only.

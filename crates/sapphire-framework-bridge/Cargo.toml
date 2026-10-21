@@ -53,6 +53,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
 toml.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 # The registry and the filters are what turn a writer into a layer: `registry` is what

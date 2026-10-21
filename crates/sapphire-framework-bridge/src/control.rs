@@ -15,7 +15,7 @@ use sapphire_bridge_api::{
     EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
     EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
     EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
-    EmbedModelSetParams, EmbedParams, EmbedResult, EmbedSettingsResult,
+    EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult,
     ExternalDeviceAuthenticateParams, INVITE, InviteParams, InviteResult, JOIN, JoinParams,
     JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams, RegisterResult,
     RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
@@ -297,7 +297,8 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedModelSetParams = parse(ctx, "embed.model_set")?;
-                    crate::embed_settings::set_model(&bridge.dir, params).map_err(failed)?;
+                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::ModelSet(params))
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
@@ -310,7 +311,7 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedDeviceSetParams = parse(ctx, "embed.device_set")?;
-                    crate::embed_settings::set_device(&bridge.dir, params.slot, params.enabled)
+                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::DeviceSet(params))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -324,7 +325,8 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedKeySetParams = parse(ctx, "embed.key_set")?;
-                    crate::embed_settings::set_key(&bridge.dir, &params.key).map_err(failed)?;
+                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::KeySet(params.key))
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
@@ -336,7 +338,8 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
             move |_| {
                 let bridge = Arc::clone(&bridge);
                 async move {
-                    crate::embed_settings::clear_key(&bridge.dir).map_err(failed)?;
+                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::KeyClear)
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
@@ -1577,8 +1580,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_synced_into_the_workgroup_root_is_picked_up_on_reload() {
-        use sapphire_bridge_api::ModelSettings;
-
         let tmp = tempfile::tempdir().unwrap();
         let (bridge, _builds) = settings_bridge(&tmp, true);
         bridge.reload_embed().unwrap();
@@ -1586,11 +1587,15 @@ mod tests {
 
         // What arrives from another device: the workgroup's file, written by its sync.
         let wg = bridge.workgroup().unwrap().unwrap();
-        let models = ModelSettings {
-            local: None,
-            remote: Some(remote_model("from-another-device")),
-        };
-        std::fs::write(wg.embedding_toml(), toml::to_string(&models).unwrap()).unwrap();
+        let model = remote_model("from-another-device");
+        std::fs::write(
+            wg.config_toml(),
+            format!(
+                "[embed.remote]\nendpoint = \"{}\"\nmodel = \"{}\"\ndimension = {}\n",
+                model.endpoint, model.model, model.dimension
+            ),
+        )
+        .unwrap();
         bridge.reload_embed().unwrap();
 
         let info = embed_info(&bridge);
@@ -1600,16 +1605,16 @@ mod tests {
 
     #[tokio::test]
     async fn without_avx2_a_local_only_workgroup_does_not_embed() {
-        use sapphire_bridge_api::{EmbedNote, LocalModel, Slot, SlotModel};
+        use sapphire_bridge_api::{EmbedNote, EmbedRequest, LocalModel, Slot, SlotModel};
 
         let tmp = tempfile::tempdir().unwrap();
         let (bridge, builds) = settings_bridge(&tmp, false);
-        crate::embed_settings::set_model(
+        crate::embed_settings::apply(
             &bridge.dir,
-            EmbedModelSetParams {
+            EmbedRequest::ModelSet(EmbedModelSetParams {
                 slot: Slot::Local,
                 model: Some(SlotModel::Local(LocalModel::default())),
-            },
+            }),
         )
         .unwrap();
         bridge.reload_embed().unwrap();

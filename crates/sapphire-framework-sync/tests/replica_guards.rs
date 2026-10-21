@@ -137,6 +137,83 @@ fn an_interrupted_delete_is_finished_on_the_next_scan() {
 }
 
 #[test]
+fn files_written_but_not_recorded_before_a_crash_are_not_local_edits() {
+    let (mut a, mut b) = (node(1), node(2));
+    for rel in ["a.txt", "b.txt", "c.txt"] {
+        write(&a, rel, rel);
+    }
+    scan(&mut a);
+
+    b.replica.inject_fault(FaultPoint::CrashAfterWrites(3));
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    assert!(matches!(
+        b.replica.apply(&updates, &a.replica),
+        Err(Error::InjectedFault)
+    ));
+
+    let mut b = reopen(b);
+    for rel in ["a.txt", "b.txt", "c.txt"] {
+        assert_eq!(read(&b, rel).as_deref(), Some(rel), "{rel} was written");
+        let state = b.replica.state(rel).unwrap().unwrap();
+        assert!(
+            state.winner().content.hash().is_some(),
+            "{rel}: the joined version was committed before its file was written"
+        );
+        assert_eq!(
+            state.disk.hash, None,
+            "{rel}: the written file was lost with the rest of the page"
+        );
+    }
+    let report = scan(&mut b);
+    assert!(
+        report.recorded.is_empty(),
+        "the peer's files are not recorded as local edits"
+    );
+    for rel in ["a.txt", "b.txt", "c.txt"] {
+        assert!(b.replica.state(rel).unwrap().unwrap().disk.hash.is_some());
+    }
+    assert!(push(&b, &mut a).recorded.is_empty());
+    assert_eq!(tree(&a), tree(&b));
+    assert_eq!(tree(&a).len(), 3, "no conflict copies");
+}
+
+#[test]
+fn files_removed_but_not_recorded_before_a_crash_are_not_local_deletes() {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&a, "a.txt", "one");
+    write(&a, "b.txt", "two");
+    scan(&mut a);
+    sync(&mut a, &mut b);
+
+    remove(&a, "a.txt");
+    remove(&a, "b.txt");
+    scan(&mut a);
+
+    b.replica.inject_fault(FaultPoint::CrashAfterWrites(2));
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    assert!(matches!(
+        b.replica.apply(&updates, &a.replica),
+        Err(Error::InjectedFault)
+    ));
+
+    let mut b = reopen(b);
+    for rel in ["a.txt", "b.txt"] {
+        assert_eq!(read(&b, rel), None, "{rel} was removed");
+        let state = b.replica.state(rel).unwrap().unwrap();
+        assert!(state.winner().content.is_tombstone());
+        assert!(state.disk.hash.is_some(), "{rel}: the removal was lost");
+    }
+    let report = scan(&mut b);
+    assert!(
+        report.recorded.is_empty(),
+        "the peer's deletes are not recorded again as local ones"
+    );
+    for rel in ["a.txt", "b.txt"] {
+        assert_eq!(b.replica.state(rel).unwrap().unwrap().disk.hash, None);
+    }
+}
+
+#[test]
 fn a_lost_store_reconverges_without_conflict_copies() {
     let (mut a, mut b) = (node(1), node(2));
     write(&a, "a.txt", "one");

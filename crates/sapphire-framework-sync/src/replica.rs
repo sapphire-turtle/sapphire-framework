@@ -1,6 +1,6 @@
 //! A replica: one workspace root kept in sync with peers by joining path states.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,11 @@ pub const DEFAULT_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 
 /// A file whose mtime is this close to when it was checked is re-hashed.
 const RACY_NS: i64 = 2_000_000_000;
+
+/// Path states held in memory before they are written in one transaction. A redb
+/// commit costs several fsyncs, so writing each path on its own made a first sync
+/// slow enough on a slow disk to outlast a peer's idle timeout (issue #305).
+const MAX_PENDING: usize = 256;
 
 /// Where a replica gets content it does not have: a peer, in practice.
 ///
@@ -75,6 +80,14 @@ pub struct Replica {
     store: ReplicaStore,
     meta: Meta,
     clock: Arc<dyn Clock>,
+    /// Path states committed but not yet written to the store; see [`Self::flush`].
+    /// Every read of a state goes through [`Self::get_state`], which sees these first.
+    pending: BTreeMap<String, PathState>,
+    /// Whether `pending` holds a state with newly joined versions. Such a state is
+    /// written before the workspace changes, so that a file placed from it is never
+    /// newer than what the store knows: a crash would otherwise leave a peer's content
+    /// on disk that the next scan records as a local edit.
+    pending_versions: bool,
     #[cfg(any(test, feature = "test-util"))]
     fault: Option<crate::testing::FaultPoint>,
     /// Fires once after the next path a scan reconciles. Lets a test change the
@@ -258,6 +271,8 @@ impl Replica {
             store,
             meta,
             clock,
+            pending: BTreeMap::new(),
+            pending_versions: false,
             #[cfg(any(test, feature = "test-util"))]
             fault: None,
             #[cfg(any(test, feature = "test-util"))]
@@ -280,11 +295,69 @@ impl Replica {
     }
 
     pub fn state(&self, path: &str) -> Result<Option<PathState>> {
-        self.store.get(path)
+        self.get_state(path)
     }
 
     pub fn states(&self) -> Result<Vec<(String, PathState)>> {
-        self.store.all()
+        self.all_states()
+    }
+
+    /// The state of `path`, pending or stored.
+    fn get_state(&self, path: &str) -> Result<Option<PathState>> {
+        match self.pending.get(path) {
+            Some(state) => Ok(Some(state.clone())),
+            None => self.store.get(path),
+        }
+    }
+
+    /// Every path state, pending or stored, in path order.
+    fn all_states(&self) -> Result<Vec<(String, PathState)>> {
+        let mut states = self.store.all()?;
+        if self.pending.is_empty() {
+            return Ok(states);
+        }
+        let mut pending = self.pending.clone();
+        for (rel, state) in &mut states {
+            if let Some(newer) = pending.remove(rel) {
+                *state = newer;
+            }
+        }
+        states.extend(pending);
+        states.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(states)
+    }
+
+    /// Write the pending path states, and the metadata, in one transaction.
+    fn flush(&mut self) -> Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let states: Vec<(String, PathState)> = self
+            .pending
+            .iter()
+            .map(|(rel, state)| (rel.clone(), state.clone()))
+            .collect();
+        self.store.commit(&self.meta, &states)?;
+        self.pending.clear();
+        self.pending_versions = false;
+        Ok(())
+    }
+
+    /// Flush before the workspace changes if a pending state holds joined versions.
+    fn flush_versions(&mut self) -> Result<()> {
+        if self.pending_versions {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Flush what `result`'s call left pending, whether or not it failed: the files it
+    /// already placed must be recorded. The call's own error takes precedence.
+    fn finish<T>(&mut self, result: Result<T>) -> Result<T> {
+        let flushed = self.flush();
+        let value = result?;
+        flushed?;
+        Ok(value)
     }
 
     fn filter(&self) -> Result<SyncFilter> {
@@ -303,7 +376,11 @@ impl Replica {
         if root_ok && marker_ok {
             return Ok(None);
         }
-        if !self.store.any_materialized()? {
+        if !self
+            .all_states()?
+            .iter()
+            .any(|(_, s)| s.disk.hash.is_some())
+        {
             return Ok(None);
         }
         Ok(Some(if root_ok {
@@ -315,14 +392,40 @@ impl Replica {
 
     #[cfg(any(test, feature = "test-util"))]
     fn fault_check(&mut self) -> Result<()> {
-        match self.fault.take() {
-            Some(crate::testing::FaultPoint::AfterCommitBeforeWrite) => Err(Error::InjectedFault),
-            None => Ok(()),
+        use crate::testing::FaultPoint;
+        if self.fault == Some(FaultPoint::AfterCommitBeforeWrite) {
+            self.fault = None;
+            return Err(Error::InjectedFault);
         }
+        Ok(())
     }
 
     #[cfg(not(any(test, feature = "test-util")))]
     fn fault_check(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after each file written or removed. A crash loses what is still pending.
+    #[cfg(any(test, feature = "test-util"))]
+    fn crash_check(&mut self) -> Result<()> {
+        use crate::testing::FaultPoint;
+        match self.fault {
+            Some(FaultPoint::CrashAfterWrites(n)) if n > 1 => {
+                self.fault = Some(FaultPoint::CrashAfterWrites(n - 1));
+            }
+            Some(FaultPoint::CrashAfterWrites(_)) => {
+                self.fault = None;
+                self.pending.clear();
+                self.pending_versions = false;
+                return Err(Error::InjectedFault);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    #[cfg(not(any(test, feature = "test-util")))]
+    fn crash_check(&mut self) -> Result<()> {
         Ok(())
     }
 
@@ -341,6 +444,13 @@ impl Replica {
         if let Some(reason) = self.pause_reason()? {
             return Ok(ScanOutcome::Paused(reason));
         }
+        let result = self.scan_root();
+        let report = self.finish(result)?;
+        self.collect_staging_quietly();
+        Ok(ScanOutcome::Scanned(report))
+    }
+
+    fn scan_root(&mut self) -> Result<Report> {
         let filter = self.filter()?;
         let mut report = Report::default();
         let mut rels = BTreeSet::new();
@@ -388,7 +498,7 @@ impl Replica {
                 rels.insert(rel);
             }
         }
-        let states = self.store.all()?;
+        let states = self.all_states()?;
         let mut index = StoreIndex::build(&states);
         for (rel, _) in states {
             rels.insert(rel);
@@ -398,8 +508,7 @@ impl Replica {
             tolerate_io(result, &rel, &mut report)?;
             self.run_reconcile_hook();
         }
-        self.collect_staging_quietly();
-        Ok(ScanOutcome::Scanned(report))
+        Ok(report)
     }
 
     /// Path states the peer with version vector `peer` has not merged.
@@ -418,14 +527,28 @@ impl Replica {
     }
 
     /// Join updates received from a peer, fetching content from `source`.
+    ///
+    /// Every update is joined before any file is written, so that the joined states go
+    /// to the store in one transaction and what the files then hold in another, rather
+    /// than several transactions per path.
     pub fn apply(&mut self, updates: &[PathUpdate], source: &dyn ContentSource) -> Result<Report> {
         if let Some(reason) = self.pause_reason()? {
             return Err(Error::Paused(reason));
         }
+        let result = self.apply_updates(updates, source);
+        self.finish(result)
+    }
+
+    fn apply_updates(
+        &mut self,
+        updates: &[PathUpdate],
+        source: &dyn ContentSource,
+    ) -> Result<Report> {
         let filter = self.filter()?;
         let mut report = Report::default();
-        let mut index = StoreIndex::build(&self.store.all()?);
+        let mut index = StoreIndex::build(&self.all_states()?);
         let now = self.clock.now_ms();
+        let mut joined = BTreeSet::new();
         for update in updates {
             // A counter of 0 is not a dot any replica assigns (`next_entry` increments
             // first), and it has no predecessor for `disk_seen` to pin a loser at.
@@ -449,15 +572,30 @@ impl Replica {
             let reconciled =
                 self.reconcile_path(&update.path, &filter, Some(source), &mut index, &mut report);
             tolerate_io(reconciled, &update.path, &mut report)?;
-            let integrated = self.integrate(
-                update.clone(),
-                None,
-                &filter,
-                Some(source),
-                &mut index,
-                &mut report,
-            );
-            tolerate_io(integrated, &update.path, &mut report)?;
+            if self
+                .join(update.clone(), None, &mut index, &mut report)?
+                .is_some()
+            {
+                joined.insert(update.path.clone());
+            }
+        }
+        for rel in joined {
+            let Some(state) = self.get_state(&rel)? else {
+                continue;
+            };
+            let settled = self
+                .ensure_conflict_copies(
+                    &rel,
+                    &state,
+                    &filter,
+                    Some(source),
+                    &mut index,
+                    &mut report,
+                )
+                .and_then(|()| {
+                    self.settle(&rel, state, &filter, Some(source), &mut index, &mut report)
+                });
+            tolerate_io(settled, &rel, &mut report)?;
         }
         Ok(report)
     }
@@ -465,7 +603,11 @@ impl Replica {
     /// Declare that every update of a session with `peer` has been applied.
     pub fn commit_session(&mut self, peer: &VersionVector) -> Result<()> {
         self.meta.vv.merge(peer);
-        self.store.commit(&self.meta, &[])
+        if self.pending.is_empty() {
+            self.store.commit(&self.meta, &[])
+        } else {
+            self.flush()
+        }
     }
 
     /// Retry writes that were waiting for content.
@@ -473,9 +615,14 @@ impl Replica {
         if let Some(reason) = self.pause_reason()? {
             return Err(Error::Paused(reason));
         }
+        let result = self.fetch_missing_states(source);
+        self.finish(result)
+    }
+
+    fn fetch_missing_states(&mut self, source: &dyn ContentSource) -> Result<Report> {
         let filter = self.filter()?;
         let mut report = Report::default();
-        let states = self.store.all()?;
+        let states = self.all_states()?;
         let mut index = StoreIndex::build(&states);
         for (rel, _) in states {
             let result = self.reconcile_path(&rel, &filter, Some(source), &mut index, &mut report);
@@ -494,7 +641,7 @@ impl Replica {
     /// — is left out.
     pub fn unavailable(&self) -> Result<Vec<ContentHash>> {
         let filter = self.filter()?;
-        let states = self.store.all()?;
+        let states = self.all_states()?;
         let index = StoreIndex::build(&states);
         let max = self.config.max_file_size;
         let mut wanted: BTreeSet<ContentHash> = BTreeSet::new();
@@ -519,7 +666,7 @@ impl Replica {
                     && len <= max
                     && filter.allows(&copy_rel, false)
                     && paths::representable(&copy_rel)
-                    && self.store.get(&copy_rel)?.is_none()
+                    && self.get_state(&copy_rel)?.is_none()
                 {
                     wanted.insert(hash);
                 }
@@ -550,7 +697,7 @@ impl Replica {
         if staged.is_empty() {
             return Ok(0);
         }
-        let states = self.store.all()?;
+        let states = self.all_states()?;
         let referenced: BTreeSet<ContentHash> = states
             .iter()
             .flat_map(|(_, state)| &state.versions)
@@ -595,7 +742,7 @@ impl Replica {
     /// Whether a workspace file holds `hash`, judged by its recorded stamp alone.
     fn held_in_workspace(&self, hash: &ContentHash, index: &StoreIndex) -> Result<bool> {
         for rel in index.paths_with(hash) {
-            let Some(state) = self.store.get(rel)? else {
+            let Some(state) = self.get_state(rel)? else {
                 continue;
             };
             let disk = &state.disk;
@@ -618,7 +765,7 @@ impl Replica {
     /// finished staged content. A file whose length and mtime still match what was
     /// recorded (and are not racy) is trusted; any other is re-hashed first.
     pub fn content_path(&self, hash: &ContentHash) -> Result<Option<(PathBuf, u64)>> {
-        self.content_path_with(hash, &StoreIndex::build(&self.store.all()?))
+        self.content_path_with(hash, &StoreIndex::build(&self.all_states()?))
     }
 
     /// [`Self::content_path`] for each of `hashes`, building the store index once for
@@ -628,7 +775,7 @@ impl Replica {
         &self,
         hashes: &[ContentHash],
     ) -> Result<HashMap<ContentHash, (PathBuf, u64)>> {
-        let index = StoreIndex::build(&self.store.all()?);
+        let index = StoreIndex::build(&self.all_states()?);
         let mut found = HashMap::new();
         for hash in hashes {
             if found.contains_key(hash) {
@@ -648,7 +795,7 @@ impl Replica {
         index: &StoreIndex,
     ) -> Result<Option<(PathBuf, u64)>> {
         for rel in index.paths_with(hash) {
-            let Some(state) = self.store.get(rel)? else {
+            let Some(state) = self.get_state(rel)? else {
                 continue;
             };
             let path = paths::to_native(&self.config.root, rel);
@@ -706,7 +853,7 @@ impl Replica {
             return Ok(());
         }
         let abs = paths::to_native(&self.config.root, rel);
-        let state = self.store.get(rel)?;
+        let state = self.get_state(rel)?;
         let disk = state.as_ref().map(|s| s.disk.clone()).unwrap_or_default();
         // On a case-insensitive filesystem, `a.txt` would find the file of `A.txt`.
         if disk.hash.is_none() && index.case_twin(rel).is_some() {
@@ -783,10 +930,12 @@ impl Replica {
         // silently, destroying the winner's only copy (the file) with nothing recording that
         // anything superseded it, and no conflict copy to fall back on (conflict copies exist
         // for losers, never for the winner).
-        if let Some(hash) = file_hash
-            && state
-                .as_ref()
-                .is_some_and(|s| s.winner().content.hash() == Some(hash))
+        //
+        // A missing file whose winner is a tombstone is the same case: the delete was
+        // carried out, and a crash came before it was recorded.
+        if state
+            .as_ref()
+            .is_some_and(|s| s.winner().content.hash() == file_hash)
         {
             if let Some(mut state) = state {
                 // The on-disk file now holds `file_hash`, but the stored `disk` still
@@ -845,7 +994,7 @@ impl Replica {
         self.integrate(update, Some(new_disk), filter, source, index, report)
     }
 
-    /// Join `update` into the stored state, commit, then settle the file.
+    /// Join `update` into the stored state and commit, then settle the file.
     /// `local_disk` is set when the update is a local write already on disk.
     fn integrate(
         &mut self,
@@ -857,14 +1006,32 @@ impl Replica {
         report: &mut Report,
     ) -> Result<()> {
         let rel = update.path.clone();
-        let old = self.store.get(&rel)?;
+        let Some(state) = self.join(update, local_disk, index, report)? else {
+            return Ok(());
+        };
+        // Copies first: settling may overwrite the loser's bytes on disk.
+        self.ensure_conflict_copies(&rel, &state, filter, source, index, report)?;
+        self.settle(&rel, state, filter, source, index, report)
+    }
+
+    /// Join `update` into the stored state and commit it, leaving the file as it is.
+    /// The joined state, or `None` when the update brought nothing new.
+    fn join(
+        &mut self,
+        update: PathUpdate,
+        local_disk: Option<DiskState>,
+        index: &mut StoreIndex,
+        report: &mut Report,
+    ) -> Result<Option<PathState>> {
+        let rel = update.path;
+        let old = self.get_state(&rel)?;
         let joined = merge::join(
             old.as_ref().map(|s| (s.versions.as_slice(), &s.seen)),
             &update.versions,
             &update.seen,
         );
         let Some((versions, seen)) = joined else {
-            return Ok(());
+            return Ok(None);
         };
         let disk = match local_disk {
             Some(d) => d,
@@ -876,10 +1043,9 @@ impl Replica {
             disk,
         };
         self.commit_state(&rel, &state, index)?;
+        self.pending_versions = true;
         report.changed += 1;
-        // Copies first: settling may overwrite the loser's bytes on disk.
-        self.ensure_conflict_copies(&rel, &state, filter, source, index, report)?;
-        self.settle(&rel, state, filter, source, index, report)
+        Ok(Some(state))
     }
 
     /// Write a conflict copy for every loser that needs one and has never had one.
@@ -921,7 +1087,7 @@ impl Replica {
                 });
                 continue;
             }
-            if self.store.get(&copy_rel)?.is_some() {
+            if self.get_state(&copy_rel)?.is_some() {
                 continue;
             }
             let copy_abs = paths::to_native(&self.config.root, &copy_rel);
@@ -973,6 +1139,7 @@ impl Replica {
                     });
                     continue;
                 };
+                self.flush_versions()?;
                 place(&staged, &copy_abs)?;
                 report.conflicts.push(Conflict {
                     path: rel.to_owned(),
@@ -1021,12 +1188,14 @@ impl Replica {
         let abs = paths::to_native(&self.config.root, rel);
         match winner.content {
             Content::Tombstone => {
+                self.flush_versions()?;
                 self.fault_check()?;
                 match fs::remove_file(&abs) {
                     Ok(()) => {}
                     Err(e) if e.kind() == ErrorKind::NotFound => {}
                     Err(e) => return Err(e.into()),
                 }
+                self.crash_check()?;
                 state.disk = DiskState::default();
             }
             Content::File { hash, .. } => {
@@ -1037,8 +1206,10 @@ impl Replica {
                     });
                     return Ok(());
                 };
+                self.flush_versions()?;
                 self.fault_check()?;
                 place(&staged, &abs)?;
+                self.crash_check()?;
                 let (mtime_ns, len) = stamp_of(&fs::metadata(&abs)?);
                 state.disk = DiskState {
                     hash: Some(hash),
@@ -1053,11 +1224,14 @@ impl Replica {
         self.commit_state(rel, &state, index)
     }
 
-    /// Commit one path state and keep `index` in step with it.
-    fn commit_state(&self, rel: &str, state: &PathState, index: &mut StoreIndex) -> Result<()> {
-        self.store
-            .commit(&self.meta, &[(rel.to_owned(), state.clone())])?;
+    /// Commit one path state and keep `index` in step with it. The state is pending
+    /// until [`Self::flush`], which this calls once enough states are pending.
+    fn commit_state(&mut self, rel: &str, state: &PathState, index: &mut StoreIndex) -> Result<()> {
+        self.pending.insert(rel.to_owned(), state.clone());
         index.record(rel, state.disk.hash);
+        if self.pending.len() >= MAX_PENDING {
+            self.flush()?;
+        }
         Ok(())
     }
 
@@ -1079,7 +1253,7 @@ impl Replica {
             if !filter.allows(&copy_rel, false) || !paths::representable(&copy_rel) {
                 continue;
             }
-            if self.store.get(&copy_rel)?.is_none() {
+            if self.get_state(&copy_rel)?.is_none() {
                 let slot = seen.0.entry(loser.dot.replica).or_insert(0);
                 *slot = (*slot).min(loser.dot.counter.saturating_sub(1));
             }
@@ -1236,7 +1410,7 @@ impl Replica {
     /// the local filesystem.
     pub fn logical_dump(&self) -> Result<serde_json::Value> {
         let mut path_states = serde_json::Map::new();
-        for (rel, s) in self.store.all()? {
+        for (rel, s) in self.all_states()? {
             path_states.insert(
                 rel,
                 serde_json::json!({

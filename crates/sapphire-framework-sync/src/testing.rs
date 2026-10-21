@@ -66,4 +66,7 @@ impl ContentSource for MapSource {
 pub enum FaultPoint {
     /// After a path state is committed, before its file is written or removed.
     AfterCommitBeforeWrite,
+    /// After this many files are written or removed, as a crash: the path states not
+    /// yet written to the store are lost.
+    CrashAfterWrites(usize),
 }

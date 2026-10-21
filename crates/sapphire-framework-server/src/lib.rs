@@ -43,10 +43,13 @@ mod config;
 mod current;
 mod error;
 mod events;
+#[cfg(feature = "metrics")]
+mod exporter;
 mod handlers;
 mod host;
 #[cfg(feature = "http")]
 mod http;
+mod instrument;
 mod selection;
 pub mod sync;
 #[cfg(test)]
@@ -57,7 +60,9 @@ pub use command::{
     AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
     WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
 };
-pub use config::{HttpConfig, McpConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig};
+pub use config::{
+    HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,
+};
 pub use current::Current;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
@@ -70,6 +75,10 @@ pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_ro
 /// The MCP tools an application serves, and how (feature `mcp`).
 #[cfg(feature = "mcp")]
 pub use sapphire_framework_mcp as mcp;
+
+/// The `metrics` crate, for an application's own metrics: the macros it records with, and
+/// the types [`AppServer::metrics_collector`] sets them from.
+pub use metrics;
 
 /// An application's server.
 pub struct AppServer {
@@ -94,6 +103,9 @@ pub struct AppServer {
     /// Whether `run` stops on SIGTERM and ctrl-c. Off where the server is not the process's
     /// own (a phone app hosting it in-process).
     signals: bool,
+    /// What the application sets on every scrape of `/metrics`. Kept in a build without
+    /// feature `metrics` too, so the builder method needs no gate; `run` never calls them there.
+    metrics_collectors: Vec<Arc<dyn Fn() + Send + Sync>>,
     /// Where the HTTP listener binds when `server.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
@@ -190,6 +202,7 @@ impl AppServer {
             config: None,
             releases: None,
             signals: true,
+            metrics_collectors: Vec::new(),
             #[cfg(feature = "http")]
             http_listen: None,
             #[cfg(feature = "http")]
@@ -252,6 +265,9 @@ impl AppServer {
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
     /// `/mcp` only when `server.toml` turns it on.
+    ///
+    /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
+    /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
     #[cfg(feature = "http")]
     pub fn http(mut self, routes: axum::Router) -> AppServer {
         self.http_routes = Some(routes);
@@ -346,6 +362,24 @@ impl AppServer {
         self
     }
 
+    /// Set the application's own gauges on every scrape of `/metrics`.
+    ///
+    /// `collect` runs once per scrape, after the framework has refreshed its own state and
+    /// before the response is rendered; collectors run in the order they were added. It runs
+    /// inside the async `/metrics` handler, so keep it cheap and non-blocking — read values
+    /// already held rather than doing I/O or waiting on a lock — and it must not panic. Set
+    /// state with `sapphire_framework::metrics::gauge!`, and prefix each name with the
+    /// application's own, as in `sapphire_journal_entries`, so it cannot collide with the
+    /// framework's `sapphire_*` names. Labels carry no identifiers, paths or names: the
+    /// endpoint is served without a token, so anything in a label is public.
+    ///
+    /// A build without feature `metrics`, or a server whose `server.toml` leaves
+    /// `[http.metrics]` off, never calls it.
+    pub fn metrics_collector(mut self, collect: Arc<dyn Fn() + Send + Sync>) -> AppServer {
+        self.metrics_collectors.push(collect);
+        self
+    }
+
     /// Where this application's releases are published.
     ///
     /// The server looks there for newer ones once at start and once a day after, unless
@@ -412,6 +446,7 @@ impl AppServer {
             config,
             releases,
             signals,
+            metrics_collectors,
             #[cfg(feature = "http")]
             http_listen,
             #[cfg(feature = "http")]
@@ -421,6 +456,9 @@ impl AppServer {
             #[cfg(feature = "mcp")]
             mcp,
         } = self;
+        // Without the exporter nothing scrapes, so there is nothing to call them from.
+        #[cfg(not(feature = "metrics"))]
+        let _ = metrics_collectors;
 
         let endpoint = match endpoint {
             Some(e) => e,
@@ -448,9 +486,16 @@ impl AppServer {
             None => ServerConfig::load_for_app(ctx)?,
         };
         #[cfg(not(feature = "mcp"))]
-        if config.mcp.http {
+        if config.http.mcp.enabled {
             tracing::warn!(
                 "server.toml turns MCP over HTTP on, but this build of {} has no MCP",
+                ctx.app_name
+            );
+        }
+        #[cfg(not(feature = "metrics"))]
+        if config.http.metrics.enabled {
+            tracing::warn!(
+                "server.toml turns metrics on, but this build of {} has no metrics",
                 ctx.app_name
             );
         }
@@ -557,14 +602,13 @@ impl AppServer {
         // The HTTP listener, when anything is served over it. Started once the IPC socket
         // is bound, for the same reason as the sync tasks below. `/mcp`'s tools reach this
         // server the way the `mcp` subcommand's do — over IPC — on an in-process connection
-        // served like any other.
+        // served like any other. `/metrics` is the one public route, served without a token.
         #[cfg(feature = "http")]
         let http_stop = tokio_util::sync::CancellationToken::new();
         #[cfg(feature = "http")]
         let _http = {
-            let mut routes = http_routes;
             #[cfg(feature = "mcp")]
-            if config.mcp.http {
+            let routes = if config.http.mcp.enabled {
                 let (ours, theirs) = sapphire_ipc::Connection::pair();
                 {
                     let router = Arc::clone(&router);
@@ -590,26 +634,55 @@ impl AppServer {
                 );
                 let mcp_routes =
                     mcp.http_router(tools, &config.http.allowed_hosts, http_stop.child_token());
-                routes = Some(match routes {
+                Some(match http_routes {
                     Some(routes) => routes.merge(mcp_routes),
                     None => mcp_routes,
+                })
+            } else {
+                http_routes
+            };
+            #[cfg(not(feature = "mcp"))]
+            let routes = http_routes;
+            #[cfg(feature = "metrics")]
+            let public = if config.http.metrics.enabled
+                && let Some(handle) = exporter::install()
+            {
+                metrics::gauge!(
+                    instrument::BUILD_INFO,
+                    "app" => ctx.app_name,
+                    "version" => version,
+                )
+                .set(1.0);
+                let scrape = Arc::new(exporter::Scrape {
+                    process: metrics_process::Collector::default(),
+                    current: Arc::clone(&current),
+                    update: Arc::clone(&update_status),
+                    collectors: metrics_collectors,
                 });
-            }
-            match (routes, config.http.listen.or(http_listen)) {
-                (None, _) => None,
-                (Some(_), None) => {
+                Some(exporter::routes(handle, scrape))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "metrics"))]
+            let public: Option<axum::Router> = None;
+            match (
+                routes.is_some() || public.is_some(),
+                config.http.listen.or(http_listen),
+            ) {
+                (false, _) => None,
+                (true, None) => {
                     tracing::error!(
                         "nothing to bind HTTP to: set `[http] listen` in {SERVER_CONFIG_FILE}"
                     );
                     None
                 }
-                (Some(routes), Some(addr)) => {
+                (true, Some(addr)) => {
                     let auth = http_auth.unwrap_or_else(|| {
                         sapphire_framework_keys::AuthConfig::new(Arc::new(
                             sapphire_framework_keys::BridgeVerifier::new(ctx.app_name, version),
                         ))
                     });
-                    http::start(addr, routes, auth, http_stop.clone()).await
+                    http::start(addr, routes, public, auth, http_stop.clone()).await
                 }
             }
         };
@@ -671,10 +744,14 @@ impl AppServer {
                 }
                 accepted = listener.accept() => {
                     let conn = accepted?;
+                    // Moved into the task, so the connection stops counting as open when it
+                    // ends, or when the reaping below aborts it.
+                    let counted = instrument::IpcConnection::open();
                     let router = Arc::clone(&router);
                     let app = ctx.app_name;
                     let info = info.clone();
                     connections.spawn(async move {
+                        let _counted = counted;
                         let _ = serve(conn, router, app, info).await;
                     });
                 }

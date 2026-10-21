@@ -14,7 +14,7 @@ use std::time::Duration;
 use sapphire_backend::protocol as proto;
 use sapphire_framework_keys::{AuthConfig, Authenticated, GrainId, Verdict, Verifier};
 use sapphire_framework_server::mcp::{Error as McpError, ToolContext};
-use sapphire_framework_server::{AppServer, HttpConfig, McpConfig, ServerConfig};
+use sapphire_framework_server::{AppServer, HttpConfig, HttpMcpConfig, ServerConfig};
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::{AppContext, AppKind};
 use serde_json::{Value, json};
@@ -284,8 +284,9 @@ async fn mcp_over_http_takes_a_token_and_serves_the_framework_tools() {
         http: HttpConfig {
             listen: Some(([127, 0, 0, 1], port).into()),
             allowed_hosts: Vec::new(),
+            mcp: HttpMcpConfig { enabled: true },
+            ..HttpConfig::default()
         },
-        mcp: McpConfig { http: true },
         ..ServerConfig::default()
     };
     let server = AppServer::new(&CTX_HTTP, "0.0.0")

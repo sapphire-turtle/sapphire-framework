@@ -11,9 +11,13 @@
 //! # The Host names clients use beyond loopback (a LAN name, a Tailscale name).
 //! allowed_hosts = ["box.tailnet.ts.net"]
 //!
-//! [mcp]
+//! [http.mcp]
 //! # Serve the application's MCP tools at /mcp, behind an external device's token.
-//! http = true
+//! enabled = true
+//!
+//! [http.metrics]
+//! # Serve Prometheus metrics at /metrics, without a token (counts and states only).
+//! enabled = true
 //!
 //! [update]
 //! # Do not ask GitHub for newer releases of this application. On by default, for an
@@ -39,9 +43,6 @@ pub struct ServerConfig {
     /// The HTTP listener.
     #[serde(default)]
     pub http: HttpConfig,
-    /// MCP over HTTP.
-    #[serde(default)]
-    pub mcp: McpConfig,
     /// Looking for newer releases.
     #[serde(default)]
     pub update: UpdateConfig,
@@ -49,8 +50,8 @@ pub struct ServerConfig {
 
 /// The `[http]` table: the listener every HTTP route shares.
 ///
-/// The listener binds only when something is served over it. Every route on it is behind
-/// an external device's bearer token (`sapphire-framework-keys`).
+/// The listener binds only when something is served over it. Every route on it but
+/// `/metrics` is behind an external device's bearer token (`sapphire-framework-keys`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {
@@ -60,15 +61,36 @@ pub struct HttpConfig {
     /// The `Host` names clients reach the server by, beyond loopback.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_hosts: Vec<String>,
+    /// MCP over HTTP.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub mcp: HttpMcpConfig,
+    /// Prometheus metrics over HTTP.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub metrics: HttpMetricsConfig,
 }
 
-/// The `[mcp]` table.
+/// The `[http.mcp]` table.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct McpConfig {
+pub struct HttpMcpConfig {
     /// Serve the application's MCP tools at `/mcp` on the HTTP listener. Off by default.
     #[serde(default)]
-    pub http: bool,
+    pub enabled: bool,
+}
+
+/// The `[http.metrics]` table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpMetricsConfig {
+    /// Serve Prometheus metrics at `/metrics` on the HTTP listener. Off by default.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Serde's `skip_serializing_if` wants a function, and a table that is all defaults is
+/// not worth writing out.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// The `[update]` table.
@@ -115,6 +137,17 @@ impl ServerConfig {
     pub fn load(path: &Path) -> Result<ServerConfig> {
         match std::fs::read_to_string(path) {
             Ok(text) => {
+                // `[mcp] http` moved under `[http]`. `deny_unknown_fields` alone would only
+                // say that `mcp` is unknown, so say where the setting went. A text that is
+                // not a table falls through to the parse below, which reports why.
+                if let Ok(table) = text.parse::<toml::Table>()
+                    && table.contains_key("mcp")
+                {
+                    return Err(Error::Config(format!(
+                        "{}: [mcp] http moved to [http.mcp] enabled",
+                        path.display()
+                    )));
+                }
                 toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ServerConfig::default()),
@@ -132,7 +165,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let config = ServerConfig::load(&tmp.path().join(SERVER_CONFIG_FILE)).unwrap();
         assert_eq!(config, ServerConfig::default());
-        assert!(!config.mcp.http);
+        assert!(!config.http.mcp.enabled);
+        assert!(!config.http.metrics.enabled);
         assert_eq!(config.http.listen, None);
         assert!(config.update.check);
     }
@@ -153,11 +187,11 @@ mod tests {
         let path = tmp.path().join(SERVER_CONFIG_FILE);
         std::fs::write(
             &path,
-            "[http]\nlisten = \"127.0.0.1:3173\"\nallowed_hosts = [\"box.example\"]\n\n[mcp]\nhttp = true\n",
+            "[http]\nlisten = \"127.0.0.1:3173\"\nallowed_hosts = [\"box.example\"]\n\n[http.mcp]\nenabled = true\n",
         )
         .unwrap();
         let config = ServerConfig::load(&path).unwrap();
-        assert!(config.mcp.http);
+        assert!(config.http.mcp.enabled);
         assert_eq!(config.http.listen, Some("127.0.0.1:3173".parse().unwrap()));
         assert_eq!(config.http.allowed_hosts, vec!["box.example".to_owned()]);
     }
@@ -166,7 +200,33 @@ mod tests {
     fn a_misspelt_setting_is_an_error_not_a_default() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join(SERVER_CONFIG_FILE);
-        std::fs::write(&path, "[mcp]\nhtpp = true\n").unwrap();
+        std::fs::write(&path, "[http.mcp]\nenabeld = true\n").unwrap();
         assert!(ServerConfig::load(&path).is_err());
+    }
+
+    #[test]
+    fn the_file_turns_metrics_on_under_http() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join(SERVER_CONFIG_FILE);
+        std::fs::write(
+            &path,
+            "[http]\nlisten = \"127.0.0.1:3173\"\n\n[http.metrics]\nenabled = true\n",
+        )
+        .unwrap();
+        let config = ServerConfig::load(&path).unwrap();
+        assert!(config.http.metrics.enabled);
+        assert!(!config.http.mcp.enabled);
+    }
+
+    #[test]
+    fn an_old_mcp_table_says_where_the_setting_went() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join(SERVER_CONFIG_FILE);
+        std::fs::write(&path, "[mcp]\nhttp = true\n").unwrap();
+        let err = ServerConfig::load(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("[mcp] http moved to [http.mcp] enabled"),
+            "{err}"
+        );
     }
 }

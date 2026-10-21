@@ -37,12 +37,16 @@ eframe = ["gui", "sapphire-framework-gui/eframe"]
 mobile = ["eframe", "server", "bridge", "ipc", "sapphire-framework-gui/mobile"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
 service = ["dep:sapphire-framework-service"]
-# The app server's HTTP listener (`AppServer::http`), every route behind an external device's token.
+# The app server's HTTP listener (`AppServer::http`), every route but `/metrics` behind an
+# external device's token.
 http = ["server", "sapphire-framework-server/http"]
 # MCP: the shared tools, the `mcp` subcommand (stdio, through the server's IPC endpoint) and
 # `/mcp` on the HTTP listener when the server's config turns it on. Not in `native`: an app
 # opts in (sapphire-agent does not).
 mcp = ["http", "sapphire-framework-server/mcp", "dep:sapphire-framework-mcp"]
+# Prometheus metrics at `/metrics` on the HTTP listener when the server's config turns them
+# on; the one route not behind a token.
+metrics = ["http", "sapphire-framework-server/metrics"]
 # YAML front matter for Markdown files (split, parse, render, edit one key in place).
 frontmatter = ["dep:sapphire-framework-frontmatter"]
 

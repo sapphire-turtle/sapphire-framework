@@ -161,7 +161,10 @@ impl Current {
         // on it. One that lands first finds this workspace no longer current, and stops.
         if let Ok(backend) = self.host.backend().await {
             tokio::spawn(async move {
-                if let Err(err) = backend.sync().await {
+                let started = std::time::Instant::now();
+                let result = backend.sync().await;
+                crate::instrument::reindexed(started, result.is_ok());
+                if let Err(err) = result {
                     tracing::warn!("re-indexing the moved workspace: {err}");
                 }
             });

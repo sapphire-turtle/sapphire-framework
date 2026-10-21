@@ -202,6 +202,9 @@ pub enum ConfigCommand {
         /// Read a secret from standard input even on a terminal.
         #[arg(long)]
         stdin: bool,
+        /// Restart the running bridge afterwards, and wait until it is back.
+        #[arg(long)]
+        restart: bool,
     },
     /// Remove settings (or every setting under a prefix), going back to the defaults.
     Unset {
@@ -211,6 +214,9 @@ pub enum ConfigCommand {
         /// Which scope's file to remove from (default: each key's own).
         #[command(flatten)]
         scope: ScopeFlags,
+        /// Restart the running bridge afterwards, and wait until it is back.
+        #[arg(long)]
+        restart: bool,
     },
 }
 

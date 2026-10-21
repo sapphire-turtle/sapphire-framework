@@ -19,7 +19,7 @@ use sapphire_bridge_api::{
     EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
     EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult,
     ExternalDeviceAuthenticateParams, INVITE, InviteParams, InviteResult, JOIN, JoinParams,
-    JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams, RegisterResult,
+    JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RESTART, RegisterParams, RegisterResult,
     RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
     WorkgroupCreateParams, WorkgroupCreateResult, WorkgroupStatus, WorkgroupWorkspaceInfo,
     WorkspaceRoles, WorkspacesResult,
@@ -135,6 +135,10 @@ impl Session {
 
 // ── serving ─────────────────────────────────────────────────────────────────
 
+/// How long `bridge.restart` waits after answering before the restart begins, so the
+/// reply is flushed before the connection closes.
+const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Serve control connections until the listener fails.
 pub(crate) async fn listen(
     bridge: Arc<Bridge>,
@@ -148,9 +152,9 @@ pub(crate) async fn listen(
 
     loop {
         let conn = listener.accept().await?;
-        let bridge = Arc::clone(&bridge);
-        let info = info.clone();
-        tokio::spawn(serve_connection(conn, bridge, info));
+        // On the bridge's own task set: a restart ends every connection, so a connected
+        // app server sees it close and reconnects to the new bridge.
+        bridge.spawn_task(serve_connection(conn, Arc::clone(&bridge), info.clone()));
     }
 }
 
@@ -347,6 +351,23 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
+                }
+            }
+        })
+        .method(RESTART, {
+            let bridge = Arc::clone(&bridge);
+            move |_| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    tracing::info!(target: crate::logging::BRIDGE_TARGET, "a restart was requested");
+                    // Notified after the reply is on its way: the restart closes this very
+                    // connection, and the caller should hear back first.
+                    tokio::spawn(async move {
+                        tokio::task::yield_now().await;
+                        tokio::time::sleep(RESTART_DELAY).await;
+                        bridge.request_restart();
+                    });
+                    encode(Ack {})
                 }
             }
         })

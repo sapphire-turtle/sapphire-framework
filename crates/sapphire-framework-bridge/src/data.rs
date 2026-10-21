@@ -207,9 +207,9 @@ pub(crate) async fn listen(bridge: Arc<Bridge>, endpoint: Endpoint) -> Result<()
 
     loop {
         let stream = listener.accept_raw().await?;
-        let bridge = Arc::clone(&bridge);
-        tokio::spawn(async move {
-            if let Err(err) = serve(bridge, stream).await {
+        let serving = Arc::clone(&bridge);
+        bridge.spawn_task(async move {
+            if let Err(err) = serve(serving, stream).await {
                 tracing::debug!("a data-plane connection ended: {err}");
             }
         });
@@ -492,7 +492,7 @@ pub(crate) async fn inbound(bridge: Arc<Bridge>, net: NetConfig) -> Result<()> {
         if route.app_name == wgsync::WORKSPACE_APP_NAME {
             match bridge.workgroup_replica() {
                 Some(replica) => {
-                    tokio::spawn(async move {
+                    bridge.spawn_task(async move {
                         if let Err(err) = replica.session(stream).await {
                             tracing::warn!("a workgroup replication session failed: {err}");
                         }

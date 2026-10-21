@@ -67,7 +67,7 @@ async fn a_third_device_learns_about_the_second_through_the_workgroup_workspace(
     let (_tc, dir_c, _wg_c) = pair_in(&net, &a, common::NODE_C, "tablet").await;
 
     // Let the workgroup workspace reach C.
-    common::sync_workgroup(&a, &dir_c, &net).await;
+    common::sync_workgroup(&a, &dir_c, common::NODE_C, &net).await;
 
     let wg_c = Workgroup::open(&dir_c).unwrap().unwrap();
     assert!(
@@ -83,7 +83,7 @@ async fn a_retired_device_stops_being_admitted_everywhere() {
     let a = common::start(&net, common::NODE_A, "host-a").await;
     let (_tb, _dir_b, _) = pair_in(&net, &a, common::NODE_B, "phone").await;
     let (_tc, dir_c, _) = pair_in(&net, &a, common::NODE_C, "tablet").await;
-    common::sync_workgroup(&a, &dir_c, &net).await;
+    common::sync_workgroup(&a, &dir_c, common::NODE_C, &net).await;
     assert!(
         Workgroup::open(&dir_c)
             .unwrap()
@@ -97,7 +97,7 @@ async fn a_retired_device_stops_being_admitted_everywhere() {
         .unwrap()
         .unwrap();
     wg_a.devices().unwrap().retire("phone").unwrap();
-    common::sync_workgroup(&a, &dir_c, &net).await;
+    common::sync_workgroup(&a, &dir_c, common::NODE_C, &net).await;
 
     let err = Workgroup::open(&dir_c)
         .unwrap()

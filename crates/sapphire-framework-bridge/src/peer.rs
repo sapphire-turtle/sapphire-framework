@@ -163,6 +163,13 @@ pub trait PeerTransport: Send + Sync + 'static {
         let _ = node_id;
         false
     }
+
+    /// Stop reaching other devices: close connections and free the socket.
+    ///
+    /// Called when a bridge stops serving, before a restart builds the next transport over
+    /// the same identity — which may want the same port. Defaults to nothing, for a
+    /// transport with nothing to free.
+    async fn close(&self) {}
 }
 
 // ── loopback ────────────────────────────────────────────────────────────────

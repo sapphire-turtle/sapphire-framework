@@ -270,6 +270,38 @@ async fn a_push_larger_than_the_inline_limit_is_fetched_by_hash() {
     assert_eq!(await_file(&b, "big.md").await.len(), 300_000);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_push_of_a_file_over_the_inline_limit_arrives_chunked() {
+    let ws = grain_id::GrainId::random();
+    let a = side("a");
+    let b = side("b");
+
+    let (left, right) = tokio::io::duplex(64 * 1024);
+    let (x, y) = tokio::join!(
+        open_live_session(left, Arc::clone(&a.replica), ws),
+        open_live_session(right, Arc::clone(&b.replica), ws)
+    );
+    let (_, live_a) = x.unwrap();
+    let (_, live_b) = y.unwrap();
+
+    // Several chunks and a short last one: the content is streamed, not sent whole.
+    let mut received = live_b.updates();
+    let len = 3 * sapphire_framework_session::CHUNK + 7;
+    let big = "y".repeat(len);
+    std::fs::write(a.root.join("chunked.md"), &big).unwrap();
+    live_a.push(scan(&a).await).await.unwrap();
+
+    let updates = tokio::time::timeout(std::time::Duration::from_secs(20), received.recv())
+        .await
+        .expect("an update within twenty seconds")
+        .unwrap();
+    assert!(
+        updates.iter().any(|u| u.path.ends_with("chunked.md")),
+        "{updates:?}"
+    );
+    assert_eq!(await_file(&b, "chunked.md").await, big);
+}
+
 #[tokio::test(start_paused = true)]
 async fn an_exchange_gives_up_on_a_peer_that_never_says_hello() {
     // The far end took the stream and then said nothing: a peer whose bridge parked the

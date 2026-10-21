@@ -62,6 +62,27 @@ pub fn reopen(node: Node) -> Node {
     }
 }
 
+/// Close and reopen the replica on the same state directory with `tweak` applied to
+/// its config.
+pub fn reopen_with(node: Node, tweak: impl FnOnce(&mut ReplicaConfig)) -> Node {
+    let Node {
+        replica,
+        root,
+        clock,
+        _dir,
+    } = node;
+    let mut config = replica.config().clone();
+    drop(replica);
+    tweak(&mut config);
+    let replica = Replica::open(config, clock.clone()).unwrap();
+    Node {
+        replica,
+        root,
+        clock,
+        _dir,
+    }
+}
+
 /// Close the replica, delete its store and staging directory, and open a fresh one.
 pub fn reset_store(node: Node) -> Node {
     let Node {

@@ -12,7 +12,8 @@ pub enum Error {
     /// The peer sent something the framing or the session does not allow.
     #[error("protocol error: {0}")]
     Protocol(String),
-    /// A frame announced more payload than [`crate::MAX_FRAME_LEN`].
+    /// A frame announced more payload than its kind allows: [`crate::MAX_FRAME_LEN`] for a
+    /// control frame, [`crate::CHUNK`] for a content chunk.
     #[error("frame of {len} bytes exceeds the {max}-byte limit")]
     FrameTooLarge {
         /// Length the frame announced, in bytes.
@@ -31,6 +32,9 @@ pub enum Error {
     /// The replication core failed; the message is its error's `Display`.
     #[error("replication error: {0}")]
     Sync(String),
+    /// The writer is gone — the stream failed under it — so nothing more can be sent.
+    #[error("the stream closed")]
+    Closed,
     /// The peer said it would not continue, and why.
     #[error("the peer refused the session: {0}")]
     Refused(String),

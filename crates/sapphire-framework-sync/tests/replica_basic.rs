@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use sapphire_framework_sync::testing::MapSource;
-use sapphire_framework_sync::{Content, PathUpdate, SkipReason, VersionVector};
+use sapphire_framework_sync::{Content, ContentHash, PathUpdate, SkipReason, VersionVector};
 
 #[test]
 fn a_new_file_propagates() {
@@ -323,4 +323,220 @@ fn an_ignored_path_is_reported_when_a_peer_sends_it() {
         "{report:?}"
     );
     assert_eq!(read(&b, "build.log"), None);
+}
+
+#[test]
+fn open_clears_leftover_partials() {
+    let a = node(1);
+    let staging = a.replica.config().staging_dir.clone();
+    std::fs::write(staging.join("x.partial"), b"junk").unwrap();
+    std::fs::write(staging.join("kept"), b"done").unwrap();
+    let a = reopen(a);
+    assert!(!staging.join("x.partial").exists());
+    assert!(staging.join("kept").exists());
+    drop(a);
+}
+
+#[test]
+fn content_path_trusts_an_unchanged_file() {
+    let mut a = node(1);
+    write(&a, "a.bin", "hello");
+    scan(&mut a);
+    let hash = ContentHash::of_bytes(b"hello");
+    assert_eq!(
+        a.replica.content_path(&hash).unwrap(),
+        Some((a.root.join("a.bin"), 5))
+    );
+    assert_eq!(
+        a.replica
+            .content_path(&ContentHash::of_bytes(b"other"))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn content_path_rehashes_a_file_whose_stamp_changed() {
+    let mut a = node(1);
+    write(&a, "a.bin", "hello");
+    scan(&mut a);
+    write(&a, "a.bin", "world");
+    let hash = ContentHash::of_bytes(b"hello");
+    assert_eq!(a.replica.content_path(&hash).unwrap(), None);
+}
+
+#[test]
+fn content_path_finds_staged_content() {
+    let a = node(1);
+    let hash = ContentHash::of_bytes(b"hello");
+    let mut w = a.replica.stager().writer(hash, 5).unwrap();
+    w.write(b"hello").unwrap();
+    w.finish().unwrap();
+    assert_eq!(
+        a.replica.content_path(&hash).unwrap(),
+        Some((a.replica.config().staging_dir.join(hash.to_hex()), 5))
+    );
+}
+
+#[test]
+fn content_paths_answers_as_content_path_does_for_each_hash() {
+    let mut a = node(1);
+    write(&a, "a.bin", "on disk");
+    write(&a, "b.bin", "changed");
+    scan(&mut a);
+    write(&a, "b.bin", "changed after the scan");
+    let staged = ContentHash::of_bytes(b"staged");
+    let mut w = a.replica.stager().writer(staged, 6).unwrap();
+    w.write(b"staged").unwrap();
+    w.finish().unwrap();
+    let hashes = [
+        ContentHash::of_bytes(b"on disk"),
+        ContentHash::of_bytes(b"changed"),
+        staged,
+        ContentHash::of_bytes(b"absent"),
+    ];
+    let found = a.replica.content_paths(&hashes).unwrap();
+    for hash in &hashes {
+        assert_eq!(
+            found.get(hash).cloned(),
+            a.replica.content_path(hash).unwrap(),
+            "{hash:?}"
+        );
+    }
+    assert_eq!(found.len(), 2, "only the file on disk and the staged one");
+}
+
+#[test]
+fn a_staged_file_is_used_without_rehashing() {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&a, "a.txt", "hello");
+    scan(&mut a);
+    let hash = ContentHash::of_bytes(b"hello");
+    let mut w = b.replica.stager().writer(hash, 5).unwrap();
+    w.write(b"hello").unwrap();
+    let staged = w.finish().unwrap();
+    assert!(staged.is_file());
+    // Pin trust-on-existence: only `finish` ever writes `staging/<hex>`, so the file is
+    // placed as it stands, not re-hashed. Same length, different bytes: if it were
+    // re-hashed it would be refused instead of placed.
+    std::fs::write(&staged, b"jello").unwrap();
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    b.replica.apply(&updates, &MapSource::default()).unwrap();
+    assert_eq!(read(&b, "a.txt").as_deref(), Some("jello"));
+    assert!(!staged.exists());
+}
+
+#[test]
+fn a_file_above_64_mib_is_recorded_by_default() {
+    let mut a = node(1);
+    let path = a.root.join("big.bin");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(64 * 1024 * 1024 + 1).unwrap();
+    drop(file);
+    let report = scan(&mut a);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let recorded: Vec<&str> = report.recorded.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(recorded, ["big.bin"]);
+}
+
+#[test]
+fn a_conflict_copy_of_a_large_loser_is_written() {
+    let (mut a, mut b) = (node(1), node(2));
+    let big = "x".repeat(100 * 1024);
+    write(&a, "a.txt", &big);
+    scan(&mut a);
+    b.clock.set(9_000_000);
+    write(&b, "a.txt", "from b");
+    scan(&mut b);
+    // The loser's bytes are only reachable through the source's path.
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    let source = MapSource::default().with(big.as_bytes());
+    let report = b.replica.apply(&updates, &source).unwrap();
+    assert_eq!(report.conflicts.len(), 1);
+    assert_eq!(read(&b, "a.txt").as_deref(), Some("from b"));
+    assert_eq!(read(&b, &report.conflicts[0].copy_path), Some(big));
+}
+
+/// b holds a local, recorded `a.txt` ("from b ...", over 4 bytes) as the loser of a
+/// conflict with a's newer one-byte "A", and b's size limit has since dropped to 4.
+fn loser_on_disk_over_a_lowered_limit() -> (Node, Node, Vec<PathUpdate>) {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&b, "a.txt", "from b, longer than the new limit");
+    scan(&mut b);
+    let b = reopen_with(b, |c| c.max_file_size = 4);
+    a.clock.set(9_000_000);
+    write(&a, "a.txt", "A");
+    scan(&mut a);
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    (a, b, updates)
+}
+
+#[test]
+fn an_on_disk_loser_over_a_lowered_limit_still_gets_its_conflict_copy() {
+    let (a, mut b, updates) = loser_on_disk_over_a_lowered_limit();
+    let report = b.replica.apply(&updates, &a.replica).unwrap();
+    assert_eq!(report.conflicts.len(), 1, "{:?}", report.skipped);
+    assert_eq!(
+        read(&b, &report.conflicts[0].copy_path).as_deref(),
+        Some("from b, longer than the new limit")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_on_disk_loser_is_an_io_skip_and_stays_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    let (a, mut b, updates) = loser_on_disk_over_a_lowered_limit();
+    let path = b.root.join("a.txt");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&path).is_ok() {
+        // Running with privileges that ignore file modes.
+        return;
+    }
+    // `apply` reports a per-path I/O error as a skip rather than failing the batch.
+    let result = b.replica.apply(&updates, &a.replica);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let report = result.unwrap();
+    assert!(report.conflicts.is_empty());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .any(|s| matches!(s.reason, SkipReason::Io(_))),
+        "{:?}",
+        report.skipped
+    );
+    assert_eq!(
+        read(&b, "a.txt").as_deref(),
+        Some("from b, longer than the new limit")
+    );
+}
+
+/// A source whose file does not hold the bytes its name promises.
+struct LyingSource(std::path::PathBuf);
+
+impl sapphire_framework_sync::ContentSource for LyingSource {
+    fn locate(&self, _: &ContentHash) -> Option<std::path::PathBuf> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn a_located_file_with_the_wrong_bytes_is_unavailable_not_placed() {
+    let (mut a, mut b) = (node(1), node(2));
+    write(&a, "a.txt", "hello");
+    scan(&mut a);
+    let dir = tempfile::tempdir().unwrap();
+    let wrong = dir.path().join("wrong");
+    std::fs::write(&wrong, "jello").unwrap();
+    let updates = a.replica.delta_for(b.replica.vv()).unwrap();
+    let report = b.replica.apply(&updates, &LyingSource(wrong)).unwrap();
+    assert_eq!(report.skipped[0].reason, SkipReason::ContentUnavailable);
+    assert_eq!(read(&b, "a.txt"), None);
+    let staging = &b.replica.config().staging_dir;
+    assert!(
+        std::fs::read_dir(staging)
+            .map(|d| d.count() == 0)
+            .unwrap_or(true)
+    );
 }

@@ -10,7 +10,7 @@ categories = ["filesystem"]
 
 [features]
 # Deterministic clocks, fault injection and logical dumps for tests.
-test-util = []
+test-util = ["dep:tempfile"]
 
 [dependencies]
 grain-id.workspace = true
@@ -19,6 +19,7 @@ redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile = { version = "3", optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true

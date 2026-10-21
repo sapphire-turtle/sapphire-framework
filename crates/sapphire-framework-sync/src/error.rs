@@ -1,5 +1,6 @@
 //! Error type for the replication core.
 
+use crate::hash::ContentHash;
 use crate::report::PauseReason;
 
 /// Errors raised by the replication core.
@@ -21,6 +22,10 @@ pub enum Error {
     Corrupt(String),
     #[error("replica is paused: {0:?}")]
     Paused(PauseReason),
+    #[error("content of {len} bytes exceeds the {max} byte limit")]
+    TooLarge { len: u64, max: u64 },
+    #[error("received content does not match its hash {expected}")]
+    ContentMismatch { expected: ContentHash },
     #[cfg(any(test, feature = "test-util"))]
     #[error("injected fault")]
     InjectedFault,

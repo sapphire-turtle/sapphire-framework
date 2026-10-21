@@ -24,7 +24,7 @@ impl ContentHash {
 
     pub fn of_file(path: &Path) -> std::io::Result<Self> {
         let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
+        let mut hasher = ContentHasher::new();
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             let n = file.read(&mut buf)?;
@@ -33,11 +33,31 @@ impl ContentHash {
             }
             hasher.update(&buf[..n]);
         }
-        Ok(Self(hasher.finalize().into()))
+        Ok(hasher.finish())
     }
 
     pub fn to_hex(&self) -> String {
         self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+/// Incremental [`ContentHash`], for content that arrives in pieces.
+#[derive(Clone, Default)]
+pub struct ContentHasher(Sha256);
+
+impl ContentHasher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed the next piece of the content.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// The hash of everything fed so far.
+    pub fn finish(self) -> ContentHash {
+        ContentHash(self.0.finalize().into())
     }
 }
 

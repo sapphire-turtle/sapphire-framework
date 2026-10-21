@@ -16,8 +16,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 # `rt` and `sync` for the writer task and its channel; `io-util` for split and the
 # AsyncRead/AsyncWrite traits.
-# `time` for the deadline the initial exchange puts on a peer's `Hello`.
-tokio = { workspace = true, features = ["io-util", "rt", "sync", "time"] }
+# `time` for the deadline the initial exchange puts on a peer's `Hello`, and its idle
+# timeout. `macros` for the `select!` in the writer and the idle-bounded read.
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 tracing.workspace = true
 
 [dev-dependencies]

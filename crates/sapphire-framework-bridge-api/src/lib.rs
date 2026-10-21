@@ -56,8 +56,8 @@ pub use external::{
 mod cli;
 #[cfg(feature = "cli")]
 pub use cli::{
-    EmbeddingCommand, ExternalDeviceCommand, KeyCommand, LocalCommand, RemoteCommand, Switch,
-    read_key,
+    ConfigCommand, EmbeddingCommand, ExternalDeviceCommand, KeyCommand, LocalCommand,
+    RemoteCommand, ScopeFlags, Switch, describe_entries, parse_entries, read_key, read_secret,
 };
 
 /// The version of the bridge's control-plane API: the methods below and their types.

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::io::Write as _;
 
 use sapphire_bridge_api::{
-    BRIDGE_NAME, EmbedInfoResult, EmbedRequest, EmbedSettingsResult, EmbeddingCommand,
-    ExternalDeviceCommand, InviteParams, JoinParams, PeerInfo, StatusResult,
+    BRIDGE_NAME, ConfigCommand, EmbedInfoResult, EmbedRequest, EmbedSettingsResult,
+    EmbeddingCommand, ExternalDeviceCommand, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
 use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_service::{Environment, ServiceCommand, ServiceSpec, SystemManager};
@@ -76,6 +76,9 @@ pub enum BridgeCommand {
     /// switches and API key.
     #[command(subcommand)]
     Embedding(EmbeddingCommand),
+    /// The settings, by key: list, get, set and unset.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// The workgroup's external devices: clients that reach its apps with a key.
     #[command(subcommand)]
     ExternalDevice(ExternalDeviceCommand),
@@ -228,6 +231,7 @@ impl BridgeCommand {
                 }
             },
             BridgeCommand::Embedding(command) => embedding(version, command).await,
+            BridgeCommand::Config(command) => config(version, command).await,
             BridgeCommand::ExternalDevice(command) => external_device(version, command).await,
         }
     }
@@ -286,6 +290,104 @@ fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSett
         ..EmbedInfoResult::default()
     };
     Ok(resolved.report(info))
+}
+
+// ── config ──────────────────────────────────────────────────────────────────
+
+/// What `config set` and `config unset` print when the batch only reached the files.
+const OFFLINE_NOTE: &str = "the bridge is not running; it applies these settings when it starts";
+
+/// `config …`: through the running bridge, or — when none runs — on the files, so a
+/// device can be set up before its bridge starts.
+async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
+    let Some(client) = connect(version).await? else {
+        let (code, lines) = config_offline(&BridgeDir::open()?, command)?;
+        for line in lines {
+            println!("{line}");
+        }
+        return Ok(code);
+    };
+    let write = |result: sapphire_bridge_api::ConfigWriteResult| {
+        if !result.pending_restart.is_empty() {
+            println!("restart required: run `sapphire-bridge restart`");
+        }
+    };
+    match command {
+        ConfigCommand::List { scope, show_origin } => {
+            let entries = client.config_list(scope.scope()).await?.entries;
+            for line in sapphire_bridge_api::describe_entries(&entries, show_origin) {
+                println!("{line}");
+            }
+        }
+        ConfigCommand::Get { key } => match client.config_get(&key).await {
+            Ok(entry) => {
+                for line in sapphire_bridge_api::describe_entries(&[entry], false) {
+                    println!("{line}");
+                }
+            }
+            Err(err) => {
+                println!("{err}");
+                return Ok(1);
+            }
+        },
+        ConfigCommand::Set {
+            entries,
+            scope,
+            stdin,
+        } => {
+            let schema = client.config_schema().await?.settings;
+            let entries = sapphire_bridge_api::parse_entries(&schema, &entries, stdin)
+                .map_err(Error::Config)?;
+            write(client.config_set(scope.scope(), entries).await?);
+        }
+        ConfigCommand::Unset { keys, scope } => {
+            write(client.config_unset(scope.scope(), keys).await?);
+        }
+    }
+    Ok(0)
+}
+
+/// Carry out `command` on the files of `dir`: the exit code and the lines to print.
+fn config_offline(dir: &BridgeDir, command: ConfigCommand) -> Result<(i32, Vec<String>)> {
+    use sapphire_framework_settings::{Op, apply, get, list};
+
+    let reg = crate::settings::registry(dir)?;
+    let done = || Ok((0, vec![OFFLINE_NOTE.to_owned()]));
+    match command {
+        ConfigCommand::List { scope, show_origin } => {
+            let entries = list(&reg, scope.scope(), None)?;
+            Ok((
+                0,
+                sapphire_bridge_api::describe_entries(&entries, show_origin),
+            ))
+        }
+        ConfigCommand::Get { key } => match get(&reg, &key) {
+            Ok(entry) => Ok((0, sapphire_bridge_api::describe_entries(&[entry], false))),
+            Err(err) => Ok((1, vec![err.to_string()])),
+        },
+        ConfigCommand::Set {
+            entries,
+            scope,
+            stdin,
+        } => {
+            let entries = sapphire_bridge_api::parse_entries(&reg.schema(), &entries, stdin)
+                .map_err(Error::Config)?;
+            let ops = entries
+                .into_iter()
+                .map(|e| Op::Set {
+                    key: e.key,
+                    value: e.value,
+                })
+                .collect();
+            apply(&reg, scope.scope(), ops)?;
+            done()
+        }
+        ConfigCommand::Unset { keys, scope } => {
+            let ops = keys.into_iter().map(|key| Op::Unset { key }).collect();
+            apply(&reg, scope.scope(), ops)?;
+            done()
+        }
+    }
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
@@ -1225,6 +1327,45 @@ mod pairing_cli_tests {
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn offline_set_writes_the_files_and_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().to_path_buf()).unwrap();
+        let command = |args: &[&str]| {
+            let mut argv = vec!["b", "config"];
+            argv.extend_from_slice(args);
+            match Probe::try_parse_from(argv).unwrap().command {
+                BridgeCommand::Config(c) => c,
+                _ => panic!("not a config command"),
+            }
+        };
+        let (code, lines) = config_offline(&dir, command(&["set", "net.discovery=false"])).unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            lines,
+            ["the bridge is not running; it applies these settings when it starts"]
+        );
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
+        assert!(
+            text.contains("[net]") && text.contains("discovery = false"),
+            "{text}"
+        );
+
+        let (_, lines) = config_offline(&dir, command(&["get", "net.discovery"])).unwrap();
+        assert_eq!(lines, ["net.discovery = false"]);
+        let (code, lines) = config_offline(&dir, command(&["get", "net.nope"])).unwrap();
+        assert_eq!(code, 1);
+        assert!(lines[0].contains("net.nope"), "{lines:?}");
+
+        let (_, lines) = config_offline(&dir, command(&["unset", "net.discovery"])).unwrap();
+        assert_eq!(lines.len(), 1);
+        let (_, lines) = config_offline(&dir, command(&["list", "--device"])).unwrap();
+        assert!(
+            !lines.iter().any(|l| l.starts_with("net.discovery")),
+            "{lines:?}"
+        );
     }
 
     #[test]

@@ -9,12 +9,16 @@
 //!    mismatch, or a different workspace, ends the session with `Refused` before any state
 //!    is exchanged.
 //! 2. Every path state the peer's version vector does not cover, in pages of [`PAGE`], each
-//!    page preceded by the content it inlines (64 KiB or less), then `Done`.
-//! 3. `Want` for content that was not inlined, answered with the content or `Missing`.
+//!    page preceded by the content it inlines (64 KiB or less, and within the peer's
+//!    `max_file_size`), then `Done`.
+//! 3. `Want` for content that was not inlined, answered with the content or `Missing`. Once
+//!    the peer's `Done` is in, also `Want` for content earlier sessions never got
+//!    ([`Replica::unavailable`]).
 //! 4. `Settled`, once the sender will ask for nothing more.
 //! 5. `commit_session` last. An interrupted session leaves the version vector where it was,
-//!    and everything is simply resent next time; committing earlier would make the replica
-//!    claim versions whose content never arrived.
+//!    and everything is simply resent next time. A completed one commits even when some
+//!    content was `Missing`: the paths are recorded, and step 3 of every later session asks
+//!    for their content again, from whichever peer it meets.
 //!
 //! # Locking and giving up
 //!
@@ -384,6 +388,8 @@ where
     // 3. Read until the peer is done and settled and every hash we asked for has been
     //    answered.
     let mut wanted: HashSet<ContentHash> = HashSet::new();
+    // Hashes the peer answered without the content this session; not asked for again.
+    let mut lacked: HashSet<ContentHash> = HashSet::new();
     let mut report = Report::default();
     let mut received_count = 0usize;
     let mut peer_done = false;
@@ -422,16 +428,33 @@ where
                         }
                     }
                 }
-                Frame::Control(Message::Done) => peer_done = true,
+                Frame::Control(Message::Done) => {
+                    peer_done = true;
+                    // Content an earlier session never got: its paths were committed all the
+                    // same, so no page carries them again (#297). Asked for once the peer's
+                    // pages and the content they inline are all in, so nothing on the wire is
+                    // asked for twice.
+                    let again = replica
+                        .lock()
+                        .await
+                        .unavailable()
+                        .map_err(|e| Error::Sync(e.to_string()))?;
+                    for hash in again {
+                        if !lacked.contains(&hash) && wanted.insert(hash) {
+                            send(&out_tx, Out::Control(Message::Want(hash)))?;
+                        }
+                    }
+                }
                 Frame::Control(Message::Settled) => peer_settled = true,
                 Frame::Control(Message::Want(hash)) => {
                     let reply = answer(&*replica.lock().await, hash);
                     send(&out_tx, reply)?;
                 }
                 Frame::Control(Message::Missing(hash)) => {
-                    // The peer does not have it either. Another peer may; the path simply stays
-                    // unmaterialised until one does.
+                    // The peer does not have it either. Another peer may: the path stays
+                    // unmaterialised, and later sessions ask for it again.
                     wanted.remove(&hash);
+                    lacked.insert(hash);
                 }
                 Frame::Control(Message::Aborted(hash)) => {
                     // The peer's file changed under it: as good as `Missing`.
@@ -439,6 +462,7 @@ where
                         break Stop::Protocol(reason(e));
                     }
                     wanted.remove(&hash);
+                    lacked.insert(hash);
                 }
                 Frame::Control(Message::Live(_)) => {
                     // A `Live` push travels only after both sides have left the exchange, and

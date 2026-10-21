@@ -458,6 +458,56 @@ impl Replica {
         Ok(report)
     }
 
+    /// Content this replica wants written and does not have: the winner of a path whose
+    /// file does not hold it yet, and each loser still waiting for its conflict copy.
+    ///
+    /// A session asks its peer for these whatever the peer sends: committing a session
+    /// takes in the peer's version vector even when some content never arrived, so no
+    /// later delta carries those paths again. Content the replica would not write anyway
+    /// — an ignored or unrepresentable path, a case collision, a file over the size limit
+    /// — is left out.
+    pub fn unavailable(&self) -> Result<Vec<ContentHash>> {
+        let filter = self.filter()?;
+        let states = self.store.all()?;
+        let index = StoreIndex::build(&states);
+        let max = self.config.max_file_size;
+        let mut wanted: BTreeSet<ContentHash> = BTreeSet::new();
+        for (rel, state) in &states {
+            let winner = state.winner();
+            if let Content::File { hash, .. } = winner.content
+                && state.disk.hash != Some(hash)
+                && self.skip_reason(rel, winner, &filter, &index)?.is_none()
+            {
+                wanted.insert(hash);
+            }
+            for loser in state
+                .versions
+                .iter()
+                .filter(|v| v.dot != winner.dot && merge::needs_copy(v, winner))
+            {
+                let Content::File { hash, len } = loser.content else {
+                    continue;
+                };
+                let copy_rel = merge::conflict_path(rel, &loser.dot);
+                if state.disk.hash != Some(hash)
+                    && len <= max
+                    && filter.allows(&copy_rel, false)
+                    && paths::representable(&copy_rel)
+                    && self.store.get(&copy_rel)?.is_none()
+                {
+                    wanted.insert(hash);
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        for hash in wanted {
+            if self.content_path_with(&hash, &index)?.is_none() {
+                missing.push(hash);
+            }
+        }
+        Ok(missing)
+    }
+
     /// A [`Stager`] over this replica's staging directory and size limit.
     pub fn stager(&self) -> Stager {
         Stager::new(self.config.staging_dir.clone(), self.config.max_file_size)

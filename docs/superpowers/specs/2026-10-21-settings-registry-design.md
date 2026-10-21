@@ -303,7 +303,9 @@ When #307 lands it adds `embed.local.qtype` to this table.
 
 - `net.embedded_relay.*`. Whether the table is present is its on/off switch, and `hostname`
   and the TLS fields are required together, which fits per-key editing poorly; it is an
-  operator's setting and stays a hand edit. A follow-up issue covers it.
+  operator's setting and stays a hand edit. The bridge parses the table but never starts
+  the relay (`EmbeddedRelay::start` is called only from tests); #316 decides whether to wire
+  it up or remove it.
 - Workgroup-scope `net.*` keys (the announced relays of the old `root/net.toml`). Nothing
   writes them in production yet (`publish_net` has no caller); the bridge reads `[net]` from
   `root/config.toml` where it read `root/net.toml`, so a later version can add the keys.

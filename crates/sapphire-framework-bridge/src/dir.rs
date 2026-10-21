@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub const BRIDGE_DIR_ENV: &str = "SAPPHIRE_BRIDGE_DIR";
 
 /// On-disk format version of the bridge directory.
-pub const BRIDGE_FORMAT_VERSION: u32 = 1;
+pub const BRIDGE_FORMAT_VERSION: u32 = 2;
 
 /// The bridge's directory.
 ///
@@ -65,8 +65,11 @@ impl BridgeDir {
                     )));
                 }
                 if found < BRIDGE_FORMAT_VERSION {
-                    // No older format exists yet. When one does, migrate here — idempotently
-                    // — before writing the new stamp.
+                    // Format 1 kept `net.toml` and `embedding.toml`; format 2 folds them into
+                    // `config.toml`. The migration is idempotent, so a CLI and a starting
+                    // bridge may both run it, and one stopped half-way runs again here
+                    // because the stamp is written only after it.
+                    crate::config_file::migrate_device(self)?;
                     std::fs::write(&format, BRIDGE_FORMAT_VERSION.to_string())?;
                 }
             }
@@ -91,7 +94,6 @@ impl BridgeDir {
     /// The format-1 network configuration, now `[net]` of [`config_toml`](Self::config_toml).
     ///
     /// Read only by the migration to format 2.
-    #[allow(dead_code)] // The migration to format 2 reads it (#314).
     pub(crate) fn legacy_net_toml(&self) -> PathBuf {
         self.root.join("net.toml")
     }
@@ -104,7 +106,6 @@ impl BridgeDir {
     /// The format-1 embedding settings, now `[embed]` of [`config_toml`](Self::config_toml).
     ///
     /// Read only by the migration to format 2.
-    #[allow(dead_code)] // The migration to format 2 reads it (#314).
     pub(crate) fn legacy_embedding_toml(&self) -> PathBuf {
         self.root.join("embedding.toml")
     }

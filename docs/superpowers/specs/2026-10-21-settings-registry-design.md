@@ -327,6 +327,10 @@ bridge may both run it:
   move into the same tables.
 - The old files are renamed to `*.toml.v1` rather than deleted, so a user can see what was
   moved.
+- A joined host's workgroup wins even when it has no models, so a joined host whose
+  workgroup has neither `root/embedding.toml` nor an `[embed]` table gives its own
+  `[models]` to the workgroup's `[embed]` instead (the local model named explicitly), and
+  keeps embedding.
 
 The workgroup's synced files are migrated by whichever upgraded bridge opens the workgroup
 first: `root/embedding.toml` becomes `[embed]` and `root/net.toml` becomes `[net]` of

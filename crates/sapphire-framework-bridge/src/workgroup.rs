@@ -158,12 +158,16 @@ impl Workgroup {
             })?;
             let parsed: WorkgroupFile = toml::from_str(&text)
                 .map_err(|e| Error::Config(format!("{}: {e}", file.display())))?;
-            return Ok(Some(Workgroup {
+            let workgroup = Workgroup {
                 id,
                 name: parsed.name,
                 dir: entry.path(),
                 devices_dir: dir.devices_dir(id),
-            }));
+            };
+            // The root is synced: a format-1 file may arrive from a device that has not
+            // been upgraded yet, at any time, so every open checks for one.
+            crate::config_file::migrate_workgroup(&workgroup)?;
+            return Ok(Some(workgroup));
         }
         Ok(None)
     }
@@ -456,7 +460,6 @@ impl Workgroup {
     /// [`config_toml`](Self::config_toml).
     ///
     /// Read only by the migration to format 2.
-    #[allow(dead_code)] // The migration to format 2 reads it (#314).
     pub(crate) fn legacy_embedding_toml(&self) -> PathBuf {
         self.dir.join("root").join("embedding.toml")
     }
@@ -470,7 +473,6 @@ impl Workgroup {
     /// [`config_toml`](Self::config_toml).
     ///
     /// Read only by the migration to format 2.
-    #[allow(dead_code)] // The migration to format 2 reads it (#314).
     pub(crate) fn legacy_net_toml(&self) -> PathBuf {
         self.dir.join("root").join("net.toml")
     }

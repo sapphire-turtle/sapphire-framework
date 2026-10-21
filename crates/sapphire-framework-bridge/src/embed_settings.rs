@@ -60,7 +60,7 @@ pub struct Resolved {
     pub models: ModelSettings,
     /// Where they come from.
     pub source: Option<ModelSource>,
-    /// This host's own `[models]` is ignored because the workgroup's file wins.
+    /// This host's own models are ignored because the workgroup's settings win.
     pub shadowed: bool,
     /// This host's switches and cache directory, as written.
     pub device: DeviceSettings,

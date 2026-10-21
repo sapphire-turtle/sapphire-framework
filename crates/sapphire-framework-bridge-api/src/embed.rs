@@ -86,7 +86,7 @@ pub struct RemoteModel {
     pub dimension: u32,
 }
 
-/// The two slots: the workgroup's synced `embedding.toml`, or a host's own without one.
+/// The two slots: the workgroup's synced `[embed]` models, or a host's own without a workgroup.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSettings {
@@ -221,9 +221,9 @@ impl fmt::Debug for ApiKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelSource {
-    /// The workgroup's synced `embedding.toml`.
+    /// The workgroup's synced `root/config.toml`.
     Workgroup,
-    /// This host's own `[models]`, because it has no workgroup or the workgroup has none.
+    /// This host's own `config.toml`, because it has no workgroup.
     Device,
 }
 
@@ -263,7 +263,7 @@ pub struct EmbedSettingsResult {
     /// Where they come from; `None` when there are none.
     #[serde(default)]
     pub source: Option<ModelSource>,
-    /// This host's own `[models]` exists but the workgroup's file wins.
+    /// This host's own `[embed]` holds models but the workgroup's settings win.
     #[serde(default)]
     pub shadowed_device_models: bool,
     /// This device's own settings, as written.
@@ -349,7 +349,8 @@ pub fn describe(s: &EmbedSettingsResult) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(match s.source {
         Some(ModelSource::Workgroup) if s.shadowed_device_models => {
-            "models: the workgroup's (this device's own [models] is ignored)".to_owned()
+            "models: the workgroup's (the models in this device's own config.toml are ignored)"
+                .to_owned()
         }
         Some(ModelSource::Workgroup) => "models: the workgroup's".to_owned(),
         Some(ModelSource::Device) => "models: this device's own".to_owned(),

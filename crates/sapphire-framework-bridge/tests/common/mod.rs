@@ -118,7 +118,7 @@ pub async fn start_with_exe(
     .await
 }
 
-/// As [`start_with_exe`], with this host's `net.toml` spelled out.
+/// As [`start_with_exe`], with this host's `[net]` spelled out.
 pub async fn start_with_net(
     net: &LoopbackNetwork,
     node_id: &str,

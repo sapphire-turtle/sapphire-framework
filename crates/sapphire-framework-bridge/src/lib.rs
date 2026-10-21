@@ -97,8 +97,9 @@ pub struct Bridge {
     version: &'static str,
     control: Endpoint,
     data: Endpoint,
-    /// `None` means "read `[net]` of `config.toml` when `run` starts", which is what a real caller wants:
-    /// the file may have been edited since this bridge was built. Tests set it outright.
+    /// `None` means "read `[net]` of `config.toml` when `run` starts", which is what a real
+    /// caller wants: the file may have been edited since this bridge was built. Tests set it
+    /// outright.
     net: Option<NetConfig>,
     /// The routing table, held in memory rather than re-read per call: two app servers
     /// registering at the same moment would otherwise load-modify-write over each other. Only

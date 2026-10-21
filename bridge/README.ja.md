@@ -87,11 +87,12 @@ sapphire-bridge/
     format          # ディレクトリのフォーマットバージョン
     node.key        # iroh の秘密鍵 -> このデバイスの node id
     bridge.lock     # 単一インスタンス用のガード。役割選出ではない
-    net.toml        # discovery・relay・wake_on_sync
+    config.toml     # このデバイスの設定: [net], [embed]
     routes.toml     # workspace_id -> 所有するアプリサーバ
     run/            # IPC ソケットと spawn lock（SAPPHIRE_RUNTIME_DIR で単体上書き可）
     workgroups/<workgroup-id>/
         root/       # デバイス台帳
+        root/config.toml  # workgroup 共通の設定
         root/devices/<device-id>.toml
 ```
 
@@ -100,13 +101,20 @@ Unix ではディレクトリは `0700`、`node.key` は `0600` です。この�
 
 ## 設定
 
-`net.toml`。どのフィールドも省略可能です:
+`config.toml`。どのフィールドも省略可能です（以下は `[net]`。`[embed]` は埋め込みの設定）:
 
 ```toml
+[net]
 wake_on_sync = true    # ピアがワークスペースを求めたとき、停止中のアプリサーバを起動する
 discovery = true       # discovery サービスでピアを見つける
 relays = []            # relay URL。空にすると relay を使わない
 ```
+
+設定はキーで読み書きします: `sapphire-bridge config list|get|set|unset`（`--device` /
+`--workgroup` でファイルを選び、再起動が要るキーは `--restart`。単独の再起動は
+`sapphire-bridge restart`）。`embed.remote.key` のような秘密はプロンプトか `--stdin` で渡し、
+表示されません。workgroup 共通の設定は `root/config.toml` にあります。旧レイアウト
+（`net.toml`、`embedding.toml`）は初回起動時に取り込まれ、`*.toml.v1` として残ります。
 
 ログのフィルタはフレームワークの他と同じく `RUST_LOG` で設定します。
 

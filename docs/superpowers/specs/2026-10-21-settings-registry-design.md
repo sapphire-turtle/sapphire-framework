@@ -103,13 +103,16 @@ Parts 1 and 2 ship together: the core is designed against its first real owner.
     into config batches; the `embed.*` RPCs stay for existing clients. In the GUI, editing
     moves to the settings screen (part 4).
 
-## Part 1: Registry core — crate `sapphire-framework-settings`
+## Part 1: Registry core — crates `sapphire-framework-settings-api` and `sapphire-framework-settings`
 
 ### Types
 
 The schema and value types are plain serde types, shared by the CLI, the GUI and the IPC
-API. Writing is behind a `store` feature (it brings `toml_edit`), so the GUI depends on the
-types only.
+API. They live in their own crate, `sapphire-framework-settings-api`, versioned
+independently from 1.0 like the other API crates: `sapphire-framework-bridge-api` and
+`-server-api` carry them on the wire and must not depend on a 0.x framework crate. Reading,
+resolution and writing (with `toml_edit`) live in `sapphire-framework-settings`, which moves
+with the framework's version. The GUI depends on the types only.
 
 ```rust
 pub enum Scope { Device, Workgroup, Workspace }
@@ -148,6 +151,7 @@ pub struct Entry {
     pub value: EntryValue,        // Value, Secret(SecretState), or Unset
     pub origin: Origin,           // Scope, or Default
     pub pending_restart: bool,
+    pub note: Option<String>,     // e.g. "this host has no workgroup; stored on this device"
 }
 ```
 
@@ -313,8 +317,9 @@ When #307 lands it adds `embed.local.qtype` to this table.
 ### Migrating the old files
 
 The bridge directory's format goes from 1 to 2. `BridgeDir::open` already has the place for
-the migration (`found < BRIDGE_FORMAT_VERSION`); it runs once, under the instance lock,
-before anything reads the settings:
+the migration (`found < BRIDGE_FORMAT_VERSION`); it runs there, before the format stamp is
+written and before anything reads the settings. It is idempotent, so a CLI and a starting
+bridge may both run it:
 
 - `<bridge>/net.toml` becomes the `[net]` table of `<bridge>/config.toml`.
 - `<bridge>/embedding.toml` becomes `[embed]`: `cache_dir` stays, `[local]` / `[remote]`
@@ -341,6 +346,7 @@ New methods in `sapphire-framework-bridge-api`, handled in `control.rs`:
 |---|---|---|
 | `config.schema` | — | `Vec<SettingDef>` |
 | `config.list` | `{ scope?: Scope }` | `Vec<Entry>` |
+| `config.get` | `{ key }` | `Entry` |
 | `config.set` | `{ scope?: Scope, entries: [{ key, value }] }` | `{ pending_restart: bool }` |
 | `config.unset` | `{ scope?: Scope, keys: [String] }` | `{ pending_restart: bool }` |
 | `bridge.restart` | — | `{}` — sent before the restart begins |

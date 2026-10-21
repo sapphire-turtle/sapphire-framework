@@ -57,33 +57,49 @@ Parts 1 and 2 ship together: the core is designed against its first real owner.
    addition to its home, and a device value then wins. Keys whose value must agree across
    devices (a model's dimension) stay single-scope. No key opts in in the first version; the
    mechanism exists for later keys.
-4. **Keys are named by feature, not by file.** `embed.remote.endpoint`, `net.relays`. Where a
-   key is stored is the owner's business, so a setting can move between files without
-   renaming it. The framework and the bridge reserve the top-level names `net`, `embed`,
-   `sync`, `retrieve` and `workspace`; an app's keys start with the app's name
-   (`notes.default_template`). The registry rejects a duplicate key when it is built.
-5. **Secrets are device-scope only, entered by prompt or stdin.** A key of kind `Secret` is
+4. **Keys are named by feature, and a key is its TOML path.** `embed.remote.endpoint` is
+   `endpoint` in the `[embed.remote]` table, `net.relays` is `relays` in `[net]`. The
+   framework and the bridge reserve the top-level names `net`, `embed`, `sync`, `retrieve`
+   and `workspace`; an app's keys start with the app's name (`notes.default_template`). The
+   registry rejects a duplicate key when it is built.
+5. **One settings file per owner and scope.** Every scope of an owner has one
+   `config.toml`, laid out the same way, so a scope only chooses the file and a device
+   override is the same path in the device file — as `git config` does. The bridge's
+   per-topic files are merged:
+
+   | | device | workgroup |
+   |---|---|---|
+   | before | `<bridge>/net.toml`, `<bridge>/embedding.toml` | `root/embedding.toml`, `root/net.toml` |
+   | after | `<bridge>/config.toml` | `root/config.toml` |
+
+   The topic files were never separate for a reason beyond their topic: `net.toml` was the
+   bridge's only settings file when it was designed, and `embedding.toml` was added beside
+   it. With the CLI and the GUI as the main way to edit settings, one file per scope is
+   simpler to locate, validate and document. The bridge's files are not merged into an
+   app's `config.toml`: the bridge is one process per OS user serving every app, and knows
+   no app. Secrets stay in their own owner-only files.
+6. **Secrets are device-scope only, entered by prompt or stdin.** A key of kind `Secret` is
    stored in its own owner-only file (mode 0600), never in a synced scope. `get` and `list`
    show only whether it is set. `config set <secret-key>` with no value prompts without echo;
    `--stdin` reads it from a pipe; a value given on the command line is an error, so it never
    reaches shell history. An OS keyring and reading from an environment variable are left
    for later.
-6. **Each key declares how a change applies: `Live` or `Restart`.** A `Live` key is applied
+7. **Each key declares how a change applies: `Live` or `Restart`.** A `Live` key is applied
    when it is written (through the owner's reload hook). A `Restart` key is applied at the
    next start, and a restart is available as an RPC that rebuilds the process's components
    in place — same process, same pid, same lock — so it works the same in the foreground,
    as an OS service, and on Windows. No separate "reload" command: hand edits of `Live`
    keys are picked up by the existing settings watch.
-7. **Writes are batches.** Settings that are only valid together (a remote model's
+8. **Writes are batches.** Settings that are only valid together (a remote model's
    endpoint, model and dimension) are set in one call — `config set a=1 b=2` in the CLI, Apply
    in the GUI — and the batch is written entirely or not at all.
-8. **The existing loaders have the final word.** Each value is checked against its kind
-   first; then the owner rebuilds its existing structs (`NetConfig`, the device
-   `embedding.toml`, `ModelSettings`) from the edited documents with the same
+9. **The existing loaders have the final word.** Each value is checked against its kind
+   first; then the owner rebuilds its existing structs (`NetConfig`, `ModelSettings` and
+   the device's embedding switches) from the edited documents with the same
    `toml::from_str` and `validate()` that read them at startup. A batch they reject is not
    written.
-9. **Comments and order are kept.** Files are edited with `toml_edit`.
-10. **`embedding` stays.** The `embedding` CLI keeps its interface and becomes a translation
+10. **Comments and order are kept.** Files are edited with `toml_edit`.
+11. **`embedding` stays.** The `embedding` CLI keeps its interface and becomes a translation
     into config batches; the `embed.*` RPCs stay for existing clients. In the GUI, editing
     moves to the settings screen (part 4).
 
@@ -145,24 +161,20 @@ and so an app can build its table at runtime; owners write them as a function re
 pub trait SettingsOwner {
     /// This owner's key definitions.
     fn defs(&self) -> Vec<SettingDef>;
-    /// Where a key is stored in a scope, as of now.
-    fn locate(&self, key: &str, scope: Scope) -> Result<Location>;
+    /// The `config.toml` that holds a scope's values, as of now.
+    fn file(&self, scope: Scope) -> Result<PathBuf>;
+    /// The owner-only file that holds a secret key.
+    fn secret_file(&self, key: &str) -> Result<PathBuf>;
     /// The final check: the edited documents, as the owner's own loaders read them.
     fn validate(&self, staged: &Staged) -> Result<(), Vec<FieldError>>;
 }
-
-pub enum Location {
-    /// A value inside a TOML file: the file, and the path of tables and the key in it.
-    Toml { file: PathBuf, path: Vec<String> },
-    /// A whole file holding one secret, owner-only.
-    SecretFile(PathBuf),
-}
 ```
 
-`locate` is resolved when called, not fixed in the definition, so an owner can express
-"a workgroup key on a host without a workgroup is stored in the device file's `[models]`"
-(see part 2). `Staged` gives the owner each touched file's edited text, so `validate` runs
-the same `toml::from_str` the owner uses at startup.
+A key's place in the file is its own path (decision 4), so the owner only names a file per
+scope. `file` is resolved when called, not fixed, so an owner can map a scope to another
+scope's file: the bridge stores workgroup keys in the device file on a host without a
+workgroup (see part 2). `Staged` gives the owner each touched file's edited text, so
+`validate` runs the same `toml::from_str` the owner uses at startup.
 
 ### Resolution
 
@@ -185,7 +197,9 @@ A `Store` applies a batch of `set` and `unset` operations for one scope:
 2. **Edit in memory.** Each touched TOML file is loaded once as a `toml_edit` document; a
    set inserts or replaces the item at its path, creating tables as needed; an unset
    removes it and then any table left empty. An unset may name a **prefix** of keys
-   (`embed.remote`), which removes the whole table — this is how a model slot is removed.
+   (`embed.remote`), which removes every key under it that the target scope holds — this is
+   how a model slot is removed. Keys of other scopes that share the table (the device's
+   `embed.remote.enabled` beside the models on a host without a workgroup) stay.
 3. **Validate.** The owner's `validate` sees every touched file's edited text. Any error
    aborts the batch; nothing is written.
 4. **Write.** Each file is written atomically (temporary file and rename, as
@@ -234,20 +248,51 @@ user-facing; the CLI prints them as they are.
 
 Where they are stored:
 
-- `net.*` → `<bridge>/net.toml`, at the same names.
-- `embed.cache_dir`, `embed.{local,remote}.enabled` → `<bridge>/embedding.toml`
-  (`cache_dir`, `[local] enabled`, `[remote] enabled`).
-- `embed.{local,remote}.*` model fields → `<bridge>/workgroups/<id>/root/embedding.toml`
-  (`[local]`, `[remote]`). **On a host without a workgroup** they are stored in the device
-  file's `[models.local]` / `[models.remote]`, as today, and `list` reports their origin as
-  `workgroup` with a note that the host has no workgroup. When the host joins one, the
-  workgroup's file wins, as today.
-- `embed.remote.key` → `<bridge>/embedding.key`.
+- `device` → `<bridge>/config.toml`.
+- `workgroup` → `<bridge>/workgroups/<id>/root/config.toml`. **On a host without a
+  workgroup**, `<bridge>/config.toml` — the same paths in the device file — and `list`
+  reports their origin as `workgroup` with a note that the host has no workgroup. When the
+  host joins one, the workgroup's file wins and the device file's model keys are ignored and
+  reported as shadowed, as `embedding show` does today.
+- `embed.remote.key` → `<bridge>/embedding.key`, unchanged.
 
-The bridge's `validate` parses `net.toml` into `NetConfig` (which also runs the relay URL
-check of `relay::relays`), the device `embedding.toml` into its `DeviceFile`, and the
-workgroup's file into `ModelSettings` and calls `ModelSettings::validate`. A remote slot with
-only some of its fields set fails there, which is why the slot's fields are set in one batch.
+For example, a device file:
+
+```toml
+[net]
+discovery = true
+relays = ["https://relay.example.org"]
+
+[embed]
+cache_dir = "/var/cache/sapphire"
+
+[embed.local]
+enabled = false
+```
+
+and the workgroup's:
+
+```toml
+[embed.remote]
+endpoint = "https://api.example.org"
+model = "text-embedding-3-small"
+dimension = 1024
+```
+
+A model slot is configured when its `model` (local) or `endpoint` (remote) is set in the
+scope that holds the models; a table holding only `enabled` configures nothing. Setting
+`embed.local.model` alone configures the local slot with the defaults of its other fields,
+as an empty `[local]` table does today.
+
+The bridge reads each file into one struct — `[net]` into `NetConfig`, `[embed]` into the
+model settings and the device's switches — and `validate` uses the same code: `NetConfig`
+(and the relay URL check of `relay::relays`), and `ModelSettings::validate`. A remote slot
+with only some of its fields set fails there, which is why the slot's fields are set in one
+batch. The registry, not the struct, decides which keys each scope may hold; the struct
+accepts the union and rejects unknown keys.
+
+`net.embedded_relay` moves into the device file as the `[net.embedded_relay]` table, unchanged
+apart from its place.
 
 A test checks that each key's default in the registry is the default of the struct that
 reads it (`NetConfig::default()`, `LocalModel::default()`), so the two cannot drift.
@@ -259,8 +304,32 @@ When #307 lands it adds `embed.local.qtype` to this table.
 - `net.embedded_relay.*`. Whether the table is present is its on/off switch, and `hostname`
   and the TLS fields are required together, which fits per-key editing poorly; it is an
   operator's setting and stays a hand edit. A follow-up issue covers it.
-- The workgroup's announced `root/net.toml`. Nothing writes it in production yet
-  (`publish_net` has no caller).
+- Workgroup-scope `net.*` keys (the announced relays of the old `root/net.toml`). Nothing
+  writes them in production yet (`publish_net` has no caller); the bridge reads `[net]` from
+  `root/config.toml` where it read `root/net.toml`, so a later version can add the keys.
+
+### Migrating the old files
+
+The bridge directory's format goes from 1 to 2. `BridgeDir::open` already has the place for
+the migration (`found < BRIDGE_FORMAT_VERSION`); it runs once, under the instance lock,
+before anything reads the settings:
+
+- `<bridge>/net.toml` becomes the `[net]` table of `<bridge>/config.toml`.
+- `<bridge>/embedding.toml` becomes `[embed]`: `cache_dir` stays, `[local]` / `[remote]`
+  become `[embed.local]` / `[embed.remote]`, and its `[models.local]` / `[models.remote]`
+  move into the same tables.
+- The old files are renamed to `*.toml.v1` rather than deleted, so a user can see what was
+  moved.
+
+The workgroup's synced files are migrated by whichever upgraded bridge opens the workgroup
+first: `root/embedding.toml` becomes `[embed]` and `root/net.toml` becomes `[net]` of
+`root/config.toml`, and the old files are deleted, which syncs. Two bridges migrating at
+once write the same content, so last-writer-wins converges.
+
+**All devices of a workgroup must be upgraded together.** A bridge of format 1 reads only
+`root/embedding.toml`, so once another device has migrated it, the old bridge sees no
+embedding models until it is upgraded. The project is before 1.0 and the embedding settings
+are recent (#186), so this is accepted and stated as a breaking change in the CHANGELOG.
 
 ### IPC
 
@@ -330,7 +399,7 @@ loop {
 - `Bridge` holds a `restart: Notify`. `serve_loops` waits on it in its `select!` alongside
   the listeners; when it fires, the loops return `Exit::Restart`, the `Bridge` is dropped
   (the iroh endpoint, the IPC listeners, the workgroup driver and the status writer stop
-  with it), and the next iteration reads `net.toml` and the workgroup again.
+  with it), and the next iteration reads `config.toml` and the workgroup again.
 - The `bridge.restart` handler sends its reply and then notifies, so the caller gets an
   answer before the socket closes.
 - The lock and the log writer live outside the loop: the pid, the lock file and the log
@@ -379,7 +448,11 @@ Bridge:
 - `config set/list/unset` against a running test bridge, including a live embedding change
   taking effect without a restart;
 - the offline path writes the files the running bridge then reads;
-- a workgroup key on a host without a workgroup lands in the device file's `[models]`;
+- a workgroup key on a host without a workgroup lands in the device `config.toml`, and is
+  shadowed once the host joins a workgroup;
+- the format 1 → 2 migration, for the device files (including `[models]`) and the
+  workgroup's synced files, is idempotent and keeps every value; a v1 directory opened by a
+  v2 bridge serves the same embedding and network settings as before;
 - `bridge.restart`: the reply arrives, the pid is unchanged, the control endpoint answers
   again, and a changed `net.*` value is in effect after it;
 - the existing `embedding` tests pass unchanged.
@@ -388,8 +461,9 @@ Bridge:
 
 - The app registers a `SettingsOwner` with the framework (through the same builder that
   registers the app's commands). Its keys are prefixed with the app's name; the framework
-  contributes its own (`sync`, `retrieve.*`), stored in the device-scope
-  `<config_dir>/workspace.toml` and the workspace-scope `{root}/.{app}/config.toml`.
+  contributes its own (`sync`, `retrieve.*`). Following decision 5, the device scope is
+  `<config_dir>/config.toml` — today's `<config_dir>/workspace.toml`, renamed and migrated —
+  and the workspace scope is `{root}/.{app}/config.toml`, both laid out by key path.
 - The app server serves `config.*` for its owners and `server.restart` (the same in-place
   restart as the bridge).
 - `<app> config …` takes the same arguments as the bridge's, plus `--workspace`; it routes
@@ -413,6 +487,6 @@ Bridge:
 ## Out of scope
 
 - An OS keyring, and secrets from environment variables.
-- Settings of `net.embedded_relay` and the workgroup's announced `net.toml`.
+- Per-key settings of `net.embedded_relay`, and workgroup-scope `net.*` keys.
 - A reload command separate from restart.
 - Retiring the `embedding` command and the `embed.*` RPCs (after part 4, separately).

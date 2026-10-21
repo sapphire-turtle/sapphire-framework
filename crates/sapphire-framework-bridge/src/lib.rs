@@ -11,6 +11,7 @@
 
 mod availability;
 mod command;
+pub mod config_file;
 mod control;
 mod data;
 mod dir;
@@ -29,6 +30,7 @@ mod pairing;
 mod peer;
 mod relay;
 mod routes;
+pub mod settings;
 mod status;
 #[cfg(any(test, feature = "test-util"))]
 mod testing;

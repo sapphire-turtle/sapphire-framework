@@ -452,6 +452,11 @@ impl Workgroup {
             .join(crate::embed_settings::SETTINGS_FILE)
     }
 
+    /// The workgroup's settings by key, `root/config.toml`, inside the synced root.
+    pub fn config_toml(&self) -> PathBuf {
+        self.dir.join("root").join("config.toml")
+    }
+
     /// The workgroup's published `root/net.toml`, inside the synced root.
     fn net_toml(&self) -> PathBuf {
         self.dir.join("root").join("net.toml")

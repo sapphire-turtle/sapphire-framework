@@ -42,6 +42,10 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
+    /// The settings registry refused or could not read a change.
+    #[error(transparent)]
+    Settings(#[from] sapphire_framework_settings::Error),
+
     /// Installing, removing or reporting the bridge's service failed.
     ///
     /// Carries the service crate's own message, which already says what to do about the

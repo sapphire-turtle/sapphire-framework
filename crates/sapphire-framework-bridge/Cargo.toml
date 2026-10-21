@@ -26,6 +26,7 @@ sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.21.0", path = 
 sapphire-registry = { package = "sapphire-framework-registry", version = "0.21.0", path = "../sapphire-framework-registry" }
 sapphire-framework-session = { version = "0.21.0", path = "../sapphire-framework-session" }
 sapphire-framework-service = { version = "0.21.0", path = "../sapphire-framework-service" }
+sapphire-framework-settings = { version = "0.21.0", path = "../sapphire-framework-settings" }
 sapphire-framework-update = { version = "0.21.0", path = "../sapphire-framework-update" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.21.0", path = "../sapphire-framework-sync" }
 async-trait.workspace = true

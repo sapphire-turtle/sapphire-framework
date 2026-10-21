@@ -93,6 +93,11 @@ impl BridgeDir {
         self.root.join("net.toml")
     }
 
+    /// This device's settings by key: `[net]` and `[embed]` (not synced).
+    pub fn config_toml(&self) -> PathBuf {
+        self.root.join("config.toml")
+    }
+
     /// This device's embedding settings (not synced).
     pub fn embedding_toml(&self) -> PathBuf {
         self.root.join(crate::embed_settings::SETTINGS_FILE)

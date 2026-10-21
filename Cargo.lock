@@ -7661,6 +7661,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire-framework-settings"
+version = "0.21.0"
+dependencies = [
+ "sapphire-framework-settings-api",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
 name = "sapphire-framework-settings-api"
 version = "1.0.0"
 dependencies = [
@@ -9040,6 +9052,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

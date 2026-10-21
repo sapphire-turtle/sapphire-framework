@@ -71,11 +71,7 @@ impl Outbox {
             Out::Control(msg) => self.urgent.send(msg).is_ok(),
             blob @ Out::Blob { .. } => self.bulk.send(blob).is_ok(),
         };
-        if sent {
-            Ok(())
-        } else {
-            Err(Error::Closed)
-        }
+        if sent { Ok(()) } else { Err(Error::Closed) }
     }
 }
 

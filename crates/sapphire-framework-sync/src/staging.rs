@@ -114,6 +114,11 @@ impl StagingWriter {
     /// Anything other than the announced content is [`Error::ContentMismatch`]. If
     /// another writer staged the same hash meanwhile, the rename replaces its file
     /// with identical content.
+    ///
+    /// The bytes are on disk before the rename, so a crash cannot leave a `<hex>` that
+    /// holds less than verified content. The rename itself may be lost to one; that
+    /// leaves only a `.partial`, which [`clear_partials`] removes, and the content is
+    /// asked for again.
     pub fn finish(mut self) -> Result<PathBuf> {
         if self.written != self.len || self.hasher.clone().finish() != self.hash {
             return Err(Error::ContentMismatch {
@@ -121,6 +126,7 @@ impl StagingWriter {
             });
         }
         self.file.flush()?;
+        self.file.sync_all()?;
         fs::rename(&self.partial, &self.dest)?;
         self.finished = true;
         Ok(self.dest.clone())

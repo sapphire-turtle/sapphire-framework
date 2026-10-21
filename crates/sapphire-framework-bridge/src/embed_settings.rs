@@ -4,7 +4,8 @@
 //!
 //! - the workgroup's synced `root/config.toml` holds the two model slots;
 //! - this host's `config.toml` holds its switch per slot, the local model's cache
-//!   directory, and — only on a host without a workgroup — the model slots too;
+//!   directory and quantization (`[embed.local] qtype`), and — only on a host
+//!   without a workgroup — the model slots too;
 //! - this host's `embedding.key` holds the remote slot's API key, readable by the owner only.
 //!
 //! [`load`] reads all three and [`resolve`]s them. Changes are settings batches: the RPCs
@@ -15,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use sapphire_bridge_api::{
     ApiKey, DeviceSettings, EmbedDeviceSetParams, EmbedInfoResult, EmbedModelSetParams, EmbedNote,
-    EmbedRequest, EmbedSettingsResult, LocalModel, ModelSettings, ModelSource, RemoteModel, Slot,
-    SlotModel,
+    EmbedRequest, EmbedSettingsResult, LocalModel, ModelSettings, ModelSource, QType, RemoteModel,
+    Slot, SlotModel,
 };
 use sapphire_framework_settings::{Op, Scope, Value};
 
@@ -41,6 +42,8 @@ pub enum EmbedConfig {
     Local {
         /// Its model.
         model: LocalModel,
+        /// How this device holds its weights.
+        qtype: QType,
         /// Where its files are cached; `None` is the host's default.
         cache_dir: Option<PathBuf>,
     },
@@ -70,6 +73,8 @@ pub struct Resolved {
     pub remote_enabled: bool,
     /// The slot served.
     pub active: Option<Slot>,
+    /// How the local model's weights are held: this device's setting, or the default.
+    pub local_qtype: QType,
     /// Whether the CPU has AVX2.
     pub avx2: bool,
     /// Whether a key is stored.
@@ -89,6 +94,7 @@ impl Resolved {
             local_enabled: self.local_enabled,
             remote_enabled: self.remote_enabled,
             active: self.active,
+            local_qtype: Some(self.local_qtype),
             avx2: self.avx2,
             key_set: self.key_set,
             info,
@@ -183,6 +189,11 @@ fn resolve(
         local_enabled,
         remote_enabled,
         active,
+        local_qtype: device
+            .local
+            .as_ref()
+            .and_then(|t| t.qtype)
+            .unwrap_or_default(),
         avx2,
         key_set,
         note,
@@ -195,6 +206,7 @@ fn device_settings(device: &EmbedTable) -> DeviceSettings {
         local_enabled: device.local.as_ref().and_then(|t| t.enabled),
         remote_enabled: device.remote.as_ref().and_then(|t| t.enabled),
         cache_dir: device.cache_dir.clone(),
+        local_qtype: device.local.as_ref().and_then(|t| t.qtype),
     }
 }
 
@@ -219,6 +231,7 @@ pub fn load(dir: &BridgeDir, avx2: bool) -> Result<(Resolved, Option<EmbedConfig
             .clone()
             .map(|model| EmbedConfig::Local {
                 model,
+                qtype: resolved.local_qtype,
                 cache_dir: device.cache_dir.clone(),
             }),
         None => None,
@@ -602,6 +615,43 @@ mod tests {
         .unwrap();
         let (r, _) = load(&dir, true).unwrap();
         assert_eq!(r.models.local, Some(local()));
+    }
+
+    #[test]
+    fn the_local_qtype_comes_from_this_devices_file() {
+        let (_tmp, dir) = bridge_dir();
+        run(
+            &dir,
+            model_set(Slot::Local, Some(SlotModel::Local(local()))),
+        )
+        .unwrap();
+        let qtype_of = |dir: &BridgeDir| match load(dir, true).unwrap() {
+            (r, Some(EmbedConfig::Local { qtype, .. })) => (r.device.local_qtype, qtype),
+            other => panic!("not local: {other:?}"),
+        };
+        assert_eq!(qtype_of(&dir), (None, QType::default()));
+
+        // Set by key; a switch change through the embedding command keeps it.
+        sapphire_framework_settings::apply(
+            &crate::settings::registry(&dir).unwrap(),
+            None,
+            vec![sapphire_framework_settings::Op::Set {
+                key: "embed.local.qtype".to_owned(),
+                value: sapphire_framework_settings::Value::String("q4_k".to_owned()),
+            }],
+        )
+        .unwrap();
+        assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
+        run(&dir, device_set(Slot::Local, Some(true))).unwrap();
+        assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
+        assert!(text.contains("qtype = \"q4_k\""), "{text}");
+
+        // An unknown type is a broken file: a batch refuses to rewrite it, and reading
+        // falls back to the defaults.
+        std::fs::write(dir.config_toml(), "[embed.local]\nqtype = \"fp16\"\n").unwrap();
+        assert!(run(&dir, device_set(Slot::Local, None)).is_err());
+        assert_eq!(load(&dir, true).unwrap().0.device.local_qtype, None);
     }
 
     #[test]

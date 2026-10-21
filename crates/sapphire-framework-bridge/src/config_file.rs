@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sapphire_bridge_api::{LocalModel, ModelSettings, RemoteModel};
+use sapphire_bridge_api::{LocalModel, ModelSettings, QType, RemoteModel};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use toml_edit::{DocumentMut, Item, Table};
@@ -65,6 +65,9 @@ pub struct LocalTable {
     pub dimension: Option<u32>,
     /// Content tokens kept.
     pub max_tokens: Option<usize>,
+    /// How this device holds the model's weights; unset = [`QType::default`]. A device
+    /// setting: in the workgroup's file it is ignored.
+    pub qtype: Option<QType>,
 }
 
 /// `[embed.remote]`.
@@ -617,6 +620,41 @@ mod tests {
             std::fs::read_to_string(root.join("format")).unwrap().trim(),
             "2"
         );
+    }
+
+    #[test]
+    fn the_local_qtype_stays_on_the_device() {
+        let v1 = "[local]\nqtype = \"q8_0\"\n[models.local]\n";
+        // Without a workgroup the slot joins the switch table, qtype included.
+        let (_tmp, root) = v1_dir(&[("embedding.toml", v1)]);
+        let dir = BridgeDir::at(root).unwrap();
+        let local = read_device(&dir.config_toml())
+            .unwrap()
+            .embed
+            .local
+            .unwrap();
+        assert_eq!(local.qtype, Some(QType::Q8_0));
+        assert_eq!(
+            local.model.as_deref(),
+            Some(sapphire_bridge_api::LOCAL_MODEL)
+        );
+
+        // A joined host's models go to the workgroup; its qtype does not.
+        let (_tmp, root, wg) = v1_dir_with_workgroup(&[("embedding.toml", v1)]);
+        let dir = BridgeDir::at(root).unwrap();
+        let local = read_device(&dir.config_toml())
+            .unwrap()
+            .embed
+            .local
+            .unwrap();
+        assert_eq!((local.qtype, local.model), (Some(QType::Q8_0), None));
+        let shared = read_workgroup(&wg.config_toml()).unwrap().unwrap();
+        let shared_local = shared.embed.local.unwrap();
+        assert_eq!(
+            shared_local.model.as_deref(),
+            Some(sapphire_bridge_api::LOCAL_MODEL)
+        );
+        assert_eq!(shared_local.qtype, None);
     }
 
     #[test]

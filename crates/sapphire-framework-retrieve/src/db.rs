@@ -393,6 +393,7 @@ pub fn open_redb_vec(db_path: &Path, dim: u32) -> Result<Arc<dyn RetrieveStore +
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retrieve_store::DocKind;
 
     #[test]
     fn shared_store_sees_documents_written_through_the_db() {
@@ -404,6 +405,7 @@ mod tests {
             id: 1,
             body: "hello".to_owned(),
             path: "a.md".to_owned(),
+            kind: DocKind::Text,
         })
         .unwrap();
 
@@ -454,6 +456,7 @@ mod tests {
                 id: 1,
                 body: "hello world".into(),
                 path: "/w/a.md".into(),
+                kind: DocKind::Text,
             })
             .unwrap();
         let hits = store.search_fts(&FtsQuery::new("world").limit(5)).unwrap();

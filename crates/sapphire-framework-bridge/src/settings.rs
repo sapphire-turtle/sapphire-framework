@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sapphire_bridge_api::{DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, LOCAL_MODEL, MAX_TOKENS};
+use sapphire_bridge_api::{DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, LOCAL_MODEL, MAX_TOKENS, QType};
 use sapphire_framework_settings::{
     Apply, FieldError, Kind, Registry, Scope, SettingDef, SettingsOwner, Staged, Value,
 };
@@ -100,6 +100,17 @@ pub fn bridge_defs() -> Vec<SettingDef> {
             None,
             "Embedding",
             "Switch for the local model; unset = on when it is configured",
+        ),
+        def(
+            "embed.local.qtype",
+            Kind::Enum {
+                choices: QType::ALL.iter().map(|q| q.as_str().to_owned()).collect(),
+            },
+            Scope::Device,
+            Apply::Live,
+            None,
+            "Embedding",
+            "How this device holds the local model's weights; unset = f16",
         ),
         def(
             "embed.remote.enabled",
@@ -374,6 +385,7 @@ mod tests {
             ("net.use_default_relays", Value::Bool(false)),
             ("embed.cache_dir", s("/var/cache/sapphire")),
             ("embed.local.enabled", Value::Bool(false)),
+            ("embed.local.qtype", s("q8_0")),
             ("embed.remote.enabled", Value::Bool(true)),
             ("embed.local.model", s(LOCAL_MODEL)),
             ("embed.local.dimension", Value::Int(512)),

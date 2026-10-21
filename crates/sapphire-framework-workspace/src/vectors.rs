@@ -243,6 +243,7 @@ mod tests {
             template_version: 1,
             revision: None,
             max_tokens: Some(1024),
+            images: false,
         }
     }
 
@@ -274,6 +275,7 @@ mod tests {
             },
             EmbedModelInfo {
                 max_tokens: Some(512),
+                images: false,
                 ..info()
             },
             EmbedModelInfo {

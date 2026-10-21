@@ -24,6 +24,15 @@ pub trait EmbedProvider: Send + Sync {
     fn loaded(&self) -> bool;
     /// One vector per text, in order. An `Err` reaches the client as its message.
     async fn embed(&self, texts: Vec<String>) -> std::result::Result<Vec<Vec<f32>>, String>;
+    /// One vector per image (a file's bytes), in order, in the texts' space. Called only
+    /// when [`info`](Self::info) says the model embeds images.
+    async fn embed_images(
+        &self,
+        images: Vec<Vec<u8>>,
+    ) -> std::result::Result<Vec<Vec<f32>>, String> {
+        let _ = images;
+        Err("this model cannot embed images".to_owned())
+    }
 }
 
 /// Builds the provider for a resolved configuration. Called again whenever it changes; the
@@ -120,12 +129,21 @@ impl Bridge {
         }
         let provider = config.as_ref().and_then(|c| factory(c, &self.dir));
         match (&config, &provider) {
-            (Some(EmbedConfig::Local { model, .. }), Some(_)) => tracing::info!(
-                target: crate::logging::BRIDGE_TARGET,
-                "embedding with the local model {} ({} dimensions)",
-                model.model,
-                model.dimension
-            ),
+            (Some(EmbedConfig::Local { model, qtype, .. }), Some(_)) => {
+                tracing::info!(
+                    target: crate::logging::BRIDGE_TARGET,
+                    "embedding with the local model {} ({} dimensions, {qtype})",
+                    model.model,
+                    model.dimension
+                );
+                if qtype.is_quantized() && !sapphire_bridge_api::QType::FAST_QUANTIZED {
+                    tracing::warn!(
+                        target: crate::logging::BRIDGE_TARGET,
+                        "this bridge was built without AVX2, so {qtype} runs on scalar code, \
+                         more than ten times slower than f16 (the default)"
+                    );
+                }
+            }
             (Some(EmbedConfig::Remote { model, .. }), Some(_)) => tracing::info!(
                 target: crate::logging::BRIDGE_TARGET,
                 "embedding with the remote model {} at {} ({} dimensions)",

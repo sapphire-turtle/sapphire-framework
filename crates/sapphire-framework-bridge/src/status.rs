@@ -307,6 +307,7 @@ mod tests {
                 template_version: 1,
                 revision: None,
                 max_tokens: None,
+                images: false,
             })
         }
         fn loaded(&self) -> bool {

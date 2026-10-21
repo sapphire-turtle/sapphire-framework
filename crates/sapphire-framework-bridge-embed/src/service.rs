@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crate::rest::RestEmbedder;
-use sapphire_bridge_api::{ApiKey, LocalModel, RemoteModel};
+use sapphire_bridge_api::{ApiKey, LocalModel, QType, RemoteModel};
 
 use crate::template::TEMPLATE_VERSION;
 use crate::{Error, Result};
@@ -17,6 +17,13 @@ use crate::{Error, Result};
 pub trait Embed: Send {
     /// One vector per text, in order.
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
+
+    /// One vector per image (encoded bytes: PNG, JPEG, WebP or GIF), in order, in the same
+    /// space as the texts'. Only a model whose [`ModelInfo::images`] is set supports it.
+    fn embed_images(&mut self, images: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
+        let _ = images;
+        Err(Error::Embed("this model cannot embed images".into()))
+    }
 }
 
 /// Builds the model. Called on the worker thread, on demand.
@@ -31,6 +38,8 @@ pub struct ModelInfo {
     pub template_version: u32,
     /// Content tokens kept before embedding (local); `None` when the provider decides (REST).
     pub max_tokens: Option<u32>,
+    /// Whether [`EmbedService::embed_images`] works.
+    pub images: bool,
 }
 
 /// The model unloads after this long without a request.
@@ -39,9 +48,27 @@ pub const IDLE_UNLOAD: Duration = Duration::from_secs(10 * 60);
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(60);
 /// Texts per call to [`Embed::embed`].
 pub const BATCH: usize = 32;
+/// Images per call to [`Embed::embed_images`]: each is up to `max_tokens` tokens long.
+pub const IMAGE_BATCH: usize = 1;
 
 type Reply = tokio::sync::oneshot::Sender<Result<Vec<Vec<f32>>>>;
-type Job = (Vec<String>, Reply);
+
+/// What a job embeds.
+enum Input {
+    Texts(Vec<String>),
+    Images(Vec<Vec<u8>>),
+}
+
+impl Input {
+    fn len(&self) -> usize {
+        match self {
+            Input::Texts(t) => t.len(),
+            Input::Images(i) => i.len(),
+        }
+    }
+}
+
+type Job = (Input, Reply);
 
 /// The embedding service: a request channel to one worker thread.
 ///
@@ -54,16 +81,17 @@ pub struct EmbedService {
 }
 
 impl EmbedService {
-    /// The local model, its files cached in `cache_dir` (hf-hub layout). The model loads
-    /// on the first request.
-    pub fn local(model: &LocalModel, cache_dir: PathBuf) -> EmbedService {
+    /// The local model, its weights held as `qtype` and its files cached in `cache_dir`
+    /// (hf-hub layout). The model loads on the first request.
+    pub fn local(model: &LocalModel, qtype: QType, cache_dir: PathBuf) -> EmbedService {
         let info = ModelInfo {
             model: model.model.clone(),
             dimension: model.dimension,
             template_version: TEMPLATE_VERSION,
             max_tokens: Some(model.max_tokens as u32),
+            images: cfg!(feature = "local"),
         };
-        let loader = local_loader(model.clone(), cache_dir);
+        let loader = local_loader(model.clone(), qtype, cache_dir);
         Self::with_loader(info, loader, IDLE_UNLOAD, RETRY_BACKOFF)
     }
 
@@ -74,6 +102,7 @@ impl EmbedService {
             dimension: model.dimension,
             template_version: 0,
             max_tokens: None,
+            images: false,
         };
         let model = model.clone();
         let loader: Loader =
@@ -121,21 +150,40 @@ impl EmbedService {
     ///
     /// A caller that drops this future does not cancel its job: the worker still runs it.
     pub async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
+        self.submit(Input::Texts(texts)).await
+    }
+
+    /// Embed `images` (encoded bytes), one at a time inside the worker. Loads the model if
+    /// needed; fails when the model cannot embed images.
+    pub async fn embed_images(&self, images: Vec<Vec<u8>>) -> Result<Vec<Vec<f32>>> {
+        if !self.info.images && !images.is_empty() {
+            return Err(Error::Embed(format!(
+                "{} cannot embed images",
+                self.info.model
+            )));
+        }
+        self.submit(Input::Images(images)).await
+    }
+
+    async fn submit(&self, input: Input) -> Result<Vec<Vec<f32>>> {
         let (reply, rx) = tokio::sync::oneshot::channel();
-        self.tx.send((texts, reply)).map_err(|_| Error::Stopped)?;
+        self.tx.send((input, reply)).map_err(|_| Error::Stopped)?;
         rx.await.map_err(|_| Error::Stopped)?
     }
 }
 
 #[cfg(feature = "local")]
-fn local_loader(settings: LocalModel, cache_dir: PathBuf) -> Loader {
+fn local_loader(settings: LocalModel, qtype: QType, cache_dir: PathBuf) -> Loader {
     Box::new(move || {
-        Ok(Box::new(crate::local::LocalQwen::load(&settings, &cache_dir)?) as Box<dyn Embed>)
+        Ok(
+            Box::new(crate::local::LocalQwen::load(&settings, qtype, &cache_dir)?)
+                as Box<dyn Embed>,
+        )
     })
 }
 
 #[cfg(not(feature = "local"))]
-fn local_loader(_settings: LocalModel, _cache_dir: PathBuf) -> Loader {
+fn local_loader(_settings: LocalModel, _qtype: QType, _cache_dir: PathBuf) -> Loader {
     Box::new(|| {
         Err(Error::Load(
             "this bridge was built without the `local` embedding feature".into(),
@@ -157,8 +205,8 @@ impl Worker {
     fn run(mut self, rx: mpsc::Receiver<Job>, idle_unload: Duration) {
         loop {
             match rx.recv_timeout(idle_unload) {
-                Ok((texts, reply)) => {
-                    let result = self.serve(&texts);
+                Ok((input, reply)) => {
+                    let result = self.serve(&input);
                     let _ = reply.send(result);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -172,36 +220,49 @@ impl Worker {
         }
     }
 
-    fn serve(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.ensure_loaded()?;
-        let mut out = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(BATCH) {
-            let result = catch_unwind(AssertUnwindSafe(|| model.embed(chunk)));
-            let vectors = match result {
-                Ok(r) => r?,
-                Err(panic) => {
-                    // The model's state is unknown after a panic; load it again next time.
-                    self.model = None;
-                    self.loaded.store(false, Ordering::Release);
-                    return Err(Error::Embed(format!(
-                        "the model panicked: {}",
-                        panic_message(&panic)
-                    )));
+    fn serve(&mut self, input: &Input) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(input.len());
+        match input {
+            Input::Texts(texts) => {
+                for chunk in texts.chunks(BATCH) {
+                    out.extend(self.call(chunk.len(), |m| m.embed(chunk))?);
                 }
-            };
-            if vectors.len() != chunk.len() {
-                return Err(Error::Embed(format!(
-                    "the model returned {} vectors for {} texts",
-                    vectors.len(),
-                    chunk.len()
-                )));
             }
-            out.extend(vectors);
+            Input::Images(images) => {
+                for chunk in images.chunks(IMAGE_BATCH) {
+                    out.extend(self.call(chunk.len(), |m| m.embed_images(chunk))?);
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// One call into the model, for `len` inputs, loading it first if needed.
+    fn call(
+        &mut self,
+        len: usize,
+        call: impl FnOnce(&mut dyn Embed) -> Result<Vec<Vec<f32>>>,
+    ) -> Result<Vec<Vec<f32>>> {
+        let model = self.ensure_loaded()?;
+        let vectors = match catch_unwind(AssertUnwindSafe(|| call(model.as_mut()))) {
+            Ok(r) => r?,
+            Err(panic) => {
+                // The model's state is unknown after a panic; load it again next time.
+                self.model = None;
+                self.loaded.store(false, Ordering::Release);
+                return Err(Error::Embed(format!(
+                    "the model panicked: {}",
+                    panic_message(&panic)
+                )));
+            }
+        };
+        if vectors.len() != len {
+            return Err(Error::Embed(format!(
+                "the model returned {} vectors for {len} inputs",
+                vectors.len(),
+            )));
+        }
+        Ok(vectors)
     }
 
     fn ensure_loaded(&mut self) -> Result<&mut Box<dyn Embed>> {
@@ -268,6 +329,15 @@ mod tests {
             self.calls.lock().unwrap().push(texts.to_vec());
             Ok(texts.iter().map(|t| vec![t.len() as f32]).collect())
         }
+
+        /// `[-len(bytes)]` per image, recorded as one call of `"<n> images"`.
+        fn embed_images(&mut self, images: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(vec![format!("{} images", images.len())]);
+            Ok(images.iter().map(|i| vec![-(i.len() as f32)]).collect())
+        }
     }
 
     impl Drop for FakeEmbed {
@@ -289,6 +359,7 @@ mod tests {
             dimension: 1,
             template_version: 1,
             max_tokens: None,
+            images: true,
         }
     }
 
@@ -450,6 +521,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn images_go_one_at_a_time_through_the_same_model() {
+        let h = harness(Duration::from_secs(60));
+        h.service.embed(texts(&["a"])).await.unwrap();
+        let out = h
+            .service
+            .embed_images(vec![vec![0; 3], vec![0; 5]])
+            .await
+            .unwrap();
+        assert_eq!(out, vec![vec![-3.0], vec![-5.0]]);
+        assert_eq!(h.loads.load(Ordering::SeqCst), 1);
+        let calls = h.calls.lock().unwrap().clone();
+        assert_eq!(calls[1..], [vec!["1 images"], vec!["1 images"]]);
+    }
+
+    #[tokio::test]
+    async fn a_text_only_model_refuses_images_without_loading() {
+        let remote = EmbedService::remote(
+            &RemoteModel {
+                endpoint: "http://127.0.0.1:9".into(),
+                model: "m".into(),
+                dimension: 8,
+            },
+            None,
+        );
+        let err = remote.embed_images(vec![vec![1]]).await.unwrap_err();
+        assert!(err.to_string().contains("cannot embed images"), "{err}");
+        assert!(!remote.loaded());
+    }
+
+    #[tokio::test]
     async fn an_empty_request_does_not_load() {
         let h = harness(Duration::from_secs(60));
         assert!(h.service.embed(Vec::new()).await.unwrap().is_empty());
@@ -458,7 +559,11 @@ mod tests {
 
     #[test]
     fn each_slot_reports_its_model_without_loading() {
-        let local = EmbedService::local(&LocalModel::default(), PathBuf::from("unused"));
+        let local = EmbedService::local(
+            &LocalModel::default(),
+            QType::default(),
+            PathBuf::from("unused"),
+        );
         assert_eq!(
             local.info(),
             ModelInfo {
@@ -466,6 +571,7 @@ mod tests {
                 dimension: 1024,
                 template_version: crate::TEMPLATE_VERSION,
                 max_tokens: Some(1024),
+                images: true,
             }
         );
         assert!(!local.loaded());
@@ -485,6 +591,7 @@ mod tests {
                 dimension: 8,
                 template_version: 0,
                 max_tokens: None,
+                images: false,
             }
         );
     }

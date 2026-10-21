@@ -39,8 +39,8 @@ mod embed;
 pub use embed::{
     ApiKey, DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, DeviceSettings, EmbedDeviceSetParams,
     EmbedKeySetParams, EmbedModelSetParams, EmbedNote, EmbedRequest, EmbedSettingsResult,
-    LOCAL_MODEL, LocalModel, MAX_TOKENS, ModelSettings, ModelSource, RemoteModel, Slot, SlotModel,
-    describe,
+    LOCAL_MODEL, LocalModel, MAX_TOKENS, ModelSettings, ModelSource, QType, RemoteModel, Slot,
+    SlotModel, describe,
 };
 
 mod external;
@@ -109,6 +109,9 @@ pub const DEVICE_RETIRE: &str = "bridge.device_retire";
 pub const EMBED_INFO: &str = "embed.info";
 /// Embed texts with the bridge's embedding model.
 pub const EMBED: &str = "embed.embed";
+/// Embed images with the bridge's embedding model, into the texts' space. Served only when
+/// [`EmbedModelInfo::images`] is set; absent from bridges before 2.4.
+pub const EMBED_IMAGES: &str = "embed.embed_images";
 /// List the workgroup's external devices.
 pub const EXTERNAL_DEVICE_LIST: &str = "external_device.list";
 /// Add an external device; the answer carries its token, once.
@@ -406,6 +409,10 @@ pub struct EmbedModelInfo {
     /// Content tokens kept before embedding, when the bridge truncates (the local model).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Whether the model embeds images too ([`EMBED_IMAGES`]). Absent from bridges before
+    /// 2.4: false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub images: bool,
 }
 
 /// Result of [`EMBED_INFO`].
@@ -431,14 +438,48 @@ pub struct EmbedParams {
     pub texts: Vec<String>,
 }
 
-/// Result of [`EMBED`].
+/// Parameters of [`EMBED_IMAGES`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct EmbedImagesParams {
+    /// The images, each a file's bytes (PNG, JPEG, WebP or GIF) in standard base64.
+    pub images: Vec<String>,
+}
+
+impl EmbedImagesParams {
+    /// The parameters for `images`, each a file's bytes.
+    pub fn new<B: AsRef<[u8]>>(images: &[B]) -> EmbedImagesParams {
+        use base64::Engine as _;
+        EmbedImagesParams {
+            images: images
+                .iter()
+                .map(|i| base64::engine::general_purpose::STANDARD.encode(i))
+                .collect(),
+        }
+    }
+
+    /// The images' bytes; the error names the first that is not base64.
+    pub fn decode(&self) -> Result<Vec<Vec<u8>>, String> {
+        use base64::Engine as _;
+        self.images
+            .iter()
+            .enumerate()
+            .map(|(i, b64)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(b64)
+                    .map_err(|e| format!("image {i}: {e}"))
+            })
+            .collect()
+    }
+}
+
+/// Result of [`EMBED`] and [`EMBED_IMAGES`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EmbedResult {
     /// The model that produced the vectors.
     pub model: String,
     /// Their dimension.
     pub dimension: u32,
-    /// One vector per input text, in order.
+    /// One vector per input, in order.
     pub vectors: Vec<Vec<f32>>,
 }
 
@@ -522,6 +563,7 @@ mod tests {
                 template_version: 1,
                 revision: None,
                 max_tokens: None,
+                images: false,
             }),
             loaded: true,
             note: Some(EmbedNote::KeyMissing),

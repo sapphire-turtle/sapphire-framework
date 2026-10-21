@@ -21,6 +21,7 @@ impl EmbedProvider for ServiceProvider {
             template_version: i.template_version,
             revision: None,
             max_tokens: i.max_tokens,
+            images: i.images,
         })
     }
 
@@ -30,6 +31,10 @@ impl EmbedProvider for ServiceProvider {
 
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
         self.0.embed(texts).await.map_err(|e| e.to_string())
+    }
+
+    async fn embed_images(&self, images: Vec<Vec<u8>>) -> Result<Vec<Vec<f32>>, String> {
+        self.0.embed_images(images).await.map_err(|e| e.to_string())
     }
 }
 
@@ -45,9 +50,15 @@ fn model_cache(dir: &BridgeDir) -> PathBuf {
 pub fn factory() -> EmbedFactory {
     Arc::new(|config, dir| {
         let service = match config {
-            EmbedConfig::Local { model, cache_dir } => {
-                EmbedService::local(model, cache_dir.clone().unwrap_or_else(|| model_cache(dir)))
-            }
+            EmbedConfig::Local {
+                model,
+                qtype,
+                cache_dir,
+            } => EmbedService::local(
+                model,
+                *qtype,
+                cache_dir.clone().unwrap_or_else(|| model_cache(dir)),
+            ),
             EmbedConfig::Remote { model, key } => EmbedService::remote(model, key.clone()),
         };
         Some(Arc::new(ServiceProvider(service)) as Arc<dyn EmbedProvider>)
@@ -56,7 +67,7 @@ pub fn factory() -> EmbedFactory {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_bridge_api::{ApiKey, LocalModel, RemoteModel};
+    use sapphire_bridge_api::{ApiKey, LocalModel, QType, RemoteModel};
 
     use super::*;
 
@@ -88,6 +99,7 @@ mod tests {
                 dimension: 512,
                 ..LocalModel::default()
             },
+            qtype: QType::default(),
             cache_dir: None,
         });
         assert_eq!(p.info().unwrap().dimension, 512);

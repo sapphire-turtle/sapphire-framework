@@ -719,6 +719,7 @@ mod tests {
                 template_version: 0,
                 revision: None,
                 max_tokens: None,
+                images: false,
             }),
             loaded: true,
             note: Some(EmbedNote::KeyMissing),

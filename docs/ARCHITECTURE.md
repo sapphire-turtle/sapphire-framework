@@ -76,14 +76,17 @@ arrow の更新がこちらの都合では進められない状態だった。`l
 - **`RetrieveStore` trait**（同期）が統一インターフェース（`upsert_document`/`remove_document`/`rebuild_fts`/
   `document_ids`/`document_count`/`configure_vectors`/`embed_pending`/`vec_info`/`search_fts`/`search_similar`/`search_hybrid`）。
   mtime 追跡は責務外（`sapphire-framework-track` の `TrackStore` が持つ）。
-- **唯一の永続実装 = `RedbStore`（redb + tantivy + brute-force vectors）**。C依存ゼロ・純Rust。
+- **唯一の永続実装 = `RedbStore`（redb + tantivy + ベクトル検索）**。C依存ゼロ・純Rust。
   `redb-store` を切ると揮発する in-memory ストアにフォールバックするだけなので、
   **各アプリは `redb-store` を既定に入れること**。
   - **redb** = 正本レコード保管。`documents: doc_id -> {path, text}`、`vectors: doc_id -> f32[]`（1 ファイル = 1 ドキュメント = 1 ベクトル。長い入力は切り詰め）、`meta`（`schema_version` を保持。現在 2 で、不一致なら初回オープン時に一度だけキャッシュを作り直す）。検索結果は一致箇所の `snippet` を返す。
   - **tantivy** = redb から作る転置インデックス。**trigram トークナイザ**（`NgramTokenizer(3,3)`）で
     旧 FTS5 `trigram` 相当（substring・CJK 対応）。BM25 ランキング。索引は redb から再構築可能。
-  - **ベクトル検索は brute-force**（redb 上の全ベクトルを L2 距離でスキャン）。数万件までミリ秒未満で厳密。
-    規模が要求したら HNSW（`instant-distance` 等の純Rust）に差し替え可能。
+  - **ベクトル検索**は 1 万件未満なら brute-force（redb 上の全ベクトルを L2 距離でスキャン、厳密）。
+    1 万件以上ではメモリ上の HNSW 索引（`instant-distance`、#306）を使う。索引は redb から作る派生物で
+    保存しない（バックグラウンドで構築し、構築後の追加・削除は厳密に検索して補う）。
+  - **画像**（png/jpg/jpeg/webp/gif、20 MiB まで）も 1 ファイル = 1 ドキュメント。本文はファイル名、
+    ベクトルはファイルのバイト列から作る（埋め込み器が画像に対応する場合だけ）。
   - **VectorStore を別 trait に切らず redb に統合**（redb の vectors 表は同期対象外。同期するのは
     `.<app>/embedded/` のベクターファイルで、`embed_pending` は `VectorSource` を通じてそれを先に読む）。
 - **埋め込み器は bridge から来る**。この crate が持つのは `Embedder` trait だけで、実装（ローカル推論・
@@ -122,7 +125,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
 | `sapphire-framework-bridge-client` | bridge 制御プレーンの型付きクライアント `BridgeClient` とデータプレーンの `handshake_data`（ipc 上）。framework と同じバージョンで動く |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh）。埋め込みは `EmbedProvider` フック越しに受け取り、この crate 自体は埋め込みコンポーネントに依存しない |
-| `sapphire-framework-bridge-embed` | bridge の埋め込みコンポーネント（ローカル Qwen3-VL-Embedding-2B を candle で、または OpenAI 互換 REST）。ファサード feature は `bridge-embed`（既定ではなく `native` にも入らない — fastembed / candle が重いため）。**bridge をプロセス内に持つモバイルアプリがあるため framework crate に残す** |
+| `sapphire-framework-bridge-embed` | bridge の埋め込みコンポーネント（ローカル Qwen3-VL-Embedding-2B を candle で — テキストと画像、重みは読み込み時に量子化 — または OpenAI 互換 REST）。ファサード feature は `bridge-embed`（既定ではなく `native` にも入らない — candle が重いため）。**bridge をプロセス内に持つモバイルアプリがあるため framework crate に残す** |
 | `bridge`（`sapphire-bridge`） | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device`） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
 | `sapphire-framework-keys` | `protect` / `AuthConfig` / `BridgeVerifier`。HTTP エンドポイントで external device の Bearer トークンを bridge に確かめる（#199） |
@@ -271,18 +274,19 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
    新規登録（`Service`）では起動しない — Service 管理の所有者は自身の service manager が
    起動するもので、bridge も CLI もその manager ではない。よってオフライン報告になる。
    spawn 機構自体の再設計は Phase 2 の後続 issue で扱う。
-4. **埋め込み** — ホストに 1 つだけモデルを持つ。制御面の `embed.info` / `embed.embed` で
-   bridge の埋め込みコンポーネント（`sapphire-framework-bridge-embed`、Qwen3-VL-Embedding-2B を
-   CPU で、または OpenAI 互換 REST）がベクトルを作る。設定は持ち主ごとに 3 か所（#186）:
-   設定は持ち主（スコープ）ごとに 1 つの `config.toml`（#186, #314）: デバイスごと（同期しない）は
-   `<bridge dir>/config.toml`、workgroup 共通（同期する）は `<workgroup root>/config.toml`。
-   どちらも `[net]` と `[embed]` を持ち、キーは TOML のパスそのもの（`embed.remote.endpoint` =
-   `[embed.remote] endpoint`）。モデル（ローカル 1 つとリモート 1 つの枠）は workgroup で共通 —
-   workgroup に参加しているホストでは、`root/config.toml` が空でも workgroup 側が勝つ。
-   デバイスごとには枠ごとの on/off（未設定は自動: ローカルは AVX2 が無ければ off、リモートは on）と
-   キャッシュ置き場を置く。workgroup を持たないホストだけはモデルも自分の `config.toml` に置く。
-   リモートの API キー（秘密）は `<bridge dir>/embedding.key`（0600）で、`get` / `list` には
-   出ない。使うのはリモートが on ならリモート、でなければローカル。設定は `config`
+4. **埋め込み** — ホストに 1 つだけモデルを持つ。制御面の `embed.info` / `embed.embed`（画像は
+   `embed.embed_images`、ローカルのモデルだけ）で bridge の埋め込みコンポーネント
+   （`sapphire-framework-bridge-embed`、Qwen3-VL-Embedding-2B を CPU で、または OpenAI 互換 REST）が
+   ベクトルを作る。設定は持ち主（スコープ）ごとに 1 つの `config.toml`（#186, #314）:
+   デバイスごと（同期しない）は `<bridge dir>/config.toml`、workgroup 共通（同期する）は
+   `<workgroup root>/config.toml`。どちらも `[net]` と `[embed]` を持ち、キーは TOML のパスそのもの
+   （`embed.remote.endpoint` = `[embed.remote] endpoint`）。モデル（ローカル 1 つとリモート 1 つの枠）は
+   workgroup で共通 — workgroup に参加しているホストでは、`root/config.toml` が空でも workgroup 側が勝つ。
+   デバイスごとには枠ごとの on/off（未設定は自動: ローカルは AVX2 が無ければ off、リモートは on）、
+   キャッシュ置き場、ローカルのモデルの量子化（`embed.local.qtype` = `f32` / `f16`（既定）/ `q8_0` /
+   `q4_k`、#307。ベクトルの互換性には影響しない）を置く。workgroup を持たないホストだけはモデルも
+   自分の `config.toml` に置く。リモートの API キー（秘密）は `<bridge dir>/embedding.key`（0600）で、
+   `get` / `list` には出ない。使うのはリモートが on ならリモート、でなければローカル。設定は `config`
    コマンド（`list` / `get` / `set` / `unset`、`--device` / `--workgroup`、秘密は `--stdin` か
    プロンプト、再起動が要るキーは `--restart`。制御面は `config.schema` / `config.list` /
    `config.get` / `config.set` / `config.unset`）で、設定レジストリ
@@ -489,9 +493,9 @@ IPC ソケットは `<データルート>/sapphire-bridge/run/`（`SAPPHIRE_RUNT
 
 1. 同期→非同期の波及は Backend trait のみ async 化で封じる（`ops::update_entry(&Connection,...)` の `&Connection` を trait から外す破壊的変更）。
 2. egui native の async: `?Send` により `dyn` は跨スレッド不可 → 具象型保持 + `runtime.spawn`。
-3. 非互換 crate（git2・sqlx-postgres・tantivy/redb・iroh）は native 専用バイナリで隔離。fastembed / candle は
+3. 非互換 crate（git2・sqlx-postgres・tantivy/redb・iroh）は native 専用バイナリで隔離。candle は
    bridge の埋め込みコンポーネント（`sapphire-framework-bridge-embed`、ファサード feature `bridge-embed`）に
-   隔離し、ORT を動的ロードにして AVX 非対応 CPU でも `cargo test --workspace` が走るようにした。
+   隔離した（モデルは fastembed から移植し、ONNX Runtime には依存しない）。
    プラットフォーム差（UDS / named pipe / チャネル、systemd / LaunchAgent / タスクスケジューラ）
    は各層が吸収する。
 4. tantivy trigram FTS の挙動同等性（BM25・prefix フィルタ・短いクエリ<3文字は無マッチ＝FTS5同等）。

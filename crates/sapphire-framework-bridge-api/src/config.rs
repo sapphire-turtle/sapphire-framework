@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use sapphire_framework_settings_api::{Entry, Scope, SettingDef, Value};
+use crate::settings::{Entry, Scope, SettingDef, Value};
 use serde::{Deserialize, Serialize};
 
 /// Parameters of `config.list`.

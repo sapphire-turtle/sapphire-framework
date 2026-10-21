@@ -7427,7 +7427,6 @@ dependencies = [
  "clap",
  "grain-id",
  "rpassword",
- "sapphire-framework-settings-api",
  "serde",
  "serde_json",
 ]
@@ -7667,20 +7666,12 @@ dependencies = [
 name = "sapphire-framework-settings"
 version = "0.21.0"
 dependencies = [
- "sapphire-framework-settings-api",
+ "sapphire-framework-bridge-api",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
  "toml_edit",
-]
-
-[[package]]
-name = "sapphire-framework-settings-api"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]

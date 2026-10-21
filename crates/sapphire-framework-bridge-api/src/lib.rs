@@ -32,9 +32,8 @@ pub use config::{
     ConfigEntry, ConfigGetParams, ConfigListParams, ConfigListResult, ConfigSchemaResult,
     ConfigSetParams, ConfigUnsetParams, ConfigWriteResult,
 };
-pub use sapphire_framework_settings_api::{
-    Apply, Entry, EntryValue, Kind, Origin, Scope, SecretState, SettingDef, Value,
-};
+pub mod settings;
+pub use settings::{Apply, Entry, EntryValue, Kind, Origin, Scope, SecretState, SettingDef, Value};
 
 mod embed;
 pub use embed::{

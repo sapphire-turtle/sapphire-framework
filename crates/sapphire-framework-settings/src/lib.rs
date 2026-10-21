@@ -15,5 +15,5 @@ pub use error::{Error, Result};
 pub use owner::{FieldError, SettingsOwner, Staged};
 pub use read::{StartState, get, list};
 pub use registry::Registry;
-pub use sapphire_framework_settings_api::*;
+pub use sapphire_bridge_api::settings::*;
 pub use store::{Applied, Op, apply, write_atomic, write_private};

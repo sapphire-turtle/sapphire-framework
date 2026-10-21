@@ -103,16 +103,18 @@ Parts 1 and 2 ship together: the core is designed against its first real owner.
     into config batches; the `embed.*` RPCs stay for existing clients. In the GUI, editing
     moves to the settings screen (part 4).
 
-## Part 1: Registry core — crates `sapphire-framework-settings-api` and `sapphire-framework-settings`
+## Part 1: Registry core — `sapphire-framework-bridge-api::settings` and crate `sapphire-framework-settings`
 
 ### Types
 
 The schema and value types are plain serde types, shared by the CLI, the GUI and the IPC
-API. They live in their own crate, `sapphire-framework-settings-api`, versioned
-independently from 1.0 like the other API crates: `sapphire-framework-bridge-api` and
-`-server-api` carry them on the wire and must not depend on a 0.x framework crate. Reading,
-resolution and writing (with `toml_edit`) live in `sapphire-framework-settings`, which moves
-with the framework's version. The GUI depends on the types only.
+API. They live in the `settings` module of `sapphire-framework-bridge-api` (versioned
+independently, so it never depends on a 0.x framework crate). They were first planned as a
+crate of their own, `sapphire-framework-settings-api`; they moved into the bridge API before
+release because clients are to reach the bridge only through their app server, which makes
+`-server-api` depend on `-bridge-api` and leaves no second consumer to share a separate
+crate with (see Part 3). Reading, resolution and writing (with `toml_edit`) live in
+`sapphire-framework-settings`, which moves with the framework's version. The GUI depends on the types only.
 
 ```rust
 pub enum Scope { Device, Workgroup, Workspace }
@@ -478,9 +480,16 @@ Bridge:
   and the workspace scope is `{root}/.{app}/config.toml`, both laid out by key path.
 - The app server serves `config.*` for its owners and `server.restart` (the same in-place
   restart as the bridge).
-- `<app> config …` takes the same arguments as the bridge's, plus `--workspace`; it routes
-  each key to its owner — bridge keys to the bridge, app and framework keys to the app
-  server — and writes files directly when the owner is not running.
+- Clients (the app's CLI and GUI) talk only to their app server; the app server relays
+  what they need from the bridge (decided 2026-10-22, replacing direct client→bridge
+  calls). So `-server-api` depends on `-bridge-api`. The app server's `config.*` merges its
+  own owners' schema with the bridge's and routes each key to its owner, so `<app> config …`
+  (the bridge's arguments plus `--workspace`) and the GUI see one endpoint. The other bridge
+  methods clients use go through a generic relay with an allowlist. A mixed batch is
+  validated by both owners before either writes, which needs a validate-only bridge call.
+  `sapphire-bridge`'s own CLI still talks to the bridge directly. Its own spec settles the
+  relay's shape, whether bridge notifications need relaying, and the offline path (writing
+  files directly when an owner is not running).
 - Its own spec decides how app settings are reloaded live and what the app server's
   restart rebuilds.
 

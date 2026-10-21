@@ -2,7 +2,7 @@
 //!
 //! A setting is addressed by its key (its TOML path in a scope's `config.toml`) and
 //! described by a [`SettingDef`]: its [`Kind`], the [`Scope`]s it may live in, and
-//! whether a change applies live or needs a restart. This crate is types only, so the
+//! whether a change applies live or needs a restart. This module is types only, so the
 //! bridge, the app servers and the CLIs can share it without sharing a store.
 
 use std::fmt;

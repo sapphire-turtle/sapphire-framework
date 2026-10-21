@@ -18,7 +18,6 @@ cli = ["dep:clap", "dep:rpassword"]
 clap = { workspace = true, optional = true }
 rpassword = { version = "7", optional = true }
 grain-id.workspace = true
-sapphire-framework-settings-api = { version = "1.0.0", path = "../sapphire-framework-settings-api" }
 serde.workspace = true
 
 [dev-dependencies]

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use sapphire_framework_settings_api::{Scope, SettingDef};
+use sapphire_bridge_api::settings::{Scope, SettingDef};
 
 use crate::Result;
 

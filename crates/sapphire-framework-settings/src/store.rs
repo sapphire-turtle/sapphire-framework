@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sapphire_framework_settings_api::{Apply, Kind, Scope, SettingDef, Value};
+use sapphire_bridge_api::settings::{Apply, Kind, Scope, SettingDef, Value};
 use toml_edit::DocumentMut;
 
 use crate::owner::{SettingsOwner, Staged};

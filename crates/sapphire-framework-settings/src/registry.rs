@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sapphire_framework_settings_api::{Kind, Scope, SettingDef};
+use sapphire_bridge_api::settings::{Kind, Scope, SettingDef};
 
 use crate::owner::SettingsOwner;
 use crate::{Error, Result};

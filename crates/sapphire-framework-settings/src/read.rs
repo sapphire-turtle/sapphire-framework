@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use sapphire_framework_settings_api::{
+use sapphire_bridge_api::settings::{
     Apply, Entry, EntryValue, Kind, Origin, Scope, SecretState, SettingDef, Value,
 };
 

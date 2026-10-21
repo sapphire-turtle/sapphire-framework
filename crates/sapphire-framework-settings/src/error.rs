@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use sapphire_framework_settings_api::Scope;
+use sapphire_bridge_api::settings::Scope;
 
 use crate::owner::FieldError;
 

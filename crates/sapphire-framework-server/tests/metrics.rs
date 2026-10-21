@@ -95,10 +95,27 @@ async fn wait_until_listening(endpoint: &Endpoint) {
     }
 }
 
-async fn start(server: AppServer, endpoint: &Endpoint) -> tokio::task::JoinHandle<()> {
+/// Wait until the HTTP listener on `port` accepts. The server binds it after the IPC socket,
+/// so a probe of the socket alone can return before it does.
+async fn wait_until_serving(port: u16) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .is_err()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never started serving HTTP on {port}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn start(server: AppServer, endpoint: &Endpoint, port: u16) -> tokio::task::JoinHandle<()> {
     let server = server.endpoint(endpoint.clone());
     let task = tokio::spawn(async move { server.run().await.unwrap() });
     wait_until_listening(endpoint).await;
+    wait_until_serving(port).await;
     task
 }
 
@@ -161,7 +178,7 @@ async fn metrics_alone_starts_the_listener() {
     let server = AppServer::new(&CTX_ALONE, "0.0.0")
         .config(metrics_config(port, true))
         .http_auth(AuthConfig::new(Arc::new(Fake)));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
 
     let res = get_from(port, "/metrics", None).await;
     assert_eq!(res.status(), reqwest::StatusCode::OK);
@@ -197,7 +214,7 @@ async fn metrics_ignores_a_bad_token() {
     let server = AppServer::new(&CTX_TOKEN, "0.0.0")
         .config(metrics_config(port, true))
         .http_auth(AuthConfig::new(Arc::new(Fake)));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
 
     let res = get_from(port, "/metrics", Some("nope")).await;
     assert_eq!(res.status(), reqwest::StatusCode::OK);
@@ -217,7 +234,7 @@ async fn app_routes_stay_behind_the_token() {
         .config(metrics_config(port, true))
         .http(axum::Router::new().route("/app", get(|| async { "app" })))
         .http_auth(AuthConfig::new(Arc::new(Fake)));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
 
     let res = get_from(port, "/app", None).await;
     assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
@@ -246,7 +263,7 @@ async fn metrics_off_serves_no_route() {
         .config(metrics_config(port, false))
         .http(axum::Router::new().route("/app", get(|| async { "app" })))
         .http_auth(AuthConfig::new(Arc::new(Fake)));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
 
     let res = get_from(port, "/metrics", Some(TOKEN)).await;
     assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
@@ -263,7 +280,7 @@ async fn start_metrics(
     let endpoint = Endpoint::in_dir(ctx.app_name, tmp.join("run"));
     let port = free_port();
     let server = AppServer::new(ctx, "0.0.0").config(metrics_config(port, true));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
     (port, endpoint, task)
 }
 
@@ -406,7 +423,7 @@ async fn an_application_collector_runs_on_each_scrape() {
             sapphire_framework_server::metrics::gauge!("sapphire_metricstest_scrapes")
                 .set(n as f64);
         }));
-    let task = start(server, &endpoint).await;
+    let task = start(server, &endpoint, port).await;
 
     let first = get_from(port, "/metrics", None).await.text().await.unwrap();
     assert!(first.contains("sapphire_metricstest_scrapes 1"), "{first}");

@@ -11,16 +11,16 @@ use std::sync::{Arc, Mutex};
 use sapphire_bridge_api::{
     Ack, BRIDGE_NAME, DEVICE_PRIORITY_SET, DEVICE_RETIRE, DevicePrioritySetParams,
     DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET,
-    EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
+    EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
     EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
     EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
-    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
-    EmbedModelSetParams, EmbedParams, EmbedResult, EmbedSettingsResult,
-    ExternalDeviceAuthenticateParams, INVITE, InviteParams, InviteResult, JOIN, JoinParams,
-    JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams, RegisterResult,
-    RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
-    WorkgroupCreateParams, WorkgroupCreateResult, WorkgroupStatus, WorkgroupWorkspaceInfo,
-    WorkspaceRoles, WorkspacesResult,
+    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult,
+    EmbedKeySetParams, EmbedModelInfo, EmbedModelSetParams, EmbedParams, EmbedResult,
+    EmbedSettingsResult, ExternalDeviceAuthenticateParams, INVITE, InviteParams, InviteResult,
+    JOIN, JoinParams, JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams,
+    RegisterResult, RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams,
+    WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult, WorkgroupStatus,
+    WorkgroupWorkspaceInfo, WorkspaceRoles, WorkspacesResult,
 };
 use sapphire_ipc::{
     Connection, Endpoint, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve,
@@ -218,6 +218,13 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
             move |ctx| {
                 let bridge = Arc::clone(&bridge);
                 async move { embed(&bridge, ctx).await }
+            }
+        })
+        .method(EMBED_IMAGES, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move { embed_images(&bridge, ctx).await }
             }
         })
         .method(EXTERNAL_DEVICE_LIST, {
@@ -610,24 +617,51 @@ fn parse<T: serde::de::DeserializeOwned>(
         .map_err(|e| RpcError::invalid_params(format!("malformed {method}: {e}")))
 }
 
+/// The provider and its model, or the error that says this host does not embed.
+fn embed_provider(
+    bridge: &Bridge,
+) -> std::result::Result<(Arc<dyn crate::EmbedProvider>, EmbedModelInfo), RpcError> {
+    match bridge.embedder().map(|p| {
+        let info = p.info();
+        (p, info)
+    }) {
+        Some((p, Some(info))) => Ok((p, info)),
+        _ => Err(failed(Error::Config(
+            "embedding is not enabled on this host".to_owned(),
+        ))),
+    }
+}
+
 /// `embed.embed` — one vector per text, in order. A provider failure travels with its own
 /// message.
 async fn embed(bridge: &Bridge, ctx: RequestCtx) -> std::result::Result<Value, RpcError> {
     let params: EmbedParams = serde_json::from_value(ctx.params)
         .map_err(|e| RpcError::invalid_params(format!("malformed embed request: {e}")))?;
-    let (provider, info) = match bridge.embedder().map(|p| {
-        let info = p.info();
-        (p, info)
-    }) {
-        Some((p, Some(info))) => (p, info),
-        _ => {
-            return Err(failed(Error::Config(
-                "embedding is not enabled on this host".to_owned(),
-            )));
-        }
-    };
+    let (provider, info) = embed_provider(bridge)?;
     let vectors = provider
         .embed(params.texts)
+        .await
+        .map_err(RpcError::internal)?;
+    encode(EmbedResult {
+        model: info.model,
+        dimension: info.dimension,
+        vectors,
+    })
+}
+
+/// `embed.embed_images` — one vector per image, in order, from a model that embeds images.
+async fn embed_images(bridge: &Bridge, ctx: RequestCtx) -> std::result::Result<Value, RpcError> {
+    let params: EmbedImagesParams = parse(ctx, EMBED_IMAGES)?;
+    let images = params.decode().map_err(RpcError::invalid_params)?;
+    let (provider, info) = embed_provider(bridge)?;
+    if !info.images {
+        return Err(failed(Error::Config(format!(
+            "the embedding model {} cannot embed images",
+            info.model
+        ))));
+    }
+    let vectors = provider
+        .embed_images(images)
         .await
         .map_err(RpcError::internal)?;
     encode(EmbedResult {
@@ -1296,6 +1330,7 @@ mod tests {
                 template_version: 1,
                 revision: None,
                 max_tokens: None,
+                images: false,
             })
         }
         fn loaded(&self) -> bool {
@@ -1479,6 +1514,7 @@ mod tests {
                     template_version: 0,
                     revision: None,
                     max_tokens: None,
+                    images: false,
                 })) as Arc<dyn crate::EmbedProvider>,
             )
         });

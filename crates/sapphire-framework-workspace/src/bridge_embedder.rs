@@ -30,6 +30,13 @@ enum Job {
         /// Where the answer goes.
         reply: Sender<Result<EmbedResult>>,
     },
+    /// Embed `images` (each a file's bytes) and reply as for [`Job::Embed`].
+    EmbedImages {
+        /// The images, in the caller's order.
+        images: Vec<Vec<u8>>,
+        /// Where the answer goes.
+        reply: Sender<Result<EmbedResult>>,
+    },
     /// Ask `embed.info` again and reply with the model now served (`None`: embedding is
     /// off), or an error when the bridge cannot be reached.
     Info {
@@ -163,6 +170,16 @@ fn serve(
                 }
                 let _ = reply.send(result.map_err(|e| Error::Embed(e.to_string())));
             }
+            Job::EmbedImages { images, reply } => {
+                let mut result = rt.block_on(client.embed_images(&images));
+                if result.as_ref().is_err_and(is_connection_error)
+                    && let Some(fresh) = rt.block_on(connect_client(endpoint.as_ref()))
+                {
+                    client = fresh;
+                    result = rt.block_on(client.embed_images(&images));
+                }
+                let _ = reply.send(result.map_err(|e| Error::Embed(e.to_string())));
+            }
             Job::Info { reply } => {
                 let mut result = probe(&rt, &client);
                 if result.is_err()
@@ -237,7 +254,29 @@ impl Embedder for BridgeEmbedder {
             texts: texts.iter().map(|t| (*t).to_owned()).collect(),
             reply: reply_tx,
         })?;
-        let answer = reply_rx.recv().map_err(|_| gone())??;
+        self.check(reply_rx.recv().map_err(|_| gone())??)
+    }
+
+    fn images(&self) -> bool {
+        self.info().images
+    }
+
+    fn embed_images(&self, images: &[&[u8]]) -> Result<Vec<Vec<f32>>> {
+        if images.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.send(Job::EmbedImages {
+            images: images.iter().map(|i| i.to_vec()).collect(),
+            reply: reply_tx,
+        })?;
+        self.check(reply_rx.recv().map_err(|_| gone())??)
+    }
+}
+
+impl BridgeEmbedder {
+    /// The answer's vectors, if they come from the model this embedder is for.
+    fn check(&self, answer: EmbedResult) -> Result<Vec<Vec<f32>>> {
         // The bridge switched models since this embedder was configured: these vectors
         // cannot be compared with the stored ones. The next sync reconfigures the store.
         let info = self.info();
@@ -381,6 +420,7 @@ pub(crate) mod testing {
                         template_version: 1,
                         revision: None,
                         max_tokens: None,
+                        images: false,
                     }),
                     loaded: true,
                     note: None,
@@ -557,6 +597,7 @@ mod tests {
             template_version: 0,
             revision: None,
             max_tokens: None,
+            images: false,
         };
         bridge.set_info(EmbedInfoResult {
             enabled: true,

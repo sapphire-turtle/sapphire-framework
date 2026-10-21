@@ -17,13 +17,14 @@ categories = ["database"]
 # legacy sqlite-store backend was removed outright rather than left optional.
 default = ["redb-store"]
 # Pure-Rust cache backend: redb (record storage) + tantivy (full-text index) +
-# brute-force vector search. No C dependencies.
-redb-store      = ["dep:redb", "dep:tantivy"]
+# vector search, brute force or HNSW (instant-distance). No C dependencies.
+redb-store      = ["dep:redb", "dep:tantivy", "dep:instant-distance"]
 
 [dependencies]
 thiserror.workspace = true
 redb       = { version = "4", optional = true }
 tantivy    = { version = "0.26", optional = true }
+instant-distance = { version = "0.6.1", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

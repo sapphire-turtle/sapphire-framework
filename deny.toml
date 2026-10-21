@@ -22,13 +22,13 @@ yanked = "warn"
 # still load-bearing. Re-check them when the dependency they name moves.
 ignore = [
     # Unmaintained, with no vulnerability and no safe upgrade.
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (author-declared); a proc-macro reached via fastembed > candle > gemm (bridge-embed) and iroh > netwatch > netlink-packet-core. No drop-in replacement upstream." },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained (author-declared); a proc-macro reached via candle > gemm (bridge-embed) and iroh > netwatch > netlink-packet-core. No drop-in replacement upstream." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser is unmaintained (author-declared); the gui crate reads font files with it directly and through fontdb. The suggested alternative (skrifa) is a different font stack." },
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained as a standalone crate (merged into zbus 6). Reached via eframe > egui-winit > accesskit_winit > accesskit_unix (Linux screen reader support), whose latest release still pins zbus ^5.19 and atspi ^0.29. Drop when accesskit_unix moves to zbus 6." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained as a standalone crate (merged into zbus 6). Same path and reason as RUSTSEC-2026-0370." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained as a standalone crate (merged into zbus 6). Same path and reason as RUSTSEC-2026-0370." },
     # Vulnerable only in code paths the dependency never takes, with no upgrade it accepts yet.
-    { id = "RUSTSEC-2026-0367", reason = "zip 8 keeps SUID/SGID bits in ZipArchive::extract. Reached via fastembed > candle-core 0.11 (bridge-embed), the latest candle, which pins zip ^8.6 and only opens archives to read entries by name (pickle/npy), never extract. Drop when candle moves to zip >= 9." },
+    { id = "RUSTSEC-2026-0367", reason = "zip 8 keeps SUID/SGID bits in ZipArchive::extract. Reached via candle-core 0.11 (bridge-embed), the latest candle, which pins zip ^8.6 and only opens archives to read entries by name (pickle/npy), never extract. Drop when candle moves to zip >= 9." },
     { id = "RUSTSEC-2026-0368", reason = "zip 8's ZipArchive::extract follows symlink targets outside the destination. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
     { id = "RUSTSEC-2026-0369", reason = "zip 8's extract applies permissions through symlinks. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
 ]

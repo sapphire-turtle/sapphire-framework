@@ -7,7 +7,8 @@
 //!
 //! - [`template`]: the prompt template, token truncation and MRL helpers (pure).
 //! - [`rest`]: an OpenAI-compatible `/v1/embeddings` provider.
-//! - `local` (feature `local`): Qwen3-VL-Embedding-2B on CPU through fastembed and candle.
+//! - `local` (feature `local`): Qwen3-VL-Embedding (2B or 8B) on CPU through candle, its
+//!   weights quantized while loading ([`qwen3vl`]).
 //! - [`service`]: one worker thread that loads the model on demand and unloads it when idle.
 
 pub mod rest;
@@ -16,6 +17,8 @@ pub mod template;
 
 #[cfg(feature = "local")]
 pub mod local;
+#[cfg(feature = "local")]
+pub mod qwen3vl;
 
 pub use rest::{HttpPost, RestEmbedder, UreqPost};
 pub use sapphire_bridge_api::{ApiKey, LOCAL_MODEL, LocalModel, MAX_TOKENS, RemoteModel};

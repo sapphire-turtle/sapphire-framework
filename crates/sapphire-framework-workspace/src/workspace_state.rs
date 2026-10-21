@@ -89,28 +89,35 @@ struct FileVectors<'a> {
 /// Texts per embedding request when an app embeds in the foreground.
 const BATCH: usize = 100;
 
+/// The hash a document's vector file is named by: of a text's bytes, or the image file's
+/// (computed when it was indexed).
+fn vector_hash(content: sapphire_retrieve::Content<'_>) -> String {
+    match content {
+        sapphire_retrieve::Content::Text(text) => crate::vectors::content_hash(text.as_bytes()),
+        sapphire_retrieve::Content::Image { content_hash } => content_hash.to_owned(),
+    }
+}
+
 impl sapphire_retrieve::VectorSource for FileVectors<'_> {
-    fn find(&self, _path: &str, text: &str) -> Option<Vec<f32>> {
-        self.dir
-            .as_ref()?
-            .read(&crate::vectors::content_hash(text.as_bytes()))
+    fn find(&self, _path: &str, content: sapphire_retrieve::Content<'_>) -> Option<Vec<f32>> {
+        self.dir.as_ref()?.read(&vector_hash(content))
     }
 
-    fn may_embed(&self, path: &str, text: &str) -> bool {
+    fn may_embed(&self, path: &str, content: sapphire_retrieve::Content<'_>) -> bool {
         let rel = Path::new(path)
             .strip_prefix(self.root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_owned());
-        (self.policy)(&rel, &crate::vectors::content_hash(text.as_bytes()))
+        (self.policy)(&rel, &vector_hash(content))
     }
 
     fn batch_size(&self) -> usize {
         self.batch_size
     }
 
-    fn embedded(&self, _path: &str, text: &str, vector: &[f32]) {
+    fn embedded(&self, _path: &str, content: sapphire_retrieve::Content<'_>, vector: &[f32]) {
         let Some(dir) = &self.dir else { return };
-        let hash = crate::vectors::content_hash(text.as_bytes());
+        let hash = vector_hash(content);
         if let Err(err) = dir.write(&hash, vector) {
             tracing::warn!("could not write the vector file for {hash}: {err}");
         }
@@ -558,8 +565,9 @@ impl WorkspaceState {
     /// Write raw bytes to a file, for binary content such as images or audio.
     ///
     /// Behaves like [`write_file`](Self::write_file): missing parent
-    /// directories are created and an existing file is overwritten. Content
-    /// that is not UTF-8 is synced but not indexed.
+    /// directories are created and an existing file is overwritten. An image
+    /// (by its extension) is indexed as one; other content that is not UTF-8
+    /// is synced but not indexed.
     pub fn write_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
         let resolved = self.resolve_path(path)?;
         let abs = resolved.as_path();
@@ -727,6 +735,7 @@ impl WorkspaceState {
                 template_version: 0,
                 revision: None,
                 max_tokens: None,
+                images: false,
             },
         }));
         Ok(())
@@ -1218,7 +1227,8 @@ mod tests {
         #[test]
         fn on_file_updated_skips_a_binary_file() {
             let (tmp, state) = make_state();
-            let file = tmp.path().join("photo.png");
+            // Audio is synced but not indexed (images are, #306).
+            let file = tmp.path().join("voice.wav");
             fs::write(&file, BINARY).unwrap();
 
             state.on_file_updated(&file).unwrap();
@@ -1407,6 +1417,38 @@ mod tests {
         }
 
         #[test]
+        fn an_image_is_found_by_a_text_query_when_the_embedder_embeds_images() {
+            struct ImageEmbedder;
+            impl Embedder for ImageEmbedder {
+                fn embed_texts(&self, texts: &[&str]) -> sapphire_retrieve::Result<Vec<Vec<f32>>> {
+                    FakeEmbedder.embed_texts(texts)
+                }
+                fn images(&self) -> bool {
+                    true
+                }
+                fn embed_images(
+                    &self,
+                    images: &[&[u8]],
+                ) -> sapphire_retrieve::Result<Vec<Vec<f32>>> {
+                    assert!(images.iter().all(|i| i.starts_with(b"\x89PNG")));
+                    Ok(images.iter().map(|_| vec![0.0, 0.0, 1.0]).collect())
+                }
+            }
+            let (tmp, state) = make_state();
+            fs::write(tmp.path().join("cat.png"), b"\x89PNG fake").unwrap();
+            state.sync().unwrap();
+            state
+                .set_embedder_for_test(Box::new(ImageEmbedder), "fake-3d", 3)
+                .unwrap();
+            assert_eq!(state.embed_pending(|_, _| {}).unwrap(), 3);
+            let hits = state
+                .retrieve_files(&params("a photo"), &HybridConfig::default())
+                .unwrap();
+            assert!(hits[0].path.ends_with("cat.png"), "{hits:?}");
+            assert_eq!(hits[0].snippet, "");
+        }
+
+        #[test]
         fn vector_db_none_never_loads_an_embedder() {
             let (_tmp, state) = make_state();
             state.set_vector_db(VectorDb::None);
@@ -1440,6 +1482,7 @@ mod tests {
                     template_version: 0,
                     revision: None,
                     max_tokens: None,
+                    images: false,
                 }),
                 ..Default::default()
             }

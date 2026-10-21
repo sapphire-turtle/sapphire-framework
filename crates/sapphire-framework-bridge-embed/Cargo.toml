@@ -2,7 +2,7 @@
 name = "sapphire-framework-bridge-embed"
 version.workspace = true
 edition.workspace = true
-description = "Text embedding component of the sapphire bridge: a local Qwen3-VL-Embedding model or an OpenAI-compatible endpoint"
+description = "Embedding component of the sapphire bridge: a local Qwen3-VL-Embedding model (texts and images) or an OpenAI-compatible endpoint"
 license.workspace = true
 repository.workspace = true
 keywords = ["embedding", "bridge", "local-first", "qwen3"]
@@ -10,19 +10,18 @@ categories = ["science"]
 
 [features]
 default = ["local"]
-# The local model. ORT is loaded dynamically (never at start), so CPUs without AVX still run.
-local = ["dep:fastembed", "dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:hf-hub"]
+# The local model (candle, on the CPU).
+local = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:hf-hub", "dep:image"]
 
 [dependencies]
-fastembed = { version = "=7.1.1", default-features = false, features = ["qwen3", "hf-hub-native-tls", "ort-load-dynamic"], optional = true }
 candle-core = { version = "0.11.0", optional = true }
 candle-nn = { version = "0.11.0", optional = true }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"], optional = true }
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"], optional = true }
-# The hf-hub fastembed uses, with the same TLS. The model is fetched through it into an
-# explicit cache directory (fastembed's `from_hf` would use the working directory).
+# The model is fetched through hf-hub into an explicit cache directory.
 hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "native-tls"], optional = true }
 ureq = { version = "3.3", features = ["json"] }
-sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.3.0", path = "../sapphire-framework-bridge-api" }
+sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.4.0", path = "../sapphire-framework-bridge-api" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

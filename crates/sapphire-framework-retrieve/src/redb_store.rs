@@ -16,9 +16,11 @@
 //!   `embedding_model`, `embedding_dim` and `schema_version`.
 //! - **tantivy** holds a trigram full-text index (BM25) with one document per
 //!   file. It is derived from redb and can be rebuilt at any time.
-//! - **Vector search is brute-force** over the `vectors` table (exact, no ANN).
-//!   Fine up to tens of thousands of files; swap in an HNSW index later if the
-//!   collection grows.
+//! - **Vector search** is brute force over the `vectors` table below
+//!   [`ANN_MIN`](crate::ann::ANN_MIN) vectors, and through an in-memory HNSW index
+//!   ([`crate::ann`]) above it. The index is derived like tantivy's and never saved.
+//! - A document is a text file, or an image ([`DocKind::Image`]) embedded from its
+//!   file's bytes by an embedder that can.
 //! - A store whose `schema_version` is not `SCHEMA_VERSION` (an older shape)
 //!   is wiped on open and rebuilt by the caller, as for a fresh cache.
 
@@ -42,10 +44,12 @@ use tantivy::{
 };
 
 use crate::{
+    ann::{ANN_MIN, Ann, EF_SEARCH, Point, Ticket},
     embed::Embedder,
     error::{Error, Result},
     retrieve_store::{
-        Document, FileSearchResult, FtsQuery, RetrieveStore, VectorQuery, VectorSource,
+        Content, DocKind, Document, FileSearchResult, FtsQuery, RetrieveStore, VectorQuery,
+        VectorSource,
     },
     snippet::{collapse_and_cut, leading},
     vector_store::{VecInfo, l2_distance, vec_deserialize, vec_serialize},
@@ -67,6 +71,48 @@ const SCHEMA_VERSION: u32 = 2;
 struct DocRecord {
     path: String,
     text: String,
+    /// Absent from records written before images: text.
+    #[serde(default, skip_serializing_if = "is_text")]
+    kind: DocKind,
+}
+
+fn is_text(kind: &DocKind) -> bool {
+    *kind == DocKind::Text
+}
+
+impl DocRecord {
+    /// Whether it gets a vector: a text with content, or any image.
+    fn embeddable(&self) -> bool {
+        match self.kind {
+            DocKind::Text => !self.text.trim().is_empty(),
+            DocKind::Image { .. } => true,
+        }
+    }
+
+    /// The search result's snippet: an image has none.
+    fn snippet(&self) -> String {
+        match self.kind {
+            DocKind::Text => leading(&self.text),
+            DocKind::Image { .. } => String::new(),
+        }
+    }
+}
+
+/// One document waiting for a vector, in [`RetrieveStore::embed_pending`].
+struct Pending {
+    doc_id: i64,
+    path: String,
+    text: String,
+    kind: DocKind,
+}
+
+impl Pending {
+    fn content(&self) -> Content<'_> {
+        match &self.kind {
+            DocKind::Text => Content::Text(&self.text),
+            DocKind::Image { content_hash } => Content::Image { content_hash },
+        }
+    }
 }
 
 fn vkey(doc_id: i64) -> [u8; 8] {
@@ -224,6 +270,11 @@ pub struct RedbStore {
     /// so [`RetrieveStore::configure_vectors`] can turn vectors on (or switch
     /// model) on a store that is already open and shared.
     dim: Mutex<Option<u32>>,
+    /// Images the embedder rejected while it embedded others (or texts): unreadable or
+    /// undecodable files, skipped until their content changes or the process restarts.
+    bad_images: Mutex<HashSet<(i64, String)>>,
+    /// The approximate nearest-neighbour index, once the store holds enough vectors.
+    ann: Arc<Ann>,
 }
 
 impl RedbStore {
@@ -285,6 +336,8 @@ impl RedbStore {
             reader,
             fields,
             dim: Mutex::new(dim),
+            bad_images: Mutex::new(HashSet::new()),
+            ann: Arc::new(Ann::new(ANN_MIN)),
         };
 
         if let Some(d) = dim {
@@ -371,6 +424,11 @@ impl RedbStore {
             }
         }
         wtx.commit().map_err(redb_err)?;
+        // Marked after the commit: a build whose snapshot misses a change still has it
+        // marked, so it is searched exactly.
+        for (doc_id, _) in vectors {
+            self.ann.changed(*doc_id);
+        }
         Ok(stored)
     }
 
@@ -398,14 +456,15 @@ impl RedbStore {
 
 impl RetrieveStore for RedbStore {
     fn upsert_document(&self, doc: &Document) -> Result<()> {
-        // A new record, or one whose text changed, needs a new vector.
+        // A new record, or one whose text or image changed, needs a new vector.
         let drop_vector = self
             .get_doc(doc.id)?
-            .is_none_or(|prev| prev.text != doc.body);
+            .is_none_or(|prev| prev.text != doc.body || prev.kind != doc.kind);
 
         let record = DocRecord {
             path: doc.path.clone(),
             text: doc.body.clone(),
+            kind: doc.kind.clone(),
         };
         let bytes = serde_json::to_vec(&record).map_err(|e| Error::Redb(e.to_string()))?;
 
@@ -419,6 +478,9 @@ impl RetrieveStore for RedbStore {
             }
         }
         wtx.commit().map_err(redb_err)?;
+        if drop_vector {
+            self.ann.changed(doc.id);
+        }
 
         self.reindex_fts(doc.id, &record.text)
     }
@@ -432,6 +494,7 @@ impl RetrieveStore for RedbStore {
             vecs.remove(vkey(id).as_slice()).map_err(redb_err)?;
         }
         wtx.commit().map_err(redb_err)?;
+        self.ann.changed(id);
 
         let w = self.writer.lock().unwrap();
         w.delete_term(Term::from_field_i64(self.fields.doc_id, id));
@@ -496,6 +559,7 @@ impl RetrieveStore for RedbStore {
         };
         if changed {
             wtx.commit().map_err(redb_err)?;
+            self.ann.clear();
         } else {
             wtx.abort().map_err(redb_err)?;
         }
@@ -513,8 +577,8 @@ impl RetrieveStore for RedbStore {
             return Ok(0);
         }
 
-        // Collect (doc_id, path, text) for non-empty documents that lack a vector.
-        let mut pending: Vec<(i64, String, String)> = Vec::new();
+        // Collect the documents with content that lack a vector.
+        let mut pending: Vec<Pending> = Vec::new();
         {
             let rtx = self.db.begin_read().map_err(redb_err)?;
             let vecs = rtx.open_table(VECTORS).map_err(redb_err)?;
@@ -525,7 +589,7 @@ impl RetrieveStore for RedbStore {
                 let Ok(rec) = serde_json::from_slice::<DocRecord>(v.value()) else {
                     continue;
                 };
-                if rec.text.trim().is_empty() {
+                if !rec.embeddable() {
                     continue;
                 }
                 if vecs
@@ -533,80 +597,111 @@ impl RetrieveStore for RedbStore {
                     .map_err(redb_err)?
                     .is_none()
                 {
-                    pending.push((doc_id, rec.path, rec.text));
+                    pending.push(Pending {
+                        doc_id,
+                        path: rec.path,
+                        text: rec.text,
+                        kind: rec.kind,
+                    });
                 }
             }
         }
 
         // What the source already has is stored as it is; what it neither has nor allows
-        // stays pending. Only the rest is computed.
+        // stays pending, and so does an image the embedder cannot embed. Only the rest is
+        // computed.
         let mut found = Vec::new();
-        let mut to_embed = Vec::new();
-        for (doc_id, path, text) in pending {
-            if let Some(v) = source.find(&path, &text) {
-                found.push((doc_id, v));
-            } else if source.may_embed(&path, &text) {
-                to_embed.push((doc_id, path, text));
+        let mut texts = Vec::new();
+        let mut images = Vec::new();
+        for item in pending {
+            if let Some(v) = source.find(&item.path, item.content()) {
+                found.push((item.doc_id, v));
+            } else if source.may_embed(&item.path, item.content()) {
+                match &item.kind {
+                    DocKind::Text => texts.push(item),
+                    DocKind::Image { content_hash } if embedder.images() => {
+                        let key = (item.doc_id, content_hash.clone());
+                        if !self.bad_images.lock().unwrap().contains(&key) {
+                            images.push(item);
+                        }
+                    }
+                    DocKind::Image { .. } => {}
+                }
             }
         }
         let found = self.put_vectors(&found)?;
-        let pending = to_embed;
 
-        let total = pending.len();
+        let total = texts.len() + images.len();
         let mut done = 0;
         let mut embedded = found;
         let mut last_err = None;
         // Set when the loop broke on a fully-failed batch: the caller is told,
         // even if earlier batches embedded (#194).
         let mut broke_early = false;
-        for batch in pending.chunks(source.batch_size().max(1)) {
-            let texts: Vec<&str> = batch.iter().map(|(_, _, t)| t.as_str()).collect();
-            let (vectors, outage): (Vec<(i64, Vec<f32>)>, bool) = match embedder.embed_texts(&texts)
-            {
-                Ok(embeddings) => (
-                    batch.iter().map(|(id, _, _)| *id).zip(embeddings).collect(),
+        let batch_size = source.batch_size().max(1);
+        let batches = texts
+            .chunks(batch_size)
+            .chain(images.chunks(batch_size.min(IMAGE_BATCH)));
+        for batch in batches {
+            // Texts go in one call, and one at a time only when it fails; images always go
+            // one at a time, read from their files only now.
+            let all_at_once = match batch.first().map(|p| &p.kind) {
+                Some(DocKind::Text) => {
+                    let texts: Vec<&str> = batch.iter().map(|p| p.text.as_str()).collect();
+                    embedder.embed_texts(&texts).ok()
+                }
+                _ => None,
+            };
+            let (vectors, outage): (Vec<(i64, Vec<f32>)>, bool) = match all_at_once {
+                Some(embeddings) => (
+                    batch.iter().map(|p| p.doc_id).zip(embeddings).collect(),
                     false,
                 ),
-                // One bad input must not block the rest: retry the batch one
-                // document at a time, and leave each one that still fails pending.
-                Err(_) => {
+                // One bad input must not block the rest: each one that fails on its own is
+                // left pending.
+                None => {
                     let mut ok = Vec::new();
-                    for (doc_id, _, text) in batch {
-                        match embedder.embed_texts(&[text.as_str()]) {
-                            Ok(mut v) if v.len() == 1 => ok.push((*doc_id, v.remove(0))),
-                            Ok(v) => {
-                                let e = Error::Embed(format!(
-                                    "embedder returned {} vectors for 1 input",
-                                    v.len()
-                                ));
-                                self.warn_embed_failed(*doc_id, &e)?;
-                                last_err = Some(e);
-                            }
+                    for item in batch {
+                        match embed_one(embedder, item) {
+                            Ok(v) => ok.push((item.doc_id, v)),
                             Err(e) => {
-                                self.warn_embed_failed(*doc_id, &e)?;
+                                self.warn_embed_failed(item.doc_id, &e)?;
                                 last_err = Some(e);
                             }
                         }
                     }
                     // Not one input of the batch went through on its own: the
-                    // provider is down, not one input bad.
-                    let outage = ok.is_empty();
+                    // provider is down, not one input bad. Images are the exception
+                    // when a text still goes through: then the files are bad.
+                    let mut outage = ok.is_empty();
+                    if outage
+                        && matches!(batch[0].kind, DocKind::Image { .. })
+                        && embedder.embed_texts(&["ok"]).is_ok()
+                    {
+                        let mut bad = self.bad_images.lock().unwrap();
+                        for item in batch {
+                            if let DocKind::Image { content_hash } = &item.kind
+                                && !ok.iter().any(|(id, _)| *id == item.doc_id)
+                            {
+                                bad.insert((item.doc_id, content_hash.clone()));
+                            }
+                        }
+                        outage = false;
+                    }
                     (ok, outage)
                 }
             };
             embedded += self.put_vectors(&vectors)?;
             // Handed on only once the index holds them: a vector the index refused (a wrong
             // dimension) must not become a file other devices trust.
-            let by_id: std::collections::HashMap<i64, (&str, &str)> = batch
-                .iter()
-                .map(|(id, p, t)| (*id, (p.as_str(), t.as_str())))
-                .collect();
+            let by_id: std::collections::HashMap<i64, &Pending> =
+                batch.iter().map(|p| (p.doc_id, p)).collect();
             let want = self.dim().unwrap_or(0) as usize;
             for (doc_id, v) in &vectors {
                 if v.len() == want
-                    && let Some((path, text)) = by_id.get(doc_id)
+                    && let Some(item) = by_id.get(doc_id)
                 {
-                    source.embedded(path, text, v);
+                    source.embedded(&item.path, item.content(), v);
                 }
             }
             done += batch.len();
@@ -656,7 +751,7 @@ impl RetrieveStore for RedbStore {
         for entry in docs.iter().map_err(redb_err)? {
             let (_, v) = entry.map_err(redb_err)?;
             if let Ok(rec) = serde_json::from_slice::<DocRecord>(v.value())
-                && !rec.text.trim().is_empty()
+                && rec.embeddable()
             {
                 embeddable += 1;
             }
@@ -707,8 +802,13 @@ impl RetrieveStore for RedbStore {
             {
                 continue;
             }
-            let source = snippet_source(&rec.text, SNIPPET_SOURCE_BYTES);
-            let snippet = pick_snippet(generator.snippet(source).fragment(), &rec.text);
+            let snippet = match rec.kind {
+                DocKind::Text => {
+                    let source = snippet_source(&rec.text, SNIPPET_SOURCE_BYTES);
+                    pick_snippet(generator.snippet(source).fragment(), &rec.text)
+                }
+                DocKind::Image { .. } => String::new(),
+            };
             results.push(FileSearchResult {
                 id: doc_id,
                 path: rec.path,
@@ -731,21 +831,49 @@ impl RetrieveStore for RedbStore {
 
         let over_fetch = q.limit.saturating_mul(5).max(q.limit);
 
-        // Brute-force scan: keep the best `over_fetch` by L2 distance.
+        // The index serves a search over the whole store that wants no more candidates
+        // than it returns; a prefix would filter its candidates down to too few.
+        let indexable = q.path_prefix.is_none() && over_fetch <= EF_SEARCH;
         let mut scored: Vec<(f64, i64)> = Vec::new();
         {
             let rtx = self.db.begin_read().map_err(redb_err)?;
             let vecs = rtx.open_table(VECTORS).map_err(redb_err)?;
-            for entry in vecs.iter().map_err(redb_err)? {
-                let (k, v) = entry.map_err(redb_err)?;
-                let Some(doc_id) = vkey_parse(k.value()) else {
-                    continue;
-                };
-                let emb = vec_deserialize(v.value());
-                if emb.len() != query_vec.len() {
-                    continue;
+            let count = vecs.len().map_err(redb_err)? as usize;
+            if indexable && let Some(ticket) = self.ann.start(count) {
+                self.build_ann(ticket);
+            }
+            let candidates = if indexable && count >= self.ann_min() {
+                self.ann.search(&query_vec, over_fetch)
+            } else {
+                None
+            };
+            match candidates {
+                Some(c) => {
+                    scored = c.nearest;
+                    for doc_id in c.changed {
+                        let Some(v) = vecs.get(vkey(doc_id).as_slice()).map_err(redb_err)? else {
+                            continue;
+                        };
+                        let emb = vec_deserialize(v.value());
+                        if emb.len() == query_vec.len() {
+                            scored.push((l2_distance(&query_vec, &emb), doc_id));
+                        }
+                    }
                 }
-                scored.push((l2_distance(&query_vec, &emb), doc_id));
+                // Brute-force scan.
+                None => {
+                    for entry in vecs.iter().map_err(redb_err)? {
+                        let (k, v) = entry.map_err(redb_err)?;
+                        let Some(doc_id) = vkey_parse(k.value()) else {
+                            continue;
+                        };
+                        let emb = vec_deserialize(v.value());
+                        if emb.len() != query_vec.len() {
+                            continue;
+                        }
+                        scored.push((l2_distance(&query_vec, &emb), doc_id));
+                    }
+                }
             }
         }
         // L2 distance: lower = better.
@@ -768,12 +896,81 @@ impl RetrieveStore for RedbStore {
             }
             results.push(FileSearchResult {
                 id: doc_id,
+                snippet: rec.snippet(),
                 path: rec.path,
                 score: dist,
-                snippet: leading(&rec.text),
             });
         }
         Ok(results)
+    }
+}
+
+impl RedbStore {
+    /// The threshold the index was made with (lowered in tests).
+    fn ann_min(&self) -> usize {
+        self.ann.min()
+    }
+
+    /// Build the index on a background thread, from a snapshot of the vectors taken now.
+    fn build_ann(&self, ticket: Ticket) {
+        let (db, ann) = (Arc::clone(&self.db), Arc::clone(&self.ann));
+        let spawned = std::thread::Builder::new()
+            .name("sapphire-ann".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let snapshot = (|| -> Result<(Vec<Point>, Vec<i64>)> {
+                    let rtx = db.begin_read().map_err(redb_err)?;
+                    let vecs = rtx.open_table(VECTORS).map_err(redb_err)?;
+                    let (mut points, mut ids) = (Vec::new(), Vec::new());
+                    for entry in vecs.iter().map_err(redb_err)? {
+                        let (k, v) = entry.map_err(redb_err)?;
+                        if let Some(id) = vkey_parse(k.value()) {
+                            points.push(Point(vec_deserialize(v.value())));
+                            ids.push(id);
+                        }
+                    }
+                    Ok((points, ids))
+                })();
+                match snapshot {
+                    Ok(snapshot) => {
+                        let n = snapshot.1.len();
+                        ann.finish(ticket, Some(snapshot));
+                        tracing::info!(
+                            "vector index built: {n} vectors in {:?}",
+                            started.elapsed()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("vector index not built: {e}");
+                        ann.finish(ticket, None);
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("vector index not built: {e}");
+            self.ann.finish(ticket, None);
+        }
+    }
+}
+
+/// Images per batch in [`RetrieveStore::embed_pending`]: each is read and embedded on its own,
+/// and a batch whose every image fails is an outage.
+const IMAGE_BATCH: usize = 4;
+
+/// One document's vector, computed on its own: a text from its text, an image from its file.
+fn embed_one(embedder: &dyn Embedder, item: &Pending) -> Result<Vec<f32>> {
+    let mut vectors = match &item.kind {
+        DocKind::Text => embedder.embed_texts(&[item.text.as_str()])?,
+        DocKind::Image { .. } => {
+            let bytes = std::fs::read(&item.path)?;
+            embedder.embed_images(&[bytes.as_slice()])?
+        }
+    };
+    match vectors.len() {
+        1 => Ok(vectors.remove(0)),
+        n => Err(Error::Embed(format!(
+            "embedder returned {n} vectors for 1 input"
+        ))),
     }
 }
 
@@ -818,6 +1015,7 @@ mod tests {
             id,
             body: text.to_owned(),
             path: path.to_owned(),
+            kind: DocKind::Text,
         }
     }
 
@@ -1490,13 +1688,13 @@ mod tests {
     }
 
     impl crate::retrieve_store::VectorSource for MapSource {
-        fn find(&self, path: &str, _: &str) -> Option<Vec<f32>> {
+        fn find(&self, path: &str, _: Content<'_>) -> Option<Vec<f32>> {
             self.stored.get(path).cloned()
         }
-        fn may_embed(&self, path: &str, _: &str) -> bool {
+        fn may_embed(&self, path: &str, _: Content<'_>) -> bool {
             self.allowed.iter().any(|p| p == path)
         }
-        fn embedded(&self, path: &str, _: &str, vector: &[f32]) {
+        fn embedded(&self, path: &str, _: Content<'_>, vector: &[f32]) {
             self.kept
                 .lock()
                 .unwrap()
@@ -1579,13 +1777,13 @@ mod tests {
     /// Embeds everything, `n` texts per request.
     struct SmallBatches(usize);
     impl crate::retrieve_store::VectorSource for SmallBatches {
-        fn find(&self, _: &str, _: &str) -> Option<Vec<f32>> {
+        fn find(&self, _: &str, _: Content<'_>) -> Option<Vec<f32>> {
             None
         }
-        fn may_embed(&self, _: &str, _: &str) -> bool {
+        fn may_embed(&self, _: &str, _: Content<'_>) -> bool {
             true
         }
-        fn embedded(&self, _: &str, _: &str, _: &[f32]) {}
+        fn embedded(&self, _: &str, _: Content<'_>, _: &[f32]) {}
         fn batch_size(&self) -> usize {
             self.0
         }
@@ -1617,5 +1815,251 @@ mod tests {
             5
         );
         assert_eq!(*embedder.0.lock().unwrap(), vec![2, 2, 1]);
+    }
+
+    // ── images ──────────────────────────────────────────────────────────────
+
+    /// Texts as [`FakeEmbedder`]; an image is `[0, 0, 1]` unless its bytes start with
+    /// `bad`, which fails. Counts image calls.
+    struct ImageEmbedder(std::sync::atomic::AtomicUsize);
+    impl Embedder for ImageEmbedder {
+        fn embed_texts(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            FakeEmbedder.embed_texts(texts)
+        }
+        fn images(&self) -> bool {
+            true
+        }
+        fn embed_images(&self, images: &[&[u8]]) -> Result<Vec<Vec<f32>>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            images
+                .iter()
+                .map(|bytes| {
+                    if bytes.starts_with(b"bad") {
+                        Err(Error::Embed("cannot decode the image".into()))
+                    } else {
+                        Ok(vec![0.0, 0.0, 1.0])
+                    }
+                })
+                .collect()
+        }
+    }
+
+    fn image(dir: &Path, id: i64, name: &str, bytes: &[u8]) -> Document {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        Document {
+            id,
+            body: name.to_owned(),
+            path: path.to_string_lossy().into_owned(),
+            kind: DocKind::Image {
+                content_hash: format!("hash-{}", bytes.len()),
+            },
+        }
+    }
+
+    #[test]
+    fn images_are_embedded_from_their_files_by_an_embedder_that_can() {
+        let files = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RedbStore::open(tmp.path(), Some(3)).unwrap();
+        store.upsert_document(&doc(1, "/a.md", "banana")).unwrap();
+        store
+            .upsert_document(&image(files.path(), 2, "photo.png", b"png bytes"))
+            .unwrap();
+        store.rebuild_fts().unwrap();
+
+        // A text-only embedder leaves the image pending.
+        assert_eq!(
+            store
+                .embed_pending(&FakeEmbedder, &crate::NoVectorSource, &|_, _| {})
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.vec_info().unwrap().pending_count, 1);
+
+        let embedder = ImageEmbedder(Default::default());
+        assert_eq!(
+            store
+                .embed_pending(&embedder, &crate::NoVectorSource, &|_, _| {})
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.vec_info().unwrap().pending_count, 0);
+
+        // A text query finds the image, without a snippet; its name is searchable.
+        let hits = store
+            .search_similar(&VectorQuery::new("anything", &embedder).limit(5))
+            .unwrap();
+        assert_eq!((hits[0].id, hits[0].snippet.as_str()), (2, ""));
+        let fts = store.search_fts(&FtsQuery::new("photo").limit(5)).unwrap();
+        assert_eq!(fts.iter().map(|h| h.id).collect::<Vec<_>>(), vec![2]);
+
+        // Same name, other bytes: the vector goes. Same bytes again: it stays.
+        let changed = image(files.path(), 2, "photo.png", b"other png bytes");
+        store.upsert_document(&changed).unwrap();
+        assert_eq!(store.vec_info().unwrap().pending_count, 1);
+        store
+            .embed_pending(&embedder, &crate::NoVectorSource, &|_, _| {})
+            .unwrap();
+        store.upsert_document(&changed).unwrap();
+        assert_eq!(store.vec_info().unwrap().pending_count, 0);
+    }
+
+    #[test]
+    fn a_synced_image_vector_is_found_by_its_hash() {
+        struct ByHash;
+        impl VectorSource for ByHash {
+            fn find(&self, _: &str, content: Content<'_>) -> Option<Vec<f32>> {
+                match content {
+                    Content::Image {
+                        content_hash: "hash-3",
+                    } => Some(vec![0.0, 1.0, 0.0]),
+                    _ => None,
+                }
+            }
+            fn may_embed(&self, _: &str, _: Content<'_>) -> bool {
+                false
+            }
+            fn embedded(&self, _: &str, _: Content<'_>, _: &[f32]) {}
+        }
+        let files = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RedbStore::open(tmp.path(), Some(3)).unwrap();
+        store
+            .upsert_document(&image(files.path(), 1, "a.png", b"abc"))
+            .unwrap();
+        // Even a text-only embedder takes a vector another device made.
+        assert_eq!(
+            store
+                .embed_pending(&FakeEmbedder, &ByHash, &|_, _| {})
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn bad_images_do_not_hold_up_the_rest() {
+        let files = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = RedbStore::open(tmp.path(), Some(3)).unwrap();
+        // The first batch of images is all bad; a good one follows.
+        for id in 1..=IMAGE_BATCH as i64 {
+            store
+                .upsert_document(&image(files.path(), id, &format!("{id}.png"), b"bad"))
+                .unwrap();
+        }
+        let good = IMAGE_BATCH as i64 + 1;
+        store
+            .upsert_document(&image(files.path(), good, "good.png", b"fine"))
+            .unwrap();
+        let embedder = ImageEmbedder(Default::default());
+        assert_eq!(
+            store
+                .embed_pending(&embedder, &crate::NoVectorSource, &|_, _| {})
+                .unwrap(),
+            1
+        );
+        // The bad ones are not tried again in this process.
+        let calls = embedder.0.load(std::sync::atomic::Ordering::SeqCst);
+        store
+            .embed_pending(&embedder, &crate::NoVectorSource, &|_, _| {})
+            .unwrap();
+        assert_eq!(embedder.0.load(std::sync::atomic::Ordering::SeqCst), calls);
+        assert_eq!(store.vec_info().unwrap().pending_count, IMAGE_BATCH as u64);
+    }
+
+    // ── approximate nearest neighbours ──────────────────────────────────────
+
+    /// The query is a number `i`; its vector is that of document `i`.
+    struct IndexEmbedder(Vec<Vec<f32>>);
+    impl Embedder for IndexEmbedder {
+        fn embed_texts(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|t| self.0[t.parse::<usize>().unwrap()].clone())
+                .collect())
+        }
+    }
+
+    fn unit_vectors(n: usize, dim: usize) -> Vec<Vec<f32>> {
+        let mut x: u64 = 7;
+        (0..n)
+            .map(|_| {
+                let v: Vec<f32> = (0..dim)
+                    .map(|_| {
+                        x = x
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        ((x >> 33) as f32 / (1u64 << 31) as f32) - 0.5
+                    })
+                    .collect();
+                let norm = v.iter().map(|a| a * a).sum::<f32>().sqrt();
+                v.into_iter().map(|a| a / norm).collect()
+            })
+            .collect()
+    }
+
+    fn wait_for_index(store: &RedbStore, probe: &[f32]) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while store.ann.search(probe, 1).is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the index was not built"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_large_store_searches_through_the_index_and_sees_later_changes() {
+        let (n, dim) = (600, 16);
+        let mut vectors = unit_vectors(n + 1, dim);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = RedbStore::open(tmp.path(), Some(dim as u32)).unwrap();
+        store.ann = Arc::new(Ann::new(500));
+        for i in 0..n {
+            store
+                .upsert_document(&doc(i as i64, &format!("/{i}.md"), &format!("doc {i}")))
+                .unwrap();
+        }
+        let all: Vec<(i64, Vec<f32>)> = (0..n).map(|i| (i as i64, vectors[i].clone())).collect();
+        store.put_vectors(&all).unwrap();
+
+        // The first search is brute force and starts the build.
+        let embedder = IndexEmbedder(vectors.clone());
+        let first = store
+            .search_similar(&VectorQuery::new("3", &embedder).limit(5))
+            .unwrap();
+        assert_eq!(first[0].id, 3);
+        wait_for_index(&store, &vectors[0]);
+        for probe in [0usize, 42, 599] {
+            let hits = store
+                .search_similar(&VectorQuery::new(&probe.to_string(), &embedder).limit(5))
+                .unwrap();
+            assert_eq!(hits[0].id, probe as i64);
+            assert!(hits[0].score < 1e-6);
+        }
+
+        // A removed document is gone at once; a new one is found at once.
+        store.remove_document(42).unwrap();
+        let hits = store
+            .search_similar(&VectorQuery::new("42", &embedder).limit(5))
+            .unwrap();
+        assert!(hits.iter().all(|h| h.id != 42));
+        store
+            .upsert_document(&doc(n as i64, "/new.md", "new"))
+            .unwrap();
+        store
+            .put_vectors(&[(n as i64, vectors[n].clone())])
+            .unwrap();
+        let hits = store
+            .search_similar(&VectorQuery::new(&n.to_string(), &embedder).limit(5))
+            .unwrap();
+        assert_eq!(hits[0].id, n as i64);
+
+        // A model change drops the index with the vectors.
+        vectors.truncate(1);
+        store.configure_vectors("other", dim as u32).unwrap();
+        assert!(store.ann.search(&vectors[0], 1).is_none());
     }
 }

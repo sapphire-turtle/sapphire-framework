@@ -20,6 +20,86 @@ pub const DEFAULT_DIMENSION: u32 = 1024;
 /// [`LocalModel::max_tokens`]'s default.
 pub const DEFAULT_MAX_TOKENS: usize = 1024;
 
+/// How the local model's weights are held in memory: a device setting, never synced.
+///
+/// The weights are converted while loading, from the same download. Vectors from every
+/// type count as the model's own: the type is no part of the model's identity. Unset, a
+/// device uses `f16` ([`QType::default`]): measured on x86_64, it is as close to `f32` as
+/// makes no difference at half its memory, and faster than `q8_0` and `q4_k`, which trade
+/// speed for memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub enum QType {
+    /// Full precision; about 3.5 bytes a parameter resident.
+    #[serde(rename = "f32")]
+    F32,
+    /// Half precision: the default.
+    #[serde(rename = "f16")]
+    F16,
+    /// 8-bit blocks; close to `f32` at about a quarter of its memory.
+    #[serde(rename = "q8_0")]
+    Q8_0,
+    /// 4-bit k-quants; the smallest, with a visible loss.
+    #[serde(rename = "q4_k")]
+    Q4K,
+}
+
+impl QType {
+    /// Every type, in order of size.
+    pub const ALL: [QType; 4] = [QType::F32, QType::F16, QType::Q8_0, QType::Q4K];
+
+    /// Whether this build runs the quantized types on vector instructions. candle picks
+    /// those kernels at compile time: NEON on aarch64 always, AVX2 on x86_64 only in a
+    /// build for such CPUs (`-C target-feature=+avx2`). Without them, `q8_0` and `q4_k` run
+    /// on scalar code, more than ten times slower than `f16`.
+    pub const FAST_QUANTIZED: bool = cfg!(any(
+        target_feature = "avx2",
+        target_feature = "neon",
+        target_feature = "simd128"
+    ));
+
+    /// Whether this is a block-quantized type (`q8_0`, `q4_k`).
+    pub fn is_quantized(self) -> bool {
+        matches!(self, QType::Q8_0 | QType::Q4K)
+    }
+
+    /// The name the settings file uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QType::F32 => "f32",
+            QType::F16 => "f16",
+            QType::Q8_0 => "q8_0",
+            QType::Q4K => "q4_k",
+        }
+    }
+}
+
+impl Default for QType {
+    /// `f16`.
+    fn default() -> QType {
+        QType::F16
+    }
+}
+
+impl fmt::Display for QType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for QType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        QType::ALL
+            .into_iter()
+            .find(|q| q.as_str() == s)
+            .ok_or_else(|| {
+                let names: Vec<&str> = QType::ALL.iter().map(|q| q.as_str()).collect();
+                format!("`{s}` is not one of {}", names.join(", "))
+            })
+    }
+}
+
 /// One of the two model slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -177,6 +257,10 @@ pub struct DeviceSettings {
     /// Where the local model's files are cached, when not the bridge's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_dir: Option<PathBuf>,
+    /// How the local model's weights are held; `None` is [`QType::default`].
+    /// Absent from bridges before 2.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_qtype: Option<QType>,
 }
 
 impl DeviceSettings {
@@ -278,6 +362,10 @@ pub struct EmbedSettingsResult {
     /// The slot the bridge serves.
     #[serde(default)]
     pub active: Option<Slot>,
+    /// How the bridge holds the local model's weights: this device's `local_qtype`, or the
+    /// default. Absent from bridges before 2.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_qtype: Option<QType>,
     /// Whether this CPU has AVX2 (always true off x86_64).
     #[serde(default)]
     pub avx2: bool,
@@ -365,11 +453,16 @@ pub fn describe(s: &EmbedSettingsResult) -> Vec<String> {
     };
     lines.push(match &s.models.local {
         Some(m) => format!(
-            "local:  {} ({} dimensions, {} tokens) — this device: {}",
+            "local:  {} ({} dimensions, {} tokens) — this device: {}, {}",
             m.model,
             m.dimension,
             m.max_tokens,
-            switch(Slot::Local)
+            switch(Slot::Local),
+            match (s.device.local_qtype, s.local_qtype) {
+                (Some(q), _) => q.to_string(),
+                (None, Some(q)) => format!("{q} (default)"),
+                (None, None) => format!("{} (default)", QType::default()),
+            }
         ),
         None => "local:  not configured".to_owned(),
     });
@@ -449,6 +542,19 @@ mod tests {
     }
 
     #[test]
+    fn qtypes_round_trip_by_name() {
+        for q in QType::ALL {
+            assert_eq!(q.as_str().parse::<QType>(), Ok(q));
+            assert_eq!(
+                serde_json::to_value(q).unwrap(),
+                serde_json::json!(q.as_str())
+            );
+        }
+        assert_eq!(QType::default(), QType::F16);
+        assert!("fp16".parse::<QType>().is_err());
+    }
+
+    #[test]
     fn validation_checks_the_remote_slot() {
         let check = |r: RemoteModel| {
             ModelSettings {
@@ -520,6 +626,7 @@ mod tests {
             local_enabled: false,
             remote_enabled: true,
             active: Some(Slot::Remote),
+            local_qtype: Some(QType::F16),
             avx2: false,
             key_set: false,
             info: EmbedInfoResult {
@@ -532,7 +639,7 @@ mod tests {
         let lines = describe(&s);
         assert_eq!(lines[0], "models: the workgroup's");
         assert!(
-            lines[1].ends_with("this device: off (auto: no AVX2)"),
+            lines[1].ends_with("this device: off (auto: no AVX2), f16 (default)"),
             "{}",
             lines[1]
         );

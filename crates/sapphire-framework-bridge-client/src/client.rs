@@ -8,16 +8,17 @@ use tokio::sync::broadcast;
 use sapphire_bridge_api::{
     Ack, ApiKey, BRIDGE_DATA_NAME, BRIDGE_NAME, DEVICE_PRIORITY_SET, DEVICE_RETIRE, DataHeader,
     DevicePrioritySetParams, DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult,
-    EMBED, EMBED_DEVICE_SET, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET,
-    EMBED_SETTINGS, EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
-    EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
-    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
-    EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult,
-    ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult, ExternalDeviceListResult,
-    ExternalDeviceOutcome, ExternalDeviceRequest, ExternalDeviceSelectParams, GrainId, INVITE,
-    IncomingParams, InviteParams, InviteResult, JOIN, JoinParams, JoinResult, PEERS, PeersResult,
-    REGISTER, RegisterParams, RegisterResult, STATUS, StatusResult, UNREGISTER, UnregisterParams,
-    WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult, WorkspacesResult,
+    EMBED, EMBED_DEVICE_SET, EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET,
+    EMBED_MODEL_SET, EMBED_SETTINGS, EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE,
+    EXTERNAL_DEVICE_LIST, EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
+    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult,
+    EmbedKeySetParams, EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult,
+    EmbedSettingsResult, ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult,
+    ExternalDeviceListResult, ExternalDeviceOutcome, ExternalDeviceRequest,
+    ExternalDeviceSelectParams, GrainId, INVITE, IncomingParams, InviteParams, InviteResult, JOIN,
+    JoinParams, JoinResult, PEERS, PeersResult, REGISTER, RegisterParams, RegisterResult, STATUS,
+    StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
+    WorkgroupCreateParams, WorkgroupCreateResult, WorkspacesResult,
 };
 
 /// How many pending incoming announcements a subscriber may fall behind by.
@@ -181,6 +182,17 @@ impl BridgeClient {
     /// Embed `texts` with the bridge's model; one vector per text, in order.
     pub async fn embed(&self, texts: Vec<String>) -> sapphire_ipc::Result<EmbedResult> {
         self.client.call(EMBED, EmbedParams { texts }).await
+    }
+
+    /// Embed `images` (each a file's bytes) with the bridge's model; one vector per image,
+    /// in order. Only a bridge whose model reports `images` serves it.
+    pub async fn embed_images<B: AsRef<[u8]>>(
+        &self,
+        images: &[B],
+    ) -> sapphire_ipc::Result<EmbedResult> {
+        self.client
+            .call(EMBED_IMAGES, EmbedImagesParams::new(images))
+            .await
     }
 
     /// The embedding settings and what they resolve to.

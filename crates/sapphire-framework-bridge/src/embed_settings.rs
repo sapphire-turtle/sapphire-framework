@@ -4,7 +4,8 @@
 //!
 //! - the workgroup's synced `root/embedding.toml` holds the two model slots;
 //! - this host's `embedding.toml` holds its switch per slot, the local model's cache
-//!   directory, and — only for a host without a workgroup's file — its own `[models]`;
+//!   directory and quantization (`[local] qtype`), and — only for a host without a
+//!   workgroup's file — its own `[models]`;
 //! - this host's `embedding.key` holds the remote slot's API key, readable by the owner only.
 //!
 //! [`load`] reads all three and [`resolve`]s them; the RPCs and the bridge's offline CLI
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use sapphire_bridge_api::{
     ApiKey, DeviceSettings, EmbedInfoResult, EmbedModelSetParams, EmbedNote, EmbedSettingsResult,
-    LocalModel, ModelSettings, ModelSource, RemoteModel, Slot, SlotModel,
+    LocalModel, ModelSettings, ModelSource, QType, RemoteModel, Slot, SlotModel,
 };
 use serde::{Deserialize, Serialize};
 
@@ -34,9 +35,9 @@ struct DeviceFile {
     /// Where the local model's files are cached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cache_dir: Option<PathBuf>,
-    /// The local slot's switch.
-    #[serde(default, skip_serializing_if = "Switch::is_auto")]
-    local: Switch,
+    /// The local slot's switch and quantization.
+    #[serde(default, skip_serializing_if = "LocalSwitch::is_default")]
+    local: LocalSwitch,
     /// The remote slot's switch.
     #[serde(default, skip_serializing_if = "Switch::is_auto")]
     remote: Switch,
@@ -59,19 +60,37 @@ impl Switch {
     }
 }
 
+/// `[local]` in [`DeviceFile`]: the switch, and how this device holds the model's weights.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct LocalSwitch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    /// `None` is [`QType::default`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    qtype: Option<QType>,
+}
+
+impl LocalSwitch {
+    fn is_default(&self) -> bool {
+        *self == LocalSwitch::default()
+    }
+}
+
 impl DeviceFile {
     fn settings(&self) -> DeviceSettings {
         DeviceSettings {
             local_enabled: self.local.enabled,
             remote_enabled: self.remote.enabled,
             cache_dir: self.cache_dir.clone(),
+            local_qtype: self.local.qtype,
         }
     }
 
-    fn switch_mut(&mut self, slot: Slot) -> &mut Switch {
+    fn enabled_mut(&mut self, slot: Slot) -> &mut Option<bool> {
         match slot {
-            Slot::Local => &mut self.local,
-            Slot::Remote => &mut self.remote,
+            Slot::Local => &mut self.local.enabled,
+            Slot::Remote => &mut self.remote.enabled,
         }
     }
 }
@@ -86,6 +105,8 @@ pub enum EmbedConfig {
     Local {
         /// Its model.
         model: LocalModel,
+        /// How this device holds its weights.
+        qtype: QType,
         /// Where its files are cached; `None` is the host's default.
         cache_dir: Option<PathBuf>,
     },
@@ -115,6 +136,8 @@ pub struct Resolved {
     pub remote_enabled: bool,
     /// The slot served.
     pub active: Option<Slot>,
+    /// How the local model's weights are held: this device's setting, or the default.
+    pub local_qtype: QType,
     /// Whether the CPU has AVX2.
     pub avx2: bool,
     /// Whether a key is stored.
@@ -134,6 +157,7 @@ impl Resolved {
             local_enabled: self.local_enabled,
             remote_enabled: self.remote_enabled,
             active: self.active,
+            local_qtype: Some(self.local_qtype),
             avx2: self.avx2,
             key_set: self.key_set,
             info,
@@ -221,6 +245,7 @@ fn resolve(
         local_enabled,
         remote_enabled,
         active,
+        local_qtype: device.local.qtype.unwrap_or_default(),
         avx2,
         key_set,
         note,
@@ -248,6 +273,7 @@ pub fn load(dir: &BridgeDir, avx2: bool) -> Result<(Resolved, Option<EmbedConfig
             .clone()
             .map(|model| EmbedConfig::Local {
                 model,
+                qtype: resolved.local_qtype,
                 cache_dir: device.cache_dir.clone(),
             }),
         None => None,
@@ -315,7 +341,7 @@ pub fn set_model(dir: &BridgeDir, params: EmbedModelSetParams) -> Result<()> {
 pub fn set_device(dir: &BridgeDir, slot: Slot, enabled: Option<bool>) -> Result<()> {
     let path = dir.embedding_toml();
     let mut device = read_device_strict(&path)?;
-    device.switch_mut(slot).enabled = enabled;
+    *device.enabled_mut(slot) = enabled;
     write_device(&path, &device)
 }
 
@@ -441,7 +467,10 @@ mod tests {
 
     fn device(local: Option<bool>, remote: Option<bool>) -> DeviceFile {
         DeviceFile {
-            local: Switch { enabled: local },
+            local: LocalSwitch {
+                enabled: local,
+                ..LocalSwitch::default()
+            },
             remote: Switch { enabled: remote },
             ..DeviceFile::default()
         }
@@ -595,6 +624,41 @@ mod tests {
         let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
         assert!(!text.contains("[models"), "{text}");
         assert!(text.contains("[local]"), "{text}");
+    }
+
+    #[test]
+    fn the_local_qtype_comes_from_this_devices_file() {
+        let (_tmp, dir) = bridge_dir();
+        set_model(
+            &dir,
+            EmbedModelSetParams {
+                slot: Slot::Local,
+                model: Some(SlotModel::Local(local())),
+            },
+        )
+        .unwrap();
+        let qtype_of = |dir: &BridgeDir| match load(dir, true).unwrap() {
+            (r, Some(EmbedConfig::Local { qtype, .. })) => (r.device.local_qtype, qtype),
+            other => panic!("not local: {other:?}"),
+        };
+        assert_eq!(qtype_of(&dir), (None, QType::default()));
+
+        // Written by hand next to what the CLI wrote; a switch change keeps it.
+        let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
+        std::fs::write(
+            dir.embedding_toml(),
+            format!("{text}\n[local]\nqtype = \"q4_k\"\n"),
+        )
+        .unwrap();
+        assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
+        set_device(&dir, Slot::Local, Some(true)).unwrap();
+        assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
+        let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
+        assert!(text.contains("qtype = \"q4_k\""), "{text}");
+
+        // An unknown type is a broken file: the switch command refuses to rewrite it.
+        std::fs::write(dir.embedding_toml(), "[local]\nqtype = \"fp16\"\n").unwrap();
+        assert!(set_device(&dir, Slot::Local, None).is_err());
     }
 
     #[test]

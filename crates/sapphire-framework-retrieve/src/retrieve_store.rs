@@ -164,10 +164,38 @@ impl std::fmt::Debug for HybridQuery<'_> {
 pub struct Document {
     /// Stable identifier assigned by the caller.
     pub id: i64,
-    /// The text that is indexed and embedded: the file's content.
+    /// The text that is indexed: the file's content, or an image's file name. A text file's
+    /// body is also what is embedded.
     pub body: String,
     /// Absolute file path (shown in search results).
     pub path: String,
+    /// What the file is; an image is embedded from its bytes, read from `path`.
+    #[serde(default)]
+    pub kind: DocKind,
+}
+
+/// What a [`Document`] is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocKind {
+    /// A text file: its body is embedded.
+    #[default]
+    Text,
+    /// An image: embedded from the file's bytes, when the embedder can.
+    Image {
+        /// The caller's hash of the file's bytes, as its [`VectorSource`] keys vectors by.
+        /// A changed hash drops the vector.
+        content_hash: String,
+    },
+}
+
+/// What a vector is computed from, as a [`VectorSource`] sees it.
+#[derive(Debug, Clone, Copy)]
+pub enum Content<'a> {
+    /// A text file's text.
+    Text(&'a str),
+    /// An image, by the hash of its bytes ([`DocKind::Image`]).
+    Image { content_hash: &'a str },
 }
 
 /// One file matching a search.
@@ -189,11 +217,11 @@ pub struct FileSearchResult {
 /// whether it may compute them: the synced vector files of #187, or nothing.
 pub trait VectorSource: Sync {
     /// The stored vector for this document, if there is one.
-    fn find(&self, path: &str, text: &str) -> Option<Vec<f32>>;
+    fn find(&self, path: &str, content: Content<'_>) -> Option<Vec<f32>>;
     /// Whether this device should compute a vector it could not find.
-    fn may_embed(&self, path: &str, text: &str) -> bool;
+    fn may_embed(&self, path: &str, content: Content<'_>) -> bool;
     /// A vector was just computed and stored in the index: keep it.
-    fn embedded(&self, path: &str, text: &str, vector: &[f32]);
+    fn embedded(&self, path: &str, content: Content<'_>, vector: &[f32]);
 
     /// How many texts go to the embedder in one call. A background backfill keeps this
     /// small, so a search query waiting on the same model is not stuck behind it.
@@ -206,13 +234,13 @@ pub trait VectorSource: Sync {
 pub struct NoVectorSource;
 
 impl VectorSource for NoVectorSource {
-    fn find(&self, _: &str, _: &str) -> Option<Vec<f32>> {
+    fn find(&self, _: &str, _: Content<'_>) -> Option<Vec<f32>> {
         None
     }
-    fn may_embed(&self, _: &str, _: &str) -> bool {
+    fn may_embed(&self, _: &str, _: Content<'_>) -> bool {
         true
     }
-    fn embedded(&self, _: &str, _: &str, _: &[f32]) {}
+    fn embedded(&self, _: &str, _: Content<'_>, _: &[f32]) {}
 }
 
 // ── trait ─────────────────────────────────────────────────────────────────────

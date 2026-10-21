@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use sapphire_retrieve::{Document, RetrieveStore};
+use sapphire_retrieve::{DocKind, Document, RetrieveStore};
 use sapphire_track::{FileStamp, TrackStore};
 use thiserror::Error;
 
@@ -20,18 +20,32 @@ pub(crate) fn file_stamp(path: &Path) -> FileStamp {
 const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "rst", "org"];
 const JSONL_EXTENSIONS: &[&str] = &["jsonl"];
 const TOML_EXTENSIONS: &[&str] = &["toml"];
+/// Images, embedded by a model that can (#306). A GIF is embedded by its first frame.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif"];
+/// A larger image is not indexed: it would be read whole to hash and to embed, and it
+/// travels to the bridge in one message.
+pub(crate) const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// `true` if `path` has an extension the indexer recognises (markdown family,
-/// JSONL, or TOML).
-pub(crate) fn is_indexable_path(path: &Path) -> bool {
-    let ext = path
-        .extension()
+fn extension(path: &Path) -> String {
+    path.extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
-        .to_lowercase();
+        .to_lowercase()
+}
+
+/// `true` if `path` has an extension the indexer recognises (markdown family,
+/// JSONL, TOML, or an image).
+pub(crate) fn is_indexable_path(path: &Path) -> bool {
+    let ext = extension(path);
     MARKDOWN_EXTENSIONS.contains(&ext.as_str())
         || JSONL_EXTENSIONS.contains(&ext.as_str())
         || TOML_EXTENSIONS.contains(&ext.as_str())
+        || IMAGE_EXTENSIONS.contains(&ext.as_str())
+}
+
+/// `true` if `path` is indexed as an image.
+fn is_image_path(path: &Path) -> bool {
+    IMAGE_EXTENSIONS.contains(&extension(path).as_str())
 }
 
 /// Generate a stable `i64` document ID from a file path (FNV-1a).
@@ -46,18 +60,36 @@ pub fn path_to_doc_id(path: &Path) -> i64 {
     h as i64
 }
 
-/// Build a [`Document`] for `path` by reading the file from disk. Every file
-/// is indexed whole and verbatim, whatever its extension.
+/// Build a [`Document`] for `path` by reading the file from disk. A text file
+/// is indexed whole and verbatim, whatever its extension; an image by its file
+/// name, with the hash of its bytes for its vector.
 ///
-/// Returns `Ok(None)` if the content is not UTF-8 (an image, audio, …): such a
-/// file is synced but is not a document. Returns the `io::Error` if the file
-/// cannot be read. Bulk walkers silently drop both; the single-file
-/// `on_file_updated_*` methods remove a stale document on `None` and
-/// propagate the error.
+/// Returns `Ok(None)` if a text's content is not UTF-8 (audio, …) or an image
+/// is over [`MAX_IMAGE_BYTES`]: such a file is synced but is not a document.
+/// Returns the `io::Error` if the file cannot be read. Bulk walkers silently
+/// drop both; the single-file `on_file_updated_*` methods remove a stale
+/// document on `None` and propagate the error.
 pub(crate) fn build_document_from_disk(
     path: &Path,
     doc_id: i64,
 ) -> std::io::Result<Option<Document>> {
+    if is_image_path(path) {
+        if std::fs::metadata(path)?.len() > MAX_IMAGE_BYTES {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(path)?;
+        return Ok(Some(Document {
+            id: doc_id,
+            body: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: path.to_string_lossy().into_owned(),
+            kind: DocKind::Image {
+                content_hash: crate::vectors::content_hash(&bytes),
+            },
+        }));
+    }
     let Ok(raw) = String::from_utf8(std::fs::read(path)?) else {
         return Ok(None);
     };
@@ -65,6 +97,7 @@ pub(crate) fn build_document_from_disk(
         id: doc_id,
         body: raw,
         path: path.to_string_lossy().into_owned(),
+        kind: DocKind::Text,
     }))
 }
 
@@ -458,6 +491,32 @@ mod tests {
             assert_eq!(d.body, body, "{name} is indexed whole and verbatim");
             assert_eq!(d.id, 7);
         }
+    }
+
+    #[test]
+    fn an_image_is_a_document_by_its_name_and_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("Photo.JPG");
+        std::fs::write(&p, b"\xff\xd8 not utf-8 \xff").unwrap();
+        assert!(is_indexable_path(&p));
+        let d = build_document_from_disk(&p, 7).unwrap().unwrap();
+        assert_eq!(d.body, "Photo.JPG");
+        assert_eq!(
+            d.kind,
+            DocKind::Image {
+                content_hash: crate::vectors::content_hash(b"\xff\xd8 not utf-8 \xff")
+            }
+        );
+
+        // Too large to index.
+        let big = dir.path().join("big.png");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        assert!(build_document_from_disk(&big, 8).unwrap().is_none());
+        // Not an image extension, not UTF-8: no document.
+        let bin = dir.path().join("x.md");
+        std::fs::write(&bin, b"\xff\xfe").unwrap();
+        assert!(build_document_from_disk(&bin, 9).unwrap().is_none());
     }
 
     #[test]

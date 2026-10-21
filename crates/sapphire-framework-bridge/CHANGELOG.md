@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.21.0...sapphire-framework-bridge-v0.22.0) - 2026-10-21
+
+### Added
+
+- *(session)* lock per step and give up on no progress, not total time
+- host the bridge and an app server in-process
+
+### Fixed
+
+- *(session)* never let a read loop wait on its own writer
+
+### Other
+
+- Merge pull request #288 from sapphire-turtle/feat/mobile-android
+- *(deps)* Bump windows-sys from 0.59.0 to 0.61.2
+
 ## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.20.0...sapphire-framework-bridge-v0.21.0) - 2026-10-16
 
 ### Fixed

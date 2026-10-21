@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-ipc-v0.21.0...sapphire-framework-ipc-v0.22.0) - 2026-10-21
+
+### Added
+
+- *(ipc)* an in-process carrier, chosen per process
+
+### Other
+
+- Merge pull request #288 from sapphire-turtle/feat/mobile-android
+- *(deps)* Bump windows-sys from 0.59.0 to 0.61.2
+
 ## [0.20.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-ipc-v0.19.0...sapphire-framework-ipc-v0.20.0) - 2026-10-14
 
 ### Other

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.21.0...v0.22.0) - 2026-10-21
+
+### Added
+
+- *(workspace)* read and write binary files; skip non-UTF-8 content when indexing
+
 ## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.20.0...v0.21.0) - 2026-10-16
 
 ### Added

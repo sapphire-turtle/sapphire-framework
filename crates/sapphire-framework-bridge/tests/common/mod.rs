@@ -384,21 +384,27 @@ pub async fn sync_workgroup(
 
     let replica = WorkgroupReplica::open(joiner, &workgroup, own_id).unwrap();
     let transport = net.transport(joiner_node);
-    let joiner_session = tokio::spawn(async move {
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<()>();
+    let joiner_sessions = tokio::spawn(async move {
         // The inviter dials the workgroup's own workspace, as a bridge would; a pairing
-        // attempt would be someone else's business.
-        let (_, _, stream) = transport
-            .accept_workspace()
-            .await
-            .expect("the inviter dialed the joiner");
-        replica.session(stream).await
+        // attempt would be someone else's business. Its running bridge may dial on its own
+        // too (a change to its root wakes its driver), so every stream is served, one at a
+        // time, until the fixture's own dial is done: a stream left unaccepted would be
+        // dropped and fail that session.
+        loop {
+            tokio::select! {
+                accepted = transport.accept_workspace() => {
+                    let (_, _, stream) = accepted.expect("the inviter dialed the joiner");
+                    replica.session(stream).await.expect("the joiner's session succeeded");
+                }
+                _ = &mut done_rx => return,
+            }
+        }
     });
 
     host.bridge().sync_workgroup_now(joiner_node).await.unwrap();
-    joiner_session
-        .await
-        .expect("the joiner's session task")
-        .expect("the joiner's session succeeded");
+    done_tx.send(()).unwrap();
+    joiner_sessions.await.expect("the joiner's session task");
 }
 
 /// Start a bridge over `dir`, which already holds a joined workgroup.

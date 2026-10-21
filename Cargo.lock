@@ -7661,6 +7661,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire-framework-settings-api"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "sapphire-framework-sync"
 version = "0.21.0"
 dependencies = [

@@ -61,6 +61,11 @@ version_group = "framework"
 [[package]]
 name = "sapphire-framework-bridge-api"
 
+# The settings registry's wire types, versioned the same way: its major is the settings
+# API version, so it must not move with version_group "framework".
+[[package]]
+name = "sapphire-framework-settings-api"
+
 # The app server's common API, versioned the same way: its major is `API_VERSION`.
 [[package]]
 name = "sapphire-framework-server-api"

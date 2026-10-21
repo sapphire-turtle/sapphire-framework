@@ -6,18 +6,22 @@ use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use tokio::sync::broadcast;
 
 use sapphire_bridge_api::{
-    Ack, ApiKey, BRIDGE_DATA_NAME, BRIDGE_NAME, DEVICE_PRIORITY_SET, DEVICE_RETIRE, DataHeader,
-    DevicePrioritySetParams, DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult,
-    EMBED, EMBED_DEVICE_SET, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET,
-    EMBED_SETTINGS, EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
-    EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
-    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
-    EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult,
-    ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult, ExternalDeviceListResult,
-    ExternalDeviceOutcome, ExternalDeviceRequest, ExternalDeviceSelectParams, GrainId, INVITE,
-    IncomingParams, InviteParams, InviteResult, JOIN, JoinParams, JoinResult, PEERS, PeersResult,
-    REGISTER, RegisterParams, RegisterResult, STATUS, StatusResult, UNREGISTER, UnregisterParams,
-    WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult, WorkspacesResult,
+    Ack, ApiKey, BRIDGE_DATA_NAME, BRIDGE_NAME, CONFIG_GET, CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET,
+    CONFIG_UNSET, ConfigEntry, ConfigGetParams, ConfigListParams, ConfigListResult,
+    ConfigSchemaResult, ConfigSetParams, ConfigUnsetParams, ConfigWriteResult, DEVICE_PRIORITY_SET,
+    DEVICE_RETIRE, DataHeader, DevicePrioritySetParams, DevicePrioritySetResult,
+    DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET, EMBED_INFO, EMBED_KEY_CLEAR,
+    EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS, EXTERNAL_DEVICE_ADD,
+    EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST, EXTERNAL_DEVICE_RESTORE,
+    EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE, EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams,
+    EmbedInfoResult, EmbedKeySetParams, EmbedModelSetParams, EmbedParams, EmbedRequest,
+    EmbedResult, EmbedSettingsResult, Entry, ExternalDeviceAuthenticateParams,
+    ExternalDeviceAuthenticateResult, ExternalDeviceListResult, ExternalDeviceOutcome,
+    ExternalDeviceRequest, ExternalDeviceSelectParams, GrainId, INVITE, IncomingParams,
+    InviteParams, InviteResult, JOIN, JoinParams, JoinResult, PEERS, PeersResult, REGISTER,
+    RESTART, RegisterParams, RegisterResult, STATUS, Scope, StatusResult, UNREGISTER,
+    UnregisterParams, WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult,
+    WorkspacesResult,
 };
 
 /// How many pending incoming announcements a subscriber may fall behind by.
@@ -218,6 +222,60 @@ impl BridgeClient {
         self.client
             .call(EMBED_KEY_CLEAR, serde_json::json!({}))
             .await
+    }
+
+    /// Every setting the bridge knows.
+    pub async fn config_schema(&self) -> sapphire_ipc::Result<ConfigSchemaResult> {
+        self.client.call(CONFIG_SCHEMA, serde_json::json!({})).await
+    }
+
+    /// The settings' effective values; with a scope, what that scope's file holds.
+    pub async fn config_list(
+        &self,
+        scope: Option<Scope>,
+    ) -> sapphire_ipc::Result<ConfigListResult> {
+        self.client
+            .call(CONFIG_LIST, ConfigListParams { scope })
+            .await
+    }
+
+    /// One setting's effective value. A secret reports only whether it is set.
+    pub async fn config_get(&self, key: &str) -> sapphire_ipc::Result<Entry> {
+        self.client
+            .call(
+                CONFIG_GET,
+                ConfigGetParams {
+                    key: key.to_owned(),
+                },
+            )
+            .await
+    }
+
+    /// Set several settings as one batch; none is written unless all are valid.
+    pub async fn config_set(
+        &self,
+        scope: Option<Scope>,
+        entries: Vec<ConfigEntry>,
+    ) -> sapphire_ipc::Result<ConfigWriteResult> {
+        self.client
+            .call(CONFIG_SET, ConfigSetParams { scope, entries })
+            .await
+    }
+
+    /// Remove several settings (or prefixes) as one batch.
+    pub async fn config_unset(
+        &self,
+        scope: Option<Scope>,
+        keys: Vec<String>,
+    ) -> sapphire_ipc::Result<ConfigWriteResult> {
+        self.client
+            .call(CONFIG_UNSET, ConfigUnsetParams { scope, keys })
+            .await
+    }
+
+    /// Ask the bridge to restart, so restart-only settings take effect.
+    pub async fn restart(&self) -> sapphire_ipc::Result<Ack> {
+        self.client.call(RESTART, serde_json::json!({})).await
     }
 
     /// Carry out one external device management request.

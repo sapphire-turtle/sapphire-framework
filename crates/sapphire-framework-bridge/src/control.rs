@@ -9,10 +9,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
-    Ack, BRIDGE_NAME, DEVICE_PRIORITY_SET, DEVICE_RETIRE, DevicePrioritySetParams,
-    DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET,
-    EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
-    EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
+    Ack, BRIDGE_NAME, CONFIG_GET, CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET, CONFIG_UNSET,
+    ConfigGetParams, ConfigListParams, ConfigListResult, ConfigSchemaResult, ConfigSetParams,
+    ConfigUnsetParams, ConfigWriteResult, DEVICE_PRIORITY_SET, DEVICE_RETIRE,
+    DevicePrioritySetParams, DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult,
+    EMBED, EMBED_DEVICE_SET, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET,
+    EMBED_SETTINGS, EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
     EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
     EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedInfoResult, EmbedKeySetParams,
     EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult,
@@ -26,6 +28,8 @@ use sapphire_ipc::{
     Connection, Endpoint, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve,
 };
 use serde_json::Value;
+
+use sapphire_framework_settings::{self as settings, Op};
 
 use crate::Bridge;
 use crate::error::{Error, Result};
@@ -346,6 +350,74 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 }
             }
         })
+        .method(CONFIG_SCHEMA, {
+            let bridge = Arc::clone(&bridge);
+            move |_| {
+                let bridge = Arc::clone(&bridge);
+                async move { config_schema(&bridge).map_err(failed).and_then(encode) }
+            }
+        })
+        .method(CONFIG_LIST, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigListParams = parse(ctx, CONFIG_LIST)?;
+                    config_list(&bridge, params)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_GET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigGetParams = parse(ctx, CONFIG_GET)?;
+                    config_get(&bridge, &params.key)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_SET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigSetParams = parse(ctx, CONFIG_SET)?;
+                    let ops = params
+                        .entries
+                        .into_iter()
+                        .map(|e| Op::Set {
+                            key: e.key,
+                            value: e.value,
+                        })
+                        .collect();
+                    config_write(&bridge, params.scope, ops)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_UNSET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigUnsetParams = parse(ctx, CONFIG_UNSET)?;
+                    let ops = params
+                        .keys
+                        .into_iter()
+                        .map(|key| Op::Unset { key })
+                        .collect();
+                    config_write(&bridge, params.scope, ops)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
         .method(INVITE, {
             let bridge = Arc::clone(&bridge);
             move |ctx| {
@@ -602,6 +674,63 @@ fn external_device(
 fn embed_settings_report(bridge: &Bridge) -> Result<EmbedSettingsResult> {
     let resolved = bridge.reload_embed()?;
     Ok(resolved.report(embed_info(bridge)))
+}
+
+/// `config.schema` — every setting's definition.
+fn config_schema(bridge: &Bridge) -> Result<ConfigSchemaResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    Ok(ConfigSchemaResult {
+        settings: reg.schema(),
+    })
+}
+
+/// `config.list`. Restart-only keys changed since the bridge started are marked.
+fn config_list(bridge: &Bridge, params: ConfigListParams) -> Result<ConfigListResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let start = bridge.start.lock().expect("start state");
+    Ok(ConfigListResult {
+        entries: settings::list(&reg, params.scope, start.as_ref())?,
+    })
+}
+
+/// `config.get`. Computed through `list` because only it knows the start state; an
+/// unknown key is the store's own `UnknownKey` error.
+fn config_get(bridge: &Bridge, key: &str) -> Result<settings::Entry> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let start = bridge.start.lock().expect("start state");
+    let entry = settings::get(&reg, key)?;
+    Ok(settings::list(&reg, None, start.as_ref())?
+        .into_iter()
+        .find(|e| e.key == key)
+        .unwrap_or(entry))
+}
+
+/// `config.set` and `config.unset`: apply the batch, pick up a live change, and report
+/// every key still waiting for a restart.
+fn config_write(
+    bridge: &Bridge,
+    scope: Option<settings::Scope>,
+    ops: Vec<Op>,
+) -> Result<ConfigWriteResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let applied = settings::apply(&reg, scope, ops)?;
+    if applied.live {
+        // The write succeeded; a provider that cannot be rebuilt is the embedding's
+        // problem to report, not this batch's.
+        if let Err(err) = bridge.reload_embed() {
+            tracing::warn!("could not apply the embedding settings: {err}");
+        }
+    }
+    let start = bridge.start.lock().expect("start state");
+    let pending_restart = settings::list(&reg, None, start.as_ref())?
+        .into_iter()
+        .filter(|e| e.pending_restart)
+        .map(|e| e.key)
+        .collect();
+    Ok(ConfigWriteResult {
+        changed: applied.keys,
+        pending_restart,
+    })
 }
 
 /// A method's parameters, or the error that says they are malformed.

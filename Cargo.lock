@@ -7427,6 +7427,7 @@ dependencies = [
  "clap",
  "grain-id",
  "rpassword",
+ "sapphire-framework-settings-api",
  "serde",
  "serde_json",
 ]

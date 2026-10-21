@@ -127,6 +127,9 @@ pub struct Bridge {
     /// This host's availability tier, as its record last measured it (#190). `None` with
     /// too little history.
     availability: Mutex<Option<u8>>,
+    /// What the settings resolved to when serving began, to tell which restart-only keys
+    /// have been changed since. `None` until `serve_loops` captures it.
+    start: Mutex<Option<sapphire_framework_settings::StartState>>,
 }
 
 impl Bridge {
@@ -160,6 +163,7 @@ impl Bridge {
             hello_tx: tokio::sync::watch::channel(None).0,
             roles: Mutex::default(),
             availability: Mutex::new(None),
+            start: Mutex::new(None),
         })
     }
 
@@ -286,6 +290,14 @@ impl Bridge {
     async fn serve_loops(self: Arc<Self>, net: NetConfig) -> Result<()> {
         let (control_endpoint, data_endpoint) = self.endpoints();
         let bridge = self;
+        // Taken before any client can write: a restart-only key counts as pending when it
+        // differs from what the settings said at this moment.
+        match settings::registry(&bridge.dir)
+            .and_then(|reg| sapphire_framework_settings::StartState::capture(&reg))
+        {
+            Ok(start) => *bridge.start.lock().expect("start state") = Some(start),
+            Err(err) => tracing::warn!("could not capture the settings at start: {err}"),
+        }
         let info = ServerInfo {
             version: bridge.version.to_owned(),
             api: sapphire_bridge_api::API_VERSION,

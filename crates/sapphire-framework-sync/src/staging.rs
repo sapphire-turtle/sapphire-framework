@@ -113,7 +113,8 @@ impl StagingWriter {
     /// Check the length and hash, then move the file to `<hex>` and return its path.
     /// Anything other than the announced content is [`Error::ContentMismatch`]. If
     /// another writer staged the same hash meanwhile, the rename replaces its file
-    /// with identical content.
+    /// with identical content; where that replacing fails (on Windows, while the file
+    /// is open without delete sharing), the staged file is kept and this one dropped.
     ///
     /// The bytes are on disk before the rename, so a crash cannot leave a `<hex>` that
     /// holds less than verified content. The rename itself may be lost to one; that
@@ -127,7 +128,15 @@ impl StagingWriter {
         }
         self.file.flush()?;
         self.file.sync_all()?;
-        fs::rename(&self.partial, &self.dest)?;
+        if let Err(e) = fs::rename(&self.partial, &self.dest) {
+            // Named by its hash, a staged file holds exactly these bytes. The partial
+            // goes with `Drop`.
+            if !self.dest.is_file() {
+                return Err(e.into());
+            }
+            tracing::debug!(hash = %self.hash, error = %e, "kept the content already staged");
+            return Ok(self.dest.clone());
+        }
         self.finished = true;
         Ok(self.dest.clone())
     }
@@ -402,5 +411,56 @@ mod tests {
         assert!(dir.join("aa").exists());
         assert!(!dir.join("aa.partial").exists());
         clear_partials(&dir.join("missing")).unwrap();
+    }
+
+    #[test]
+    fn a_failed_rename_onto_content_already_staged_counts_as_staged() {
+        let (_t, dir) = dir();
+        let stager = Stager::new(dir.clone(), 100);
+        let hash = ContentHash::of_bytes(b"hello");
+        let mut first = stager.writer(hash, 5).unwrap();
+        let mut second = stager.writer(hash, 5).unwrap();
+        first.write(b"hello").unwrap();
+        second.write(b"hello").unwrap();
+        first.finish().unwrap();
+        // Make the second rename fail, as an open `<hex>` can on Windows.
+        std::fs::remove_file(&second.partial).unwrap();
+        assert_eq!(second.finish().unwrap(), dir.join(hash.to_hex()));
+        assert_eq!(std::fs::read(dir.join(hash.to_hex())).unwrap(), b"hello");
+        assert_eq!(entries(&dir), 1);
+    }
+
+    #[test]
+    fn a_failed_rename_with_nothing_staged_is_an_error() {
+        let (_t, dir) = dir();
+        let hash = ContentHash::of_bytes(b"hello");
+        let mut w = Stager::new(dir.clone(), 100).writer(hash, 5).unwrap();
+        w.write(b"hello").unwrap();
+        std::fs::remove_file(&w.partial).unwrap();
+        assert!(matches!(w.finish(), Err(Error::Io(_))));
+        assert_eq!(entries(&dir), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn content_staged_while_the_same_hash_is_open_without_delete_sharing() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x1;
+
+        let (_t, dir) = dir();
+        let stager = Stager::new(dir.clone(), 100);
+        let hash = ContentHash::of_bytes(b"hello");
+        let mut first = stager.writer(hash, 5).unwrap();
+        first.write(b"hello").unwrap();
+        let staged = first.finish().unwrap();
+        let _held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&staged)
+            .unwrap();
+        let mut second = stager.writer(hash, 5).unwrap();
+        second.write(b"hello").unwrap();
+        assert_eq!(second.finish().unwrap(), staged);
+        assert_eq!(entries(&dir), 1, "the second partial is removed");
     }
 }

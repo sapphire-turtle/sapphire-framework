@@ -305,7 +305,9 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedModelSetParams = parse(ctx, "embed.model_set")?;
-                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::ModelSet(params))
+                    let request = EmbedRequest::ModelSet(params);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -319,7 +321,9 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedDeviceSetParams = parse(ctx, "embed.device_set")?;
-                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::DeviceSet(params))
+                    let request = EmbedRequest::DeviceSet(params);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -333,7 +337,9 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedKeySetParams = parse(ctx, "embed.key_set")?;
-                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::KeySet(params.key))
+                    let request = EmbedRequest::KeySet(params.key);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -346,7 +352,9 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
             move |_| {
                 let bridge = Arc::clone(&bridge);
                 async move {
-                    crate::embed_settings::apply(&bridge.dir, EmbedRequest::KeyClear)
+                    let request = EmbedRequest::KeyClear;
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -734,14 +742,17 @@ fn config_write(
     ops: Vec<Op>,
 ) -> Result<ConfigWriteResult> {
     let reg = crate::settings::registry(&bridge.dir)?;
-    let applied = settings::apply(&reg, scope, ops)?;
-    if applied.live {
-        // The write succeeded; a provider that cannot be rebuilt is the embedding's
-        // problem to report, not this batch's.
-        if let Err(err) = bridge.reload_embed() {
-            tracing::warn!("could not apply the embedding settings: {err}");
+    let changed = bridge.write_settings(|| -> Result<Vec<String>> {
+        let applied = settings::apply(&reg, scope, ops)?;
+        if applied.live {
+            // The write succeeded; a provider that cannot be rebuilt is the embedding's
+            // problem to report, not this batch's.
+            if let Err(err) = bridge.reload_embed() {
+                tracing::warn!("could not apply the embedding settings: {err}");
+            }
         }
-    }
+        Ok(applied.keys)
+    })?;
     let start = bridge.start.lock().expect("start state");
     let pending_restart = settings::list(&reg, None, start.as_ref())?
         .into_iter()
@@ -749,7 +760,7 @@ fn config_write(
         .map(|e| e.key)
         .collect();
     Ok(ConfigWriteResult {
-        changed: applied.keys,
+        changed,
         pending_restart,
     })
 }

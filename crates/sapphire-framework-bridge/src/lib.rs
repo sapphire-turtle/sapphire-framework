@@ -133,6 +133,10 @@ pub struct Bridge {
     /// What the settings resolved to when serving began, to tell which restart-only keys
     /// have been changed since. `None` until `serve_loops` captures it.
     start: Mutex<Option<sapphire_framework_settings::StartState>>,
+    /// Held across every settings write this bridge makes for a client — `config.set`,
+    /// `config.unset` and the `embed.*` writes — so two batches never interleave their
+    /// read-check-write of the same files.
+    settings_write: Mutex<()>,
     /// Fired by `bridge.restart`: the loops end with [`Exit::Restart`].
     restart: tokio::sync::Notify,
     /// The long-lived tasks spawned for this bridge outside its loops — control and data
@@ -207,6 +211,7 @@ impl Bridge {
             roles: Mutex::default(),
             availability: Mutex::new(None),
             start: Mutex::new(None),
+            settings_write: Mutex::new(()),
             restart: tokio::sync::Notify::new(),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
         })
@@ -336,6 +341,16 @@ impl Bridge {
         }
         *self.workgroup_replica.lock().expect("workgroup replica") = Some(replica);
         Ok(())
+    }
+
+    /// Run `write`, a settings write, while no other settings write of this bridge runs.
+    pub(crate) fn write_settings<T>(&self, write: impl FnOnce() -> T) -> T {
+        // A write that panicked left the files as a batch leaves them on failure: whole.
+        let _guard = self
+            .settings_write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        write()
     }
 
     /// Ask the running bridge to end its loops with [`Exit::Restart`].

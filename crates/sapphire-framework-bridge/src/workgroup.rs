@@ -128,6 +128,26 @@ impl Workgroup {
 
     /// The workgroup this host belongs to, if any.
     pub fn open(dir: &BridgeDir) -> Result<Option<Workgroup>> {
+        let Some(workgroup) = Workgroup::find(dir)? else {
+            return Ok(None);
+        };
+        // The root is synced: a format-1 file may arrive from a device that has not been
+        // upgraded yet, at any time, so every open checks for one. One that cannot be
+        // moved is left where it is and reported: it must not take the workgroup — and
+        // with it the bridge — down.
+        if let Err(err) = crate::config_file::migrate_workgroup(&workgroup) {
+            tracing::warn!(
+                target: crate::logging::BRIDGE_TARGET,
+                workgroup = %workgroup.name,
+                "could not move the workgroup's format-1 settings into config.toml: {err}"
+            );
+        }
+        Ok(Some(workgroup))
+    }
+
+    /// As [`open`](Self::open), without migrating the root's format-1 files: for the
+    /// device's migration, which must see the root as it was before.
+    pub(crate) fn find(dir: &BridgeDir) -> Result<Option<Workgroup>> {
         let entries = match std::fs::read_dir(dir.workgroups_dir()) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -164,9 +184,6 @@ impl Workgroup {
                 dir: entry.path(),
                 devices_dir: dir.devices_dir(id),
             };
-            // The root is synced: a format-1 file may arrive from a device that has not
-            // been upgraded yet, at any time, so every open checks for one.
-            crate::config_file::migrate_workgroup(&workgroup)?;
             return Ok(Some(workgroup));
         }
         Ok(None)
@@ -450,10 +467,14 @@ impl Workgroup {
     /// announced a configuration is a normal state, not a broken one. An unreadable one
     /// fails, for the same reason an unreadable `workgroup.toml` does — guessing at what a
     /// half-written configuration meant is worse than reporting it.
+    ///
+    /// Only `[net]` is read: an `[embed]` key this build does not know, synced in from a
+    /// newer device, must not cut the network off.
     pub fn published_net(&self) -> Result<NetConfig> {
-        Ok(crate::config_file::read_workgroup(&self.config_toml())?
-            .map(|config| config.net)
-            .unwrap_or_default())
+        Ok(
+            crate::config_file::read_table(&self.config_toml(), crate::config_file::NET)?
+                .unwrap_or_default(),
+        )
     }
 
     /// The format-1 embedding models, `root/embedding.toml`, now `[embed]` of

@@ -20,7 +20,7 @@ use sapphire_bridge_api::{
 };
 use sapphire_framework_settings::{Op, Scope, Value};
 
-use crate::config_file::{EmbedTable, read_device, read_workgroup};
+use crate::config_file::{EMBED, EmbedTable, read_table};
 use crate::dir::BridgeDir;
 use crate::error::{Error, Result};
 use crate::workgroup::Workgroup;
@@ -315,12 +315,11 @@ pub fn apply(dir: &BridgeDir, request: EmbedRequest) -> Result<()> {
 
 // ── files ───────────────────────────────────────────────────────────────────
 
-/// The workgroup's models: none when its file is absent, `Err` when the file does not
-/// parse or its slots break the rules.
+/// The workgroup's models: none when its file is absent, `Err` when the file or its
+/// `[embed]` does not parse or its slots break the rules. `[net]` is not looked at.
 fn read_shared(path: &Path) -> Result<std::result::Result<ModelSettings, String>> {
-    match read_workgroup(path) {
-        Ok(Some(config)) => Ok(config
-            .embed
+    match read_table::<EmbedTable>(path, EMBED) {
+        Ok(Some(embed)) => Ok(embed
             .models()
             .map_err(|why| format!("{}: {why}", path.display()))),
         Ok(None) => Ok(Ok(ModelSettings::default())),
@@ -332,13 +331,15 @@ fn read_shared(path: &Path) -> Result<std::result::Result<ModelSettings, String>
 /// This host's `[embed]` for reading: absent or unparsable means the defaults (logged), so
 /// a broken file never stops the bridge from serving. A batch still refuses to rewrite it.
 fn read_device_embed(path: &Path) -> EmbedTable {
-    read_device(path).map(|c| c.embed).unwrap_or_else(|err| {
-        tracing::warn!(
-            target: crate::logging::BRIDGE_TARGET,
-            "{err}; using the default embedding settings for this device"
-        );
-        EmbedTable::default()
-    })
+    read_table(path, EMBED)
+        .map(Option::unwrap_or_default)
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                target: crate::logging::BRIDGE_TARGET,
+                "{err}; using the default embedding settings for this device"
+            );
+            EmbedTable::default()
+        })
 }
 
 fn read_key(path: &Path) -> Result<Option<ApiKey>> {
@@ -708,6 +709,28 @@ mod tests {
         assert_eq!(r.device, DeviceSettings::default());
         assert!(run(&dir, device_set(Slot::Local, Some(true))).is_err());
         assert_eq!(std::fs::read_to_string(dir.config_toml()).unwrap(), bad);
+    }
+
+    #[test]
+    fn a_malformed_net_table_does_not_invalidate_embedding() {
+        let (_tmp, dir) = bridge_dir();
+        let wg = Workgroup::create(&dir, "wg", "this", "node").unwrap();
+        std::fs::write(
+            wg.config_toml(),
+            format!(
+                "[net]\nrelays = 5\n[embed.local]\nmodel = \"{}\"\n",
+                sapphire_bridge_api::LOCAL_MODEL
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.config_toml(),
+            "[net]\nwake_on_sync = \"yes\"\n[embed.local]\nenabled = false\n",
+        )
+        .unwrap();
+        let (r, _) = load(&dir, true).unwrap();
+        assert_eq!(r.models.local, Some(local()));
+        assert_eq!(r.device.local_enabled, Some(false));
     }
 
     #[test]

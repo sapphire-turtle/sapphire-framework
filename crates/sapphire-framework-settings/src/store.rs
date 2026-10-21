@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_framework_settings_api::{Apply, Kind, Scope, SettingDef, Value};
 use toml_edit::DocumentMut;
@@ -298,17 +299,27 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     write_file(path, text, true)
 }
 
+/// The temp file a write of `path` goes through, beside it: its own for every call, so two
+/// writes never share one, and a stale one left by a crash is never reopened — its mode
+/// would otherwise carry over to the file it replaces.
+fn temp_path(path: &Path) -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(format!(
+        "{}.tmp.{}.{}",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 fn write_file(path: &Path, text: &str, private: bool) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let tmp = parent.join(format!(
-        "{}.tmp.{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
-        std::process::id()
-    ));
+    let tmp = temp_path(path);
     {
         let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         if private {
             use std::os::unix::fs::OpenOptionsExt;
@@ -331,6 +342,16 @@ mod tests {
     use crate::owner::FieldError;
     use crate::owner::test_support::{TestOwner, def};
     use std::sync::Arc;
+
+    #[test]
+    fn every_write_gets_its_own_temp_file() {
+        let path = Path::new("/x/config.toml");
+        let (a, b) = (temp_path(path), temp_path(path));
+        assert_ne!(a, b);
+        assert_eq!(a.parent(), path.parent());
+        let name = a.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("config.toml.tmp."), "{name}");
+    }
 
     /// A test owner whose `validate` rejects `a.max < a.min` in the workgroup file.
     struct Checked(TestOwner);

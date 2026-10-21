@@ -49,10 +49,11 @@ impl NetConfig {
     /// or the table is not there.
     ///
     /// Every field is optional: a `[net]` that sets only `wake_on_sync` leaves discovery on,
-    /// the relay list empty, and the public relays on. A file that does not parse — in any
-    /// table — is an error naming it, so a typo is reported when the bridge starts.
+    /// the relay list empty, and the public relays on. A file that is not TOML, or a `[net]`
+    /// that does not parse, is an error naming the file, so a typo is reported when the
+    /// bridge starts; the rest of the file is the embedding loader's to judge.
     pub fn load(path: &Path) -> Result<NetConfig> {
-        Ok(crate::config_file::read_device(path)?.net)
+        Ok(crate::config_file::read_table(path, crate::config_file::NET)?.unwrap_or_default())
     }
 }
 

@@ -303,6 +303,8 @@ impl Kind {
                 items.iter().try_for_each(|v| item.check(v))
             }
             (Kind::Secret, Value::String(_)) => Ok(()),
+            // A secret's value is never shown, not even a wrong one.
+            (Kind::Secret, _) => Err("a secret must be a string".into()),
             (kind, value) => Err(format!("`{value}` has the wrong type for {kind:?}")),
         }
     }
@@ -332,6 +334,15 @@ fn split_list(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wrong_typed_secret_is_not_echoed() {
+        let value = Value::List(vec![Value::String("hunter2-sekrit".into())]);
+        let err = Kind::Secret.check(&value).unwrap_err();
+        assert!(!err.contains("hunter2"), "{err}");
+        let err = Kind::Secret.check(&Value::Int(424242)).unwrap_err();
+        assert!(!err.contains("424242"), "{err}");
+    }
 
     fn def(key: &str, home: Scope) -> SettingDef {
         SettingDef {

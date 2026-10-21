@@ -188,6 +188,11 @@ pub fn list(
             entries.push(entry);
             continue;
         };
+        // Two scopes can share a file (a host without a workgroup): a key the scope does
+        // not allow is not the scope's, whatever the file holds.
+        if !def.allows(scope) {
+            continue;
+        }
         if def.kind == Kind::Secret {
             if scope == Scope::Device && entry.value == EntryValue::Secret(SecretState::Set) {
                 entries.push(entry);
@@ -309,6 +314,29 @@ mod tests {
         assert_eq!(entries[0].key, "a.b");
         assert_eq!(list(&reg, None, None).unwrap().len(), 2);
         assert!(list(&reg, Some(Scope::Device), None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_with_a_scope_shows_only_keys_the_scope_allows() {
+        // A host without a workgroup keeps both scopes in one file: each scope's listing
+        // must still hold only its own keys.
+        let mut device_only = def("d.x", int());
+        device_only.scopes = vec![Scope::Device];
+        let workgroup_only = def("w.y", int());
+        let owner = Arc::new(TestOwner::new(vec![device_only, workgroup_only]));
+        let reg = Registry::new(vec![owner.clone() as Arc<dyn SettingsOwner>], &[]).unwrap();
+        let both = "[d]\nx = 1\n[w]\ny = 2\n";
+        owner.write("dev.toml", both);
+        owner.write("wg.toml", both);
+        let keys = |scope| {
+            list(&reg, Some(scope), None)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(Scope::Workgroup), vec!["w.y".to_owned()]);
+        assert_eq!(keys(Scope::Device), vec!["d.x".to_owned()]);
     }
 
     #[test]

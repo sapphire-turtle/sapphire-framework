@@ -50,6 +50,15 @@ pub enum Error {
         /// The reserved top-level name.
         name: String,
     },
+    /// A definition breaks the registry's rules: it names no scope, or it is a secret
+    /// outside the device scope.
+    #[error("setting `{key}` is defined wrongly: {message}")]
+    InvalidDef {
+        /// The offending key.
+        key: String,
+        /// Which rule it breaks.
+        message: String,
+    },
     /// A settings file is not valid TOML, or holds a value of an unsupported type.
     #[error("cannot read {}: {message}", file.display())]
     Unparsable {

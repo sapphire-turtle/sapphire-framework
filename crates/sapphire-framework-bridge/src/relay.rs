@@ -406,6 +406,34 @@ mod tests {
     }
 
     #[test]
+    fn unknown_embed_keys_in_either_file_do_not_stop_the_network() {
+        // What `build_bridge` reads: the device's `[net]`, the workgroup, its `[net]`. An
+        // `[embed]` key this build does not know — a newer device's, synced into the root,
+        // or a typo in the device file — is the embedding loader's problem, not the
+        // network's.
+        let (_tmp, dir, wg) = workgroup_with_net(&host_with(&["https://wg.example"], true));
+        let mut shared = std::fs::read_to_string(wg.config_toml()).unwrap();
+        shared.push_str("[embed.local]\nfuture_key = 1\n");
+        std::fs::write(wg.config_toml(), shared).unwrap();
+        std::fs::write(
+            dir.config_toml(),
+            "[net]\nrelays = [\"https://mine.example\"]\n[embed]\nbogus = 1\n",
+        )
+        .unwrap();
+
+        let host = NetConfig::load(&dir.config_toml()).unwrap();
+        let wg = Workgroup::open(&dir).unwrap().unwrap();
+        let config = relays(&host, Some(&wg)).unwrap();
+        assert_eq!(
+            config.urls,
+            vec![
+                "https://mine.example".to_owned(),
+                "https://wg.example".to_owned()
+            ]
+        );
+    }
+
+    #[test]
     fn a_relay_url_that_is_not_a_url_is_refused() {
         let err = relays(&host_with(&["not a url"], true), None).unwrap_err();
         assert!(err.to_string().contains("not a url"), "{err}");

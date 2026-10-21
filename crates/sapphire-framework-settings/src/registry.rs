@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sapphire_framework_settings_api::SettingDef;
+use sapphire_framework_settings_api::{Kind, Scope, SettingDef};
 
 use crate::owner::SettingsOwner;
 use crate::{Error, Result};
@@ -21,7 +21,9 @@ impl Registry {
     ///
     /// `reserved_for` maps a top-level name (a key's first segment) to the one owner, by
     /// index, allowed to use it; names not listed are free. A key defined twice is
-    /// [`Error::Duplicate`], a reserved name used by another owner is [`Error::Reserved`].
+    /// [`Error::Duplicate`], a reserved name used by another owner is [`Error::Reserved`],
+    /// and a definition without scopes or a secret outside the device scope is
+    /// [`Error::InvalidDef`].
     pub fn new(
         owners: Vec<Arc<dyn SettingsOwner>>,
         reserved_for: &[(&str, usize)],
@@ -30,6 +32,7 @@ impl Registry {
         let mut by_key = HashMap::new();
         for (idx, owner) in owners.iter().enumerate() {
             for def in owner.defs() {
+                check(&def)?;
                 let top = def.key.split('.').next().unwrap_or_default();
                 if reserved_for
                     .iter()
@@ -91,17 +94,61 @@ impl Registry {
     }
 }
 
+/// The rules every definition keeps: it names its home (the first scope), and a secret
+/// lives on the device only — its file is this host's, never synced.
+fn check(def: &SettingDef) -> Result<()> {
+    let invalid = |message: &str| Error::InvalidDef {
+        key: def.key.clone(),
+        message: message.to_string(),
+    };
+    if def.scopes.is_empty() {
+        return Err(invalid("it names no scope"));
+    }
+    if def.kind == Kind::Secret && def.scopes != [Scope::Device] {
+        return Err(invalid("a secret's only scope must be the device"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Error;
     use crate::owner::test_support::{TestOwner, def};
-    use crate::{Error, Kind};
     use std::sync::Arc;
 
     fn owner(keys: &[&str]) -> Arc<dyn SettingsOwner> {
         Arc::new(TestOwner::new(
             keys.iter().map(|k| def(k, Kind::Bool)).collect(),
         ))
+    }
+
+    #[test]
+    fn a_def_without_scopes_is_rejected() {
+        let mut d = def("a.b", Kind::Bool);
+        d.scopes = vec![];
+        let err = Registry::new(vec![Arc::new(TestOwner::new(vec![d]))], &[])
+            .err()
+            .unwrap();
+        assert!(matches!(err, Error::InvalidDef { key, .. } if key == "a.b"));
+    }
+
+    #[test]
+    fn a_secret_outside_the_device_scope_is_rejected() {
+        for scopes in [
+            vec![Scope::Workgroup],
+            vec![Scope::Device, Scope::Workgroup],
+        ] {
+            let mut d = def("a.key", Kind::Secret);
+            d.scopes = scopes;
+            let err = Registry::new(vec![Arc::new(TestOwner::new(vec![d]))], &[])
+                .err()
+                .unwrap();
+            assert!(matches!(err, Error::InvalidDef { key, .. } if key == "a.key"));
+        }
+        let mut d = def("a.key", Kind::Secret);
+        d.scopes = vec![Scope::Device];
+        assert!(Registry::new(vec![Arc::new(TestOwner::new(vec![d]))], &[]).is_ok());
     }
 
     #[test]

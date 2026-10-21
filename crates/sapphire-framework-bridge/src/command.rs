@@ -307,11 +307,14 @@ const NOTHING_TO_RESTART: &str = "the bridge is not running; nothing to restart"
 /// device can be set up before its bridge starts.
 async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
     let Some(client) = connect(version).await? else {
-        let (code, lines) = config_offline(&BridgeDir::open()?, command)?;
-        for line in lines {
+        let printed = config_offline(&BridgeDir::open()?, command)?;
+        for line in printed.out {
             println!("{line}");
         }
-        return Ok(code);
+        for line in printed.err {
+            eprintln!("{line}");
+        }
+        return Ok(printed.code);
     };
     // With `--restart`, the bridge restarts once the batch is written, so there is no
     // restart left to ask for.
@@ -333,8 +336,9 @@ async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
                     println!("{line}");
                 }
             }
+            // On stderr: `$(sapphire-bridge config get k)` must not take it for the value.
             Err(err) => {
-                println!("{err}");
+                eprintln!("{err}");
                 return Ok(1);
             }
         },
@@ -366,8 +370,37 @@ async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
     Ok(0)
 }
 
-/// Carry out `command` on the files of `dir`: the exit code and the lines to print.
-fn config_offline(dir: &BridgeDir, command: ConfigCommand) -> Result<(i32, Vec<String>)> {
+/// What an offline `config` command prints, and its exit code.
+#[derive(Debug)]
+struct Printed {
+    /// The exit code.
+    code: i32,
+    /// Lines for stdout: the answer.
+    out: Vec<String>,
+    /// Lines for stderr: why there is no answer.
+    err: Vec<String>,
+}
+
+impl Printed {
+    fn ok(out: Vec<String>) -> Printed {
+        Printed {
+            code: 0,
+            out,
+            err: Vec::new(),
+        }
+    }
+
+    fn failed(err: String) -> Printed {
+        Printed {
+            code: 1,
+            out: Vec::new(),
+            err: vec![err],
+        }
+    }
+}
+
+/// Carry out `command` on the files of `dir`: what to print, and the exit code.
+fn config_offline(dir: &BridgeDir, command: ConfigCommand) -> Result<Printed> {
     use sapphire_framework_settings::{Op, apply, get, list};
 
     // Checked before anything is written: the user asked for a restart, and a write that
@@ -375,21 +408,24 @@ fn config_offline(dir: &BridgeDir, command: ConfigCommand) -> Result<(i32, Vec<S
     if let ConfigCommand::Set { restart: true, .. } | ConfigCommand::Unset { restart: true, .. } =
         command
     {
-        return Ok((1, vec![NOTHING_TO_RESTART.to_owned()]));
+        return Ok(Printed::failed(NOTHING_TO_RESTART.to_owned()));
     }
     let reg = crate::settings::registry(dir)?;
-    let done = || Ok((0, vec![OFFLINE_NOTE.to_owned()]));
+    let done = || Ok(Printed::ok(vec![OFFLINE_NOTE.to_owned()]));
     match command {
         ConfigCommand::List { scope, show_origin } => {
             let entries = list(&reg, scope.scope(), None)?;
-            Ok((
-                0,
-                sapphire_bridge_api::describe_entries(&entries, show_origin),
-            ))
+            Ok(Printed::ok(sapphire_bridge_api::describe_entries(
+                &entries,
+                show_origin,
+            )))
         }
         ConfigCommand::Get { key } => match get(&reg, &key) {
-            Ok(entry) => Ok((0, sapphire_bridge_api::describe_entries(&[entry], false))),
-            Err(err) => Ok((1, vec![err.to_string()])),
+            Ok(entry) => Ok(Printed::ok(sapphire_bridge_api::describe_entries(
+                &[entry],
+                false,
+            ))),
+            Err(err) => Ok(Printed::failed(err.to_string())),
         },
         ConfigCommand::Set {
             entries,
@@ -1444,27 +1480,32 @@ mod pairing_cli_tests {
                 _ => panic!("not a config command"),
             }
         };
-        let (code, lines) = config_offline(&dir, command(&["set", "net.discovery=false"])).unwrap();
-        assert_eq!(code, 0);
+        let printed = config_offline(&dir, command(&["set", "net.discovery=false"])).unwrap();
+        assert_eq!(printed.code, 0);
         assert_eq!(
-            lines,
+            printed.out,
             ["the bridge is not running; it applies these settings when it starts"]
         );
+        assert!(printed.err.is_empty());
         let text = std::fs::read_to_string(dir.config_toml()).unwrap();
         assert!(
             text.contains("[net]") && text.contains("discovery = false"),
             "{text}"
         );
 
-        let (_, lines) = config_offline(&dir, command(&["get", "net.discovery"])).unwrap();
-        assert_eq!(lines, ["net.discovery = false"]);
-        let (code, lines) = config_offline(&dir, command(&["get", "net.nope"])).unwrap();
-        assert_eq!(code, 1);
-        assert!(lines[0].contains("net.nope"), "{lines:?}");
+        let printed = config_offline(&dir, command(&["get", "net.discovery"])).unwrap();
+        assert_eq!(printed.out, ["net.discovery = false"]);
+        // `$(sapphire-bridge config get k)` must never capture an error as the value.
+        let printed = config_offline(&dir, command(&["get", "net.nope"])).unwrap();
+        assert_eq!(printed.code, 1);
+        assert!(printed.out.is_empty(), "{:?}", printed.out);
+        assert!(printed.err[0].contains("net.nope"), "{:?}", printed.err);
 
-        let (_, lines) = config_offline(&dir, command(&["unset", "net.discovery"])).unwrap();
-        assert_eq!(lines.len(), 1);
-        let (_, lines) = config_offline(&dir, command(&["list", "--device"])).unwrap();
+        let printed = config_offline(&dir, command(&["unset", "net.discovery"])).unwrap();
+        assert_eq!(printed.out.len(), 1);
+        let lines = config_offline(&dir, command(&["list", "--device"]))
+            .unwrap()
+            .out;
         assert!(
             !lines.iter().any(|l| l.starts_with("net.discovery")),
             "{lines:?}"
@@ -1487,9 +1528,13 @@ mod pairing_cli_tests {
             else {
                 panic!("not a config command");
             };
-            let (code, lines) = config_offline(&dir, command).unwrap();
-            assert_eq!(code, 1, "{args:?}");
-            assert_eq!(lines, ["the bridge is not running; nothing to restart"]);
+            let printed = config_offline(&dir, command).unwrap();
+            assert_eq!(printed.code, 1, "{args:?}");
+            assert!(printed.out.is_empty(), "{args:?}");
+            assert_eq!(
+                printed.err,
+                ["the bridge is not running; nothing to restart"]
+            );
         }
         // Nothing was written: the check comes before the batch.
         assert!(!dir.config_toml().exists());

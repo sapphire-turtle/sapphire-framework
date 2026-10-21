@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use sapphire_bridge_api::{LocalModel, ModelSettings, RemoteModel};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use toml_edit::{DocumentMut, Item, Table};
 
 use crate::dir::BridgeDir;
@@ -130,7 +131,33 @@ pub(crate) fn parse<T: for<'de> Deserialize<'de>>(path: &Path, text: &str) -> Re
     toml::from_str(text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
 }
 
-/// Read the device's `config.toml`; a missing file is the defaults.
+/// Read one table of the `config.toml` at `path`, `[net]` or `[embed]`, and nothing else.
+///
+/// A missing file is `None`, a file without the table its defaults. The rest of the file
+/// is not looked at: the network must not stop on an `[embed]` key this build does not
+/// know — a newer device's, synced into a workgroup root — nor embedding on a broken
+/// `[net]`. The file must still be valid TOML. Writes check the whole file
+/// ([`DeviceConfig`] / [`WorkgroupConfig`]).
+pub(crate) fn read_table<T: DeserializeOwned + Default>(
+    path: &Path,
+    name: &str,
+) -> Result<Option<T>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let mut file: toml::Table = parse(path, &text)?;
+    match file.remove(name) {
+        Some(table) => table
+            .try_into()
+            .map(Some)
+            .map_err(|e| Error::Config(format!("{}: [{name}]: {e}", path.display()))),
+        None => Ok(Some(T::default())),
+    }
+}
+
+/// Read the device's whole `config.toml`; a missing file is the defaults.
 pub fn read_device(path: &Path) -> Result<DeviceConfig> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse(path, &text),
@@ -139,7 +166,7 @@ pub fn read_device(path: &Path) -> Result<DeviceConfig> {
     }
 }
 
-/// Read a workgroup's `config.toml`; a missing file is `None`.
+/// Read a workgroup's whole `config.toml`; a missing file is `None`.
 pub fn read_workgroup(path: &Path) -> Result<Option<WorkgroupConfig>> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse(path, &text).map(Some),
@@ -157,16 +184,17 @@ pub fn read_workgroup(path: &Path) -> Result<Option<WorkgroupConfig>> {
 // already has: that makes running one twice, or after a stop half-way, harmless.
 
 /// `[net]` of a `config.toml`.
-const NET: &str = "net";
+pub(crate) const NET: &str = "net";
 /// `[embed]` of a `config.toml`.
-const EMBED: &str = "embed";
+pub(crate) const EMBED: &str = "embed";
 
 /// Fold a format-1 bridge directory's `net.toml` and `embedding.toml` into `config.toml`.
 ///
 /// `net.toml` becomes `[net]`; `embedding.toml`'s `cache_dir` and `[local]` / `[remote]`
 /// switches become `[embed]`, and its `[models.local]` / `[models.remote]` join the same
-/// slot tables — except on a host whose workgroup has no models of its own, which receives
-/// them instead ([`promote_models`]). A table `config.toml` already holds is kept as it is.
+/// slot tables — except on a host whose workgroup, still in format 1, has no models of
+/// its own: it receives them instead ([`promote_models`]). A table `config.toml` already
+/// holds is kept as it is.
 /// The old files are renamed to `*.toml.v1` once `config.toml` is written, so a user can
 /// see what was moved. Idempotent: with the old files gone there is nothing to do, and a
 /// run stopped before the rename finds its tables already there.
@@ -276,13 +304,15 @@ pub(crate) fn migrate_device(dir: &BridgeDir) -> Result<()> {
 /// into the workgroup's `[embed]` keeps it embedding — and every other device of the
 /// workgroup with it, which is what a workgroup's models mean.
 ///
-/// The workgroup is found the way everything else finds it, [`Workgroup::open`], which
-/// first migrates the workgroup's own `root/embedding.toml`: after that, "no models of its
-/// own" is simply "no `[embed]` in `root/config.toml`". Returns whether the models moved.
-/// A workgroup that cannot be opened is left alone — the models stay with the device and
-/// the error surfaces where the workgroup is used.
+/// Only a workgroup still in format 1 receives them — one whose root has no `config.toml`
+/// yet. A root that has one was migrated already, by another device, and a missing
+/// `[embed]` there is a workgroup whose models were cleared: promoting would bring back
+/// what was removed. The root's own format-1 files are migrated first, so a workgroup with
+/// a `root/embedding.toml` keeps its models (or its empty file's "none"). Returns whether
+/// the models moved. A workgroup that cannot be found or migrated is left alone — the
+/// models stay with the device and the error surfaces where the workgroup is used.
 fn promote_models(dir: &BridgeDir, local: Option<&Table>, remote: Option<&Table>) -> Result<bool> {
-    let wg = match Workgroup::open(dir) {
+    let wg = match Workgroup::find(dir) {
         Ok(Some(wg)) => wg,
         Ok(None) => return Ok(false),
         Err(e) => {
@@ -294,6 +324,18 @@ fn promote_models(dir: &BridgeDir, local: Option<&Table>, remote: Option<&Table>
         }
     };
     let path = wg.config_toml();
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Err(e) = migrate_workgroup(&wg) {
+        tracing::warn!(
+            target: crate::logging::BRIDGE_TARGET,
+            workgroup = %wg.name,
+            "could not migrate the workgroup's format-1 settings; this host keeps its own \
+             embedding models: {e}"
+        );
+        return Ok(false);
+    }
     let mut doc = read_doc(&path)?.unwrap_or_default();
     if doc.contains_key(EMBED) {
         return Ok(false);
@@ -323,29 +365,36 @@ fn promote_models(dir: &BridgeDir, local: Option<&Table>, remote: Option<&Table>
 /// `[embed.local]` / `[embed.remote]`; then the old files are deleted, which syncs. The
 /// root is synced, so an old file can arrive late from a device not yet upgraded: a table
 /// `config.toml` already has is never replaced, and the old file is deleted anyway, so
-/// what the workgroup set in format 2 stays. Two bridges migrating at once write the same
+/// what the workgroup set in format 2 stays. Such a file is deleted unread, so one that is
+/// not even TOML cannot get in the way. Two bridges migrating at once write the same
 /// content, and last-writer-wins converges.
 pub(crate) fn migrate_workgroup(wg: &Workgroup) -> Result<()> {
     let net_path = wg.legacy_net_toml();
     let embedding_path = wg.legacy_embedding_toml();
-    let old_net = read_doc(&net_path)?;
-    let old_embedding = read_doc(&embedding_path)?;
-    if old_net.is_none() && old_embedding.is_none() {
+    if !net_path.exists() && !embedding_path.exists() {
         return Ok(());
     }
     let path = wg.config_toml();
     let mut doc = read_doc(&path)?.unwrap_or_default();
+    // An old file whose table `config.toml` already has is only deleted: read it only when
+    // its entries have somewhere to go.
+    let old_net = if doc.contains_key(NET) {
+        None
+    } else {
+        read_doc(&net_path)?
+    };
+    let old_embedding = if doc.contains_key(EMBED) {
+        None
+    } else {
+        read_doc(&embedding_path)?
+    };
     let mut changed = false;
 
-    if let Some(old) = &old_net
-        && !doc.contains_key(NET)
-    {
+    if let Some(old) = &old_net {
         doc.insert(NET, Item::Table(moved(old.as_table())));
         changed = true;
     }
-    if let Some(old) = &old_embedding
-        && !doc.contains_key(EMBED)
-    {
+    if let Some(old) = &old_embedding {
         let mut embed = Table::new();
         embed.set_implicit(true);
         for slot in ["local", "remote"] {
@@ -648,6 +697,38 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_old_file_is_deleted_unread_when_config_toml_has_its_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
+        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
+        std::fs::write(wg.config_toml(), "[embed]\n").unwrap();
+        std::fs::write(wg.legacy_embedding_toml(), "this is [not toml").unwrap();
+
+        let wg = Workgroup::open(&dir).unwrap().unwrap();
+
+        assert!(!wg.legacy_embedding_toml().exists());
+        assert_eq!(
+            std::fs::read_to_string(wg.config_toml()).unwrap(),
+            "[embed]\n"
+        );
+    }
+
+    #[test]
+    fn a_malformed_old_file_without_a_home_does_not_stop_the_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().join("bridge")).unwrap();
+        let wg = Workgroup::create(&dir, "home", "laptop", NODE_A).unwrap();
+        std::fs::write(wg.legacy_embedding_toml(), "this is [not toml").unwrap();
+
+        let wg = Workgroup::open(&dir).unwrap().unwrap();
+
+        assert!(
+            wg.legacy_embedding_toml().is_file(),
+            "a file that could not be moved is left for the user"
+        );
+    }
+
+    #[test]
     fn a_newer_format_still_refuses() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("bridge");
@@ -688,6 +769,43 @@ mod tests {
         let device = read_device(&dir.config_toml()).unwrap();
         assert_eq!(device.embed.local.as_ref().unwrap().enabled, Some(true));
         assert!(device.embed.models().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_joined_hosts_own_models_are_promoted_beside_a_format_1_net_file() {
+        // The workgroup is being migrated from format 1 now: its `root/net.toml` becomes
+        // `config.toml`, which still holds no models.
+        let (_tmp, root, wg) = v1_dir_with_workgroup(&[("embedding.toml", V1_DEVICE_MODELS)]);
+        std::fs::write(wg.legacy_net_toml(), "relays = [\"https://r\"]\n").unwrap();
+
+        let dir = BridgeDir::at(root).unwrap();
+
+        let shared = read_workgroup(&wg.config_toml()).unwrap().unwrap();
+        assert_eq!(shared.net.relays, vec!["https://r".to_owned()]);
+        assert_eq!(shared.embed.models().unwrap().local.unwrap().dimension, 512);
+        let device = read_device(&dir.config_toml()).unwrap();
+        assert!(device.embed.models().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_workgroup_already_in_format_2_gets_no_models_back() {
+        // `root/config.toml` without `[embed]`: the workgroup is in format 2 already and
+        // its models were cleared. A device upgrading late must not bring its old ones
+        // back for every device.
+        let (_tmp, root, wg) = v1_dir_with_workgroup(&[("embedding.toml", V1_DEVICE_MODELS)]);
+        let shared = "[net]\nrelays = [\"https://r\"]\n";
+        std::fs::write(wg.config_toml(), shared).unwrap();
+
+        let dir = BridgeDir::at(root).unwrap();
+
+        assert_eq!(std::fs::read_to_string(wg.config_toml()).unwrap(), shared);
+        let own = read_device(&dir.config_toml())
+            .unwrap()
+            .embed
+            .models()
+            .unwrap();
+        assert_eq!(own.local.unwrap().dimension, 512);
+        assert_eq!(own.remote.unwrap().endpoint, "https://e");
     }
 
     #[test]

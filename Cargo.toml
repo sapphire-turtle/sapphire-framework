@@ -26,7 +26,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.21.0"
+version = "0.22.0"
 description = "Local-first, file-based workspace framework made for human-agent collaboration - indexing, search and sync over plain-text files"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sapphire-turtle/sapphire-framework"

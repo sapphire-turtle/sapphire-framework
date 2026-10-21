@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.21.0...sapphire-framework-gui-v0.22.0) - 2026-10-21
+
+### Added
+
+- *(gui)* host an app on Android
+- *(gui)* a read-only file browser with text preview
+- host the bridge and an app server in-process
+- *(gui)* let apps put action buttons on the Shell's rail
+
+### Fixed
+
+- *(gui)* one start per process, no JNI local leaks, no stale refocus text
+- *(gui)* typing, the system bars and the activity on Android
+- *(gui)* file browser icons from egui's icon font
+
+### Other
+
+- Merge pull request #288 from sapphire-turtle/feat/mobile-android
+- *(deps)* Bump fontdb from 0.23.0 to 0.24.0
+
 ## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.20.0...sapphire-framework-gui-v0.21.0) - 2026-10-16
 
 ### Added

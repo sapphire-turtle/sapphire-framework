@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-v0.21.0...sapphire-framework-v0.22.0) - 2026-10-21
+
+### Added
+
+- let applications add metrics of their own
+- serve Prometheus metrics at /metrics when server.toml turns them on
+- *(gui)* host an app on Android
+
+### Other
+
+- say /metrics is the one route without a token
+
 ## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-v0.20.0...sapphire-framework-v0.21.0) - 2026-10-16
 
 ### Added

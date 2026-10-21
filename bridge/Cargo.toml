@@ -15,14 +15,14 @@ default = []
 embedded-relay = ["sapphire-bridge/embedded-relay"]
 
 [dependencies]
-sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.21.0", path = "../crates/sapphire-framework-bridge", features = ["node"] }
+sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.22.0", path = "../crates/sapphire-framework-bridge", features = ["node"] }
 clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing.workspace = true
 # The `env-filter` feature is what makes `EnvFilter` exist at all; it is not a default.
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.3.0", path = "../crates/sapphire-framework-bridge-api" }
-sapphire-framework-bridge-embed = { version = "0.21.0", path = "../crates/sapphire-framework-bridge-embed" }
+sapphire-framework-bridge-embed = { version = "0.22.0", path = "../crates/sapphire-framework-bridge-embed" }
 async-trait.workspace = true
 dirs.workspace = true
 

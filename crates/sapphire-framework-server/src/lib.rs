@@ -40,6 +40,7 @@ const SERVE_GRACE: Duration = Duration::from_secs(2);
 
 mod command;
 mod config;
+mod config_methods;
 mod current;
 mod error;
 mod events;
@@ -106,6 +107,9 @@ pub struct AppServer {
     app_api: Option<u32>,
     /// The framework's settings, when given rather than read from `config.toml`.
     config: Option<ServerConfig>,
+    /// The settings `config.*` reads and writes, and `config` comes from unless given;
+    /// `None` reads the framework's alone when `run` starts.
+    pub(crate) settings: Option<Settings>,
     /// Where the application's releases are published: what the server looks for newer
     /// ones in, and what `update` installs from.
     releases: Option<ReleaseSource>,
@@ -176,6 +180,15 @@ impl Sigterm {
     }
 }
 
+/// The file the selected workspace is kept in: at `path` when a fixture moved it, in the
+/// config directory otherwise.
+fn selection_at(ctx: &AppContext, path: Option<PathBuf>) -> SelectionFile {
+    match path {
+        Some(path) => SelectionFile::at(path),
+        None => SelectionFile::for_app(ctx),
+    }
+}
+
 /// ctrl-c, when the server listens for signals; never otherwise.
 async fn interrupted(signals: bool) {
     if signals {
@@ -210,6 +223,7 @@ impl AppServer {
             status_rows: None,
             app_api: None,
             config: None,
+            settings: None,
             releases: None,
             signals: true,
             metrics_collectors: Vec::new(),
@@ -257,10 +271,35 @@ impl AppServer {
         self
     }
 
-    /// Use `config` rather than reading `<config dir>/config.toml`: for fixtures.
+    /// Use `config` rather than the one `<config dir>/config.toml` gives: for fixtures.
+    /// `config.*` still reads and writes the file.
     pub fn config(mut self, config: ServerConfig) -> AppServer {
         self.config = Some(config);
         self
+    }
+
+    /// Serve the application's settings `app` beside the framework's, read now: for
+    /// fixtures. Called after [`selection_file`](Self::selection_file), whose selected
+    /// workspace holds the workspace scope.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub fn app_settings(mut self, app: Arc<dyn AppSettings>) -> Result<AppServer> {
+        let selection = self.selection();
+        self.settings = Some(Settings::load_with(self.ctx, app, selection)?);
+        Ok(self)
+    }
+
+    /// The settings `config.*` serves, once [`app_settings`](Self::app_settings) has read
+    /// them: for fixtures.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
+
+    /// The file the selected workspace is kept in.
+    fn selection(&self) -> SelectionFile {
+        selection_at(self.ctx, self.selection_file.clone())
     }
 
     /// Where the HTTP listener binds unless `config.toml` says otherwise: the application's
@@ -467,6 +506,7 @@ impl AppServer {
             status_rows,
             app_api,
             config,
+            settings,
             releases,
             signals,
             metrics_collectors,
@@ -504,14 +544,20 @@ impl AppServer {
         // routes the file layer at `<data dir>/logs/`.
         let _log = sapphire_workspace::logging::install(ctx)?;
 
+        let file = selection_at(ctx, selection_file);
         // A context whose config directory was never resolved has no file to read, and
-        // gets the defaults — as it gets no log file.
-        let config = match config {
-            Some(config) => config,
+        // gets the defaults — as it gets no log file — and no settings of its own to serve.
+        let settings = match settings {
+            Some(settings) => Some(settings),
             None if ctx.try_config_dir().is_some() => {
-                ServerConfig::from_settings(&Settings::load(ctx, Arc::new(()))?)?
+                Some(Settings::load_with(ctx, Arc::new(()), file.clone())?)
             }
-            None => ServerConfig::default(),
+            None => None,
+        };
+        let config = match (config, &settings) {
+            (Some(config), _) => config,
+            (None, Some(settings)) => ServerConfig::from_settings(settings)?,
+            (None, None) => ServerConfig::default(),
         };
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
@@ -540,10 +586,6 @@ impl AppServer {
             runtime.connect().await?;
         }
 
-        let file = match selection_file {
-            Some(path) => SelectionFile::at(path),
-            None => SelectionFile::for_app(ctx),
-        };
         let current = Arc::new(Current::new(ctx, Arc::clone(&host), sync.clone(), file));
         // Back to the workspace this host had, before the first client can ask for it.
         let restoring = current.restore().await;
@@ -567,7 +609,14 @@ impl AppServer {
                     .unwrap_or_else(|| BridgeConnector::standard(ctx.app_name, version)),
             ),
         };
-        router = Arc::new(relay::Relay::new(link)).routes(router);
+        let relay = Arc::new(relay::Relay::new(link));
+        router = Arc::clone(&relay).routes(router);
+        // `config.*`: this server's settings merged with the bridge's. Without settings of
+        // its own, the bridge's alone, relayed.
+        router = match settings {
+            Some(settings) => config_methods::routes(router, settings, relay),
+            None => relay.routes_for(router, sapphire_bridge_api::ANSWERED_BY_APP_SERVER),
+        };
         // `server.info` answers the typed [`StatusReport`] — the same shape the CLI's
         // `status` renders — so the CLI and a future GUI read one record. The rows come
         // from the application's builder, called once per report.

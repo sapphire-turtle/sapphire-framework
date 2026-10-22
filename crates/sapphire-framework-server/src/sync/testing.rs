@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
@@ -22,8 +22,13 @@ pub struct Seen {
     pub unregistrations: Vec<GrainId>,
 }
 
-/// The canned results a [`StubBridge`] answers with, by method.
-type Answers = Arc<Mutex<HashMap<&'static str, serde_json::Value>>>;
+/// How a [`StubBridge`] answers one method: from the call's params.
+type Responder = Arc<
+    dyn Fn(&serde_json::Value) -> Result<serde_json::Value, sapphire_ipc::RpcError> + Send + Sync,
+>;
+
+/// The canned answers a [`StubBridge`] gives, by method.
+type Answers = Arc<Mutex<HashMap<&'static str, Responder>>>;
 
 /// A stand-in for the bridge's control plane.
 pub struct StubBridge {
@@ -37,8 +42,12 @@ pub struct StubBridge {
     pub listed: Arc<Mutex<Vec<WorkgroupWorkspaceInfo>>>,
     /// The devices it answers `bridge.peers` with.
     peers: Arc<Mutex<Vec<PeerInfo>>>,
-    /// What it answers the relayed methods it has no handler of its own for.
+    /// What it answers the relayed methods, and `config.*`, it has no handler of its own
+    /// for.
     answers: Answers,
+    /// What `bridge.status` says of `config_dry_run`: whether this bridge checks a
+    /// `config.*` batch without writing it.
+    config_dry_run: Arc<AtomicBool>,
     /// Every call to one of those, with its params, in order.
     calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     /// Where the client looks for the bridge's data endpoint.
@@ -87,8 +96,11 @@ impl StubBridge {
 
         // Every relayed method answers from `answers` and is recorded; the handlers below
         // replace this for the methods the stub knows itself.
+        let config_dry_run = Arc::new(AtomicBool::new(true));
+
         let canned = sapphire_bridge_api::RELAYED
             .iter()
+            .chain(sapphire_bridge_api::ANSWERED_BY_APP_SERVER)
             .fold(Router::new(), |router, &method| {
                 let answers = Arc::clone(&answers);
                 let calls = Arc::clone(&calls);
@@ -99,13 +111,16 @@ impl StubBridge {
                         calls
                             .lock()
                             .expect("stub")
-                            .push((method.to_owned(), ctx.params));
+                            .push((method.to_owned(), ctx.params.clone()));
                         let answer = answers.lock().expect("stub").get(method).cloned();
-                        answer.ok_or_else(|| sapphire_ipc::RpcError {
-                            code: sapphire_ipc::codes::METHOD_NOT_FOUND,
-                            message: format!("the stub has no answer for {method}"),
-                            data: None,
-                        })
+                        match answer {
+                            Some(respond) => respond(&ctx.params),
+                            None => Err(sapphire_ipc::RpcError {
+                                code: sapphire_ipc::codes::METHOD_NOT_FOUND,
+                                message: format!("the stub has no answer for {method}"),
+                                data: None,
+                            }),
+                        }
                     }
                 })
             });
@@ -177,16 +192,22 @@ impl StubBridge {
                         }
                     }
                 })
-                .method(sapphire_bridge_api::STATUS, |_| async move {
-                    serde_json::to_value(StatusResult {
-                        version: "stub".into(),
-                        node_id: "stub".into(),
-                        workgroup: None,
-                        routes: vec![],
-                        embedding: None,
-                        config_dry_run: false,
-                    })
-                    .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
+                .method(sapphire_bridge_api::STATUS, {
+                    let config_dry_run = Arc::clone(&config_dry_run);
+                    move |_| {
+                        let config_dry_run = config_dry_run.load(Ordering::Relaxed);
+                        async move {
+                            serde_json::to_value(StatusResult {
+                                version: "stub".into(),
+                                node_id: "stub".into(),
+                                workgroup: None,
+                                routes: vec![],
+                                embedding: None,
+                                config_dry_run,
+                            })
+                            .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
+                        }
+                    }
                 }),
         );
 
@@ -219,6 +240,7 @@ impl StubBridge {
                 listed,
                 peers,
                 answers,
+                config_dry_run,
                 calls,
                 runtime_dir,
                 device_id,
@@ -287,14 +309,38 @@ impl StubBridge {
         })
     }
 
-    /// Answer `method` with `result` from now on: for a relayed method the stub has no
-    /// handler of its own for. One it has none and no answer for is `method not found`.
+    /// Answer `method` with `result` from now on: for a relayed method, or one of
+    /// `config.*`, the stub has no handler of its own for. One it has none and no answer
+    /// for is `method not found`.
     pub fn answer(&self, method: &'static str, result: serde_json::Value) {
-        self.answers.lock().expect("stub").insert(method, result);
+        self.respond(method, move |_| Ok(result.clone()));
     }
 
-    /// Every call to a method answered by [`answer`](Self::answer), with its params, in
-    /// order — answered or not.
+    /// Answer `method` with what `respond` makes of each call's params from now on: as
+    /// [`answer`](Self::answer), for an answer that depends on the call, or an error.
+    pub fn respond(
+        &self,
+        method: &'static str,
+        respond: impl Fn(&serde_json::Value) -> Result<serde_json::Value, sapphire_ipc::RpcError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.answers
+            .lock()
+            .expect("stub")
+            .insert(method, Arc::new(respond));
+    }
+
+    /// Have `bridge.status` report `config_dry_run` as `on` from now on; a new stub reports
+    /// it on, as a current bridge does, and off is a bridge too old to check a `config.*`
+    /// batch without writing it.
+    pub fn set_config_dry_run(&self, on: bool) {
+        self.config_dry_run.store(on, Ordering::Relaxed);
+    }
+
+    /// Every call to a method answered by [`answer`](Self::answer) or
+    /// [`respond`](Self::respond), with its params, in order — answered or not.
     pub fn calls(&self) -> Vec<(String, serde_json::Value)> {
         self.calls.lock().expect("stub").clone()
     }

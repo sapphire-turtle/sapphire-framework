@@ -41,7 +41,7 @@ const NO_WORKSPACE: &str = "no workspace is selected";
 const FRAMEWORK_NAMES: [&str; 5] = ["http", "update", "sync", "retrieve", "workspace"];
 
 /// The bridge's top-level names: owned by no one here, so no key of this server takes them.
-const BRIDGE_NAMES: [&str; 2] = ["net", "embed"];
+pub(crate) const BRIDGE_NAMES: [&str; 2] = ["net", "embed"];
 
 /// An application's own settings: what they are, and a check of the edited files as a
 /// whole.
@@ -76,7 +76,17 @@ pub(crate) struct SettingsFiles {
 
 impl SettingsFiles {
     /// `ctx`'s application's files; an error while its config directory is unresolved.
+    #[cfg(test)]
     pub(crate) fn for_app(ctx: &AppContext) -> Result<SettingsFiles> {
+        SettingsFiles::with_selection(ctx, SelectionFile::for_app(ctx))
+    }
+
+    /// [`for_app`](Self::for_app), with the selected workspace read from `selection`: the
+    /// server's own, where a fixture moved it.
+    pub(crate) fn with_selection(
+        ctx: &AppContext,
+        selection: SelectionFile,
+    ) -> Result<SettingsFiles> {
         let config_dir = ctx.try_config_dir().ok_or_else(|| {
             Error::Config(format!(
                 "{} has no config directory, so no settings",
@@ -86,7 +96,7 @@ impl SettingsFiles {
         Ok(SettingsFiles {
             config_dir: config_dir.to_path_buf(),
             app_name: ctx.app_name,
-            selection: SelectionFile::for_app(ctx),
+            selection,
         })
     }
 
@@ -460,8 +470,19 @@ impl std::fmt::Debug for Settings {
 impl Settings {
     /// Read `ctx`'s application's settings: migrate `server.toml`, build the registry,
     /// check the device file and the application's files, and read every value.
+    #[allow(dead_code)] // The offline `<app> config` (#314) is its first caller outside tests.
     pub(crate) fn load(ctx: &AppContext, app: Arc<dyn AppSettings>) -> Result<Settings> {
-        let files = SettingsFiles::for_app(ctx)?;
+        Settings::load_with(ctx, app, SelectionFile::for_app(ctx))
+    }
+
+    /// [`load`](Self::load), with the selected workspace — and so the workspace scope's
+    /// file — read from `selection`.
+    pub(crate) fn load_with(
+        ctx: &AppContext,
+        app: Arc<dyn AppSettings>,
+        selection: SelectionFile,
+    ) -> Result<Settings> {
+        let files = SettingsFiles::with_selection(ctx, selection)?;
         migrate(&files.config_dir)?;
         let registry = registry(ctx, &files, Arc::clone(&app))?;
         let mut errors = Vec::new();
@@ -513,7 +534,6 @@ impl Settings {
     /// Read the files again after a write: live keys take their new values, and
     /// [`changed`](Self::changed) is bumped if any did; restart keys keep their start
     /// values.
-    #[allow(dead_code)] // `config.*` (#314) is its first caller.
     pub(crate) fn refresh(&self) -> Result<()> {
         let new = read(&self.inner.registry)?;
         let mut values = self.inner.values.write().unwrap_or_else(|e| e.into_inner());
@@ -536,13 +556,11 @@ impl Settings {
     }
 
     /// The registry the server reads and writes through.
-    #[allow(dead_code)] // `config.*` (#314) is its first caller.
     pub(crate) fn registry(&self) -> &Registry {
         &self.inner.registry
     }
 
     /// The restart keys' values at start, to tell which writes wait for a restart.
-    #[allow(dead_code)] // `config.*` (#314) is its first caller.
     pub(crate) fn start(&self) -> &StartState {
         &self.inner.start
     }

@@ -136,10 +136,17 @@ impl BridgeClient {
     ///
     /// The relay answers [`BRIDGE_NOT_RUNNING`] when no bridge runs; this client reads it
     /// as [`sapphire_ipc::Error::NotRunning`], as a direct connection's absence is read.
+    ///
+    /// The relay passes on calls only, never the bridge's notifications, so
+    /// [`incoming`](Self::incoming) never yields here, and nothing is left running to
+    /// listen for them: a caller may make one of these per call over a connection it keeps.
     pub fn relayed(client: Arc<Client>, runtime_dir: std::path::PathBuf) -> BridgeClient {
+        let (incoming, _) = broadcast::channel(INCOMING_CAPACITY);
         BridgeClient {
+            client,
+            incoming,
+            runtime_dir,
             relayed: true,
-            ..BridgeClient::from_client(client, runtime_dir)
         }
     }
 
@@ -487,6 +494,22 @@ mod tests {
             Err(Error::NotRunning(m)) => assert_eq!(m, "no sapphire-bridge is running"),
             other => panic!("expected NotRunning, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_relayed_client_leaves_nothing_running_once_dropped() {
+        // The GUI makes one per refresh over a connection it keeps: a forwarder of
+        // announcements left behind by each would pile up for as long as the GUI runs.
+        let app = relay_without_a_bridge().await;
+        let client = BridgeClient::relayed(Arc::clone(&app), "/unused".into());
+        let mut incoming = client.incoming();
+        drop(client);
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), incoming.recv()).await;
+        assert!(
+            matches!(ended, Ok(Err(broadcast::error::RecvError::Closed))),
+            "something still holds the announcements' sender: {ended:?}"
+        );
+        drop(app);
     }
 
     #[tokio::test]

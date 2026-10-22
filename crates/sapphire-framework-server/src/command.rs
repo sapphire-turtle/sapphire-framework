@@ -851,6 +851,7 @@ async fn workspace_show(app: &'static str, version: &'static str) -> Result<i32>
 ///
 /// The workgroup half goes through the same connection, relayed to the bridge. Public so
 /// the integration tests can capture it.
+#[doc(hidden)]
 pub async fn render_workspace_show(
     client: Arc<sapphire_ipc::Client>,
     app: &str,

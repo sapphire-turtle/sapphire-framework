@@ -90,6 +90,27 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// A connection straight to the bridge, as an app server's would be.
+    async fn direct_client(&self) -> sapphire_bridge_client::BridgeClient {
+        let info = sapphire_ipc::ClientInfo {
+            kind: "test".into(),
+            version: "0.0.0".into(),
+            api: sapphire_bridge_api::API_VERSION,
+            app_api: None,
+            pid: std::process::id(),
+        };
+        let (direct, _) = sapphire_ipc::connect_or_absent(&self.control, "bridge", info)
+            .await
+            .unwrap()
+            .expect("the bridge is listening");
+        sapphire_bridge_client::BridgeClient::from_client(
+            Arc::new(direct),
+            self._tmp.path().to_path_buf(),
+        )
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
@@ -219,17 +240,7 @@ async fn bridge_commands_without_an_app_server_say_so() {
 #[tokio::test(flavor = "multi_thread")]
 async fn workspace_show_lists_the_workgroup_through_the_app_server() {
     let _lock = ENV.lock().await;
-    let tmp = tempfile::tempdir().unwrap();
-    let runtime = tmp.path().join("run");
-    let bridge_runtime = tmp.path().join("bridge-run");
-    std::fs::create_dir_all(&runtime).unwrap();
-    std::fs::create_dir_all(&bridge_runtime).unwrap();
-    unsafe {
-        std::env::set_var(sapphire_ipc::RUNTIME_DIR_ENV, &runtime);
-    }
-    let (bridge, control) = start_bridge_no_workgroup(&bridge_runtime).await;
-    let server = start_app_server(tmp.path(), control);
-    wait_for_app_server().await;
+    let fixture = Fixture::start().await;
     let created = WorkgroupCommand::Create {
         name: "home".into(),
         device_name: "desk".into(),
@@ -237,6 +248,26 @@ async fn workspace_show_lists_the_workgroup_through_the_app_server() {
     .dispatch(APP, "0.0.0")
     .await;
     assert_eq!(created.unwrap(), 0);
+
+    // Two apps' servers register a workspace with the bridge, as app servers do; their
+    // connections stay open so the registrations stand.
+    let mut owners = Vec::new();
+    for (app, root) in [(APP, "/ws/mine"), ("sapphire-other", "/ws/theirs")] {
+        let client = fixture.direct_client().await;
+        client
+            .register(sapphire_bridge_api::RegisterParams {
+                app_name: app.into(),
+                exe_path: "/bin/true".into(),
+                managed_by: sapphire_bridge_api::ManagedBy::Service,
+                workspaces: vec![sapphire_bridge_api::WorkspaceRegistration {
+                    workspace_id: sapphire_bridge_api::GrainId::random(),
+                    root: root.into(),
+                }],
+            })
+            .await
+            .unwrap();
+        owners.push(client);
+    }
 
     let info = sapphire_ipc::ClientInfo {
         kind: "test".into(),
@@ -255,14 +286,15 @@ async fn workspace_show_lists_the_workgroup_through_the_app_server() {
         .unwrap();
     assert_eq!(code, 1, "no workspace yet: {out}");
     assert!(out.contains("no workspace yet"), "{out}");
+    assert!(out.contains("in the workgroup:"), "{out}");
+    assert!(
+        out.contains("mine"),
+        "this app's workspace is listed: {out}"
+    );
+    assert!(!out.contains("theirs"), "another app's is not: {out}");
     assert!(
         !out.contains("no sapphire-bridge is running"),
         "the bridge is reached through the app server: {out}"
     );
-
-    server.abort();
-    drop(bridge);
-    unsafe {
-        std::env::remove_var(sapphire_ipc::RUNTIME_DIR_ENV);
-    }
+    drop(owners);
 }

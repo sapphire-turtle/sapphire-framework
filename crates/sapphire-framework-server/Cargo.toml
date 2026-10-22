@@ -82,6 +82,8 @@ toml.workspace = true
 async-trait.workspace = true
 # The MCP test drives `/mcp` with raw HTTP requests.
 reqwest.workspace = true
+# The relay's logging test captures every event at TRACE.
+tracing-subscriber.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 # The signal test sends SIGTERM with `libc::kill` directly.

@@ -1,5 +1,6 @@
 //! Cached connections, and turning failures into [`Conn`] states.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
@@ -28,24 +29,32 @@ pub(crate) fn unanswered(process: &str, limit: Duration) -> String {
     }
 }
 
-/// One cached connection per process. A failed call drops the cache, so the next refresh
-/// reconnects — and finds the process gone, or back.
+/// Whether a relayed bridge call that failed with `err` leaves the app connection unfit.
+///
+/// An RPC error, the relay's "no bridge is running" among them, is an answer: the app
+/// server is there, and only the bridge refused. Anything else — the connection closed, a
+/// frame that would not decode — is the connection's own failure.
+pub(crate) fn drops_app(err: &sapphire_ipc::Error) -> bool {
+    !matches!(
+        err,
+        sapphire_ipc::Error::Rpc(_) | sapphire_ipc::Error::NotRunning(_)
+    )
+}
+
+/// The one cached connection, to the app server, which relays the bridge's methods too. A
+/// call that fails other than with the server's answer drops the cache, so the next
+/// refresh reconnects — and finds the server gone, or back.
 #[derive(Default)]
 pub(crate) struct Connections {
-    bridge: Option<BridgeClient>,
-    app: Option<Client>,
+    app: Option<Arc<Client>>,
 }
 
 impl Connections {
-    pub(crate) async fn bridge(
-        &mut self,
-        cfg: &ClientConfig,
-    ) -> sapphire_ipc::Result<Option<&BridgeClient>> {
-        if self.bridge.is_none() {
-            self.bridge =
-                BridgeClient::connect_at(&cfg.endpoints.bridge, "gui", cfg.app.version).await?;
-        }
-        Ok(self.bridge.as_ref())
+    /// The bridge, through the cached app-server connection; `None` until
+    /// [`app`](Self::app) has connected.
+    pub(crate) fn bridge(&self, cfg: &ClientConfig) -> Option<BridgeClient> {
+        let client = Arc::clone(self.app.as_ref()?);
+        Some(BridgeClient::relayed(client, cfg.endpoints.app.dir.clone()))
     }
 
     pub(crate) async fn app(
@@ -62,23 +71,22 @@ impl Connections {
             };
             self.app = sapphire_ipc::connect_or_absent(&cfg.endpoints.app, cfg.app.app_name, info)
                 .await?
-                .map(|(client, _)| client);
+                .map(|(client, _)| Arc::new(client));
         }
-        Ok(self.app.as_ref())
-    }
-
-    pub(crate) fn drop_bridge(&mut self) {
-        self.bridge = None;
+        Ok(self.app.as_deref())
     }
 
     pub(crate) fn drop_app(&mut self) {
         self.app = None;
     }
 
-    /// Ask the bridge everything the views show.
+    /// Ask the bridge, through the app server, everything the views show.
     pub(crate) async fn fetch_bridge(&mut self, cfg: &ClientConfig) -> Conn<BridgeState> {
         let result = tokio::time::timeout(cfg.fetch_timeout, async {
-            let Some(c) = self.bridge(cfg).await? else {
+            if self.app(cfg).await?.is_none() {
+                return Ok(None);
+            }
+            let Some(c) = self.bridge(cfg) else {
                 return Ok(None);
             };
             let status = c.status().await?;
@@ -114,13 +122,16 @@ impl Connections {
         .await;
         match result {
             Ok(Ok(Some(state))) => Conn::Up(state),
-            Ok(Ok(None)) => Conn::Absent,
+            // Without its app server the GUI cannot tell whether a bridge runs.
+            Ok(Ok(None)) => Conn::Error(format!("the {} server is not running", cfg.app.app_name)),
+            // The app server answered, for the bridge: its connection is fine.
+            Ok(Err(err)) if !drops_app(&err) => classify(&err),
             Ok(Err(err)) => {
-                self.drop_bridge();
+                self.drop_app();
                 classify(&err)
             }
             Err(_) => {
-                self.drop_bridge();
+                self.drop_app();
                 Conn::Error(unanswered("sapphire-bridge", cfg.fetch_timeout))
             }
         }
@@ -165,8 +176,87 @@ impl Connections {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use sapphire_ipc::{Connection, ManagedBy, Router, RpcError, ServerInfo};
+
+    /// A configuration whose endpoint nothing listens on: a test hands [`Connections`] its
+    /// app connection instead.
+    pub(crate) fn config() -> ClientConfig {
+        let dir = std::path::PathBuf::from("/run");
+        ClientConfig {
+            app: super::super::AppIdentity {
+                app_name: "app",
+                version: "0",
+            },
+            endpoints: super::super::Endpoints {
+                app: sapphire_ipc::Endpoint::in_dir("a", dir),
+            },
+            service_exes: super::super::ServiceExes {
+                bridge: "/b".into(),
+                app: "/a".into(),
+            },
+            refresh: Duration::from_secs(2),
+            fetch_timeout: Duration::from_secs(5),
+            command_timeout: Duration::from_secs(5),
+            install_timeout: Duration::from_secs(5),
+        }
+    }
+
+    /// Connections holding an app server whose relay answers every bridge method with the
+    /// bridge's own error: the app server is up, the bridge refused.
+    pub(crate) async fn over_a_refusing_relay() -> Connections {
+        let router = sapphire_bridge_api::RELAYED
+            .iter()
+            .fold(Router::new(), |r, &m| {
+                r.method(m, |_| async {
+                    Err(RpcError::internal("the bridge said no"))
+                })
+            });
+        let (client_conn, server_conn) = Connection::pair();
+        tokio::spawn(async move {
+            let info = ServerInfo {
+                version: "0".into(),
+                api: proto::API_VERSION,
+                app_api: None,
+                pid: std::process::id(),
+                managed_by: ManagedBy::Spawned,
+            };
+            let _ = sapphire_ipc::serve(server_conn, Arc::new(router), "app", info).await;
+        });
+        let info = ClientInfo {
+            kind: "gui".into(),
+            version: "0".into(),
+            api: proto::API_VERSION,
+            app_api: None,
+            pid: std::process::id(),
+        };
+        let (client, _) = Client::handshake(client_conn, "app", info).await.unwrap();
+        Connections {
+            app: Some(Arc::new(client)),
+        }
+    }
+
+    /// Whether `conns` still holds its app connection.
+    pub(crate) fn holds_app(conns: &Connections) -> bool {
+        conns.app.is_some()
+    }
+
+    #[tokio::test]
+    async fn a_bridge_error_in_a_poll_keeps_the_app_connection() {
+        let cfg = config();
+        let mut conns = over_a_refusing_relay().await;
+
+        let state = conns.fetch_bridge(&cfg).await;
+        assert!(
+            matches!(&state, Conn::Error(m) if m.contains("the bridge said no")),
+            "{state:?}"
+        );
+        assert!(
+            holds_app(&conns),
+            "the app server answered: its connection is fine"
+        );
+    }
 
     #[test]
     fn classify_maps_api_mismatch_to_incompatible() {

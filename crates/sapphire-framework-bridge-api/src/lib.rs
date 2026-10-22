@@ -153,6 +153,56 @@ pub const RESTART: &str = "bridge.restart";
 /// Set a device's election priority.
 pub const DEVICE_PRIORITY_SET: &str = "bridge.device_priority_set";
 
+/// The error code an app server's relay answers with when no bridge is running, or the
+/// connection to it drops mid-call. In the server-defined range of JSON-RPC codes.
+///
+/// A [`BridgeClient`] over an app-server connection turns it back into the not-running
+/// error a direct connection would have produced.
+///
+/// [`BridgeClient`]: https://docs.rs/sapphire-framework-bridge-client
+pub const BRIDGE_NOT_RUNNING: i32 = -32001;
+
+/// The methods an app server relays to the bridge for its clients, under their own names.
+pub const RELAYED: &[&str] = &[
+    STATUS,
+    PEERS,
+    WORKSPACES,
+    WORKGROUP_CREATE,
+    INVITE,
+    JOIN,
+    DEVICE_RETIRE,
+    DEVICE_PRIORITY_SET,
+    EMBED_SETTINGS,
+    EMBED_MODEL_SET,
+    EMBED_DEVICE_SET,
+    EMBED_KEY_SET,
+    EMBED_KEY_CLEAR,
+    EXTERNAL_DEVICE_LIST,
+    EXTERNAL_DEVICE_ADD,
+    EXTERNAL_DEVICE_ROTATE,
+    EXTERNAL_DEVICE_RETIRE,
+    EXTERNAL_DEVICE_RESTORE,
+    EXTERNAL_DEVICE_SET_APPS,
+    CONFIG_SCHEMA,
+    CONFIG_LIST,
+    CONFIG_GET,
+    CONFIG_SET,
+    CONFIG_UNSET,
+    RESTART,
+];
+
+/// The methods an app server does not relay, because only an app server or the HTTP
+/// listener calls them on its own behalf.
+pub const NOT_RELAYED: &[&str] = &[
+    REGISTER,
+    UNREGISTER,
+    INCOMING,
+    EMBED_INFO,
+    EMBED,
+    EMBED_IMAGES,
+    EXTERNAL_DEVICE_AUTHENTICATE,
+];
+
 /// A device's priority when its record names none. Mirrors the registry's own constant;
 /// this crate does not depend on the registry.
 pub const DEFAULT_PRIORITY: u8 = 1;
@@ -694,6 +744,58 @@ mod tests {
             assert!(name.starts_with("config."), "{name}");
         }
         assert!(RESTART.starts_with("bridge."));
+    }
+
+    #[test]
+    fn every_method_is_either_relayed_or_not() {
+        let all: std::collections::BTreeSet<&str> = [
+            REGISTER,
+            UNREGISTER,
+            PEERS,
+            STATUS,
+            INCOMING,
+            INVITE,
+            JOIN,
+            WORKSPACES,
+            WORKGROUP_CREATE,
+            DEVICE_RETIRE,
+            EMBED_INFO,
+            EMBED,
+            EMBED_IMAGES,
+            EXTERNAL_DEVICE_LIST,
+            EXTERNAL_DEVICE_ADD,
+            EXTERNAL_DEVICE_RETIRE,
+            EXTERNAL_DEVICE_RESTORE,
+            EXTERNAL_DEVICE_ROTATE,
+            EXTERNAL_DEVICE_SET_APPS,
+            EXTERNAL_DEVICE_AUTHENTICATE,
+            EMBED_SETTINGS,
+            EMBED_MODEL_SET,
+            EMBED_DEVICE_SET,
+            EMBED_KEY_SET,
+            EMBED_KEY_CLEAR,
+            CONFIG_SCHEMA,
+            CONFIG_LIST,
+            CONFIG_GET,
+            CONFIG_SET,
+            CONFIG_UNSET,
+            RESTART,
+            DEVICE_PRIORITY_SET,
+        ]
+        .into_iter()
+        .collect();
+        let relayed: std::collections::BTreeSet<&str> = RELAYED.iter().copied().collect();
+        let not_relayed: std::collections::BTreeSet<&str> = NOT_RELAYED.iter().copied().collect();
+        assert_eq!(relayed.len(), RELAYED.len(), "RELAYED repeats a method");
+        assert_eq!(
+            not_relayed.len(),
+            NOT_RELAYED.len(),
+            "NOT_RELAYED repeats a method"
+        );
+        assert!(relayed.is_disjoint(&not_relayed));
+        let union: std::collections::BTreeSet<&str> =
+            relayed.union(&not_relayed).copied().collect();
+        assert_eq!(union, all);
     }
 
     #[test]

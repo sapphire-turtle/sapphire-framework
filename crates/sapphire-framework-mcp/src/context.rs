@@ -6,7 +6,9 @@ use sapphire_bridge_client::BridgeClient;
 use sapphire_ipc::{Client, ClientInfo, Endpoint};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::sync::broadcast;
 
+use crate::change::{CHANGE_CAPACITY, Change};
 use crate::error::{Error, Result};
 
 /// The application a tool serves, and the IPC link to its server.
@@ -20,6 +22,11 @@ use crate::error::{Error, Result};
 /// before the app server is up, and the app server may restart while the agent runs. A call
 /// that finds no server says so; a call that loses the connection drops it, and the next
 /// call dials again.
+///
+/// The context also carries the changes the application announces to the subscriptions
+/// `subscriptions/listen` holds open ([`notify_tool_list_changed`](Self::notify_tool_list_changed)
+/// and the rest). Every handler made from one context shares them, which is how the HTTP
+/// transport, whose handlers last one request, reaches a subscription another request opened.
 #[derive(Clone, Debug)]
 pub struct ToolContext {
     inner: Arc<Inner>,
@@ -30,6 +37,7 @@ struct Inner {
     app: &'static str,
     version: &'static str,
     link: Link,
+    changes: broadcast::Sender<Change>,
 }
 
 #[derive(Debug)]
@@ -53,6 +61,7 @@ impl ToolContext {
                 app,
                 version,
                 link: Link::Connected(client),
+                changes: broadcast::channel(CHANGE_CAPACITY).0,
             }),
         }
     }
@@ -76,6 +85,7 @@ impl ToolContext {
                     app_api,
                     client: tokio::sync::Mutex::new(None),
                 },
+                changes: broadcast::channel(CHANGE_CAPACITY).0,
             }),
         }
     }
@@ -151,6 +161,41 @@ impl ToolContext {
             .map_err(Error::Bridge)
     }
 
+    /// Tell every subscription that asked that the tool list changed.
+    ///
+    /// A change is a signal to read again, not the change itself: a subscription cannot be
+    /// resumed, so a client that reconnects reads everything afresh anyway. Nobody listening
+    /// is not an error.
+    pub fn notify_tool_list_changed(&self) {
+        self.announce(Change::ToolListChanged);
+    }
+
+    /// Tell every subscription that asked that the resource list changed.
+    pub fn notify_resource_list_changed(&self) {
+        self.announce(Change::ResourceListChanged);
+    }
+
+    /// Tell every subscription to `uri` that the resource changed.
+    pub fn notify_resource_updated(&self, uri: impl Into<String>) {
+        self.announce(Change::ResourceUpdated(uri.into()));
+    }
+
+    fn announce(&self, change: Change) {
+        // An error only means no subscription is listening.
+        let _ = self.inner.changes.send(change);
+    }
+
+    /// A receiver of the changes announced from now on.
+    pub(crate) fn changes(&self) -> broadcast::Receiver<Change> {
+        self.inner.changes.subscribe()
+    }
+
+    /// How many receivers of [`changes`](Self::changes) are alive.
+    #[cfg(test)]
+    pub(crate) fn listeners(&self) -> usize {
+        self.inner.changes.receiver_count()
+    }
+
     /// Drop `lost` if it is still the held client, so the next call dials again.
     async fn forget(&self, lost: &Arc<Client>) {
         if let Link::Dial { client, .. } = &self.inner.link {
@@ -165,5 +210,33 @@ impl ToolContext {
 impl AsRef<ToolContext> for ToolContext {
     fn as_ref(&self) -> &ToolContext {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::change::Change;
+
+    fn ctx() -> ToolContext {
+        let endpoint = Endpoint::in_dir("sapphire-test", std::env::temp_dir());
+        ToolContext::dial("sapphire-test", "0.0.0", None, endpoint)
+    }
+
+    #[test]
+    fn notifying_with_no_listener_is_fine() {
+        let ctx = ctx();
+        ctx.notify_tool_list_changed();
+        ctx.notify_resource_list_changed();
+        ctx.notify_resource_updated("x://a");
+    }
+
+    #[test]
+    fn a_clone_shares_the_changes() {
+        let ctx = ctx();
+        let mut rx = ctx.changes();
+        assert_eq!(ctx.listeners(), 1);
+        ctx.clone().notify_resource_updated("x://a");
+        assert_eq!(rx.try_recv(), Ok(Change::ResourceUpdated("x://a".into())));
     }
 }

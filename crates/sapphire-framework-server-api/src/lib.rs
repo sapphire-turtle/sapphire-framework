@@ -21,6 +21,10 @@ use serde::{Deserialize, Serialize};
 
 pub use grain_id::GrainId;
 
+/// The bridge's API, for the methods an app server relays to it ([`bridge::RELAYED`]) and
+/// the types they carry, so a client needs no second dependency.
+pub use sapphire_bridge_api as bridge;
+
 /// The version of the app server's API: the framework's methods below and their types.
 ///
 /// It is this crate's major version, parsed at compile time, so the two cannot drift: a

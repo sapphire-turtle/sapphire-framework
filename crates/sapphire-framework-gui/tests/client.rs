@@ -2,10 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig};
 use sapphire_framework_gui::client::*;
-use sapphire_framework_server::{AppServer, SyncRuntime};
+use sapphire_framework_server::{AppServer, BridgeConnector, SyncRuntime};
 use sapphire_ipc::{Endpoint, ManagedBy};
 use sapphire_workspace::{AppContext, AppKind};
 
@@ -23,6 +22,8 @@ struct Fixture {
     tmp: tempfile::TempDir,
     _env: std::sync::MutexGuard<'static, ()>,
     endpoints: Endpoints,
+    /// The bridge's control plane: the app server's to reach, never the GUI's.
+    bridge: Endpoint,
 }
 
 fn fixture() -> Fixture {
@@ -35,14 +36,18 @@ fn fixture() -> Fixture {
     CTX.init(AppKind::Server);
     let run = tmp.path().join("run");
     std::fs::create_dir_all(&run).unwrap();
+    // The bridge listens in a runtime directory of its own: the GUI reaches it only
+    // through the app server.
+    let bridge_run = tmp.path().join("bridge-run");
+    std::fs::create_dir_all(&bridge_run).unwrap();
     let endpoints = Endpoints {
-        bridge: Endpoint::in_dir("bridge", run.clone()),
         app: Endpoint::in_dir(APP.app_name, run),
     };
     Fixture {
         tmp,
         _env: env,
         endpoints,
+        bridge: Endpoint::in_dir("bridge", bridge_run),
     }
 }
 
@@ -85,14 +90,7 @@ impl Drop for BridgeProcess {
 
 /// A bridge with no workgroup, on the fixture's endpoints.
 async fn start_bridge(f: &Fixture) -> BridgeProcess {
-    start_bridge_as(
-        f,
-        &LoopbackNetwork::new(),
-        NODE,
-        "bridge",
-        &f.endpoints.bridge,
-    )
-    .await
+    start_bridge_as(f, &LoopbackNetwork::new(), NODE, "bridge", &f.bridge).await
 }
 
 /// A bridge with no workgroup: node `node` on `net`, its directory `<tmp>/<name>`, its
@@ -124,25 +122,36 @@ async fn start_bridge_as(
     BridgeProcess(Some(rt))
 }
 
-/// A sync-mounted app server talking to that bridge.
+/// A sync-mounted app server on the fixture's endpoint, reaching the fixture's bridge
+/// whenever one runs.
 async fn start_server(f: &Fixture) -> tokio::task::JoinHandle<()> {
-    let bridge = BridgeClient::connect_at(&f.endpoints.bridge, "test", "0.0.0")
-        .await
-        .unwrap()
-        .unwrap();
-    let runtime = Arc::new(SyncRuntime::new(
+    let runtime = Arc::new(SyncRuntime::connecting(
         &CTX,
-        Arc::new(bridge),
+        BridgeConnector::at(f.bridge.clone(), "test", "0.0.0"),
         PathBuf::from("/bin/true"),
         ManagedBy::Service,
     ));
     let server = AppServer::new(&CTX, "0.0.0")
         .endpoint(f.endpoints.app.clone())
+        .signals(false)
         .sync(runtime);
     let task = tokio::spawn(async move {
         let _ = server.run().await;
     });
     wait(|| async { sapphire_ipc::probe(&f.endpoints.app).await.unwrap() }).await;
+    task
+}
+
+/// An app server without sync on `app`, relaying to the bridge on `bridge`.
+async fn start_relay(app: &Endpoint, bridge: &Endpoint) -> tokio::task::JoinHandle<()> {
+    let server = AppServer::new(&CTX, "0.0.0")
+        .endpoint(app.clone())
+        .signals(false)
+        .bridge_connector(BridgeConnector::at(bridge.clone(), "test", "0.0.0"));
+    let task = tokio::spawn(async move {
+        let _ = server.run().await;
+    });
+    wait(|| async { sapphire_ipc::probe(app).await.unwrap() }).await;
     task
 }
 
@@ -183,17 +192,48 @@ async fn nothing_running_reads_absent_twice() {
     let client = spawn(&f);
     wait(|| async { client.snapshot().fetched }).await;
     let s = (*client.snapshot()).clone();
-    assert!(matches!(s.bridge, Conn::Absent));
+    // Without its app server the GUI cannot know whether a bridge runs.
+    assert!(
+        matches!(&s.bridge, Conn::Error(m) if m.contains("server is not running")),
+        "{:?}",
+        s.bridge
+    );
     assert!(matches!(s.server, Conn::Absent));
     let id = client.send(Command::SyncEnable);
     let err = outcome(&client, id).await.unwrap_err();
     assert!(err.contains("not running"), "{err}");
+    let id = client.send(Command::DeviceInvite {
+        name: "laptop".into(),
+        ttl_secs: None,
+    });
+    let err = outcome(&client, id).await.unwrap_err();
+    assert!(err.contains("server is not running"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_without_a_bridge_reads_the_bridge_absent() {
+    let f = fixture();
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+    assert!(
+        matches!(client.snapshot().bridge, Conn::Absent),
+        "{:?}",
+        client.snapshot().bridge
+    );
+    let id = client.send(Command::DeviceInvite {
+        name: "laptop".into(),
+        ttl_secs: None,
+    });
+    let err = outcome(&client, id).await.unwrap_err();
+    assert_eq!(err, "sapphire-bridge is not running");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bridge_that_stops_reads_absent_and_one_that_returns_reads_up() {
     let f = fixture();
     let bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
     let client = spawn(&f);
     wait(|| async { client.snapshot().bridge.up().is_some() }).await;
     bridge.stop();
@@ -207,6 +247,7 @@ async fn a_bridge_that_stops_reads_absent_and_one_that_returns_reads_up() {
 async fn create_invite_and_retire_round_trip() {
     let f = fixture();
     let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
     let client = spawn(&f);
     wait(|| async { client.snapshot().bridge.up().is_some() }).await;
 
@@ -246,6 +287,7 @@ async fn create_invite_and_retire_round_trip() {
 async fn workspace_init_sync_toggle_and_switch() {
     let f = fixture();
     let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
     let client = spawn(&f);
     wait(|| async { client.snapshot().bridge.up().is_some() }).await;
     let id = client.send(Command::WorkgroupCreate {
@@ -253,7 +295,6 @@ async fn workspace_init_sync_toggle_and_switch() {
         device_name: "desk".into(),
     });
     outcome(&client, id).await.unwrap();
-    let _server = start_server(&f).await;
     wait(|| async { client.snapshot().server.up().is_some() }).await;
     let current = |client: &FrameworkClient| {
         client
@@ -377,13 +418,17 @@ async fn workgroup_join_pairs_with_another_bridge() {
     const NODE_B: &str = "b1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
     let f = fixture();
     let net = LoopbackNetwork::new();
-    // A, the inviter, on an endpoint of its own; B, the joiner, where `config` points.
-    let control_a = Endpoint::in_dir("bridge-a", f.endpoints.bridge.dir.clone());
+    // A, the inviter, behind an app server of its own; B, the joiner, behind the one
+    // `config` points at.
+    let control_a = Endpoint::in_dir("bridge-a", f.bridge.dir.clone());
     let _a = start_bridge_as(&f, &net, NODE, "bridge-a", &control_a).await;
-    let _b = start_bridge_as(&f, &net, NODE_B, "bridge", &f.endpoints.bridge).await;
+    let _b = start_bridge_as(&f, &net, NODE_B, "bridge", &f.bridge).await;
+    let app_a = Endpoint::in_dir("app-a", f.endpoints.app.dir.clone());
+    let _server_a = start_relay(&app_a, &control_a).await;
+    let _server_b = start_server(&f).await;
 
     let mut cfg_a = config(&f);
-    cfg_a.endpoints.bridge = control_a;
+    cfg_a.endpoints.app = app_a;
     let client_a =
         FrameworkClient::spawn(&tokio::runtime::Handle::current(), cfg_a, Arc::new(|| {}));
     wait(|| async { client_a.snapshot().bridge.up().is_some() }).await;
@@ -435,19 +480,24 @@ async fn hang(endpoint: &Endpoint) -> tokio::task::JoinHandle<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_process_that_never_answers_reads_error_and_does_not_stall_the_loop() {
     let f = fixture();
-    let _hung = hang(&f.endpoints.bridge).await;
+    let _hung = hang(&f.endpoints.app).await;
     let mut cfg = config(&f);
     cfg.fetch_timeout = Duration::from_millis(300);
+    cfg.command_timeout = Duration::from_millis(300);
     let client = FrameworkClient::spawn(&tokio::runtime::Handle::current(), cfg, Arc::new(|| {}));
+    // The loop kept ticking: both halves, which share the one connection, read as not
+    // answering.
     wait(|| async {
-        matches!(&client.snapshot().bridge, Conn::Error(m) if m.contains("did not answer"))
+        let s = client.snapshot();
+        matches!(&s.bridge, Conn::Error(m) if m.contains("did not answer"))
+            && matches!(&s.server, Conn::Error(m) if m.contains("did not answer"))
     })
     .await;
-    // The loop kept ticking: the server side was fetched too, and is simply absent.
-    assert!(client.snapshot().fetched);
-    assert!(matches!(client.snapshot().server, Conn::Absent));
-    // A command queued behind the hung bridge still gets an outcome.
-    let id = client.send(Command::SyncEnable);
+    // A command queued behind the hung server still gets an outcome.
+    let id = client.send(Command::DeviceInvite {
+        name: "laptop".into(),
+        ttl_secs: None,
+    });
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("not running"), "{err}");
+    assert!(err.contains("did not answer"), "{err}");
 }

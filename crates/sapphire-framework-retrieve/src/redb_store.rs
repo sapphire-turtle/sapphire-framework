@@ -2000,7 +2000,10 @@ mod tests {
     }
 
     fn wait_for_index(store: &RedbStore, probe: &[f32]) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        // The build runs on rayon's global pool, which `ann::tests::recall_against_brute_force`
+        // fills with a far larger build in the same test binary. On a slow CI runner in debug
+        // this build waits for that one, so the deadline is generous.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
         while store.ann.search(probe, 1).is_none() {
             assert!(
                 std::time::Instant::now() < deadline,

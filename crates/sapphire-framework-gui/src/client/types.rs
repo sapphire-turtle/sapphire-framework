@@ -6,8 +6,8 @@ use std::time::Duration;
 use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
 use sapphire_bridge_api::{
-    BRIDGE_NAME, EmbedRequest, EmbedSettingsResult, ExternalDeviceInfo, ExternalDeviceRequest,
-    PeerInfo, StatusResult, WorkgroupWorkspaceInfo, WorkspaceRoles,
+    EmbedRequest, EmbedSettingsResult, ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo,
+    StatusResult, WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
 use sapphire_ipc::Endpoint;
 
@@ -20,11 +20,9 @@ pub struct AppIdentity {
     pub version: &'static str,
 }
 
-/// Where the two processes listen.
+/// Where the app server listens. The GUI reaches the bridge through it.
 #[derive(Clone, Debug)]
 pub struct Endpoints {
-    /// The bridge's control plane.
-    pub bridge: Endpoint,
     /// The app server.
     pub app: Endpoint,
 }
@@ -34,7 +32,6 @@ impl Endpoints {
     pub fn default_for(app_name: &str) -> sapphire_ipc::Result<Endpoints> {
         let dir = sapphire_ipc::runtime_dir()?;
         Ok(Endpoints {
-            bridge: Endpoint::in_dir(BRIDGE_NAME, dir.clone()),
             app: Endpoint::in_dir(app_name, dir),
         })
     }

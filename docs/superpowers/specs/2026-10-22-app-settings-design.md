@@ -45,9 +45,10 @@ The app server builds one `Registry` (from `sapphire-framework-settings`) of two
   `http.mcp.enabled` (Bool, default false), `http.metrics.enabled` (Bool, default false),
   `update.check` (Bool, default true). All `Apply::Restart`, all `Scope::Device` only, section
   "Server".
-- **The app**: the `SettingsOwner` the app passes to `serve_restarting` (below). Every key
-  starts with `<app_name>.`; its scopes may be `Device` and `Workspace` (not `Workgroup`); a
-  secret is `Device` only, as everywhere.
+- **The app**: the `AppSettings` the app passes to `serve_restarting` (below) — its defs and
+  an optional whole-file `validate`; the framework, not the app, decides the files (it wraps
+  `AppSettings` in a `SettingsOwner`). Every key starts with `<app_name>.`; its scopes may be
+  `Device` and `Workspace` (not `Workgroup`); a secret is `Device` only, as everywhere.
 
 Reserved top-level names in the app server's registry: `http`, `update`, `sync`, `retrieve`,
 `workspace` (framework), `<app_name>` (the app), and `net`, `embed` (the bridge's, owned by
@@ -160,7 +161,7 @@ serve_restarting(MyOwner, |settings: &Settings| {
 
 `serve_restarting(owner, build)` (in `sapphire-framework-server`): migrate, read the
 settings, call `build`, attach the owner and the `Settings` to the server, run it, and
-repeat on a restart. `owner` is `impl SettingsOwner + Clone` (or `()` for an app with no
+repeat on a restart. `owner` is `impl AppSettings + Clone` (`()` for an app with no
 settings of its own).
 
 **Breaking:** `FrameworkCommand::dispatch(self, server: AppServer, version)` becomes

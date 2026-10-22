@@ -5,6 +5,7 @@
 //! registers it behind egui's defaults, so Latin text keeps egui's fonts and CJK falls
 //! through to the system font. Nothing is redistributed: the font is read at runtime.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Families tried in order, Japanese glyph forms first.
@@ -17,14 +18,28 @@ pub const PREFERRED_FAMILIES: &[&str] = &[
     "MS Gothic",
 ];
 /// Families tried in order, Japanese glyph forms first.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 pub const PREFERRED_FAMILIES: &[&str] = &[
     "Hiragino Sans",
     "Hiragino Kaku Gothic ProN",
     "Hiragino Kaku Gothic Pro",
 ];
+/// Families tried in order, Japanese glyph forms first. Older Android had Droid Sans
+/// Japanese, or only Droid Sans Fallback.
+#[cfg(target_os = "android")]
+pub const PREFERRED_FAMILIES: &[&str] = &[
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Droid Sans Japanese",
+    "Droid Sans Fallback",
+];
 /// Families tried in order, Japanese glyph forms first.
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android"
+)))]
 pub const PREFERRED_FAMILIES: &[&str] = &[
     "Noto Sans CJK JP",
     "Noto Sans JP",
@@ -114,13 +129,74 @@ fn pick<'a>(faces: &'a [Candidate], preferred: &[&str]) -> Option<&'a Candidate>
 /// configuration names), which can take a second or more when the file cache is cold, and
 /// it blocks the caller: call it once at startup. The chosen font file, possibly tens of
 /// megabytes, is held in memory.
+#[cfg(not(target_os = "ios"))]
 pub fn system_cjk_font() -> Option<SystemFont> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
-    // fontdb knows no Android font directory; the system's fonts, Noto CJK among them, are
-    // all here.
+    // fontdb knows no Android font directory. The system's fonts, Noto CJK among them, are
+    // in the first; a device maker's own are in the second.
     #[cfg(target_os = "android")]
-    db.load_fonts_dir("/system/fonts");
+    for dir in ["/system/fonts", "/product/fonts"] {
+        db.load_fonts_dir(dir);
+    }
+    choose(&db)
+}
+
+/// Find a CJK-capable system font, or `None` when this system has none.
+///
+/// iOS's sandbox refuses to list the system font directories, so the files come from
+/// CoreText. The preferred families' files are read first, and every other font only when
+/// none of them covers CJK. Blocks the caller: call it once at startup. The chosen font
+/// file, possibly tens of megabytes, is held in memory.
+#[cfg(target_os = "ios")]
+pub fn system_cjk_font() -> Option<SystemFont> {
+    let (preferred, rest) = split_preferred(&apple::font_files(), PREFERRED_FAMILIES);
+    let mut db = fontdb::Database::new();
+    for path in &preferred {
+        load_file(&mut db, path);
+    }
+    if let Some(font) = choose(&db) {
+        return Some(font);
+    }
+    for path in &rest {
+        load_file(&mut db, path);
+    }
+    choose(&db)
+}
+
+#[cfg(target_os = "ios")]
+fn load_file(db: &mut fontdb::Database, path: &std::path::Path) {
+    if let Err(e) = db.load_font_file(path) {
+        tracing::debug!(path = %path.display(), error = %e, "could not read a system font");
+    }
+}
+
+/// The font files of `files` (family, path), split into those holding a `preferred` family
+/// and the rest. Each file appears once, in its first position.
+#[cfg_attr(not(any(target_os = "ios", test)), allow(dead_code))]
+fn split_preferred(
+    files: &[(String, PathBuf)],
+    preferred: &[&str],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let is_preferred = |path: &PathBuf| {
+        files.iter().any(|(family, p)| {
+            p == path
+                && preferred
+                    .iter()
+                    .any(|want| want.eq_ignore_ascii_case(family))
+        })
+    };
+    let mut seen = std::collections::HashSet::new();
+    files
+        .iter()
+        .map(|(_, path)| path)
+        .filter(|path| seen.insert(*path))
+        .cloned()
+        .partition(is_preferred)
+}
+
+/// The CJK-capable face to use among `db`'s fonts.
+fn choose(db: &fontdb::Database) -> Option<SystemFont> {
     let faces: Vec<&fontdb::FaceInfo> = db.faces().collect();
 
     let candidate = |(i, f): (usize, &&fontdb::FaceInfo)| Candidate {
@@ -174,6 +250,47 @@ fn covers_cjk(data: &[u8], index: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// The system fonts as CoreText reports them.
+#[cfg(target_os = "ios")]
+mod apple {
+    use std::path::PathBuf;
+
+    use objc2_core_foundation::{CFArray, CFRetained, CFString, CFURL};
+    use objc2_core_text::{
+        CTFontCollection, CTFontDescriptor, kCTFontFamilyNameAttribute, kCTFontURLAttribute,
+    };
+
+    /// Every face available to the app, as (family, font file). A collection file appears
+    /// once per face; faces with no file (made in memory) are left out.
+    pub(super) fn font_files() -> Vec<(String, PathBuf)> {
+        // SAFETY: no options are passed, and CoreText documents the result as an array of
+        // font descriptors.
+        let descriptors = unsafe {
+            CTFontCollection::from_available_fonts(None)
+                .matching_font_descriptors()
+                .map(|a| CFRetained::cast_unchecked::<CFArray<CTFontDescriptor>>(a))
+        };
+        let Some(descriptors) = descriptors else {
+            return Vec::new();
+        };
+        descriptors
+            .iter()
+            .filter_map(|d| {
+                // SAFETY: the attribute keys are CoreText's own constants.
+                let (family, url) = unsafe {
+                    (
+                        d.attribute(kCTFontFamilyNameAttribute)?,
+                        d.attribute(kCTFontURLAttribute)?,
+                    )
+                };
+                let family = family.downcast::<CFString>().ok()?.to_string();
+                let path = url.downcast::<CFURL>().ok()?.to_file_path()?;
+                Some((family, path))
+            })
+            .collect()
+    }
+}
+
 /// Append a system CJK font to `fonts` as a fallback behind everything already in the
 /// proportional and monospace families, keeping whatever else `fonts` holds. Use this to
 /// merge into your own font definitions. Returns the family used, or `None` (logged) when
@@ -212,6 +329,7 @@ pub fn install_system_cjk_fallback(ctx: &egui::Context) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn cand(i: usize, fam: &str, covers: bool) -> Candidate {
         Candidate {
@@ -290,6 +408,64 @@ mod tests {
         let prop = &fonts.families[&egui::FontFamily::Proportional];
         assert_eq!(prop.first().map(String::as_str), Some("mine"));
         assert_eq!(prop.last().map(String::as_str), Some(FONT_KEY));
+    }
+
+    fn file(family: &str, path: &str) -> (String, PathBuf) {
+        (family.to_owned(), PathBuf::from(path))
+    }
+
+    #[test]
+    fn the_preferred_families_files_come_apart_from_the_rest() {
+        let files = vec![
+            file("Helvetica", "/f/Helvetica.ttc"),
+            file("Hiragino Sans", "/f/HiraginoW3.ttc"),
+            file("PingFang SC", "/f/PingFang.ttc"),
+            file("hiragino sans", "/f/HiraginoW6.ttc"),
+        ];
+        let (preferred, rest) = split_preferred(&files, &["Hiragino Sans"]);
+        assert_eq!(
+            preferred,
+            [
+                PathBuf::from("/f/HiraginoW3.ttc"),
+                PathBuf::from("/f/HiraginoW6.ttc")
+            ]
+        );
+        assert_eq!(
+            rest,
+            [
+                PathBuf::from("/f/Helvetica.ttc"),
+                PathBuf::from("/f/PingFang.ttc")
+            ]
+        );
+    }
+
+    /// A collection file lists one face per family it holds; it is loaded once, as preferred
+    /// when any of its families is.
+    #[test]
+    fn a_file_with_several_families_is_listed_once() {
+        let files = vec![
+            file("PingFang SC", "/f/PingFang.ttc"),
+            file("PingFang TC", "/f/PingFang.ttc"),
+            file("Hiragino Sans", "/f/Mixed.ttc"),
+            file("Other", "/f/Mixed.ttc"),
+        ];
+        let (preferred, rest) = split_preferred(&files, &["Hiragino Sans"]);
+        assert_eq!(preferred, [PathBuf::from("/f/Mixed.ttc")]);
+        assert_eq!(rest, [PathBuf::from("/f/PingFang.ttc")]);
+    }
+
+    /// Every phone ships one of its preferred families: Hiragino Sans on iOS, Noto Sans
+    /// CJK on Android. Run on the simulator and the emulator by mobile-ci.yml.
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    #[test]
+    fn a_phone_finds_a_preferred_family() {
+        let font = system_cjk_font().expect("no CJK-capable system font");
+        assert!(
+            PREFERRED_FAMILIES
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(&font.family)),
+            "picked a family outside the preferred list: {font:?}"
+        );
     }
 
     #[test]

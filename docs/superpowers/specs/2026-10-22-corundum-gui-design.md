@@ -188,6 +188,9 @@ the path filter never leaves a required check pending.
 
 ## Known gaps
 
-- `fonts::PREFERRED_FAMILIES` has no iOS or Android branch; both take the Linux list, and
-  fontdb's system-font scan may not see their font directories. The CJK fallback likely
-  finds nothing on a phone. Part 3 fixes it (#321).
+- ~~`fonts::PREFERRED_FAMILIES` has no iOS or Android branch~~ — fixed by #321: iOS asks
+  CoreText for the font files (its sandbox refuses to list the font directories), Android
+  reads `/system/fonts` and `/product/fonts`; each has its own family list, and the tests
+  run on a simulator and an emulator. Still unchecked: whether an app on a real iPhone may
+  open the files CoreText names (the simulator has no sandbox; rust-fontconfig reports it
+  can), and the family names on device makers' own Android builds.

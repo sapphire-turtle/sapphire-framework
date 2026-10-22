@@ -4,8 +4,8 @@ name: Mobile CI
 # is built for iOS and Android on every pull request that touches it. The rest of the
 # workspace is not: `-p corundum-gui` builds the crate (egui only) without it.
 #
-# Build and clippy only. Its tests are platform-independent and run on the desktops in
-# ci.yml; running them on a simulator or an emulator is later work.
+# Clippy for the phones, then the crate's tests on an iOS simulator and an Android emulator:
+# the system font lookup differs on each (#321), and only there can it be seen to work.
 #
 # Not a required check: with the path filter it does not run on most pull requests, and a
 # required check that never runs would leave them pending.
@@ -18,6 +18,7 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - .github/workflows/mobile-ci.yml
+      - .github/scripts/android-test-runner.sh
 
 defaults:
   run:
@@ -42,8 +43,18 @@ jobs:
       - name: Clippy (device and simulator)
         run: |
           for t in aarch64-apple-ios aarch64-apple-ios-sim; do
-            cargo clippy -p corundum-gui --target "$t" --locked -- -D warnings || exit 1
+            cargo clippy -p corundum-gui --target "$t" --all-targets --locked -- -D warnings || exit 1
           done
+
+      # The simulator's CoreText lists the simulator's own fonts, not the Mac's, so this runs
+      # the lookup a phone does (without the phone's sandbox).
+      - name: Test on the simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json \
+            | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          xcrun simctl bootstatus "$udid" -b
+          export CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUNNER="xcrun simctl spawn $udid"
+          cargo test -p corundum-gui --lib --target aarch64-apple-ios-sim --locked
 
   android:
     runs-on: ubuntu-latest
@@ -65,4 +76,31 @@ jobs:
       - name: Clippy (arm64 phones and x86_64 emulators)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --locked -- -D warnings
+          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked -- -D warnings
+
+      # Built before the emulator starts, so the emulator step only runs it.
+      - name: Build the tests
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t x86_64 test -p corundum-gui --lib --no-run --locked
+
+      # The emulator needs hardware acceleration, which the runner allows once /dev/kvm is
+      # opened up to its user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          CARGO_TARGET_X86_64_LINUX_ANDROID_RUNNER: ${{ github.workspace }}/.github/scripts/android-test-runner.sh
+        with:
+          api-level: 36
+          arch: x86_64
+          target: default
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
+          disable-animations: true
+          script: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME cargo ndk -t x86_64 test -p corundum-gui --lib --locked

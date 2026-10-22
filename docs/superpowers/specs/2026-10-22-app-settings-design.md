@@ -51,8 +51,11 @@ The app server builds one `Registry` (from `sapphire-framework-settings`) of two
   `update.check` (Bool, default true). All `Apply::Restart`, all `Scope::Device` only, section
   "Server".
 - **The app**: the `AppSettings` the app passes to `serve_restarting` (below) — its defs and
-  an optional whole-file `validate`; the framework, not the app, decides the files (it wraps
-  `AppSettings` in a `SettingsOwner`). Every key starts with `<app_name>.`; its scopes may be
+  an optional whole-file `validate(&self, files: &AppFiles, staged: &Staged)`; the
+  framework, not the app, decides the files (it wraps `AppSettings` in a `SettingsOwner`),
+  and tells `validate` where they are: `AppFiles::device()` and `workspace()` (`None` with
+  no workspace selected). `staged.read(path)` gives a file as the write would leave it, or as
+  it is on disk when the write does not touch it. Every key starts with `<app_name>.`; its scopes may be
   `Device` and `Workspace` (not `Workgroup`); a secret is `Device` only, as everywhere.
 
 Reserved top-level names in the app server's registry: `http`, `update`, `sync`, `retrieve`,
@@ -209,9 +212,17 @@ A cheap clonable handle (`Arc` inside):
   changes a `Live` key's effective value.
 
 The first `Settings` is read before `build` runs, so `build` can use `Restart` keys. A write
-updates the handle's values for `Live` keys at once; `Restart` keys keep their start values
-until the restart, and `pending_restart` compares against those (`StartState`, as the
-bridge).
+updates the handle's values for `Live` keys at once, and so does a change of the selected
+workspace (select, init, map, move, remove) and a change to the workspace's `config.toml`
+that a sync session or an edit makes (the sync runtime reads the settings again after each).
+`Restart` keys keep their start values until the restart, and `pending_restart` compares
+against those (`StartState`, as the bridge), so switching to a workspace whose file holds
+another value for a workspace `Restart` key makes it pending.
+
+`build` runs once per round and must make a fresh `SyncRuntime` each time
+(`sync_via_bridge`): a server stops what it was given, so a runtime made outside `build` is
+stopped after the first round. A round after a restart that fails logs
+`restart failed: {err}` before `serve_restarting` returns the error.
 
 ## `<app> config`
 
@@ -232,7 +243,11 @@ answer again).
 
 With no app server running, `<app> config` builds the same registry from the framework's
 defs and `owner`, migrates `server.toml` if needed, and reads or writes the files itself,
-with the same checks and atomic writes. A bridge key (anything the registry does not know)
+with the same checks of the edited files and atomic writes. It does not run the checks a
+starting server runs on the files as they are, so it can repair a file that keeps the server
+from starting: a write is accepted when the files it leaves pass the owners' checks, and
+`list` / `get` answer with that check's error as a warning on stderr. A file that does not
+parse at all is an error naming it. A bridge key (anything the registry does not know)
 fails with `the {app} server is not running; start it, or use sapphire-bridge config for
 {key}`. `list` shows the app server's keys and the line about the bridge's.
 
@@ -246,14 +261,20 @@ fails with `the {app} server is not running; start it, or use sapphire-bridge co
   - a mixed batch with an error on either side writes nothing on either side;
   - with no bridge: app-server keys read and write; a batch with a bridge key fails;
   - values never appear in the captured log (`http.allowed_hosts` and an app secret).
-- Migration: `server.toml` becomes `config.toml` plus `server.toml.v1`; `[mcp]` still fails
-  with its message; `ServerConfig` comes out as before.
+- Migration: `server.toml` becomes `config.toml` plus `server.toml.v1`, or merges into an
+  existing `config.toml` (a conflict keeps `config.toml`'s value and warns); `[mcp]` still
+  fails with its message; `ServerConfig` comes out as before.
+- The shared file: a `config set http.listen=…` keeps everything outside `[http]` byte for
+  byte, comments included; `serve` starts with an app's own tables in it; a write keeps the
+  file's permissions; a parse error names the line, never the text.
 - Restart: after `server.restart` the same endpoint answers, a changed `Restart` key has its
   new value, and the instance lock and pid are unchanged; `run()` answers the error.
 - `Settings`: a `Live` write fires `changed()` and `get` returns the new value; a `Restart`
-  write does neither.
+  write does neither; a `Live` workspace key follows a switch of workspace and a change the
+  sync watcher sees; an app's `validate` reads a file the batch does not touch.
 - CLI: `set` / `get` / `list` / `unset` online and offline; a bridge key offline; a secret
-  through `--stdin`; `--restart` restarts the right processes.
+  through `--stdin`; `--restart` restarts the right processes; offline `unset` repairs a file
+  `serve` refuses.
 
 ## Out of scope
 

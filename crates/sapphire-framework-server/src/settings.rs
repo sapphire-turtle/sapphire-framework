@@ -12,8 +12,12 @@
 //! | Workspace | `{root}/.{app}/config.toml`, of the workspace selected at the time |
 //! | Secrets | `<config dir>/secrets/<key>`, owner-only |
 //!
+//! The device's file is the application's own `config.toml` too: the framework reads and
+//! checks only its own tables (`[http]`, `[update]`) and the application's keys, and a
+//! write changes only the keys it names, leaving everything else in the file as it was.
+//!
 //! `config.toml` replaces `server.toml`, whose layout it keeps: [`migrate`] moves the old
-//! file over once.
+//! file's tables over once.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -39,6 +43,11 @@ const NO_WORKSPACE: &str = "no workspace is selected";
 
 /// Top-level names the framework keeps for itself, whether or not it defines keys there.
 const FRAMEWORK_NAMES: [&str; 5] = ["http", "update", "sync", "retrieve", "workspace"];
+
+/// The framework's tables the device file is checked under: the names it defines keys in.
+/// Every other name in the file is the application's business (an application keeps its
+/// own `[workspace]` there, say).
+const CHECKED_NAMES: [&str; 2] = ["http", "update"];
 
 /// The bridge's top-level names: owned by no one here, so no key of this server takes them.
 pub(crate) const BRIDGE_NAMES: [&str; 2] = ["net", "embed"];
@@ -287,8 +296,9 @@ pub(crate) fn registry(
     )
 }
 
-/// The device file's framework part: the old `[mcp]` table, unknown keys under the
-/// framework's names or at the top, and framework values of the wrong kind.
+/// The device file's framework part: the old `[mcp]` table, unknown keys under `[http]` and
+/// `[update]`, and framework values of the wrong kind. Every other table — the
+/// application's own config shares the file — is left alone.
 ///
 /// Values are never quoted back: the message names the key and the file only.
 fn check_device_file(
@@ -315,7 +325,7 @@ fn check_device_file(
     for (name, item) in &table {
         if name == "mcp" {
             errors.push(failure(None, MCP_MOVED.to_owned()));
-        } else if FRAMEWORK_NAMES.contains(&name.as_str()) {
+        } else if CHECKED_NAMES.contains(&name.as_str()) {
             let mut leaves = Vec::new();
             leaves_of(name.clone(), item, &mut leaves);
             for (key, value) in leaves {
@@ -332,11 +342,6 @@ fn check_device_file(
                     }
                 }
             }
-        } else if name != files.app_name {
-            errors.push(failure(
-                Some(name.clone()),
-                format!("unknown setting in {}", path.display()),
-            ));
         }
     }
     if errors.is_empty() {
@@ -378,27 +383,111 @@ fn to_value(value: &toml::Value) -> Option<Value> {
     }
 }
 
-/// Move `<config_dir>/server.toml` to `config.toml`, text unchanged, keeping the old file
-/// as `server.toml.v1`. Nothing happens once `config.toml` exists.
+/// Move `<config_dir>/server.toml` into `config.toml`, keeping the old file as
+/// `server.toml.v1`.
+///
+/// With no `config.toml`, the old file's text becomes it unchanged. With one — the
+/// application's own config shares the file — the old file's tables are merged in, the
+/// existing file's comments and content kept: a key it already has wins, with a warning
+/// naming the key. A rename that fails once the new file is written is a warning (the old
+/// file may be held open); the next start merges it again, changing nothing.
 pub(crate) fn migrate(config_dir: &Path) -> Result<()> {
     let new = config_dir.join(SERVER_CONFIG_FILE);
     let old = config_dir.join(OLD_CONFIG_FILE);
-    if new.exists() {
-        return Ok(());
-    }
     let text = match std::fs::read_to_string(&old) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(Error::Io(e)),
     };
-    sapphire_framework_settings::write_atomic(&new, &text)?;
-    std::fs::rename(&old, config_dir.join(OLD_CONFIG_BACKUP))?;
-    tracing::info!(
-        "{} moved to {}; the old file is kept as {OLD_CONFIG_BACKUP}",
-        old.display(),
-        new.display()
-    );
+    let merged = match std::fs::read_to_string(&new) {
+        Ok(existing) => {
+            let mut doc = parse_doc(&new, &existing)?;
+            let from = parse_doc(&old, &text)?;
+            let mut kept = Vec::new();
+            merge_tables(doc.as_table_mut(), from.as_table(), "", &mut kept);
+            for key in kept {
+                tracing::warn!(
+                    "{key} is in both {} and {}; the value in {} is kept",
+                    old.display(),
+                    new.display(),
+                    new.display()
+                );
+            }
+            doc.to_string()
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => text,
+        Err(e) => return Err(Error::Io(e)),
+    };
+    sapphire_framework_settings::write_atomic(&new, &merged)?;
+    let backup = config_dir.join(OLD_CONFIG_BACKUP);
+    match std::fs::rename(&old, &backup) {
+        Ok(()) => tracing::info!(
+            "{} moved to {}; the old file is kept as {OLD_CONFIG_BACKUP}",
+            old.display(),
+            new.display()
+        ),
+        Err(e) => tracing::warn!(
+            "{} moved to {}, but it could not be renamed to {OLD_CONFIG_BACKUP}: {e}",
+            old.display(),
+            new.display()
+        ),
+    }
     Ok(())
+}
+
+/// `text`, the content of `path`, as an editable document.
+fn parse_doc(path: &Path, text: &str) -> Result<toml_edit::DocumentMut> {
+    text.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        sapphire_framework_settings::Error::Unparsable {
+            file: path.to_path_buf(),
+            message: sapphire_framework_settings::describe_toml_error(text, e.span(), e.message()),
+        }
+        .into()
+    })
+}
+
+/// Add to `into` what `from` holds and it does not, table by table; a key both hold keeps
+/// `into`'s value and is pushed, dotted under `prefix`, to `kept`.
+fn merge_tables(
+    into: &mut dyn toml_edit::TableLike,
+    from: &dyn toml_edit::TableLike,
+    prefix: &str,
+    kept: &mut Vec<String>,
+) {
+    for (name, item) in from.iter() {
+        let key = if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match into.get_mut(name) {
+            None => {
+                let mut item = item.clone();
+                unplace(&mut item);
+                into.insert(name, item);
+            }
+            Some(existing) => match (existing.as_table_like_mut(), item.as_table_like()) {
+                (Some(existing), Some(item)) => merge_tables(existing, item, &key, kept),
+                _ => kept.push(key),
+            },
+        }
+    }
+}
+
+/// Clear the positions a table brought from its own document, so it is written after what
+/// the document it joins already holds.
+fn unplace(item: &mut toml_edit::Item) {
+    fn table(table: &mut toml_edit::Table) {
+        table.set_position(None);
+        for (_, child) in table.iter_mut() {
+            unplace(child);
+        }
+    }
+    match item {
+        toml_edit::Item::Table(t) => table(t),
+        toml_edit::Item::ArrayOfTables(array) => array.iter_mut().for_each(table),
+        _ => {}
+    }
 }
 
 /// A Rust type a setting's value reads as, for [`Settings::get_as`].
@@ -699,18 +788,146 @@ mod tests {
         assert!(!tmp.path().join("server.toml").exists());
     }
 
+    /// Every log line `f` writes, at any level.
+    fn logged(f: impl FnOnce()) -> String {
+        use std::sync::Mutex;
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8(captured.0.lock().unwrap().clone()).unwrap()
+    }
+
     #[test]
-    fn an_existing_config_toml_is_not_overwritten() {
+    fn server_toml_merges_into_an_existing_config_toml() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("server.toml"), "[update]\ncheck = false\n").unwrap();
-        std::fs::write(tmp.path().join("config.toml"), "[update]\ncheck = true\n").unwrap();
+        let old = "# old\n[update]\ncheck = false\n\n[http.mcp]\n# mine\nenabled = true\n";
+        std::fs::write(tmp.path().join("server.toml"), old).unwrap();
+        let app =
+            "# the app's own\nsync_interval_minutes = 5\n\n[anthropic]\napi_key = \"x\" # keep\n";
+        std::fs::write(tmp.path().join("config.toml"), app).unwrap();
+        let log = logged(|| migrate(tmp.path()).unwrap());
+        let merged = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+        assert!(merged.starts_with(app), "{merged}");
+        let table: toml::Table = merged.parse().unwrap();
+        assert_eq!(table["update"]["check"].as_bool(), Some(false));
+        assert_eq!(table["http"]["mcp"]["enabled"].as_bool(), Some(true));
+        assert_eq!(table["anthropic"]["api_key"].as_str(), Some("x"));
+        assert!(merged.contains("# mine"), "{merged}");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("server.toml.v1")).unwrap(),
+            old
+        );
+        assert!(!tmp.path().join("server.toml").exists());
+        assert!(!log.contains("WARN"), "{log}");
+        // Once done, it is done.
         migrate(tmp.path()).unwrap();
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("config.toml")).unwrap(),
-            "[update]\ncheck = true\n"
+            merged
         );
-        assert!(tmp.path().join("server.toml").exists());
-        assert!(!tmp.path().join("server.toml.v1").exists());
+    }
+
+    #[test]
+    fn a_key_config_toml_already_has_wins_with_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("server.toml"),
+            "[update]\ncheck = false\n[http]\nlisten = \"10.9.8.7:1\"\n",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("config.toml"), "[update]\ncheck = true\n").unwrap();
+        let log = logged(|| migrate(tmp.path()).unwrap());
+        let table: toml::Table = std::fs::read_to_string(tmp.path().join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(table["update"]["check"].as_bool(), Some(true));
+        assert_eq!(table["http"]["listen"].as_str(), Some("10.9.8.7:1"));
+        assert!(
+            log.contains("WARN") && log.contains("update.check"),
+            "{log}"
+        );
+        // The key, never the value.
+        assert!(!log.contains("false"), "{log}");
+        assert!(tmp.path().join("server.toml.v1").exists());
+        assert!(!tmp.path().join("server.toml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_keeps_config_tomls_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("server.toml"), "[update]\ncheck = false\n").unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "[anthropic]\napi_key = \"x\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        migrate(tmp.path()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn the_apps_own_tables_are_left_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        std::fs::write(
+            ctx.config_dir().join("config.toml"),
+            "sync_interval_minutes = 5\n\n[anthropic]\napi_key = \"x\"\n\n\
+             [workspace]\ndefault = \"a\"\n\n[sync]\nwhatever = true\n\n\
+             [retrieve]\nk = 1\n\n[cache]\ndir = \"/c\"\n",
+        )
+        .unwrap();
+        let settings = Settings::load(&ctx, Arc::new(())).unwrap();
+        assert_eq!(settings.get_as::<bool>("update.check"), Some(true));
+    }
+
+    #[test]
+    fn a_framework_write_keeps_the_apps_own_tables_byte_for_byte() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let path = ctx.config_dir().join("config.toml");
+        let before = "# sapphire-agent\nsync_interval_minutes = 5 # minutes\n\n\
+                      [anthropic]\n# the key\napi_key = \"x\"\n\n\
+                      [http]\n# where\nlisten = \"127.0.0.1:1\"\n\n\
+                      [matrix]\nhomeserver = \"https://m\" # mine\n";
+        std::fs::write(&path, before).unwrap();
+        let settings = Settings::load(&ctx, Arc::new(())).unwrap();
+        apply(
+            settings.registry(),
+            None,
+            vec![set("http.listen", Value::String("127.0.0.1:2".into()))],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before.replace("127.0.0.1:1", "127.0.0.1:2")
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_http_or_update_is_still_an_error() {
+        for text in ["[http]\nlisn = 1\n", "[update]\nchekc = true\n"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = context(tmp.path());
+            std::fs::write(ctx.config_dir().join("config.toml"), text).unwrap();
+            assert!(Settings::load(&ctx, Arc::new(())).is_err(), "{text}");
+        }
     }
 
     #[test]

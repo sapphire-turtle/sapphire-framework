@@ -11,7 +11,7 @@ mod read;
 mod registry;
 mod store;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, describe_toml_error};
 pub use owner::{FieldError, SettingsOwner, Staged};
 pub use read::{StartState, get, list};
 pub use registry::Registry;

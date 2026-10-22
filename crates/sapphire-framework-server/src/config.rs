@@ -216,7 +216,8 @@ mod tests {
     #[test]
     fn a_misspelt_setting_is_an_error_not_a_default() {
         assert!(from_text(Some("[http.mcp]\nenabeld = true\n")).is_err());
-        assert!(from_text(Some("[htp]\nlisten = \"127.0.0.1:1\"\n")).is_err());
+        // A table of another name may be the application's own: the file is shared.
+        assert!(from_text(Some("[htp]\nlisten = \"127.0.0.1:1\"\n")).is_ok());
     }
 
     #[test]

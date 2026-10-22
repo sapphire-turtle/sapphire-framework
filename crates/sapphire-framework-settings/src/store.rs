@@ -284,10 +284,13 @@ fn set(doc: &mut DocumentMut, key: &str, value: &Value) -> Result<()> {
             })?;
     }
     let mut new = to_edit(value);
-    if let Some(old) = table.get(last).and_then(toml_edit::Item::as_value) {
+    // Replaced in place, so the key keeps its own decor (a comment above it) too.
+    if let Some(old) = table.get_mut(last).and_then(toml_edit::Item::as_value_mut) {
         *new.decor_mut() = old.decor().clone();
+        *old = new;
+    } else {
+        table.insert(last, toml_edit::Item::Value(new));
     }
-    table.insert(last, toml_edit::Item::Value(new));
     Ok(())
 }
 
@@ -317,6 +320,10 @@ fn unset(doc: &mut DocumentMut, key: &str) {
 }
 
 /// Write `text` to `path` through a temp file and a rename, creating the directory.
+///
+/// A file already at `path` keeps its permissions (its mode on unix, its read-only flag
+/// elsewhere): the file may be shared with what an application keeps there, tokens
+/// included.
 pub fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     write_file(path, text, false)
 }
@@ -343,8 +350,18 @@ fn temp_path(path: &Path) -> PathBuf {
 fn write_file(path: &Path, text: &str, private: bool) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
+    // A private file is owner-only whatever it was; any other keeps what it had.
+    let keep = if private {
+        None
+    } else {
+        match std::fs::metadata(path) {
+            Ok(meta) => Some(meta.permissions()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e),
+        }
+    };
     let tmp = temp_path(path);
-    {
+    let written = (|| {
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -352,13 +369,24 @@ fn write_file(path: &Path, text: &str, private: bool) -> std::io::Result<()> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        #[cfg(not(unix))]
-        let _ = private;
         let mut file = options.open(&tmp)?;
+        // On unix before the text goes in, so it is never readable more widely than the
+        // file it replaces.
+        #[cfg(unix)]
+        if let Some(perms) = &keep {
+            file.set_permissions(perms.clone())?;
+        }
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path).inspect_err(|_| {
+        drop(file);
+        // Elsewhere after it is closed: a read-only flag set first would refuse the write.
+        #[cfg(not(unix))]
+        if let Some(perms) = keep {
+            std::fs::set_permissions(&tmp, perms)?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    written.inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
 }
@@ -378,6 +406,43 @@ mod tests {
         assert_eq!(a.parent(), path.parent());
         let name = a.file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("config.toml.tmp."), "{name}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_write_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&path, "a = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // A new file takes the usual mode, not the last one's.
+        let fresh = dir.path().join("fresh.toml");
+        write_atomic(&fresh, "").unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+        assert_ne!(mode & 0o777, 0o600, "{mode:o}");
+    }
+
+    #[test]
+    fn a_write_keeps_a_readonly_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+        // Unix replaces a read-only file through its directory; Windows refuses to.
+        if write_atomic(&path, "a = 2\n").is_ok() {
+            assert!(std::fs::metadata(&path).unwrap().permissions().readonly());
+        }
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
     }
 
     /// A test owner whose `validate` rejects `a.max < a.min` in the workgroup file.
@@ -441,7 +506,7 @@ mod tests {
     #[test]
     fn set_keeps_comments_and_order() {
         let (owner, reg) = setup(vec![def("net.discovery", Kind::Bool)]);
-        let before = "# mine\n[net]\n# relays\nrelays = []\ndiscovery = true # on\n";
+        let before = "# mine\n[net]\n# relays\nrelays = []\n# found\ndiscovery = true # on\n";
         owner.0.write("wg.toml", before);
         apply(
             &reg,

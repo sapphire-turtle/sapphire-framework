@@ -13,6 +13,7 @@ use sapphire_workspace::AppContext;
 
 static CTX_MIGRATE: AppContext = AppContext::new("sapphire-settings-migrate");
 static CTX_MCP: AppContext = AppContext::new("sapphire-settings-mcp");
+static CTX_SHARED: AppContext = AppContext::new("sapphire-settings-shared");
 
 /// Point `ctx`'s directories at `tmp`, and give it an endpoint there.
 fn point_at(ctx: &'static AppContext, tmp: &Path) -> Endpoint {
@@ -93,4 +94,47 @@ async fn an_old_mcp_table_stops_the_server_and_says_where_it_went() {
         err.contains(&config.join("config.toml").display().to_string()),
         "{err}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_starts_with_the_apps_own_tables_in_config_toml() {
+    let tmp = tempfile::tempdir().unwrap();
+    let endpoint = point_at(&CTX_SHARED, tmp.path());
+    let config = tmp.path().join("config");
+    let text = "sync_interval_minutes = 5\n\n[anthropic]\napi_key = \"x\"\n\n\
+                [workspace]\ndefault = \"a\"\n\n[update]\ncheck = false\n";
+    std::fs::write(config.join("config.toml"), text).unwrap();
+
+    let server = AppServer::new(&CTX_SHARED, "0.0.0").endpoint(endpoint.clone());
+    let task = tokio::spawn(async move { server.run().await });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !sapphire_ipc::probe(&endpoint).await.unwrap() {
+        assert!(!task.is_finished(), "the server stopped: {:?}", task.await);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the server never started listening"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(config.join("config.toml")).unwrap(),
+        text
+    );
+
+    let info = ClientInfo {
+        kind: "test".into(),
+        version: "0.0.0".into(),
+        api: proto::API_VERSION,
+        app_api: None,
+        pid: std::process::id(),
+    };
+    let (client, _) = connect_or_absent(&endpoint, CTX_SHARED.app_name, info)
+        .await
+        .unwrap()
+        .unwrap();
+    let _: serde_json::Value = client
+        .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
 }

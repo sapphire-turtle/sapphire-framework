@@ -90,3 +90,39 @@ fn rejected(errors: &[FieldError]) -> String {
         .collect::<Vec<_>>()
         .join("; ")
 }
+
+/// A TOML parse error of `text` as the line and column it is at and what is wrong, never
+/// the text itself: a settings file may hold an application's tokens beside the settings.
+/// `span` and `message` are the error's own (`toml::de::Error`, `toml_edit::TomlError`).
+pub fn describe_toml_error(
+    text: &str,
+    span: Option<std::ops::Range<usize>>,
+    message: &str,
+) -> String {
+    let message = message.trim();
+    let Some(span) = span else {
+        return message.to_owned();
+    };
+    let before = &text[..span.start.min(text.len())];
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+    format!("line {line}, column {column}: {message}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_toml_error_names_the_place_not_the_text() {
+        let text = "a = 1\ntoken = \"hunter2\" x\n";
+        let err = text.parse::<toml::Table>().unwrap_err();
+        let described = describe_toml_error(text, err.span(), err.message());
+        assert!(described.starts_with("line 2, column "), "{described}");
+        assert!(!described.contains("hunter2"), "{described}");
+        let err = text.parse::<toml_edit::DocumentMut>().unwrap_err();
+        let described = describe_toml_error(text, err.span(), err.message());
+        assert!(described.starts_with("line 2, column "), "{described}");
+        assert!(!described.contains("hunter2"), "{described}");
+    }
+}

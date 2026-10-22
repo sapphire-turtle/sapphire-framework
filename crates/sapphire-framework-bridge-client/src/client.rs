@@ -6,22 +6,22 @@ use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use tokio::sync::broadcast;
 
 use sapphire_bridge_api::{
-    Ack, ApiKey, BRIDGE_DATA_NAME, BRIDGE_NAME, CONFIG_GET, CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET,
-    CONFIG_UNSET, ConfigEntry, ConfigGetParams, ConfigListParams, ConfigListResult,
-    ConfigSchemaResult, ConfigSetParams, ConfigUnsetParams, ConfigWriteResult, DEVICE_PRIORITY_SET,
-    DEVICE_RETIRE, DataHeader, DevicePrioritySetParams, DevicePrioritySetResult,
-    DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET, EMBED_IMAGES, EMBED_INFO,
-    EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS, EXTERNAL_DEVICE_ADD,
-    EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST, EXTERNAL_DEVICE_RESTORE,
-    EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE, EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams,
-    EmbedImagesParams, EmbedInfoResult, EmbedKeySetParams, EmbedModelSetParams, EmbedParams,
-    EmbedRequest, EmbedResult, EmbedSettingsResult, Entry, ExternalDeviceAuthenticateParams,
-    ExternalDeviceAuthenticateResult, ExternalDeviceListResult, ExternalDeviceOutcome,
-    ExternalDeviceRequest, ExternalDeviceSelectParams, GrainId, INVITE, IncomingParams,
-    InviteParams, InviteResult, JOIN, JoinParams, JoinResult, PEERS, PeersResult, REGISTER,
-    RESTART, RegisterParams, RegisterResult, STATUS, Scope, StatusResult, UNREGISTER,
-    UnregisterParams, WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult,
-    WorkspacesResult,
+    Ack, ApiKey, BRIDGE_DATA_NAME, BRIDGE_NAME, BRIDGE_NOT_RUNNING, CONFIG_GET, CONFIG_LIST,
+    CONFIG_SCHEMA, CONFIG_SET, CONFIG_UNSET, ConfigEntry, ConfigGetParams, ConfigListParams,
+    ConfigListResult, ConfigSchemaResult, ConfigSetParams, ConfigUnsetParams, ConfigWriteResult,
+    DEVICE_PRIORITY_SET, DEVICE_RETIRE, DataHeader, DevicePrioritySetParams,
+    DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET,
+    EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
+    EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
+    EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
+    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult,
+    EmbedKeySetParams, EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult,
+    EmbedSettingsResult, Entry, ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult,
+    ExternalDeviceListResult, ExternalDeviceOutcome, ExternalDeviceRequest,
+    ExternalDeviceSelectParams, GrainId, INVITE, IncomingParams, InviteParams, InviteResult, JOIN,
+    JoinParams, JoinResult, PEERS, PeersResult, REGISTER, RESTART, RegisterParams, RegisterResult,
+    STATUS, Scope, StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
+    WorkgroupCreateParams, WorkgroupCreateResult, WorkspacesResult,
 };
 
 /// How many pending incoming announcements a subscriber may fall behind by.
@@ -33,6 +33,8 @@ pub struct BridgeClient {
     client: Arc<Client>,
     incoming: broadcast::Sender<IncomingParams>,
     runtime_dir: std::path::PathBuf,
+    /// Whether `client` reaches the bridge through an app server's relay.
+    relayed: bool,
 }
 
 impl BridgeClient {
@@ -126,12 +128,38 @@ impl BridgeClient {
             client,
             incoming,
             runtime_dir,
+            relayed: false,
+        }
+    }
+
+    /// Wrap a connection to an app server that relays the bridge's methods.
+    ///
+    /// The relay answers [`BRIDGE_NOT_RUNNING`] when no bridge runs; this client reads it
+    /// as [`sapphire_ipc::Error::NotRunning`], as a direct connection's absence is read.
+    pub fn relayed(client: Arc<Client>, runtime_dir: std::path::PathBuf) -> BridgeClient {
+        BridgeClient {
+            relayed: true,
+            ..BridgeClient::from_client(client, runtime_dir)
+        }
+    }
+
+    /// One typed call, with the relay's not-running code mapped back when relayed.
+    async fn call<P, R>(&self, method: &str, params: P) -> sapphire_ipc::Result<R>
+    where
+        P: serde::Serialize,
+        R: serde::de::DeserializeOwned,
+    {
+        match self.client.call(method, params).await {
+            Err(sapphire_ipc::Error::Rpc(e)) if self.relayed && e.code == BRIDGE_NOT_RUNNING => {
+                Err(sapphire_ipc::Error::NotRunning(e.message))
+            }
+            result => result,
         }
     }
 
     /// Announce the workspaces this app server owns.
     pub async fn register(&self, params: RegisterParams) -> sapphire_ipc::Result<RegisterResult> {
-        self.client.call(REGISTER, params).await
+        self.call(REGISTER, params).await
     }
 
     /// Found a workgroup on this host.
@@ -139,7 +167,7 @@ impl BridgeClient {
         &self,
         params: WorkgroupCreateParams,
     ) -> sapphire_ipc::Result<WorkgroupCreateResult> {
-        self.client.call(WORKGROUP_CREATE, params).await
+        self.call(WORKGROUP_CREATE, params).await
     }
 
     /// Retire a device of this host's workgroup.
@@ -147,7 +175,7 @@ impl BridgeClient {
         &self,
         params: DeviceRetireParams,
     ) -> sapphire_ipc::Result<DeviceRetireResult> {
-        self.client.call(DEVICE_RETIRE, params).await
+        self.call(DEVICE_RETIRE, params).await
     }
 
     /// Set a device's election priority.
@@ -155,13 +183,12 @@ impl BridgeClient {
         &self,
         params: DevicePrioritySetParams,
     ) -> sapphire_ipc::Result<DevicePrioritySetResult> {
-        self.client.call(DEVICE_PRIORITY_SET, params).await
+        self.call(DEVICE_PRIORITY_SET, params).await
     }
 
     /// Stop owning one workspace.
     pub async fn unregister(&self, workspace_id: GrainId) -> sapphire_ipc::Result<()> {
         let _: Ack = self
-            .client
             .call(UNREGISTER, UnregisterParams { workspace_id })
             .await?;
         Ok(())
@@ -169,22 +196,22 @@ impl BridgeClient {
 
     /// The workgroup's devices.
     pub async fn peers(&self) -> sapphire_ipc::Result<PeersResult> {
-        self.client.call(PEERS, serde_json::json!({})).await
+        self.call(PEERS, serde_json::json!({})).await
     }
 
     /// What the bridge knows about itself.
     pub async fn status(&self) -> sapphire_ipc::Result<StatusResult> {
-        self.client.call(STATUS, serde_json::json!({})).await
+        self.call(STATUS, serde_json::json!({})).await
     }
 
     /// Which embedding model the bridge serves, if any.
     pub async fn embed_info(&self) -> sapphire_ipc::Result<EmbedInfoResult> {
-        self.client.call(EMBED_INFO, serde_json::json!({})).await
+        self.call(EMBED_INFO, serde_json::json!({})).await
     }
 
     /// Embed `texts` with the bridge's model; one vector per text, in order.
     pub async fn embed(&self, texts: Vec<String>) -> sapphire_ipc::Result<EmbedResult> {
-        self.client.call(EMBED, EmbedParams { texts }).await
+        self.call(EMBED, EmbedParams { texts }).await
     }
 
     /// Embed `images` (each a file's bytes) with the bridge's model; one vector per image,
@@ -193,16 +220,13 @@ impl BridgeClient {
         &self,
         images: &[B],
     ) -> sapphire_ipc::Result<EmbedResult> {
-        self.client
-            .call(EMBED_IMAGES, EmbedImagesParams::new(images))
+        self.call(EMBED_IMAGES, EmbedImagesParams::new(images))
             .await
     }
 
     /// The embedding settings and what they resolve to.
     pub async fn embed_settings(&self) -> sapphire_ipc::Result<EmbedSettingsResult> {
-        self.client
-            .call(EMBED_SETTINGS, serde_json::json!({}))
-            .await
+        self.call(EMBED_SETTINGS, serde_json::json!({})).await
     }
 
     /// Set (`Some`) or clear (`None`) one model slot.
@@ -210,7 +234,7 @@ impl BridgeClient {
         &self,
         params: EmbedModelSetParams,
     ) -> sapphire_ipc::Result<EmbedSettingsResult> {
-        self.client.call(EMBED_MODEL_SET, params).await
+        self.call(EMBED_MODEL_SET, params).await
     }
 
     /// Switch one slot on this device; `None` is auto.
@@ -218,26 +242,22 @@ impl BridgeClient {
         &self,
         params: EmbedDeviceSetParams,
     ) -> sapphire_ipc::Result<EmbedSettingsResult> {
-        self.client.call(EMBED_DEVICE_SET, params).await
+        self.call(EMBED_DEVICE_SET, params).await
     }
 
     /// Store the remote slot's API key on this device.
     pub async fn embed_key_set(&self, key: ApiKey) -> sapphire_ipc::Result<EmbedSettingsResult> {
-        self.client
-            .call(EMBED_KEY_SET, EmbedKeySetParams { key })
-            .await
+        self.call(EMBED_KEY_SET, EmbedKeySetParams { key }).await
     }
 
     /// Remove the remote slot's API key from this device.
     pub async fn embed_key_clear(&self) -> sapphire_ipc::Result<EmbedSettingsResult> {
-        self.client
-            .call(EMBED_KEY_CLEAR, serde_json::json!({}))
-            .await
+        self.call(EMBED_KEY_CLEAR, serde_json::json!({})).await
     }
 
     /// Every setting the bridge knows.
     pub async fn config_schema(&self) -> sapphire_ipc::Result<ConfigSchemaResult> {
-        self.client.call(CONFIG_SCHEMA, serde_json::json!({})).await
+        self.call(CONFIG_SCHEMA, serde_json::json!({})).await
     }
 
     /// The settings' effective values; with a scope, what that scope's file holds.
@@ -245,21 +265,18 @@ impl BridgeClient {
         &self,
         scope: Option<Scope>,
     ) -> sapphire_ipc::Result<ConfigListResult> {
-        self.client
-            .call(CONFIG_LIST, ConfigListParams { scope })
-            .await
+        self.call(CONFIG_LIST, ConfigListParams { scope }).await
     }
 
     /// One setting's effective value. A secret reports only whether it is set.
     pub async fn config_get(&self, key: &str) -> sapphire_ipc::Result<Entry> {
-        self.client
-            .call(
-                CONFIG_GET,
-                ConfigGetParams {
-                    key: key.to_owned(),
-                },
-            )
-            .await
+        self.call(
+            CONFIG_GET,
+            ConfigGetParams {
+                key: key.to_owned(),
+            },
+        )
+        .await
     }
 
     /// Set several settings as one batch; none is written unless all are valid.
@@ -268,8 +285,7 @@ impl BridgeClient {
         scope: Option<Scope>,
         entries: Vec<ConfigEntry>,
     ) -> sapphire_ipc::Result<ConfigWriteResult> {
-        self.client
-            .call(CONFIG_SET, ConfigSetParams { scope, entries })
+        self.call(CONFIG_SET, ConfigSetParams { scope, entries })
             .await
     }
 
@@ -279,14 +295,13 @@ impl BridgeClient {
         scope: Option<Scope>,
         keys: Vec<String>,
     ) -> sapphire_ipc::Result<ConfigWriteResult> {
-        self.client
-            .call(CONFIG_UNSET, ConfigUnsetParams { scope, keys })
+        self.call(CONFIG_UNSET, ConfigUnsetParams { scope, keys })
             .await
     }
 
     /// Ask the bridge to restart, so restart-only settings take effect.
     pub async fn restart(&self) -> sapphire_ipc::Result<Ack> {
-        self.client.call(RESTART, serde_json::json!({})).await
+        self.call(RESTART, serde_json::json!({})).await
     }
 
     /// Carry out one external device management request.
@@ -298,26 +313,25 @@ impl BridgeClient {
         Ok(match request {
             ExternalDeviceRequest::List => {
                 let r: ExternalDeviceListResult = self
-                    .client
                     .call(EXTERNAL_DEVICE_LIST, serde_json::json!({}))
                     .await?;
                 ExternalDeviceOutcome::List(r.external_devices)
             }
-            ExternalDeviceRequest::Add(params) => ExternalDeviceOutcome::WithToken(
-                self.client.call(EXTERNAL_DEVICE_ADD, params).await?,
-            ),
-            ExternalDeviceRequest::Retire(s) => ExternalDeviceOutcome::One(
-                self.client.call(EXTERNAL_DEVICE_RETIRE, select(s)).await?,
-            ),
-            ExternalDeviceRequest::Restore(s) => ExternalDeviceOutcome::One(
-                self.client.call(EXTERNAL_DEVICE_RESTORE, select(s)).await?,
-            ),
+            ExternalDeviceRequest::Add(params) => {
+                ExternalDeviceOutcome::WithToken(self.call(EXTERNAL_DEVICE_ADD, params).await?)
+            }
+            ExternalDeviceRequest::Retire(s) => {
+                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_RETIRE, select(s)).await?)
+            }
+            ExternalDeviceRequest::Restore(s) => {
+                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_RESTORE, select(s)).await?)
+            }
             ExternalDeviceRequest::Rotate(s) => ExternalDeviceOutcome::WithToken(
-                self.client.call(EXTERNAL_DEVICE_ROTATE, select(s)).await?,
+                self.call(EXTERNAL_DEVICE_ROTATE, select(s)).await?,
             ),
-            ExternalDeviceRequest::SetApps(params) => ExternalDeviceOutcome::One(
-                self.client.call(EXTERNAL_DEVICE_SET_APPS, params).await?,
-            ),
+            ExternalDeviceRequest::SetApps(params) => {
+                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_SET_APPS, params).await?)
+            }
         })
     }
 
@@ -327,15 +341,14 @@ impl BridgeClient {
         token: ApiKey,
         app: &str,
     ) -> sapphire_ipc::Result<ExternalDeviceAuthenticateResult> {
-        self.client
-            .call(
-                EXTERNAL_DEVICE_AUTHENTICATE,
-                ExternalDeviceAuthenticateParams {
-                    token,
-                    app: app.to_owned(),
-                },
-            )
-            .await
+        self.call(
+            EXTERNAL_DEVICE_AUTHENTICATE,
+            ExternalDeviceAuthenticateParams {
+                token,
+                app: app.to_owned(),
+            },
+        )
+        .await
     }
 
     /// Carry out one settings request.
@@ -357,17 +370,17 @@ impl BridgeClient {
     /// The bridge composes the ticket, because only the process holding the endpoint knows
     /// the address a joiner must dial.
     pub async fn invite(&self, params: InviteParams) -> sapphire_ipc::Result<InviteResult> {
-        self.client.call(INVITE, params).await
+        self.call(INVITE, params).await
     }
 
     /// Ask the bridge to join the workgroup a ticket names.
     pub async fn join(&self, params: JoinParams) -> sapphire_ipc::Result<JoinResult> {
-        self.client.call(JOIN, params).await
+        self.call(JOIN, params).await
     }
 
     /// The workspaces the workgroup knows about.
     pub async fn workspaces(&self) -> sapphire_ipc::Result<WorkspacesResult> {
-        self.client.call(WORKSPACES, serde_json::json!({})).await
+        self.call(WORKSPACES, serde_json::json!({})).await
     }
 
     /// Announcements that a peer wants a workspace this server owns.
@@ -414,5 +427,64 @@ impl BridgeClient {
         let endpoint = Endpoint::in_dir(BRIDGE_DATA_NAME, self.runtime_dir.clone());
         let raw = sapphire_ipc::connect_raw(&endpoint).await?;
         crate::handshake_data(raw, header).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sapphire_bridge_api::BRIDGE_NOT_RUNNING;
+    use sapphire_ipc::{Connection, Error, ManagedBy, Router, RpcError, ServerInfo, serve};
+
+    /// A connection to a server that answers `bridge.status` as a relay does when no
+    /// bridge runs.
+    async fn relay_without_a_bridge() -> Arc<Client> {
+        let router = Arc::new(Router::new().method(STATUS, |_| async {
+            Err(RpcError {
+                code: BRIDGE_NOT_RUNNING,
+                message: "no sapphire-bridge is running".into(),
+                data: None,
+            })
+        }));
+        let (client_conn, server_conn) = Connection::pair();
+        tokio::spawn(async move {
+            let info = ServerInfo {
+                version: "0.0.0".into(),
+                api: sapphire_bridge_api::API_VERSION,
+                app_api: None,
+                pid: std::process::id(),
+                managed_by: ManagedBy::Spawned,
+            };
+            let _ = serve(server_conn, router, "relay-test", info).await;
+        });
+        let info = ClientInfo {
+            kind: "test".into(),
+            version: "0.0.0".into(),
+            api: sapphire_bridge_api::API_VERSION,
+            app_api: None,
+            pid: std::process::id(),
+        };
+        let (client, _) = Client::handshake(client_conn, "relay-test", info)
+            .await
+            .unwrap();
+        Arc::new(client)
+    }
+
+    #[tokio::test]
+    async fn a_relayed_client_reads_bridge_not_running_as_not_running() {
+        let client = BridgeClient::relayed(relay_without_a_bridge().await, "/unused".into());
+        match client.status().await {
+            Err(Error::NotRunning(m)) => assert_eq!(m, "no sapphire-bridge is running"),
+            other => panic!("expected NotRunning, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_direct_client_keeps_the_code_as_an_rpc_error() {
+        let client = BridgeClient::from_client(relay_without_a_bridge().await, "/unused".into());
+        match client.status().await {
+            Err(Error::Rpc(e)) => assert_eq!(e.code, BRIDGE_NOT_RUNNING),
+            other => panic!("expected Rpc, got {other:?}"),
+        }
     }
 }

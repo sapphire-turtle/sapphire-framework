@@ -11,6 +11,7 @@ keywords = ["ipc", "protocol", "local-first"]
 categories = ["network-programming"]
 
 [dependencies]
+sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.4.0", path = "../sapphire-framework-bridge-api" }
 grain-id.workspace = true
 serde.workspace = true
 

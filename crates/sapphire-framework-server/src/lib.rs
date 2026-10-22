@@ -59,7 +59,7 @@ mod update;
 
 pub use command::{
     AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
-    WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
+    WorkspaceCommand, WorkspaceSyncCommand, render_workspace, render_workspace_show,
 };
 pub use config::{
     HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,

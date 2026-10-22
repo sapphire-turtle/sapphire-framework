@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use sapphire_backend::protocol as proto;
 use sapphire_bridge_api::{
@@ -104,9 +105,13 @@ impl FrameworkCommand {
             FrameworkCommand::Workspace(command) => {
                 command.dispatch(server.app_name(), version).await
             }
-            FrameworkCommand::Workgroup(command) => command.dispatch(version).await,
-            FrameworkCommand::Device(command) => command.dispatch(version).await,
-            FrameworkCommand::Embedding(command) => embedding(command, version).await,
+            FrameworkCommand::Workgroup(command) => {
+                command.dispatch(server.app_name(), version).await
+            }
+            FrameworkCommand::Device(command) => command.dispatch(server.app_name(), version).await,
+            FrameworkCommand::Embedding(command) => {
+                embedding(command, server.app_name(), version).await
+            }
             FrameworkCommand::ExternalDevice(command) => {
                 external_device(command, server.app_name(), version).await
             }
@@ -303,10 +308,12 @@ pub enum WorkgroupCommand {
 
 impl WorkgroupCommand {
     /// Carry out the command, returning the process exit code.
-    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
         match self {
             WorkgroupCommand::Create { name, device_name } => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 let created = client
                     .workgroup_create(WorkgroupCreateParams { name, device_name })
                     .await?;
@@ -317,7 +324,9 @@ impl WorkgroupCommand {
                 Ok(0)
             }
             WorkgroupCommand::List => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 match client.status().await?.workgroup {
                     Some(workgroup) => {
                         println!("{} ({})", workgroup.name, workgroup.workgroup_id);
@@ -333,7 +342,9 @@ impl WorkgroupCommand {
                 ticket,
                 device_name,
             } => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 let joined = client
                     .join(JoinParams {
                         ticket,
@@ -388,10 +399,12 @@ pub enum DeviceCommand {
 
 impl DeviceCommand {
     /// Carry out the command, returning the process exit code.
-    pub async fn dispatch(self, version: &'static str) -> Result<i32> {
+    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
         match self {
             DeviceCommand::List => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 let peers = client.peers().await?;
                 if peers.peers.is_empty() {
                     println!("no devices");
@@ -416,7 +429,9 @@ impl DeviceCommand {
                 ttl,
                 workgroup,
             } => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 let invite = client
                     .invite(InviteParams {
                         name,
@@ -430,7 +445,9 @@ impl DeviceCommand {
                 Ok(0)
             }
             DeviceCommand::Retire { selector } => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 let retired = client
                     .device_retire(DeviceRetireParams { selector })
                     .await?;
@@ -438,7 +455,9 @@ impl DeviceCommand {
                 Ok(0)
             }
             DeviceCommand::Priority { selector, priority } => {
-                let client = connect_running(version).await?;
+                let Some(client) = relayed_bridge(app, version).await? else {
+                    return Ok(1);
+                };
                 match priority {
                     Some(priority) => {
                         let set = client
@@ -469,21 +488,32 @@ impl DeviceCommand {
     }
 }
 
-/// Connect to the running bridge, or fail with the message the command layer prints.
+/// The bridge, through `app`'s server, or `None` after saying no server is running.
 ///
-/// One wrapper for every arm that talks to the bridge: the error's text is what the
-/// `main` prints, so the absence case reads "no sapphire-bridge is running" without each
-/// arm repeating it.
-async fn connect_running(version: &str) -> Result<BridgeClient> {
-    BridgeClient::connect_running("cli", version)
-        .await
-        .map_err(Error::from)
+/// The app's server relays the bridge's client-facing methods, so the CLI holds one
+/// connection, to the app, whichever bridge answers behind it. The bridge being absent
+/// surfaces on the first call as the error whose text the `main` prints: "no
+/// sapphire-bridge is running".
+async fn relayed_bridge(app: &str, version: &str) -> Result<Option<BridgeClient>> {
+    let Some(client) = connect_app(app, version).await? else {
+        return Ok(None);
+    };
+    Ok(Some(BridgeClient::relayed(
+        Arc::new(client),
+        sapphire_ipc::runtime_dir()?,
+    )))
 }
 
-/// `embedding …`: always through the running bridge, whose files these are.
-async fn embedding(command: sapphire_bridge_api::EmbeddingCommand, version: &str) -> Result<i32> {
-    // Connect first: `key set` asks for the key, which is pointless with no bridge to take it.
-    let client = connect_running(version).await?;
+/// `embedding …`: always through the app's server, to the bridge whose files these are.
+async fn embedding(
+    command: sapphire_bridge_api::EmbeddingCommand,
+    app: &str,
+    version: &str,
+) -> Result<i32> {
+    // Connect first: `key set` asks for the key, which is pointless with no server to take it.
+    let Some(client) = relayed_bridge(app, version).await? else {
+        return Ok(1);
+    };
     let request = command.request()?;
     let report = client.embed_request(request).await?;
     for line in sapphire_bridge_api::describe(&report) {
@@ -492,13 +522,15 @@ async fn embedding(command: sapphire_bridge_api::EmbeddingCommand, version: &str
     Ok(0)
 }
 
-/// `external-device …`: always through the running bridge, which owns the ledger.
+/// `external-device …`: always through the app's server, to the bridge that owns the ledger.
 async fn external_device(
     command: sapphire_bridge_api::ExternalDeviceCommand,
     app: &str,
     version: &str,
 ) -> Result<i32> {
-    let client = connect_running(version).await?;
+    let Some(client) = relayed_bridge(app, version).await? else {
+        return Ok(1);
+    };
     let outcome = client
         .external_device_request(command.request(Some(app)))
         .await?;
@@ -808,26 +840,44 @@ async fn workspace_show(app: &'static str, version: &'static str) -> Result<i32>
         return Ok(1);
     };
     let mut out = String::new();
-    let code = render_workspace(&client, &mut out).await?;
+    let code = render_workspace_show(Arc::new(client), app, &mut out).await?;
     for line in out.lines() {
         println!("{line}");
     }
+    Ok(code)
+}
 
-    let Some(client) = BridgeClient::connect_running("cli", version).await.ok() else {
-        println!("no sapphire-bridge is running");
-        return Ok(code);
+/// [`workspace_show`]'s text, over one connection to the app's server.
+///
+/// The workgroup half goes through the same connection, relayed to the bridge. Public so
+/// the integration tests can capture it.
+pub async fn render_workspace_show(
+    client: Arc<sapphire_ipc::Client>,
+    app: &str,
+    out: &mut String,
+) -> Result<i32> {
+    let code = render_workspace(&client, out).await?;
+    let bridge = BridgeClient::relayed(client, sapphire_ipc::runtime_dir()?);
+    let workspaces = match bridge.workspaces().await {
+        Ok(workspaces) => workspaces,
+        Err(sapphire_ipc::Error::NotRunning(_)) => {
+            writeln!(out, "no sapphire-bridge is running")
+                .expect("writing to a String cannot fail");
+            return Ok(code);
+        }
+        Err(error) => return Err(error.into()),
     };
-    let workspaces = client.workspaces().await.map_err(Error::from)?;
     let mine: Vec<_> = workspaces
         .workspaces
         .into_iter()
         .filter(|w| w.app_name == app)
         .collect();
     if !mine.is_empty() {
-        println!();
-        println!("in the workgroup:");
+        writeln!(out).expect("writing to a String cannot fail");
+        writeln!(out, "in the workgroup:").expect("writing to a String cannot fail");
         for workspace in mine {
-            println!("{} {}", workspace.name, workspace.workspace_id);
+            writeln!(out, "{} {}", workspace.name, workspace.workspace_id)
+                .expect("writing to a String cannot fail");
         }
     }
     Ok(code)

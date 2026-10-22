@@ -1,6 +1,6 @@
 //! What a handler offers on `subscriptions/listen`.
 
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig, SubscriptionFilter};
+use rmcp::model::{ServerCapabilities, ServerConfig, SubscriptionFilter};
 
 use crate::context::ToolContext;
 
@@ -21,7 +21,8 @@ impl Subscriptions {
         Subscriptions::default()
     }
 
-    /// Offer updates to the resource at `uri` too.
+    /// Offer updates to the resource at `uri` too. The handler serves the resource as well
+    /// (`list_resources`, `read_resource`): the capabilities say it has resources.
     pub fn resource(mut self, uri: impl Into<String>) -> Self {
         self.resources.push(uri.into());
         self
@@ -56,17 +57,10 @@ impl Subscriptions {
     }
 
     /// [`server_info`](crate::server_info)'s name, version and instructions, with these
-    /// capabilities.
+    /// capabilities: what a handler that answers `subscriptions/listen` returns from
+    /// `get_info`.
     pub fn server_info(&self, ctx: &ToolContext) -> ServerConfig {
-        ServerConfig::new(self.capabilities())
-            .with_server_info(Implementation::new(ctx.app(), ctx.version()))
-            .with_instructions(format!(
-                "Tools of {app}, a local-first application whose data is a workspace of \
-                 plain-text files on this host. Paths are relative to the workspace root; \
-                 `workspace_show` says which workspace that is. The {app} server must be \
-                 running.",
-                app = ctx.app()
-            ))
+        crate::server::describe(ctx, self.capabilities())
     }
 }
 

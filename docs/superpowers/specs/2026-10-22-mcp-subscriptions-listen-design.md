@@ -74,10 +74,11 @@ impl Subscriptions {
 - `accept` is `requested` ∩ the offer: `tools_list_changed`, `resources_list_changed` when
   resources are offered, and the requested URIs that are on the list. Never `None`, so
   `subscriptions/listen` is always implemented.
-- `server_info(ctx)` is `Subscriptions::new().server_info(ctx)`, so it now advertises
-  `tools.listChanged`. An application that offers resources returns
-  `subs.server_info(&ctx)` instead (rmcp's `ServerConfig` has no capabilities setter; the
-  field is public, and this sets it).
+- `server_info(ctx)` keeps advertising tools without `listChanged`: an application whose
+  handler returns it and does not yet delegate `listen` would otherwise promise changes it
+  answers with -32601. A handler that answers `subscriptions/listen` returns
+  `subs.server_info(&ctx)` (rmcp's `ServerConfig` has no capabilities setter; the field is
+  public, and this sets it). `FrameworkServer` does.
 
 ### 3. `listen(ctx, subscription)`
 

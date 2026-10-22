@@ -3,8 +3,8 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams, ServerConfig,
-    SubscriptionFilter, Tool,
+    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, SubscriptionFilter, Tool,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -14,13 +14,25 @@ use crate::subscriptions::Subscriptions;
 use crate::tools::framework_tools;
 
 /// What an application's MCP server says about itself: its name and version, that it has
-/// tools whose list a `subscriptions/listen` may follow, and instructions naming the
-/// workspace they act on.
+/// tools, and instructions naming the workspace they act on.
 ///
-/// An application's own handler returns this from `get_info`, or starts from it; one that
-/// offers resources on `subscriptions/listen` returns [`Subscriptions::server_info`] instead.
+/// An application's own handler returns this from `get_info`, or starts from it. It promises
+/// no `subscriptions/listen`: a handler that answers one returns
+/// [`Subscriptions::server_info`] instead, which says what it may be told.
 pub fn server_info(ctx: &ToolContext) -> ServerConfig {
-    Subscriptions::new().server_info(ctx)
+    describe(ctx, ServerCapabilities::builder().enable_tools().build())
+}
+
+/// [`server_info`] with `capabilities`.
+pub(crate) fn describe(ctx: &ToolContext, capabilities: ServerCapabilities) -> ServerConfig {
+    ServerConfig::new(capabilities)
+        .with_server_info(Implementation::new(ctx.app(), ctx.version()))
+        .with_instructions(format!(
+            "Tools of {app}, a local-first application whose data is a workspace of plain-text \
+             files on this host. Paths are relative to the workspace root; `workspace_show` \
+             says which workspace that is. The {app} server must be running.",
+            app = ctx.app()
+        ))
 }
 
 /// An MCP handler with the framework's tools ([`framework_tools`]) and nothing else; a
@@ -85,5 +97,35 @@ impl ServerHandler for FrameworkServer {
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tools.get(name).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> ToolContext {
+        let endpoint = sapphire_ipc::Endpoint::in_dir("sapphire-test", std::env::temp_dir());
+        ToolContext::dial("sapphire-test", "0.0.0", None, endpoint)
+    }
+
+    /// An application whose handler returns `server_info` and does not answer
+    /// `subscriptions/listen` must not promise tool list changes it never sends.
+    #[test]
+    fn server_info_promises_no_list_changes() {
+        let tools = server_info(&ctx())
+            .capabilities
+            .tools
+            .expect("tools advertised");
+        assert_ne!(tools.list_changed, Some(true));
+    }
+
+    #[test]
+    fn the_framework_server_promises_tool_list_changes() {
+        let info = FrameworkServer::new(ctx()).get_info();
+        assert_eq!(
+            info.capabilities.tools.and_then(|t| t.list_changed),
+            Some(true)
+        );
     }
 }

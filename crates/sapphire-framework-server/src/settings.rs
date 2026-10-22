@@ -573,18 +573,7 @@ impl Settings {
         let files = SettingsFiles::with_selection(ctx, selection)?;
         migrate(&files.config_dir)?;
         let registry = registry(ctx, &files, Arc::clone(&app))?;
-        let mut errors = Vec::new();
-        for result in [
-            check_device_file(&files, &Staged::default()),
-            app.validate(&Staged::default()),
-        ] {
-            if let Err(e) = result {
-                errors.extend(e);
-            }
-        }
-        if !errors.is_empty() {
-            return Err(sapphire_framework_settings::Error::Rejected(errors).into());
-        }
+        startup_check(&files, &*app)?;
         let values = read(&registry)?;
         let start = StartState::capture(&registry)?;
         Ok(Settings {
@@ -690,6 +679,40 @@ impl Settings {
     pub(crate) fn start(&self) -> &StartState {
         &self.inner.start
     }
+}
+
+/// The checks a server runs on the files as they are before it starts: the device file's
+/// framework part and the application's `validate`.
+fn startup_check(files: &SettingsFiles, app: &dyn AppSettings) -> Result<()> {
+    let mut errors = Vec::new();
+    for result in [
+        check_device_file(files, &Staged::default()),
+        app.validate(&Staged::default()),
+    ] {
+        if let Err(e) = result {
+            errors.extend(e);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(sapphire_framework_settings::Error::Rejected(errors).into())
+    }
+}
+
+/// `ctx`'s registry, `server.toml` migrated, with the outcome of the checks a starting
+/// server runs kept apart rather than failing: for the offline `config`, which must be able
+/// to repair a file those checks refuse. A write still goes through the owners' checks of
+/// the edited files.
+pub(crate) fn open_unchecked(
+    ctx: &AppContext,
+    app: Arc<dyn AppSettings>,
+) -> Result<(Registry, Result<()>)> {
+    let files = SettingsFiles::with_selection(ctx, SelectionFile::for_app(ctx))?;
+    migrate(&files.config_dir)?;
+    let registry = registry(ctx, &files, Arc::clone(&app))?;
+    let checked = startup_check(&files, &*app);
+    Ok((registry, checked))
 }
 
 /// Every key's effective value, secrets and unset keys left out.

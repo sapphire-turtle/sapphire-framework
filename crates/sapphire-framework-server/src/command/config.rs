@@ -18,7 +18,7 @@ use sapphire_ipc::{ClientInfo, Endpoint};
 use sapphire_workspace::AppContext;
 
 use crate::error::{Error, Result};
-use crate::settings::{AppSettings, Settings};
+use crate::settings::AppSettings;
 
 /// `config …`: the settings, by key.
 #[derive(Debug, clap::Subcommand)]
@@ -344,9 +344,11 @@ impl Printed {
 /// Carry out `command` on `ctx`'s application's files, with `owner`'s settings beside the
 /// framework's: what to print, and the exit code.
 ///
-/// The files are opened as the server opens them — `server.toml` migrated first, the
-/// device file and the application's files checked — so a file the server would refuse is
-/// refused here too, by name. `bridge_running` says which line `list` ends with.
+/// The files are opened as the server opens them — `server.toml` migrated first — but the
+/// checks a starting server runs do not stop the command, so it can repair a file the
+/// server refuses: `list` and `get` answer and add the checks' error as a warning, and a
+/// write is accepted when the edited files pass the owners' checks. A file that does not
+/// parse at all is an error naming it. `bridge_running` says which line `list` ends with.
 fn offline(
     ctx: &'static AppContext,
     owner: Arc<dyn AppSettings>,
@@ -363,8 +365,19 @@ fn offline(
             "the {app} server is not running; nothing to restart"
         )));
     }
-    let settings = Settings::load(ctx, owner)?;
-    let reg = settings.registry();
+    let (reg, checked) = crate::settings::open_unchecked(ctx, owner)?;
+    let reg = &reg;
+    // Read-only commands answer anyway, saying what a starting server would refuse.
+    let warning = match (&command, checked) {
+        (AppConfigCommand::List { .. } | AppConfigCommand::Get { .. }, Err(e)) => {
+            Some(format!("warning: the {app} server would not start: {e}"))
+        }
+        _ => None,
+    };
+    let warned = |mut printed: Printed| {
+        printed.err.splice(0..0, warning.clone());
+        printed
+    };
     let bridge_key = |key: &str| {
         Printed::failed(format!(
             "the {app} server is not running; start it, or use sapphire-bridge config for {key}"
@@ -391,19 +404,16 @@ fn offline(
                     BRIDGE_NOT_SHOWN.to_owned()
                 });
             }
-            Ok(Printed::ok(out))
+            Ok(warned(Printed::ok(out)))
         }
         AppConfigCommand::Get { key } => {
             if reg.def(&key).is_err() {
-                return Ok(bridge_key(&key));
+                return Ok(warned(bridge_key(&key)));
             }
-            match get(reg, &key) {
-                Ok(entry) => Ok(Printed::ok(sapphire_bridge_api::describe_entries(
-                    &[entry],
-                    false,
-                ))),
-                Err(err) => Ok(Printed::failed(err.to_string())),
-            }
+            Ok(warned(match get(reg, &key) {
+                Ok(entry) => Printed::ok(sapphire_bridge_api::describe_entries(&[entry], false)),
+                Err(err) => Printed::failed(err.to_string()),
+            }))
         }
         AppConfigCommand::Set {
             entries,

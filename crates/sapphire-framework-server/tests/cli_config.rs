@@ -423,11 +423,65 @@ async fn offline_config_reports_an_unparsable_file() {
         "this is = = not toml\n"
     );
 
-    // A file that parses but holds what the framework does not know is named too.
+    // A file that parses but holds what the framework does not know is still listed,
+    // with a warning naming the file.
     std::fs::write(&file, "[http]\nnope = 1\n").unwrap();
     let run = host.cli(&["config", "list"], None).await;
-    assert_ne!(run.code, 0, "{run:?}");
+    assert_ok(&run);
     assert!(run.err.contains(&file.display().to_string()), "{run:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offline_config_repairs_a_file_the_server_refuses() {
+    let host = Host::new();
+    let file = host.config_dir().join("config.toml");
+    std::fs::write(
+        &file,
+        "# mine\nsync_interval_minutes = 5\n\n[http]\nlisten = 5\n",
+    )
+    .unwrap();
+
+    // `serve` refuses it.
+    let serve = tokio::time::timeout(
+        DEADLINE,
+        host.command(&["serve"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await
+    .expect("serve gave up in time")
+    .unwrap();
+    assert!(!serve.status.success(), "{serve:?}");
+    assert!(
+        String::from_utf8_lossy(&serve.stderr).contains("http.listen"),
+        "{serve:?}"
+    );
+
+    // `list` and `get` still answer, warning about the file on stderr.
+    let list = host.cli(&["config", "list"], None).await;
+    assert_ok(&list);
+    assert!(list.out.contains("update.check"), "{list:?}");
+    assert!(
+        list.err.contains("warning") && list.err.contains(&file.display().to_string()),
+        "{list:?}"
+    );
+    let get = host.cli(&["config", "get", "http.listen"], None).await;
+    assert_ok(&get);
+    assert!(get.err.contains("warning"), "{get:?}");
+
+    // A write that leaves the file wrong is refused; one that fixes it goes through.
+    let wrong = host
+        .cli(&["config", "set", "update.check=false"], None)
+        .await;
+    assert_ne!(wrong.code, 0, "{wrong:?}");
+    let fix = host.cli(&["config", "unset", "http.listen"], None).await;
+    assert_ok(&fix);
+    assert!(fix.err.is_empty(), "{fix:?}");
+    assert_eq!(device_file(&host), "# mine\nsync_interval_minutes = 5\n");
+
+    let mut server = host.serve().await;
+    server.kill().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

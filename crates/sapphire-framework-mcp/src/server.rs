@@ -4,9 +4,9 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams,
-    ServerConfig, Tool,
+    ServerConfig, SubscriptionFilter, Tool,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 use crate::context::ToolContext;
@@ -23,11 +23,13 @@ pub fn server_info(ctx: &ToolContext) -> ServerConfig {
     Subscriptions::new().server_info(ctx)
 }
 
-/// An MCP handler with the framework's tools ([`framework_tools`]) and nothing else.
+/// An MCP handler with the framework's tools ([`framework_tools`]) and nothing else; a
+/// `subscriptions/listen` on it follows changes to the tool list.
 #[derive(Clone, Debug)]
 pub struct FrameworkServer {
     ctx: ToolContext,
     tools: ToolRouter<FrameworkServer>,
+    subs: Subscriptions,
 }
 
 impl FrameworkServer {
@@ -36,6 +38,7 @@ impl FrameworkServer {
         FrameworkServer {
             ctx,
             tools: framework_tools(),
+            subs: Subscriptions::new(),
         }
     }
 }
@@ -48,7 +51,18 @@ impl AsRef<ToolContext> for FrameworkServer {
 
 impl ServerHandler for FrameworkServer {
     fn get_info(&self) -> ServerConfig {
-        server_info(&self.ctx)
+        self.subs.server_info(&self.ctx)
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        Some(self.subs.accept(requested))
+    }
+
+    async fn listen(&self, subscription: SubscriptionContext) -> Result<(), ErrorData> {
+        crate::listen(&self.ctx, subscription).await
     }
 
     async fn call_tool(

@@ -25,12 +25,15 @@
 //! [`ToolContext`] and adds the framework's tools to its router:
 //!
 //! ```rust,ignore
-//! use sapphire_framework::mcp::{self, ToolContext};
+//! use sapphire_framework::mcp::{self, Subscriptions, ToolContext};
 //! use sapphire_framework::mcp::rmcp::{self, handler::server::router::tool::ToolRouter, tool, tool_handler, tool_router};
+//! use sapphire_framework::mcp::rmcp::model::SubscriptionFilter;
+//! use sapphire_framework::mcp::rmcp::service::SubscriptionContext;
 //!
 //! #[derive(Clone)]
 //! struct LedgerTools {
 //!     ctx: ToolContext,
+//!     subs: Subscriptions,
 //!     tool_router: ToolRouter<LedgerTools>,
 //! }
 //!
@@ -42,7 +45,7 @@
 //! impl LedgerTools {
 //!     fn new(ctx: ToolContext) -> Self {
 //!         let tool_router = Self::tool_router() + mcp::framework_tools();
-//!         LedgerTools { ctx, tool_router }
+//!         LedgerTools { ctx, subs: Subscriptions::new(), tool_router }
 //!     }
 //!
 //!     #[tool(description = "List the accounts")]
@@ -56,12 +59,24 @@
 //!
 //! #[tool_handler]
 //! impl rmcp::ServerHandler for LedgerTools {
-//!     fn get_info(&self) -> rmcp::model::ServerConfig { mcp::server_info(&self.ctx) }
+//!     fn get_info(&self) -> rmcp::model::ServerConfig { self.subs.server_info(&self.ctx) }
+//!
+//!     // `subscriptions/listen`: the client hears what `ctx.notify_*` announces.
+//!     fn accepted_subscription_filter(&self, requested: &SubscriptionFilter) -> Option<SubscriptionFilter> {
+//!         Some(self.subs.accept(requested))
+//!     }
+//!     async fn listen(&self, subscription: SubscriptionContext) -> Result<(), rmcp::ErrorData> {
+//!         mcp::listen(&self.ctx, subscription).await
+//!     }
 //! }
 //!
 //! // Handed to the app server, which serves it on stdio (`mcp`) and at `/mcp`:
 //! AppServer::new(&CTX, VERSION).mcp(McpService::new(LedgerTools::new));
 //! ```
+//!
+//! A handler with a need of its own — a resource each client has its own of, say — writes its
+//! own `listen` instead, and may still take its capabilities and filter from
+//! [`Subscriptions`].
 //!
 //! The `rmcp` macros name the `rmcp` crate directly, so an application using them depends
 //! on `rmcp` itself, at the version re-exported here.
@@ -71,6 +86,7 @@
 mod change;
 mod context;
 mod error;
+mod listen;
 mod server;
 mod service;
 mod subscriptions;
@@ -78,6 +94,7 @@ mod tools;
 
 pub use context::ToolContext;
 pub use error::{Error, Result};
+pub use listen::listen;
 pub use server::{FrameworkServer, server_info};
 pub use service::{LOOPBACK_HOSTS, McpService};
 pub use subscriptions::Subscriptions;

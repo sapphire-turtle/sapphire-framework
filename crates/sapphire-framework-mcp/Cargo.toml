@@ -23,4 +23,5 @@ tokio-util = { version = "0.7", default-features = false }
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "net", "time"] }

@@ -59,11 +59,18 @@ pub(crate) fn request(restart: Option<Arc<Notify>>) -> std::result::Result<(), R
 /// read again from there before the server runs, and later rounds read them from there
 /// straight away.
 ///
+/// `build` runs once per round and must make everything the server owns afresh — a
+/// [`SyncRuntime`](crate::sync::SyncRuntime) above all, through
+/// [`AppServer::sync_via_bridge`] or one built inside `build`: a server stops what it was
+/// given when it stops, so a runtime made once outside `build` and handed to every round is
+/// stopped after the first.
+///
 /// The process stays: its pid, the IPC listener (bound once and never rebound — on Windows
 /// a pipe name lives while any client holds an instance of it, so binding anew would fail
 /// while clients of the old server are connected), the log, and whatever the caller holds
 /// around this call, such as the instance lock. Returns when a server stops for good, or
-/// when reading the settings, a bind or a run fails.
+/// when reading the settings, a bind or a run fails; a failure after a restart is logged as
+/// `restart failed: …` first, since no client is left to hear of it.
 ///
 /// ```rust,ignore
 /// serve_restarting(&CTX, MyOwner, |settings: &Settings| {
@@ -79,24 +86,60 @@ where
     // Held across every round, so a restart neither drops nor reopens the log file; its
     // drop flushes the last lines when the server stops for good.
     let _log = sapphire_workspace::logging::install(ctx)?;
-    let owner: Arc<dyn AppSettings> = Arc::new(owner);
-    // The selection file the settings' workspace scope is read from: the default one
-    // until a built server names its own.
-    let mut selection: Option<PathBuf> = None;
-    let mut listener: Option<(Endpoint, sapphire_ipc::Listener)> = None;
-    // One SIGTERM stream for every round: a signal that arrives while one server winds down
-    // is queued here and stops the next, where a stream of each round's own would miss it
-    // and leave the service manager waiting to kill the process.
-    let mut sigterm: Option<Sigterm> = None;
+    let mut rounds = Rounds {
+        ctx,
+        owner: Arc::new(owner),
+        selection: None,
+        listener: None,
+        sigterm: None,
+    };
+    let mut restarted = false;
     loop {
+        match rounds.serve(&build).await {
+            Ok(Exit::Stopped) => return Ok(()),
+            Ok(Exit::Restart) => {
+                tracing::info!("restarting (requested over IPC)");
+                restarted = true;
+            }
+            Err(err) => {
+                if restarted {
+                    tracing::error!("restart failed: {err}");
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
+/// What [`serve_restarting`] keeps from one round to the next.
+struct Rounds {
+    ctx: &'static AppContext,
+    owner: Arc<dyn AppSettings>,
+    /// The selection file the settings' workspace scope is read from: the default one
+    /// until a built server names its own.
+    selection: Option<PathBuf>,
+    listener: Option<(Endpoint, sapphire_ipc::Listener)>,
+    /// One SIGTERM stream for every round: a signal that arrives while one server winds
+    /// down is queued here and stops the next, where a stream of each round's own would
+    /// miss it and leave the service manager waiting to kill the process.
+    sigterm: Option<Sigterm>,
+}
+
+impl Rounds {
+    /// Read the settings, build a server and serve it until it stops or restarts.
+    async fn serve<F>(&mut self, build: &F) -> Result<Exit>
+    where
+        F: Fn(&Settings) -> AppServer,
+    {
+        let ctx = self.ctx;
         let load = |selection: &Option<PathBuf>| {
             Settings::load_with(
                 ctx,
-                Arc::clone(&owner),
+                Arc::clone(&self.owner),
                 selection_at(ctx, selection.clone()),
             )
         };
-        let mut settings = load(&selection)?;
+        let mut settings = load(&self.selection)?;
         let mut server = build(&settings);
         if !std::ptr::eq(server.ctx, ctx) {
             return Err(Error::Config(format!(
@@ -104,38 +147,38 @@ where
                 server.ctx.app_name, ctx.app_name
             )));
         }
-        if server.selection_file != selection {
-            selection = server.selection_file.clone();
-            settings = load(&selection)?;
+        if server.selection_file != self.selection {
+            self.selection = server.selection_file.clone();
+            settings = load(&self.selection)?;
         }
         server.settings = Some(settings);
 
-        if server.signals && sigterm.is_none() {
+        if server.signals && self.sigterm.is_none() {
             // Before the bind, so a SIGTERM arriving the instant the socket is up cannot
             // fall through to the default handler and kill the process.
-            sigterm = Sigterm::register()?;
+            self.sigterm = Sigterm::register()?;
         }
         let endpoint = server.endpoint_or_default()?;
-        if listener
+        if self
+            .listener
             .as_ref()
             .is_none_or(|(bound, _)| *bound != endpoint)
         {
             // Let go of a listener bound elsewhere before binding anew.
-            drop(listener.take());
+            drop(self.listener.take());
             #[cfg(unix)]
             let bound = sapphire_ipc::bind(&endpoint).await?;
             #[cfg(windows)]
             let bound = sapphire_ipc::bind(&endpoint)?;
-            listener = Some((endpoint, bound));
+            self.listener = Some((endpoint, bound));
         }
-        let (_, bound) = listener.as_mut().expect("bound above");
+        let (_, bound) = self.listener.as_mut().expect("bound above");
 
         // A fresh one each round: a second `server.restart` to one server must not leave a
         // permit that restarts the next the moment it starts.
         let restart = Arc::new(Notify::new());
-        match server.serve_on(bound, Some(restart), &mut sigterm).await? {
-            Exit::Stopped => return Ok(()),
-            Exit::Restart => tracing::info!("restarting (requested over IPC)"),
-        }
+        server
+            .serve_on(bound, Some(restart), &mut self.sigterm)
+            .await
     }
 }

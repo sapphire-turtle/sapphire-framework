@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use grain_id::GrainId;
 use sapphire_bridge_api::{DataAck, DataHeader, INCOMING, IncomingParams, ManagedBy};
-use sapphire_ipc::{Endpoint, RawStream};
+use sapphire_ipc::RawStream;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::Bridge;
@@ -199,12 +199,10 @@ where
 ///
 /// Each connection is dispatched on its own task, so one long relay does not delay the
 /// streams queued behind it.
-pub(crate) async fn listen(bridge: Arc<Bridge>, endpoint: Endpoint) -> Result<()> {
-    #[cfg(unix)]
-    let listener = sapphire_ipc::bind(&endpoint).await?;
-    #[cfg(windows)]
-    let mut listener = sapphire_ipc::bind(&endpoint)?;
-
+pub(crate) async fn listen(
+    bridge: Arc<Bridge>,
+    listener: &mut sapphire_ipc::Listener,
+) -> Result<()> {
     loop {
         let stream = listener.accept_raw().await?;
         let serving = Arc::clone(&bridge);

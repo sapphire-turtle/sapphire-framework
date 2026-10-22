@@ -24,9 +24,7 @@ use sapphire_bridge_api::{
     WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult, WorkgroupStatus,
     WorkgroupWorkspaceInfo, WorkspaceRoles, WorkspacesResult,
 };
-use sapphire_ipc::{
-    Connection, Endpoint, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve,
-};
+use sapphire_ipc::{Connection, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve};
 use serde_json::Value;
 
 use sapphire_framework_settings::{self as settings, Op};
@@ -139,17 +137,12 @@ impl Session {
 /// reply is flushed before the connection closes.
 const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Serve control connections until the listener fails.
+/// Serve control connections on `listener` until it fails.
 pub(crate) async fn listen(
     bridge: Arc<Bridge>,
-    endpoint: Endpoint,
+    listener: &mut sapphire_ipc::Listener,
     info: ServerInfo,
 ) -> Result<()> {
-    #[cfg(unix)]
-    let listener = sapphire_ipc::bind(&endpoint).await?;
-    #[cfg(windows)]
-    let mut listener = sapphire_ipc::bind(&endpoint)?;
-
     loop {
         let conn = listener.accept().await?;
         // On the bridge's own task set: a restart ends every connection, so a connected

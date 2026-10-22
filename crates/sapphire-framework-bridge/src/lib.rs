@@ -143,6 +143,36 @@ pub struct Bridge {
     /// connections, workgroup sessions, Hello links. Aborted when the loops end, so nothing
     /// of an old bridge keeps serving (or keeps it alive) after a restart.
     tasks: Mutex<tokio::task::JoinSet<()>>,
+    /// The control and data listeners. A bridge of its own binds them; under
+    /// [`serve_restarting`] every bridge borrows the same ones, so a restart never rebinds:
+    /// on Windows a pipe name lives as long as any client still holds an instance of it,
+    /// and binding it anew would fail while clients of the old bridge are connected.
+    listeners: Arc<Listeners>,
+}
+
+/// The listeners a bridge serves on, with the endpoints they were bound to.
+#[derive(Default)]
+pub(crate) struct Listeners {
+    control: tokio::sync::Mutex<Option<(Endpoint, sapphire_ipc::Listener)>>,
+    data: tokio::sync::Mutex<Option<(Endpoint, sapphire_ipc::Listener)>>,
+}
+
+/// Make `slot` hold a listener bound to `endpoint`: the one already there when it is bound
+/// to the same endpoint, a new one otherwise.
+async fn ensure_bound(
+    slot: &mut Option<(Endpoint, sapphire_ipc::Listener)>,
+    endpoint: &Endpoint,
+) -> Result<()> {
+    if slot.as_ref().is_some_and(|(bound, _)| bound == endpoint) {
+        return Ok(());
+    }
+    *slot = None;
+    #[cfg(unix)]
+    let listener = sapphire_ipc::bind(endpoint).await?;
+    #[cfg(windows)]
+    let listener = sapphire_ipc::bind(endpoint)?;
+    *slot = Some((endpoint.clone(), listener));
+    Ok(())
 }
 
 /// Why [`Bridge::run`] returned.
@@ -169,8 +199,11 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<Bridge>>,
 {
+    let listeners = Arc::new(Listeners::default());
     loop {
-        match build().await?.run().await? {
+        let mut bridge = build().await?;
+        bridge.listeners = Arc::clone(&listeners);
+        match bridge.run().await? {
             Exit::Stopped => return Ok(()),
             Exit::Restart => {
                 tracing::info!(target: BRIDGE_TARGET, "restarting (requested over IPC)");
@@ -214,6 +247,7 @@ impl Bridge {
             settings_write: Mutex::new(()),
             restart: tokio::sync::Notify::new(),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
+            listeners: Arc::default(),
         })
     }
 
@@ -411,13 +445,23 @@ impl Bridge {
             tracing::warn!("could not read the embedding settings: {err}");
         }
 
+        // Held for as long as the loops run, and left in place when they end: the next
+        // bridge of a restart serves on the same ones.
+        let listeners = Arc::clone(&bridge.listeners);
+        let mut control_listener = listeners.control.lock().await;
+        let mut data_listener = listeners.data.lock().await;
+        ensure_bound(&mut control_listener, &control_endpoint).await?;
+        ensure_bound(&mut data_listener, &data_endpoint).await?;
+        let (_, control_listener) = control_listener.as_mut().expect("bound");
+        let (_, data_listener) = data_listener.as_mut().expect("bound");
+
         // The loops run until one fails; none ends with `Ok` on its own, and one that did
         // would mean this bridge has stopped.
         let stopped = |result: Result<()>| result.map(|()| Exit::Stopped);
         let result = tokio::select! {
-            result = control::listen(Arc::clone(&bridge), control_endpoint, info) => stopped(result),
+            result = control::listen(Arc::clone(&bridge), control_listener, info) => stopped(result),
             result = Arc::clone(&bridge).watch_embed_settings() => stopped(result),
-            result = data::listen(Arc::clone(&bridge), data_endpoint) => stopped(result),
+            result = data::listen(Arc::clone(&bridge), data_listener) => stopped(result),
             result = hello::run(Arc::clone(&bridge)) => stopped(result),
             result = availability::run(Arc::clone(&bridge)) => stopped(result),
             result = data::inbound(Arc::clone(&bridge), net) => stopped(result),

@@ -109,11 +109,11 @@ pub const RECONNECT_BACKOFF: std::time::Duration = std::time::Duration::from_mil
 /// bridge: a bridge that comes up is found within this long.
 pub const RECONNECT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The wait before reconnection attempt `attempt` (0-based).
-fn reconnect_backoff(attempt: u32) -> std::time::Duration {
-    RECONNECT_BACKOFF
+/// The wait before reconnection attempt `attempt` (0-based), backing off from `first`.
+fn reconnect_backoff(first: std::time::Duration, attempt: u32) -> std::time::Duration {
+    first
         .saturating_mul(1u32 << attempt.min(16))
-        .min(RECONNECT_BACKOFF_MAX)
+        .min(RECONNECT_BACKOFF_MAX.max(first))
 }
 
 /// What a connection attempt to the bridge yields.
@@ -198,6 +198,9 @@ pub struct SyncRuntime {
     bridge: tokio::sync::watch::Sender<Option<Arc<BridgeClient>>>,
     /// How to reach the bridge again; `None` for a runtime given one connection to use.
     connector: Option<BridgeConnector>,
+    /// Woken by [`reconnect_now`](SyncRuntime::reconnect_now): someone wants the bridge
+    /// now, so [`keep_connected`](SyncRuntime::keep_connected) cuts its backoff short.
+    reconnect_now: tokio::sync::Notify,
     /// Workspaces asked to sync while the bridge was away, with their ids. Enabled once
     /// it is back.
     ///
@@ -272,6 +275,9 @@ pub struct SyncRuntime {
     last_peers: Mutex<Option<PeersResult>>,
     /// How long a dial waits for the bridge to open a stream; [`OPEN_TIMEOUT`] by default.
     open_timeout: std::time::Duration,
+    /// The first wait of [`keep_connected`](SyncRuntime::keep_connected)'s backoff;
+    /// [`RECONNECT_BACKOFF`] but for tests.
+    reconnect_first: std::time::Duration,
     /// The first dials [`enable`](SyncRuntime::enable) leaves running. Each pins the
     /// runtime, so [`stop_dials`](SyncRuntime::stop_dials) ends them with the server.
     first_dials: std::sync::Mutex<tokio::task::JoinSet<()>>,
@@ -329,6 +335,7 @@ impl SyncRuntime {
             ctx,
             bridge: tokio::sync::watch::Sender::new(bridge),
             connector,
+            reconnect_now: tokio::sync::Notify::new(),
             pending: Mutex::new(HashMap::new()),
             subscribed: std::sync::Mutex::new(None),
             exe_path,
@@ -347,6 +354,7 @@ impl SyncRuntime {
             live: Mutex::new(HashMap::new()),
             last_peers: Mutex::new(None),
             open_timeout: OPEN_TIMEOUT,
+            reconnect_first: RECONNECT_BACKOFF,
             first_dials: std::sync::Mutex::new(tokio::task::JoinSet::new()),
             background: std::sync::Mutex::new(tokio::task::JoinSet::new()),
         }
@@ -370,6 +378,14 @@ impl SyncRuntime {
         self.bridge().ok()
     }
 
+    /// Have [`keep_connected`](Self::keep_connected) try the bridge now rather than when its
+    /// backoff next ends, and start its backoff over: for the relay, whose client may just
+    /// have started the bridge. A no-op while connected, bar one early attempt after the
+    /// next loss, which makes one at once anyway.
+    pub(crate) fn reconnect_now(&self) {
+        self.reconnect_now.notify_one();
+    }
+
     /// The bridge slot, followed: changes each time the runtime connects or loses the
     /// connection.
     pub(crate) fn bridge_changes(&self) -> tokio::sync::watch::Receiver<Option<Arc<BridgeClient>>> {
@@ -388,6 +404,14 @@ impl SyncRuntime {
     /// for tests, which cannot wait that long for a peer that never answers.
     pub fn with_open_timeout(mut self, timeout: std::time::Duration) -> SyncRuntime {
         self.open_timeout = timeout;
+        self
+    }
+
+    /// Back off from `first` rather than [`RECONNECT_BACKOFF`] while the bridge cannot be
+    /// reached: for tests of a backoff that has grown long, which cannot wait for it to.
+    #[cfg(test)]
+    pub(crate) fn with_reconnect_backoff(mut self, first: std::time::Duration) -> SyncRuntime {
+        self.reconnect_first = first;
         self
     }
 
@@ -1278,12 +1302,16 @@ impl SyncRuntime {
     /// Stay connected to the bridge: wait for the connection to close, then reach the
     /// bridge again with the runtime's [`BridgeConnector`], backing off from
     /// [`RECONNECT_BACKOFF`] to [`RECONNECT_BACKOFF_MAX`] while it cannot (#244).
+    /// [`reconnect_now`](Self::reconnect_now) ends a wait early and starts the backoff over.
     ///
     /// Runs until the task is aborted, which is what the app server's shutdown does with
     /// it. Without a connector it only marks the runtime disconnected once the connection
     /// closes, and returns.
     pub async fn keep_connected(self: Arc<Self>) {
         let mut attempt = 0;
+        // Whether this outage's failure has been logged at warn: once per outage, however
+        // often `reconnect_now` starts the backoff over.
+        let mut warned = false;
         loop {
             if let Ok(bridge) = self.bridge() {
                 bridge.closed().await;
@@ -1296,6 +1324,7 @@ impl SyncRuntime {
                     same
                 });
                 attempt = 0;
+                warned = false;
                 continue;
             }
             let Some(connector) = &self.connector else {
@@ -1306,17 +1335,23 @@ impl SyncRuntime {
                     tracing::info!("connected to sapphire-bridge");
                     self.attach(client).await;
                     attempt = 0;
+                    warned = false;
                     continue;
                 }
                 Ok(None) => tracing::debug!("no sapphire-bridge is running yet"),
                 // Logged once per outage, not once per attempt.
-                Err(err) if attempt == 0 => {
-                    tracing::warn!("could not connect to sapphire-bridge: {err}")
+                Err(err) if !warned => {
+                    tracing::warn!("could not connect to sapphire-bridge: {err}");
+                    warned = true;
                 }
                 Err(err) => tracing::debug!("could not connect to sapphire-bridge: {err}"),
             }
-            tokio::time::sleep(reconnect_backoff(attempt)).await;
-            attempt = attempt.saturating_add(1);
+            tokio::select! {
+                () = tokio::time::sleep(reconnect_backoff(self.reconnect_first, attempt)) => {
+                    attempt = attempt.saturating_add(1);
+                }
+                () = self.reconnect_now.notified() => attempt = 0,
+            }
         }
     }
 

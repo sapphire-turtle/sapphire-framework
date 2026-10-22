@@ -47,13 +47,26 @@ impl BridgeLink {
 
     /// An open connection to the bridge, or the error to answer with when there is none.
     ///
-    /// The sync runtime's is whatever its slot holds. The relay's own is the one it made
-    /// last if that is still open, and otherwise one attempt to make another: no bridge
-    /// there is [`BRIDGE_NOT_RUNNING`], and a bridge that refuses the connection — one of
-    /// another API version, say — is its refusal, which carries no params to keep secret.
+    /// The sync runtime's is whatever its slot holds; an empty one has the runtime try the
+    /// bridge now, rather than when its backoff ends, and the call waits up to
+    /// [`SYNC_WAIT`] for it to connect. The relay's own is the one it made last if that is
+    /// still open, and otherwise one attempt to make another: no bridge there is
+    /// [`BRIDGE_NOT_RUNNING`], and a bridge that refuses the connection — one of another
+    /// API version, say — is its refusal, which carries no params to keep secret.
     async fn client(&self) -> Result<Arc<BridgeClient>, RpcError> {
         match self {
-            BridgeLink::Sync(runtime) => runtime.connected_bridge().ok_or_else(not_running),
+            BridgeLink::Sync(runtime) => {
+                if let Some(client) = runtime.connected_bridge() {
+                    return Ok(client);
+                }
+                let mut changes = runtime.bridge_changes();
+                runtime.reconnect_now();
+                let open = changes.wait_for(|slot| slot.as_ref().is_some_and(|c| !c.is_closed()));
+                match tokio::time::timeout(SYNC_WAIT, open).await {
+                    Ok(Ok(slot)) => Ok(Arc::clone(slot.as_ref().expect("an open connection"))),
+                    _ => Err(not_running()),
+                }
+            }
             BridgeLink::Own(own) => {
                 // Held across the attempt, so calls racing in on a fresh server make one
                 // connection between them.
@@ -91,8 +104,9 @@ impl BridgeLink {
 
     /// Wait until `old` has closed and an open connection to another bridge is held.
     ///
-    /// The sync runtime reconnects on its own, so this follows its slot. The relay's own
-    /// link tries the connector every [`RECONNECT_INTERVAL`] until a bridge answers.
+    /// The sync runtime reconnects on its own, so this follows its slot, and has it try
+    /// every [`RECONNECT_INTERVAL`] rather than wait out its backoff. The relay's own link
+    /// tries the connector every [`RECONNECT_INTERVAL`] until a bridge answers.
     async fn replaced(&self, old: &Arc<BridgeClient>) {
         old.closed().await;
         match self {
@@ -106,10 +120,14 @@ impl BridgeLink {
                     {
                         return;
                     }
-                    if changes.changed().await.is_err() {
-                        // The runtime is gone, so no new bridge is coming: the caller's
-                        // timeout ends the wait.
-                        std::future::pending::<()>().await;
+                    runtime.reconnect_now();
+                    tokio::select! {
+                        changed = changes.changed() => if changed.is_err() {
+                            // The runtime is gone, so no new bridge is coming: the caller's
+                            // timeout ends the wait.
+                            std::future::pending::<()>().await;
+                        },
+                        () = tokio::time::sleep(RECONNECT_INTERVAL) => {}
                     }
                 }
             }
@@ -140,8 +158,13 @@ impl BridgeLink {
     }
 }
 
-/// How often the relay's own link tries the new bridge after a relayed `bridge.restart`.
+/// How often the relay tries the new bridge after a relayed `bridge.restart`: itself on
+/// its own link, through the sync runtime on the runtime's.
 const RECONNECT_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long a call over the sync runtime's link, finding it without a bridge, waits for
+/// the runtime's attempt to connect before answering [`BRIDGE_NOT_RUNNING`].
+const SYNC_WAIT: Duration = Duration::from_secs(1);
 
 /// The relay's answer when there is no bridge to forward to.
 fn not_running() -> RpcError {
@@ -237,10 +260,42 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    use sapphire_ipc::ManagedBy;
+    use sapphire_workspace::AppContext;
     use serde_json::json;
 
     use super::*;
     use crate::sync::testing::StubBridge;
+
+    /// The sync runtimes' application. Never initialised: a runtime that syncs nothing
+    /// reads none of its directories.
+    static CTX: AppContext = AppContext::new("sapphire-relaytest");
+
+    /// Bridge connections a [`shared`] connector hands out, in order; empty is "no bridge
+    /// is running".
+    type Bridges = Arc<Mutex<VecDeque<BridgeClient>>>;
+
+    /// A connector over a queue the test fills as bridges come up.
+    fn shared() -> (Bridges, BridgeConnector) {
+        let bridges: Bridges = Arc::default();
+        let connector = BridgeConnector::new({
+            let bridges = Arc::clone(&bridges);
+            move || {
+                let next = bridges.lock().unwrap().pop_front();
+                async move { Ok(next) }
+            }
+        });
+        (bridges, connector)
+    }
+
+    /// A sync runtime reaching the bridge with `connector`, whose reconnect backoff is
+    /// already a minute long: as after a long outage.
+    fn backed_off(connector: BridgeConnector) -> Arc<SyncRuntime> {
+        Arc::new(
+            SyncRuntime::connecting(&CTX, connector, "/bin/true".into(), ManagedBy::Service)
+                .with_reconnect_backoff(Duration::from_secs(60)),
+        )
+    }
 
     /// A connector handing out `bridges` in order, then "no bridge is running" forever.
     fn queued(bridges: Vec<BridgeClient>) -> BridgeConnector {
@@ -291,6 +346,67 @@ mod tests {
         let e = relay.forward("bridge.status", json!({})).await.unwrap_err();
         assert_eq!(e.code, BRIDGE_NOT_RUNNING);
         assert_eq!(e.message, "no sapphire-bridge is running");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sync_link_finds_a_bridge_started_while_the_runtime_backs_off() {
+        // The user starts the bridge from the GUI and creates a workgroup straight away:
+        // the call must not wait out the runtime's backoff.
+        let (bridges, connector) = shared();
+        let runtime = backed_off(connector);
+        runtime.connect().await.unwrap();
+        let keeping = tokio::spawn(Arc::clone(&runtime).keep_connected());
+        // Long enough for the runtime to have tried, found nothing, and begun its wait.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (stub, client) = StubBridge::start_client_in(std::env::temp_dir()).await;
+        stub.answer("embed.settings", json!({"from": "new"}));
+        bridges.lock().unwrap().push_back(client);
+        let relay = Relay::new(BridgeLink::Sync(Arc::clone(&runtime)));
+
+        let answer = tokio::time::timeout(
+            Duration::from_secs(5),
+            relay.forward("embed.settings", json!({})),
+        )
+        .await
+        .expect("answered well within the backoff")
+        .unwrap();
+        assert_eq!(answer, json!({"from": "new"}));
+        keeping.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sync_link_restart_does_not_wait_out_the_runtime_backoff() {
+        // A bridge slower to come back than the runtime's first attempt after the loss.
+        let (bridges, connector) = shared();
+        let (_old, client) = restarting_stub().await;
+        bridges.lock().unwrap().push_back(client);
+        let runtime = backed_off(connector);
+        runtime.connect().await.unwrap();
+        assert!(runtime.is_connected());
+        let keeping = tokio::spawn(Arc::clone(&runtime).keep_connected());
+        let coming = tokio::spawn({
+            let runtime = Arc::clone(&runtime);
+            let bridges = Arc::clone(&bridges);
+            async move {
+                while runtime.is_connected() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let (new, next) = StubBridge::start_client_in(std::env::temp_dir()).await;
+                new.answer("embed.settings", json!({"from": "new"}));
+                bridges.lock().unwrap().push_back(next);
+                new
+            }
+        });
+        let relay = Relay::new(BridgeLink::Sync(Arc::clone(&runtime)))
+            .restart_wait(Duration::from_secs(5));
+
+        let ack = relay.forward(RESTART, json!({})).await.unwrap();
+        assert_eq!(ack, json!({}));
+        let _new = coming.await.unwrap();
+        let answer = relay.forward("embed.settings", json!({})).await.unwrap();
+        assert_eq!(answer, json!({"from": "new"}));
+        keeping.abort();
     }
 
     #[tokio::test(flavor = "multi_thread")]

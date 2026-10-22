@@ -75,6 +75,11 @@ impl McpService {
     /// `allowed_hosts` are the `Host` names clients use beyond [`LOOPBACK_HOSTS`]. The
     /// route is **not authenticated**: the caller puts it behind
     /// `sapphire_framework_keys::protect`. Its sessions end when `cancel` fires.
+    ///
+    /// A `subscriptions/listen` holds its response open as an event stream, kept alive by an
+    /// SSE comment every 15 seconds (rmcp's default). That is under common reverse-proxy idle
+    /// timeouts, such as nginx's 60-second `proxy_read_timeout`; a proxy with a shorter one
+    /// cuts the stream, and the client listens again.
     pub fn http_router(
         &self,
         ctx: ToolContext,

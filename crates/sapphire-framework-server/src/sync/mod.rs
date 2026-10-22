@@ -372,7 +372,6 @@ impl SyncRuntime {
 
     /// The bridge slot, followed: changes each time the runtime connects or loses the
     /// connection.
-    #[expect(dead_code, reason = "the relayed `bridge.restart` waits on it (#314)")]
     pub(crate) fn bridge_changes(&self) -> tokio::sync::watch::Receiver<Option<Arc<BridgeClient>>> {
         self.bridge.subscribe()
     }

@@ -30,9 +30,7 @@ pub use eframe;
 pub mod app;
 
 pub mod client;
-pub mod fonts;
 mod health;
-pub mod icons;
 #[cfg(feature = "mobile")]
 pub mod mobile;
 pub mod platform;
@@ -43,9 +41,12 @@ pub mod views;
 #[cfg(test)]
 mod test_support;
 
+pub use corundum_gui::{Action, COMPACT_WIDTH, Destination};
+/// The system CJK fallback font and the Lucide icons, from corundum-gui (shared with asteria).
+pub use corundum_gui::{fonts, icons};
 pub use health::{Health, bridge_needed};
-pub use settings::{COMPACT_WIDTH, Settings, SettingsSection};
-pub use shell::{Action, Destination, Shell};
+pub use settings::{Settings, SettingsSection};
+pub use shell::Shell;
 
 /// The sync screens on their own: now [`Settings`], which adds the app's sections and
 /// About to them.

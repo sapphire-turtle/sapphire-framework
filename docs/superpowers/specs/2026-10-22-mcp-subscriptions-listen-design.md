@@ -3,9 +3,14 @@
 - Issue: #270
 - PR: (to be opened)
 - Crates: `sapphire-framework-mcp`
-- Out of scope: what a client does with a notification (sapphire-agent's handling of
-  `tools/list_changed` is its own issue); sending any notification from the framework's
-  own tools, whose list never changes at runtime.
+- Out of scope:
+  - What a client does with a notification (sapphire-agent's handling of
+    `tools/list_changed` is its own issue).
+  - Notifications addressed to one client, and telling clients apart. Only sapphire-timer
+    needs them (each client has its own timer), and no other app is expected to; they stay
+    in sapphire-timer, which overrides `listen` in its own handler (§5).
+  - Sending any notification from the framework's own tools, whose list never changes at
+    runtime.
 - Status: accepted
 
 ## Why
@@ -16,75 +21,46 @@ A server reaches a client outside a request only through a long-lived
 `server_info()` advertises tools without `listChanged`, and neither `FrameworkServer` nor
 an application's handler implements `accepted_subscription_filter`, so rmcp answers
 `subscriptions/listen` with -32601. sapphire-timer works around this with its own
-`get_info`, `accepted_subscription_filter` and `listen`.
+`get_info` capabilities, `accepted_subscription_filter` and `listen`.
 
-The framework should carry the plumbing: an application says what it offers and calls
-`notify_*`, and three one-line delegations in its `ServerHandler` do the rest.
+The framework should carry the standard part: an application says what it offers and calls
+`notify_*`, and three one-line delegations in its `ServerHandler` do the rest. An
+application with needs of its own — sapphire-timer's per-client timer — overrides `listen`
+in the handler it already writes; rmcp's `ServerHandler` trait is the injection point, and
+the framework adds none.
 
 ## Decisions
 
 ### 1. Notifications go through `ToolContext`
 
-`ToolContext`'s shared `Inner` gains a `tokio::sync::broadcast::Sender<Notice>`. Every
+`ToolContext`'s shared `Inner` gains a `tokio::sync::broadcast::Sender<Change>`. Every
 handler built from one context shares it: on HTTP the factory clones the context for each
 request, and the clones share `Inner`; on stdio there is one context per process. This is
 the "state outside the handler" the stateless HTTP transport needs.
 
 ```rust
 // crate-private
-struct Notice { to: Option<Caller>, change: Change }
 enum Change { ToolListChanged, ResourceListChanged, ResourceUpdated(String) }
 ```
 
 Public methods on `ToolContext`, synchronous, never failing (no subscriber is not an
-error):
+error), each reaching every subscription that accepted that kind of change:
 
 - `notify_tool_list_changed()`
 - `notify_resource_list_changed()`
-- `notify_resource_updated(uri)` — to every subscriber of `uri`
-- `notify_resource_updated_to(&Caller, uri)` — to that caller's subscriptions only
+- `notify_resource_updated(uri)`
 
 Prompts are left out: the framework has none. Only list changes and resource updates exist
 because rmcp's `SubscriptionSink` sends nothing else.
 
-### 2. `Caller`: who a request comes from
-
-Moved from sapphire-timer's `Client::of` into the framework, as the key for addressed
-notifications and for any per-client state an application keeps.
-
-```rust
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Caller {
-    /// stdio: the agent that launched this process.
-    Local,
-    /// HTTP, with a device token: that device.
-    Device(GrainId),
-    /// HTTP without an authenticated device.
-    Anonymous,
-}
-
-impl Caller {
-    pub fn of(extensions: &rmcp::model::Extensions) -> Caller;
-}
-```
-
-`of` reads `http::request::Parts` from the request's extensions (rmcp puts them there on
-HTTP) and `sapphire_framework_keys::Authenticated` from those (`protect` puts it there).
-No `Parts` means stdio. The crate gains a dependency on `sapphire-framework-keys`
-(without its `axum` feature); `http` comes from `axum::http`.
-
-Every anonymous caller is the same `Caller`, so a notice addressed to `Anonymous` reaches
-all of them. With the HTTP route behind `protect`, there are none.
-
-### 3. `Subscriptions`: what a handler offers
+### 2. `Subscriptions`: what a handler offers
 
 ```rust
 #[derive(Clone, Debug, Default)]
 pub struct Subscriptions { resources: Vec<String> }
 
 impl Subscriptions {
-    pub fn new() -> Self;                                 // tools/list_changed only
+    pub fn new() -> Self;                                  // tools/list_changed only
     pub fn resource(self, uri: impl Into<String>) -> Self; // add a subscribable URI
     pub fn capabilities(&self) -> ServerCapabilities;
     pub fn accept(&self, requested: &SubscriptionFilter) -> SubscriptionFilter;
@@ -103,28 +79,26 @@ impl Subscriptions {
   `subs.server_info(&ctx)` instead (rmcp's `ServerConfig` has no capabilities setter; the
   field is public, and this sets it).
 
-### 4. `listen(ctx, subscription)`
+### 3. `listen(ctx, subscription)`
 
 ```rust
 pub async fn listen(ctx: &ToolContext, subscription: SubscriptionContext) -> Result<(), ErrorData>;
 ```
 
-Subscribes to the context's broadcast, takes the caller from the subscription's request
-context, and until the subscription is cancelled or its sink closes, forwards each notice
-that is addressed to everyone or to this caller and that the accepted filter allows.
-Notices the filter does not allow are dropped here rather than sent and refused by the
-sink.
+Subscribes to the context's broadcast, and until the subscription is cancelled or its sink
+closes, forwards each change the accepted filter allows. Changes the filter does not allow
+are dropped here rather than sent and refused by the sink.
 
-When the receiver lags (`RecvError::Lagged`), which notices were lost is unknown, so it
+When the receiver lags (`RecvError::Lagged`), which changes were lost is unknown, so it
 sends every notification the accepted filter allows once: a stream that cannot be resumed
 promises only "something changed, read again". The broadcast closing ends the listen with
 `Ok(())`.
 
-### 5. The application's handler
+### 4. The application's handler
 
 ```rust
 #[tool_handler]
-impl ServerHandler for TimerTools {
+impl ServerHandler for LedgerTools {
     fn get_info(&self) -> ServerConfig {
         self.subs.server_info(&self.ctx)
     }
@@ -137,10 +111,16 @@ impl ServerHandler for TimerTools {
 }
 ```
 
-`FrameworkServer` implements the same three with `Subscriptions::new()`. sapphire-timer
-then sends `ctx.notify_resource_updated_to(&caller, ACTIVE_TIMER_URI)` for the caller whose
-timer changed and drops its own `listen`. The crate docs' example shows the three
-delegations.
+`FrameworkServer` implements the same three with `Subscriptions::new()`. The crate docs'
+example shows the three delegations.
+
+### 5. sapphire-timer
+
+Each client has its own timer, so a change must reach only its owner's subscription. That
+stays in sapphire-timer: its `Client` / `Clients` and its own `listen`, which watches the
+caller's timer. From the framework it can take `Subscriptions::new().resource(ACTIVE_TIMER_URI)`
+for `get_info` and `accepted_subscription_filter`, in place of setting the capabilities by
+hand. That change is sapphire-timer's, after this releases.
 
 ### 6. Keep-alive
 
@@ -151,14 +131,16 @@ stays and `http_router`'s docs say so.
 
 ## Testing
 
-Integration tests in `crates/sapphire-framework-mcp/tests/listen.rs`. The client is rmcp
-with `serve_with_lifecycle(ClientLifecycleMode::Discover { .. })`: a plain `serve()` uses
-the legacy `initialize`, under which rmcp refuses `subscriptions/listen`. The context is
-`ToolContext::dial` at an endpoint nothing listens on; no test calls a tool.
+The client is rmcp with `serve_with_lifecycle(ClientLifecycleMode::Discover { .. })`: a
+plain `serve()` uses the legacy `initialize`, under which rmcp refuses
+`subscriptions/listen`. The context is `ToolContext::dial` at an endpoint nothing listens
+on; no test calls a tool.
 
 - **stdio**: the handler served on one end of a `tokio::io::duplex`, the same rmcp
-  async-read/write transport `serve_stdio` uses on stdin/stdout.
-- **HTTP**: `McpService::http_router` on a loopback port.
+  async-read/write transport `serve_stdio` uses on stdin/stdout. In-crate tests, so they
+  can see the broadcast's receiver count.
+- **HTTP**: `McpService::http_router` on a loopback port, in
+  `crates/sapphire-framework-mcp/tests/listen_http.rs`.
 
 On both:
 
@@ -167,11 +149,10 @@ On both:
 - A handler offering one URI acknowledges that URI and drops a URI it does not offer;
   `notify_resource_updated` reaches the subscription.
 
-On HTTP, with two callers told apart by a fake `Authenticated` inserted ahead of the route:
-a notice addressed to one caller reaches its subscription and not the other's.
+On HTTP, two clients listening at once both hear one notification: the per-request
+handlers share the context.
 
-Unit tests: `Subscriptions::accept` and `capabilities`, and `Caller::of` for no `Parts`,
-`Parts` with and without `Authenticated`.
+Unit tests: `Subscriptions::accept` and `capabilities`; the notify methods.
 
 Dev-dependencies: rmcp's `client` and `transport-streamable-http-client-reqwest`
-features, and `tokio`'s `net` and `io-util`.
+features, and `tokio`'s `net`, `io-util` and `time`.

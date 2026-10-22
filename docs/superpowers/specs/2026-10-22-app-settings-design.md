@@ -153,21 +153,25 @@ error: `this server cannot restart itself; restart its service`.
 // today
 AppServer::new(&CTX, VERSION).sync_via_bridge().extend(routes).run().await
 // with settings and restart
-serve_restarting(MyOwner, |settings: &Settings| {
+serve_restarting(&CTX, MyOwner, |settings: &Settings| {
     AppServer::new(&CTX, VERSION).sync_via_bridge().extend(routes)
 })
 .await
 ```
 
-`serve_restarting(owner, build)` (in `sapphire-framework-server`): migrate, read the
+`serve_restarting(ctx, owner, build)` (in `sapphire-framework-server`): migrate, read the
 settings, call `build`, attach the owner and the `Settings` to the server, run it, and
-repeat on a restart. `owner` is `impl AppSettings + Clone` (`()` for an app with no
-settings of its own).
+repeat on a restart. `ctx` is the app's `AppContext`: the settings' files depend on it, and
+they are read before `build` runs, so `build` cannot supply it. `owner` is
+`impl AppSettings + Clone` (`()` for an app with no settings of its own).
 
 **Breaking:** `FrameworkCommand::dispatch(self, server: AppServer, version)` becomes
-`dispatch(self, owner, build, version)`. `serve` runs `serve_restarting(owner, build)`; the
-other subcommands call `build` once if they need an `AppServer`, and `config` uses `owner`
-for its offline path.
+`dispatch(self, ctx, owner, build, version)`. `serve` runs
+`serve_restarting(ctx, owner, build)`; the other subcommands call `build` once if they need
+an `AppServer`, and `config` uses `ctx` and `owner` for its offline path. `update`, `service`
+and `mcp` read the settings too, but an unreadable settings file must not lock the user out
+of them (`update` and `service` are how it gets fixed), so they warn and fall back to the
+defaults.
 
 ### `Settings`
 

@@ -424,7 +424,7 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                             value: e.value,
                         })
                         .collect();
-                    config_write(&bridge, params.scope, ops)
+                    config_write(&bridge, params.scope, ops, params.dry_run)
                         .map_err(failed)
                         .and_then(encode)
                 }
@@ -441,7 +441,7 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                         .into_iter()
                         .map(|key| Op::Unset { key })
                         .collect();
-                    config_write(&bridge, params.scope, ops)
+                    config_write(&bridge, params.scope, ops, params.dry_run)
                         .map_err(failed)
                         .and_then(encode)
                 }
@@ -735,14 +735,19 @@ fn config_get(bridge: &Bridge, key: &str) -> Result<settings::Entry> {
 }
 
 /// `config.set` and `config.unset`: apply the batch, pick up a live change, and report
-/// every key still waiting for a restart.
+/// every key still waiting for a restart. With `dry_run` the batch is only validated:
+/// nothing is written and nothing reloaded.
 fn config_write(
     bridge: &Bridge,
     scope: Option<settings::Scope>,
     ops: Vec<Op>,
+    dry_run: bool,
 ) -> Result<ConfigWriteResult> {
     let reg = crate::settings::registry(&bridge.dir)?;
     let changed = bridge.write_settings(|| -> Result<Vec<String>> {
+        if dry_run {
+            return Ok(settings::check(&reg, scope, ops)?.keys);
+        }
         let applied = settings::apply(&reg, scope, ops)?;
         if applied.live {
             // The write succeeded; a provider that cannot be rebuilt is the embedding's
@@ -837,8 +842,7 @@ fn status(bridge: &Bridge) -> Result<StatusResult> {
         workgroup: workgroup.as_ref().map(workgroup_status).transpose()?,
         embedding: Some(embed_info(bridge)),
         routes: route_statuses(bridge),
-        // Set once the bridge implements `dry_run`.
-        config_dry_run: false,
+        config_dry_run: true,
     })
 }
 

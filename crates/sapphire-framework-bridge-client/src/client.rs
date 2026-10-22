@@ -330,6 +330,42 @@ impl BridgeClient {
         .await
     }
 
+    /// Check a `config.set` batch without writing it: the result a write would give, or
+    /// the error it would. A bridge too old to know `dry_run` would write, so callers
+    /// gate this on the status's `config_dry_run`.
+    pub async fn config_check_set(
+        &self,
+        scope: Option<Scope>,
+        entries: Vec<ConfigEntry>,
+    ) -> sapphire_ipc::Result<ConfigWriteResult> {
+        self.call(
+            CONFIG_SET,
+            ConfigSetParams {
+                scope,
+                entries,
+                dry_run: true,
+            },
+        )
+        .await
+    }
+
+    /// Check a `config.unset` batch without writing it; see [`Self::config_check_set`].
+    pub async fn config_check_unset(
+        &self,
+        scope: Option<Scope>,
+        keys: Vec<String>,
+    ) -> sapphire_ipc::Result<ConfigWriteResult> {
+        self.call(
+            CONFIG_UNSET,
+            ConfigUnsetParams {
+                scope,
+                keys,
+                dry_run: true,
+            },
+        )
+        .await
+    }
+
     /// Ask the bridge to restart, so restart-only settings take effect.
     pub async fn restart(&self) -> sapphire_ipc::Result<Ack> {
         self.call(RESTART, serde_json::json!({})).await
@@ -499,6 +535,59 @@ mod tests {
             .await
             .unwrap();
         Arc::new(client)
+    }
+
+    /// A connection to a server that answers `method` with an empty result and hands
+    /// the parameters it received to the returned channel.
+    async fn echoing(
+        method: &'static str,
+    ) -> (
+        Arc<Client>,
+        tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let router = Arc::new(Router::new().method(method, move |ctx| {
+            let _ = tx.send(ctx.params);
+            async { Ok(serde_json::json!({ "changed": [], "pending_restart": [] })) }
+        }));
+        let (client_conn, server_conn) = Connection::pair();
+        tokio::spawn(async move {
+            let info = ServerInfo {
+                version: "0.0.0".into(),
+                api: sapphire_bridge_api::API_VERSION,
+                app_api: None,
+                pid: std::process::id(),
+                managed_by: ManagedBy::Spawned,
+            };
+            let _ = serve(server_conn, router, "echo-test", info).await;
+        });
+        let info = ClientInfo {
+            kind: "test".into(),
+            version: "0.0.0".into(),
+            api: sapphire_bridge_api::API_VERSION,
+            app_api: None,
+            pid: std::process::id(),
+        };
+        let (client, _) = Client::handshake(client_conn, "echo-test", info)
+            .await
+            .unwrap();
+        (Arc::new(client), rx)
+    }
+
+    #[tokio::test]
+    async fn a_check_of_set_sends_dry_run() {
+        let (client, mut seen) = echoing(CONFIG_SET).await;
+        let client = BridgeClient::from_client(client, "/unused".into());
+        client.config_check_set(None, vec![]).await.unwrap();
+        assert_eq!(seen.recv().await.unwrap()["dry_run"], true);
+    }
+
+    #[tokio::test]
+    async fn a_check_of_unset_sends_dry_run() {
+        let (client, mut seen) = echoing(CONFIG_UNSET).await;
+        let client = BridgeClient::from_client(client, "/unused".into());
+        client.config_check_unset(None, vec![]).await.unwrap();
+        assert_eq!(seen.recv().await.unwrap()["dry_run"], true);
     }
 
     #[tokio::test]

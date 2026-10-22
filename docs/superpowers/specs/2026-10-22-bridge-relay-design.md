@@ -61,16 +61,19 @@ client-facing method the GUI and the app CLI call is on it.
 
 The app server keeps at most one connection to the bridge. When the app runs sync through
 the bridge (`sync_via_bridge`), the relay uses the sync runtime's connection. Otherwise the
-relay makes its own on the first relayed call, with the same connector, and reconnects the
-same way (backoff from 500 ms to 30 s, as `keep_connected` does today). An app that never
-relays never connects.
+relay makes its own on the first relayed call, with the same connector
+(`BridgeConnector::standard(app_name, version)` unless the builder is given another), and
+makes it again on the next call after it drops: there is no background reconnect loop. An app
+that never relays never connects.
 
 ### Errors
 
 - No bridge running, or the connection drops mid-call: the relay answers with the new error
-  code `BRIDGE_NOT_RUNNING` (server-api; in the server-defined range of JSON-RPC codes) and
-  the message `no sapphire-bridge is running`. The client turns it back into the
-  `NotRunning` error it gets today, so its messages do not change.
+  code `BRIDGE_NOT_RUNNING` (-32001, defined in `sapphire-framework-bridge-api` next to the
+  method names, in the server-defined range of JSON-RPC codes) and the message
+  `no sapphire-bridge is running`. A `BridgeClient` made over an app-server connection
+  (`BridgeClient::relayed`) turns it back into the `NotRunning` error clients get today, so
+  their messages do not change.
 - Anything the bridge answers — including `method not found` from an older bridge that lacks
   a method — goes back unchanged.
 
@@ -101,8 +104,10 @@ The GUI keeps one connection, to its app server. The bridge half of its poll (`s
 `peers`, `workspaces`, `embed.settings`, `external_device.list`) and `bridge_command` run
 over it. `Endpoints.bridge` goes; `ServiceExes.bridge` stays, since installing the bridge's
 service still runs `sapphire-bridge service install` locally. The GUI drops its direct
-dependency on `sapphire-framework-bridge-client`. With no app server running, the GUI shows
-the bridge's state as unknown.
+connection to the bridge; it keeps depending on `sapphire-framework-bridge-client` for the
+typed client it runs over the app-server connection. With no app server running, the GUI
+shows the bridge's state as unknown (an error state saying the app server is not running,
+not "the bridge is not running").
 
 The in-process mobile build (bridge and app server in one process) needs no change beyond
 this: its GUI already reaches the app server in process.
@@ -110,7 +115,8 @@ this: its GUI already reaches the app server in process.
 ### Unchanged
 
 `sapphire-bridge`'s own CLI, which has no app server to go through. The app server's own
-uses of the bridge (registration, sync, embedding, the HTTP token check).
+uses of the bridge (registration, sync, embedding, the HTTP token check). The MCP tools'
+bridge access (`McpContext::bridge`) stays as it is; moving it is left to a later change.
 
 ## Compatibility
 

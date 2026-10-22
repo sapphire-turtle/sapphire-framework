@@ -14,6 +14,12 @@ use sapphire_ipc::{ClientInfo, Endpoint};
 
 use crate::AppServer;
 use crate::error::{Error, Result};
+use crate::settings::{AppSettings, Settings};
+use sapphire_workspace::AppContext;
+
+mod config;
+
+pub use config::{AppConfigCommand, AppScopeFlags};
 
 pub use sapphire_backend::protocol::{StatusReport, StatusRow};
 
@@ -54,6 +60,10 @@ pub enum FrameworkCommand {
     /// otherwise. Needs the running bridge.
     #[command(subcommand)]
     ExternalDevice(sapphire_bridge_api::ExternalDeviceCommand),
+    /// List, show, set and unset this application's settings and the bridge's, by key.
+    /// Without a running server, this application's own, on its files.
+    #[command(subcommand)]
+    Config(AppConfigCommand),
     /// Serve this application's tools to an AI agent over MCP on stdin/stdout. Talks to the
     /// running server, which it does not start; register this command with the agent.
     #[cfg(feature = "mcp")]
@@ -63,33 +73,59 @@ pub enum FrameworkCommand {
 impl FrameworkCommand {
     /// Carry out the command, returning the process exit code.
     ///
-    /// The application matches its own variants first, then hands the framework's here;
-    /// the app name and the service spec come from `server` itself.
-    pub async fn dispatch(self, server: AppServer, version: &'static str) -> Result<i32> {
+    /// The application matches its own variants first, then hands the framework's here,
+    /// with what [`serve_restarting`](crate::serve_restarting) takes: its context, its own
+    /// settings (`()` for none) and the function that builds its server from the settings.
+    /// `serve` runs [`serve_restarting`](crate::serve_restarting); the commands that need an
+    /// [`AppServer`] — `service`, `update` and `mcp` — read the settings and call `build`
+    /// once; `config` reads and writes the settings through the running server, or the
+    /// files themselves when none runs.
+    ///
+    /// ```rust,ignore
+    /// command
+    ///     .dispatch(&CTX, MyOwner, |settings: &Settings| AppServer::new(&CTX, VERSION), VERSION)
+    ///     .await
+    /// ```
+    pub async fn dispatch<A, F>(
+        self,
+        ctx: &'static AppContext,
+        owner: A,
+        build: F,
+        version: &'static str,
+    ) -> Result<i32>
+    where
+        A: AppSettings + Clone,
+        F: Fn(&Settings) -> AppServer,
+    {
+        let app = ctx.app_name;
+        // Built only by the commands that need a server, and then once.
+        let server =
+            |owner: A| -> Result<AppServer> { Ok(build(&Settings::load(ctx, Arc::new(owner))?)) };
         match self {
             FrameworkCommand::Serve => {
-                server.run().await?;
+                crate::serve_restarting(ctx, owner, build).await?;
                 Ok(0)
             }
-            FrameworkCommand::Status => crate::command::status(&server, version).await,
+            FrameworkCommand::Status => {
+                let endpoint = Endpoint::for_app(app)?;
+                run_status(&endpoint, app, version).await
+            }
             FrameworkCommand::Service(command) => {
-                let spec = server.service_spec();
+                let spec = server(owner)?.service_spec();
                 command
                     .run(&spec, &Environment::detect(), &SystemManager)
                     .map_err(Error::from)
             }
             FrameworkCommand::Update(args) => {
+                let server = server(owner)?;
                 let own = match server.release_source() {
-                    Some(source) => sapphire_framework_update::run(
-                        &args.update,
-                        source,
-                        server.app_name(),
-                        version,
-                    )
-                    .await
-                    .map_err(Error::from),
+                    Some(source) => {
+                        sapphire_framework_update::run(&args.update, source, app, version)
+                            .await
+                            .map_err(Error::from)
+                    }
                     None => {
-                        println!("{} does not say where its releases are", server.app_name());
+                        println!("{app} does not say where its releases are");
                         Ok(1)
                     }
                 };
@@ -102,22 +138,17 @@ impl FrameworkCommand {
                 };
                 Ok(own?.max(bridge))
             }
-            FrameworkCommand::Workspace(command) => {
-                command.dispatch(server.app_name(), version).await
-            }
-            FrameworkCommand::Workgroup(command) => {
-                command.dispatch(server.app_name(), version).await
-            }
-            FrameworkCommand::Device(command) => command.dispatch(server.app_name(), version).await,
-            FrameworkCommand::Embedding(command) => {
-                embedding(command, server.app_name(), version).await
-            }
+            FrameworkCommand::Config(command) => config::config(ctx, owner, command, version).await,
+            FrameworkCommand::Workspace(command) => command.dispatch(app, version).await,
+            FrameworkCommand::Workgroup(command) => command.dispatch(app, version).await,
+            FrameworkCommand::Device(command) => command.dispatch(app, version).await,
+            FrameworkCommand::Embedding(command) => embedding(command, app, version).await,
             FrameworkCommand::ExternalDevice(command) => {
-                external_device(command, server.app_name(), version).await
+                external_device(command, app, version).await
             }
             #[cfg(feature = "mcp")]
             FrameworkCommand::Mcp => {
-                server.serve_mcp_stdio(version).await?;
+                server(owner)?.serve_mcp_stdio(version).await?;
                 Ok(0)
             }
         }
@@ -753,6 +784,15 @@ fn describe_state(ws: &proto::CurrentWorkspace) -> String {
 
 /// Connect to `app`'s server, or say none is running.
 async fn connect_app(app: &str, version: &str) -> Result<Option<sapphire_ipc::Client>> {
+    let client = try_connect_app(app, version).await?;
+    if client.is_none() {
+        println!("no {app} server is running");
+    }
+    Ok(client)
+}
+
+/// Connect to `app`'s server; `None`, silently, when none is running.
+async fn try_connect_app(app: &str, version: &str) -> Result<Option<sapphire_ipc::Client>> {
     let endpoint = Endpoint::for_app(app)?;
     let client_info = ClientInfo {
         kind: "cli".to_owned(),
@@ -762,9 +802,6 @@ async fn connect_app(app: &str, version: &str) -> Result<Option<sapphire_ipc::Cl
         pid: std::process::id(),
     };
     let client = sapphire_ipc::connect_or_absent(&endpoint, app, client_info).await?;
-    if client.is_none() {
-        println!("no {app} server is running");
-    }
     Ok(client.map(|(c, _)| c))
 }
 
@@ -882,13 +919,6 @@ pub async fn render_workspace_show(
         }
     }
     Ok(code)
-}
-
-/// The status command's face: render and return the exit code, going to the process's
-/// standard output.
-async fn status(server: &AppServer, version: &str) -> Result<i32> {
-    let endpoint = Endpoint::for_app(server.app_name())?;
-    run_status(&endpoint, server.app_name(), version).await
 }
 
 /// Probe, handshake and call `SERVER_INFO` in one go, or report absence.

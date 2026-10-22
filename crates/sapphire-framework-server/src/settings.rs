@@ -470,7 +470,6 @@ impl std::fmt::Debug for Settings {
 impl Settings {
     /// Read `ctx`'s application's settings: migrate `server.toml`, build the registry,
     /// check the device file and the application's files, and read every value.
-    #[allow(dead_code)] // The offline `<app> config` (#314) is its first caller outside tests.
     pub(crate) fn load(ctx: &AppContext, app: Arc<dyn AppSettings>) -> Result<Settings> {
         Settings::load_with(ctx, app, SelectionFile::for_app(ctx))
     }

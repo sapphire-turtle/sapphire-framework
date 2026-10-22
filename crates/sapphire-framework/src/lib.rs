@@ -145,10 +145,13 @@ pub mod prelude {
     // subcommands (issue #142); the sub-enums and the typed status report come
     // with it, so an app never needs the `server` module to build its CLI.
     // `ReleaseSource` names where the app's releases are, for `AppServer::releases`.
+    // `serve_restarting` is the app's entry point, with its own settings (`AppSettings`)
+    // and the `Settings` its build function reads; `AppConfigCommand` is `config`.
     #[cfg(feature = "server")]
     pub use sapphire_framework_server::{
-        AppServer, DeviceCommand, FrameworkCommand, ReleaseSource, StatusReport, StatusRow,
-        WorkgroupCommand, WorkspaceCommand, WorkspaceHost,
+        AppConfigCommand, AppScopeFlags, AppServer, AppSettings, DeviceCommand, FrameworkCommand,
+        ReleaseSource, Settings, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
+        WorkspaceHost, serve_restarting,
     };
 }
 
@@ -166,6 +169,17 @@ mod tests {
         let _workspace: FrameworkCommand = FrameworkCommand::Workspace(WorkspaceCommand::Show);
         let _workgroup: FrameworkCommand = FrameworkCommand::Workgroup(WorkgroupCommand::List);
         let _device: FrameworkCommand = FrameworkCommand::Device(DeviceCommand::List);
+        let _config: FrameworkCommand = FrameworkCommand::Config(AppConfigCommand::Get {
+            key: "http.listen".to_owned(),
+        });
+        // The entry point, with an application's settings and its build function.
+        async fn _entry<A: AppSettings + Clone, F: Fn(&Settings) -> AppServer>(
+            ctx: &'static AppContext,
+            owner: A,
+            build: F,
+        ) {
+            let _ = serve_restarting(ctx, owner, build).await;
+        }
 
         // The typed status report shared by the CLI and the IPC `server.info`.
         let _report = StatusReport {

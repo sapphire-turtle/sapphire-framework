@@ -1,0 +1,21 @@
+[package]
+name = "corundum-gui"
+# Versioned on its own, not with the framework: asteria uses it too, and should not see a
+# new version with every sapphire release.
+version = "0.1.0"
+edition.workspace = true
+description = "The look shared by sapphire and asteria apps: egui shell, system fonts, Lucide icons"
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+keywords = ["gui", "egui", "icons", "fonts"]
+categories = ["gui"]
+
+# egui only: the components render inside a host app's egui context, on the desktops and
+# on phones alike. All consuming apps must use the same egui major version.
+[dependencies]
+egui = "0.36"
+# The SVG loader for the bundled Lucide icons (assets/icons), and for the apps' own.
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+fontdb = "0.24"
+ttf-parser = "0.25"
+tracing.workspace = true

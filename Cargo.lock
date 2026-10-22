@@ -7133,10 +7133,9 @@ version = "0.21.0"
 dependencies = [
  "android-activity",
  "android_log-sys",
+ "corundum-gui",
  "eframe",
  "egui",
- "egui_extras",
- "fontdb",
  "grain-id",
  "jni 0.21.1",
  "ndk-context",
@@ -7153,7 +7152,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "ttf-parser",
 ]
 
 [[package]]

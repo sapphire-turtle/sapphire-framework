@@ -1,68 +1,17 @@
-//! [`Shell`]: every app's window frame — its screens on a rail, its actions under them,
-//! Settings at the rail's foot, and the services' state beside it.
+//! [`Shell`]: every app's window frame — [`corundum_gui::Shell`] with sapphire's
+//! [`Settings`] at the rail's foot and the services' state beside it.
 //!
-//! Wide, the rail runs down the left (as Obsidian's does); narrower than
-//! [`COMPACT_WIDTH`], it becomes a bar along the bottom, as on a phone. The width decides,
-//! not the platform, so a desktop window made narrow shows the phone layout.
+//! The frame itself (the rail, the bottom bar when narrow, the actions) is corundum-gui's,
+//! shared with asteria; this adds what is sapphire's: Settings as the footer, the health
+//! dot in the foot slot, and the status panel when a service needs attention.
 
-use crate::Health;
-use crate::settings::{COMPACT_WIDTH, Settings};
+use std::cell::Cell;
 
-/// The rail's width, wide.
-const RAIL_WIDTH: f32 = 48.0;
+use corundum_gui::{Action, Destination};
 
-/// One of the app's screens on the rail.
-pub struct Destination<D> {
-    /// What the app matches on to draw it.
-    pub id: D,
-    /// A Lucide icon, as the apps' toolbars use (`egui::include_image!` of its SVG, stroked
-    /// in white so it takes the text colour): the rail shows only this.
-    pub icon: egui::ImageSource<'static>,
-    /// The screen's name, shown when the icon is hovered.
-    pub label: String,
-}
+use crate::{Health, Settings};
 
-impl<D> Destination<D> {
-    /// A screen called `label`, drawn as `icon`.
-    pub fn new(
-        id: D,
-        icon: egui::ImageSource<'static>,
-        label: impl Into<String>,
-    ) -> Destination<D> {
-        Destination {
-            id,
-            icon,
-            label: label.into(),
-        }
-    }
-}
-
-/// A button of the app's on the rail that does something — "New entry" — rather than
-/// open a screen. [`Shell::take_action`] says which one was clicked.
-pub struct Action {
-    /// What [`Shell::take_action`] returns when it is clicked.
-    pub id: &'static str,
-    /// A Lucide icon, as for a [`Destination`].
-    pub icon: egui::ImageSource<'static>,
-    /// What it does, shown when the icon is hovered.
-    pub label: String,
-}
-
-impl Action {
-    /// A button called `label`, drawn as `icon`, reported as `id`.
-    pub fn new(
-        id: &'static str,
-        icon: egui::ImageSource<'static>,
-        label: impl Into<String>,
-    ) -> Action {
-        Action {
-            id,
-            icon,
-            label: label.into(),
-        }
-    }
-}
-
+/// What the frame has open: one of the app's screens, or Settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Open<D> {
     Screen(D),
@@ -92,17 +41,11 @@ enum Open<D> {
 /// # }
 /// ```
 pub struct Shell<D> {
-    destinations: Vec<Destination<D>>,
-    actions: Vec<Action>,
-    /// The action clicked and not yet taken.
-    clicked: Option<&'static str>,
-    /// Where each action was last drawn, for the tests to click.
-    #[cfg(test)]
-    action_rects: Vec<egui::Rect>,
-    open: Open<D>,
+    frame: corundum_gui::Shell<Open<D>>,
     settings: Settings,
-    /// Whether the SVG loader has been put in place.
-    loaders: bool,
+    /// Where the health dot was last drawn, for the tests to click.
+    #[cfg(test)]
+    dot_rect: egui::Rect,
 }
 
 impl<D: Copy + PartialEq> Shell<D> {
@@ -110,49 +53,51 @@ impl<D: Copy + PartialEq> Shell<D> {
     /// all there is.
     pub fn new(destinations: Vec<Destination<D>>, mut settings: Settings) -> Shell<D> {
         settings.hosted();
-        let open = destinations
-            .first()
-            .map_or(Open::Settings, |d| Open::Screen(d.id));
+        let destinations = destinations
+            .into_iter()
+            .map(|d| Destination::new(Open::Screen(d.id), d.icon, d.label))
+            .collect();
+        let frame = corundum_gui::Shell::new(destinations).with_footer(vec![Destination::new(
+            Open::Settings,
+            crate::icons::settings(),
+            "Settings",
+        )]);
         Shell {
-            destinations,
-            actions: Vec::new(),
-            clicked: None,
-            #[cfg(test)]
-            action_rects: Vec::new(),
-            open,
+            frame,
             settings,
-            loaders: false,
+            #[cfg(test)]
+            dot_rect: egui::Rect::NOTHING,
         }
     }
 
     /// Put `actions` on the rail, under the screens (on the bottom bar, after them).
     pub fn with_actions(mut self, actions: Vec<Action>) -> Shell<D> {
-        self.actions = actions;
+        self.frame = self.frame.with_actions(actions);
         self
     }
 
     /// The [`Action`] clicked in the last [`ui`](Self::ui), once: call it after `ui`
     /// every frame and do what it names.
     pub fn take_action(&mut self) -> Option<&'static str> {
-        self.clicked.take()
+        self.frame.take_action()
     }
 
     /// The app's screen that is open; `None` while Settings is.
     pub fn current(&self) -> Option<D> {
-        match self.open {
-            Open::Screen(id) => Some(id),
-            Open::Settings => None,
+        match self.frame.current() {
+            Some(Open::Screen(id)) => Some(id),
+            _ => None,
         }
     }
 
     /// Open the app's screen `id`.
     pub fn open(&mut self, id: D) {
-        self.open = Open::Screen(id);
+        self.frame.open(Open::Screen(id));
     }
 
     /// Open Settings.
     pub fn open_settings(&mut self) {
-        self.open = Open::Settings;
+        self.frame.open(Open::Settings);
     }
 
     /// The Settings the rail's foot opens.
@@ -164,137 +109,57 @@ impl<D: Copy + PartialEq> Shell<D> {
     /// into what the frame leaves of `ui`, as it would at the root: its own panels, then a
     /// `CentralPanel`.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
-        if !std::mem::replace(&mut self.loaders, true) {
-            crate::icons::install_loaders(ui.ctx());
-        }
         self.settings.poll();
         let health = self.settings.health();
-        if ui.available_width() < COMPACT_WIDTH {
-            egui::Panel::bottom("shell_bar").show(ui, |ui| self.bar_ui(ui, health));
-        } else {
-            egui::Panel::left("shell_rail")
-                .resizable(false)
-                .exact_size(RAIL_WIDTH)
-                .show(ui, |ui| self.rail_ui(ui, health));
-        }
-        if health == Health::Problem {
-            egui::Panel::top("shell_status").show(ui, |ui| self.settings.status_ui(ui));
-        }
-        match self.open {
-            Open::Screen(id) => content(ui, id),
-            Open::Settings => self.settings.ui(ui),
-        }
-    }
-
-    fn rail_ui(&mut self, ui: &mut egui::Ui, health: Health) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(4.0);
-            for i in 0..self.destinations.len() {
-                self.destination_ui(ui, i);
-            }
-            if !self.actions.is_empty() {
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                for i in 0..self.actions.len() {
-                    self.action_ui(ui, i);
-                }
-            }
-        });
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            ui.add_space(4.0);
-            self.settings_button_ui(ui);
-            self.status_dot_ui(ui, health);
-        });
-    }
-
-    /// The phone layout: one cell per screen, then one per action, Settings last.
-    ///
-    /// Every screen gets a cell for now. When an app has more than a bar can hold, the ones
-    /// that do not fit move to a separate list of all of them (with a choice of which stay
-    /// on the bar) — not into Settings (#275).
-    fn bar_ui(&mut self, ui: &mut egui::Ui, health: Health) {
-        let screens = self.destinations.len();
-        let cells = screens + self.actions.len() + 1;
-        ui.columns(cells, |columns| {
-            for (i, column) in columns.iter_mut().enumerate() {
-                column.vertical_centered(|ui| {
-                    if i < screens {
-                        self.destination_ui(ui, i);
-                    } else if i < cells - 1 {
-                        self.action_ui(ui, i - screens);
-                    } else {
-                        ui.horizontal(|ui| {
-                            self.settings_button_ui(ui);
-                            self.status_dot_ui(ui, health);
-                        });
-                    }
-                });
-            }
-        });
-    }
-
-    fn destination_ui(&mut self, ui: &mut egui::Ui, i: usize) {
-        let d = &self.destinations[i];
-        let open = self.open == Open::Screen(d.id);
-        if icon_button(ui, open, d.icon.clone())
-            .on_hover_text(&d.label)
-            .clicked()
-        {
-            self.open = Open::Screen(d.id);
-        }
-    }
-
-    fn action_ui(&mut self, ui: &mut egui::Ui, i: usize) {
-        let a = &self.actions[i];
-        let response = icon_button(ui, false, a.icon.clone()).on_hover_text(&a.label);
+        // Set by the dot, read by Settings in the same frame: the two closures cannot both
+        // hold `settings`.
+        let about = Cell::new(false);
         #[cfg(test)]
-        {
-            self.action_rects
-                .resize(self.actions.len(), egui::Rect::NOTHING);
-            self.action_rects[i] = response.rect;
-        }
-        if response.clicked() {
-            self.clicked = Some(a.id);
-        }
-    }
-
-    fn settings_button_ui(&mut self, ui: &mut egui::Ui) {
-        let open = self.open == Open::Settings;
-        if icon_button(ui, open, crate::icons::settings())
-            .on_hover_text("Settings")
-            .clicked()
-        {
-            self.open = Open::Settings;
-        }
-    }
-
-    /// The services' state as a dot; clicking it opens About.
-    fn status_dot_ui(&mut self, ui: &mut egui::Ui, health: Health) {
-        let visuals = ui.visuals();
-        let (color, text) = match health {
-            Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
-            Health::Healthy => (egui::Color32::from_rgb(80, 180, 100), "Services running"),
-            Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
-            Health::Problem => (visuals.error_fg_color, "A service needs attention"),
-        };
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
-        ui.painter().circle_filled(rect.center(), 4.0, color);
-        if response.on_hover_text(text).clicked() {
-            self.settings.open_about();
-            self.open = Open::Settings;
-        }
+        let dot_rect = &mut self.dot_rect;
+        let settings = &mut self.settings;
+        self.frame.ui_with_foot(
+            ui,
+            |ui| {
+                let response = status_dot(ui, health);
+                #[cfg(test)]
+                {
+                    *dot_rect = response.rect;
+                }
+                response.clicked().then(|| {
+                    about.set(true);
+                    Open::Settings
+                })
+            },
+            |ui, open| {
+                if health == Health::Problem {
+                    egui::Panel::top("shell_status").show(ui, |ui| settings.status_ui(ui));
+                }
+                match open {
+                    Open::Screen(id) => content(ui, id),
+                    Open::Settings => {
+                        if about.get() {
+                            settings.open_about();
+                        }
+                        settings.ui(ui);
+                    }
+                }
+            },
+        );
     }
 }
 
-fn icon_button(ui: &mut egui::Ui, open: bool, icon: egui::ImageSource<'static>) -> egui::Response {
-    let image = crate::icons::image(ui, icon, 20.0);
-    ui.add(
-        egui::Button::image(image)
-            .selected(open)
-            .frame_when_inactive(open)
-            .min_size(egui::vec2(36.0, 36.0)),
-    )
+/// The services' state as a dot; clicking it opens About.
+fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
+    let visuals = ui.visuals();
+    let (color, text) = match health {
+        Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
+        Health::Healthy => (egui::Color32::from_rgb(80, 180, 100), "Services running"),
+        Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
+        Health::Problem => (visuals.error_fg_color, "A service needs attention"),
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
+    ui.painter().circle_filled(rect.center(), 4.0, color);
+    response.on_hover_text(text)
 }
 
 #[cfg(test)]
@@ -351,34 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn actions_are_drawn_in_both_layouts_and_report_nothing_unclicked() {
-        let (shell, _rt) = shell();
-        let mut shell = shell.with_actions(vec![Action::new(
-            "new",
-            crate::icons::settings(),
-            "New entry",
-        )]);
-        for size in [[900.0, 600.0], [400.0, 700.0]] {
-            shell.action_rects.clear();
-            render(size, |ui| {
-                shell.ui(ui, |ui, _| {
-                    egui::CentralPanel::default().show(ui, |ui| ui.label("entries"));
-                })
-            });
-            assert!(shell.action_rects[0].is_positive(), "{size:?}");
-            assert_eq!(shell.take_action(), None);
-        }
-        assert_eq!(shell.current(), Some(Screen::Entries));
-    }
-
-    #[test]
-    fn a_clicked_action_is_taken_once_and_opens_nothing() {
-        let (shell, _rt) = shell();
-        let mut shell = shell.with_actions(vec![Action::new(
-            "new",
-            crate::icons::settings(),
-            "New entry",
-        )]);
+    fn clicking_the_dot_opens_about() {
+        let (mut shell, _rt) = shell();
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
         let frame = |events: Vec<egui::Event>, shell: &mut Shell<Screen>| {
@@ -396,7 +235,7 @@ mod tests {
         };
         frame(vec![], &mut shell);
         frame(vec![], &mut shell);
-        let pos = shell.action_rects[0].center();
+        let pos = shell.dot_rect.center();
         let button = |pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -406,9 +245,8 @@ mod tests {
         frame(vec![egui::Event::PointerMoved(pos)], &mut shell);
         frame(vec![button(true)], &mut shell);
         frame(vec![button(false)], &mut shell);
-        assert_eq!(shell.take_action(), Some("new"));
-        assert_eq!(shell.take_action(), None);
-        assert_eq!(shell.current(), Some(Screen::Entries));
+        assert_eq!(shell.current(), None);
+        assert!(shell.settings.about_open());
     }
 
     #[test]

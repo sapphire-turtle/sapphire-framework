@@ -5,13 +5,12 @@ use std::collections::HashMap;
 
 use crate::Health;
 use crate::client::{CommandId, FrameworkClient};
+use corundum_gui::COMPACT_WIDTH;
+
 use crate::views::{
     DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
     WorkspacePicker,
 };
-
-/// Below this width Settings shows the list or one page, not both.
-pub const COMPACT_WIDTH: f32 = 600.0;
 
 /// A page the app adds to [`Settings`], under its own heading.
 pub trait SettingsSection {
@@ -117,6 +116,12 @@ impl Settings {
     /// The services' state, as of the last refresh.
     pub fn health(&self) -> Health {
         Health::of(&self.client.snapshot())
+    }
+
+    /// Whether About is the page open.
+    #[cfg(test)]
+    pub(crate) fn about_open(&self) -> bool {
+        self.page == Some(Page::About)
     }
 
     /// Open About, where the services' state is.

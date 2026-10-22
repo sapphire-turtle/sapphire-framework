@@ -398,8 +398,8 @@ mod tests {
                 new
             }
         });
-        let relay = Relay::new(BridgeLink::Sync(Arc::clone(&runtime)))
-            .restart_wait(Duration::from_secs(5));
+        let relay =
+            Relay::new(BridgeLink::Sync(Arc::clone(&runtime))).restart_wait(Duration::from_secs(5));
 
         let ack = relay.forward(RESTART, json!({})).await.unwrap();
         assert_eq!(ack, json!({}));

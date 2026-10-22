@@ -354,7 +354,12 @@ fn check_device_file(
     };
     let table = match text.parse::<toml::Table>() {
         Ok(table) => table,
-        Err(e) => return Err(vec![failure(None, e.to_string())]),
+        Err(e) => {
+            return Err(vec![failure(
+                None,
+                sapphire_framework_settings::describe_toml_error(&text, e.span(), e.message()),
+            )]);
+        }
     };
     let defs = framework_defs();
     let mut errors = Vec::new();
@@ -1329,6 +1334,31 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn an_unparsable_config_is_never_quoted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        std::fs::write(
+            ctx.config_dir().join("config.toml"),
+            "[anthropic]\napi_key = \"hunter2\" x\n",
+        )
+        .unwrap();
+        let err = Settings::load(&ctx, Arc::new(()))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("line 2"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
+        // Merging `server.toml` into it says no more.
+        std::fs::write(
+            ctx.config_dir().join("server.toml"),
+            "[update]\ncheck = false\n",
+        )
+        .unwrap();
+        let err = migrate(ctx.config_dir()).unwrap_err().to_string();
+        assert!(err.contains("line 2") && !err.contains("hunter2"), "{err}");
     }
 
     #[test]

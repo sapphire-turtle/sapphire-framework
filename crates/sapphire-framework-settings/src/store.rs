@@ -235,7 +235,7 @@ fn load<'a>(
         let doc = match std::fs::read_to_string(path) {
             Ok(text) => text.parse::<DocumentMut>().map_err(|e| Error::Unparsable {
                 file: path.to_path_buf(),
-                message: e.to_string(),
+                message: crate::describe_toml_error(&text, e.span(), e.message()),
             })?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 if !create {
@@ -644,6 +644,17 @@ mod tests {
         let (_owner, reg) = setup(vec![def("a.min", int())]);
         let err = apply(&reg, None, vec![set_op("a.min", Value::String("x".into()))]).unwrap_err();
         assert!(matches!(err, Error::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn an_unparsable_file_is_named_by_line_not_quoted() {
+        let (owner, reg) = setup(vec![def("a.min", int())]);
+        owner.0.write("wg.toml", "a = 1\ntoken = \"hunter2\" x\n");
+        let err = apply(&reg, None, vec![set_op("a.min", Value::Int(1))])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("line 2"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
     }
 
     #[test]

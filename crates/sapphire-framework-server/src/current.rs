@@ -575,9 +575,13 @@ fn drop_bare_registry(path: &Path) -> Result<()> {
 /// The marker's `config.toml` as a table; an empty one when there is no file.
 fn read_config(path: &Path) -> Result<toml::Table> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse()
-            .map_err(|e: toml::de::Error| Error::Config(format!("{}: {e}", path.display()))),
+        Ok(text) => text.parse().map_err(|e: toml::de::Error| {
+            Error::Config(format!(
+                "{}: {}",
+                path.display(),
+                sapphire_framework_settings::describe_toml_error(&text, e.span(), e.message())
+            ))
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
         Err(e) => Err(Error::Io(e)),
     }
@@ -668,6 +672,17 @@ mod tests {
         current.remove(false).await.unwrap();
         assert!(changed.has_changed().unwrap());
         assert_eq!(settings.get(&key), None);
+    }
+
+    #[test]
+    fn an_unparsable_marker_config_is_never_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[app]\ntoken = \"hunter2\" x\n").unwrap();
+        let err = read_config(&path).unwrap_err().to_string();
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        assert!(err.contains("line 2"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
     }
 
     #[test]

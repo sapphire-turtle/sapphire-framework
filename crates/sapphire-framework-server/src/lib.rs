@@ -642,7 +642,16 @@ impl AppServer {
             runtime.connect().await?;
         }
 
-        let current = Arc::new(Current::new(ctx, Arc::clone(&host), sync.clone(), file));
+        // Workspace keys follow the selection and the marker's `config.toml` as sync or an
+        // edit changes it.
+        let mut current = Current::new(ctx, Arc::clone(&host), sync.clone(), file);
+        if let Some(settings) = &settings {
+            current = current.with_settings(settings.clone());
+        }
+        if let Some(runtime) = &sync {
+            runtime.set_settings(settings.clone());
+        }
+        let current = Arc::new(current);
         // Back to the workspace this host had, before the first client can ask for it.
         let restoring = current.restore().await;
 

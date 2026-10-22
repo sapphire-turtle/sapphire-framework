@@ -535,7 +535,12 @@ impl FromValue for Vec<String> {
 /// The app server's settings as the running server sees them: a cheap, clonable handle.
 ///
 /// Keys that apply on a restart keep the values they had when the server started; keys
-/// that apply live follow every write, and [`changed`](Self::changed) announces it.
+/// that apply live follow every write, a change of the selected workspace and a change sync
+/// or an edit makes to its `config.toml`, and [`changed`](Self::changed) announces it.
+///
+/// A key that applies on a restart is pending while its value differs from the one the
+/// server started with, so switching to a workspace whose file holds another value for a
+/// workspace key of that kind makes it pending too.
 #[derive(Clone)]
 pub struct Settings {
     inner: Arc<Inner>,
@@ -640,15 +645,16 @@ impl Settings {
         self.get(key).and_then(T::from_value)
     }
 
-    /// Bumped after every write that changes the effective value of a key that applies
-    /// live.
+    /// Bumped whenever the effective value of a key that applies live changes: after a
+    /// write, a change of the selected workspace, or a change to its `config.toml`.
     pub fn changed(&self) -> watch::Receiver<u64> {
         self.inner.changed.subscribe()
     }
 
-    /// Read the files again after a write: live keys take their new values, and
-    /// [`changed`](Self::changed) is bumped if any did; restart keys keep their start
-    /// values.
+    /// Read the files again after a write, a change of selection or a change to the
+    /// workspace's file: live keys take their new values, and [`changed`](Self::changed)
+    /// is bumped if any did; restart keys keep their start values. Synchronous, and holding
+    /// its lock only while it swaps the values in, so any caller may run it.
     pub(crate) fn refresh(&self) -> Result<()> {
         let new = read(&self.inner.registry)?;
         let mut values = self.inner.values.write().unwrap_or_else(|e| e.into_inner());

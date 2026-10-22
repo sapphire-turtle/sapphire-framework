@@ -190,4 +190,4 @@ the path filter never leaves a required check pending.
 
 - `fonts::PREFERRED_FAMILIES` has no iOS or Android branch; both take the Linux list, and
   fontdb's system-font scan may not see their font directories. The CJK fallback likely
-  finds nothing on a phone. Part 3 fixes it; an issue records it.
+  finds nothing on a phone. Part 3 fixes it (#321).

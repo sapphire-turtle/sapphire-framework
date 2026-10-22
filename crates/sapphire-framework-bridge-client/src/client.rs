@@ -157,6 +157,16 @@ impl BridgeClient {
         }
     }
 
+    /// Call `method` with `params` as they are, and hand back the answer as it is: for a
+    /// relay, which forwards its clients' calls without reading them.
+    pub async fn call_raw(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> sapphire_ipc::Result<serde_json::Value> {
+        self.call(method, params).await
+    }
+
     /// Announce the workspaces this app server owns.
     pub async fn register(&self, params: RegisterParams) -> sapphire_ipc::Result<RegisterResult> {
         self.call(REGISTER, params).await

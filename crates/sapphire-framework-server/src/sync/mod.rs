@@ -164,7 +164,8 @@ impl BridgeConnector {
         })
     }
 
-    async fn connect(&self) -> sapphire_ipc::Result<Option<BridgeClient>> {
+    /// One attempt: `None` when no bridge is running.
+    pub(crate) async fn connect(&self) -> sapphire_ipc::Result<Option<BridgeClient>> {
         (self.0)().await
     }
 }
@@ -362,6 +363,18 @@ impl SyncRuntime {
     /// Whether the runtime has a live connection to the bridge.
     pub fn is_connected(&self) -> bool {
         self.bridge().is_ok()
+    }
+
+    /// The bridge connection, while there is an open one: what the relay forwards over.
+    pub(crate) fn connected_bridge(&self) -> Option<Arc<BridgeClient>> {
+        self.bridge().ok()
+    }
+
+    /// The bridge slot, followed: changes each time the runtime connects or loses the
+    /// connection.
+    #[expect(dead_code, reason = "the relayed `bridge.restart` waits on it (#314)")]
+    pub(crate) fn bridge_changes(&self) -> tokio::sync::watch::Receiver<Option<Arc<BridgeClient>>> {
+        self.bridge.subscribe()
     }
 
     /// Run `task` in the background, tracked so the server's shutdown ends it.

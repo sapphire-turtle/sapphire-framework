@@ -50,6 +50,7 @@ mod host;
 #[cfg(feature = "http")]
 mod http;
 mod instrument;
+mod relay;
 mod selection;
 pub mod sync;
 #[cfg(test)]
@@ -89,6 +90,9 @@ pub struct AppServer {
     selection_file: Option<PathBuf>,
     host: Arc<WorkspaceHost>,
     sync: Option<Arc<SyncRuntime>>,
+    /// How the relay reaches the bridge when there is no sync runtime to share; `None` is
+    /// the host's own bridge.
+    bridge_connector: Option<BridgeConnector>,
     extend: Option<Box<dyn FnOnce(Router) -> Router + Send>>,
     /// The application's own status rows, shown after the framework's in `status` and in
     /// the `server.info` report.
@@ -196,6 +200,7 @@ impl AppServer {
             selection_file: None,
             host: Arc::new(WorkspaceHost::new(ctx)),
             sync: None,
+            bridge_connector: None,
             extend: None,
             status_rows: None,
             app_api: None,
@@ -351,6 +356,18 @@ impl AppServer {
         Ok(self.sync(Arc::new(runtime)))
     }
 
+    /// Reach the bridge with `connector` for the relayed `bridge.*`, `embed.*`,
+    /// `external_device.*` and `config.*` methods, rather than at the host's standard
+    /// endpoint.
+    ///
+    /// Used only without [`sync`](Self::sync): a server with a sync runtime relays over the
+    /// runtime's connection. The connection is made on the first relayed call, and made
+    /// again on the next call after it drops.
+    pub fn bridge_connector(mut self, connector: BridgeConnector) -> AppServer {
+        self.bridge_connector = Some(connector);
+        self
+    }
+
     /// The application's own rows for the status report: shown after the framework's
     /// `running` / `version` / `pid` / `managed_by` lines.
     ///
@@ -440,6 +457,7 @@ impl AppServer {
             selection_file,
             host,
             sync,
+            bridge_connector,
             extend,
             status_rows,
             app_api,
@@ -530,6 +548,16 @@ impl AppServer {
             // `workspace.*` namespace is complete.
             router = sync_router(Arc::clone(&current), router);
         }
+        // The bridge's client-facing methods, over the sync runtime's connection when there
+        // is one. Like `sync_router`, under the application's own methods.
+        let link = match &sync {
+            Some(runtime) => relay::BridgeLink::Sync(Arc::clone(runtime)),
+            None => relay::BridgeLink::own(
+                bridge_connector
+                    .unwrap_or_else(|| BridgeConnector::standard(ctx.app_name, version)),
+            ),
+        };
+        router = Arc::new(relay::Relay::new(link)).routes(router);
         // `server.info` answers the typed [`StatusReport`] — the same shape the CLI's
         // `status` renders — so the CLI and a future GUI read one record. The rows come
         // from the application's builder, called once per report.

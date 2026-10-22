@@ -45,31 +45,33 @@ impl BridgeLink {
         })
     }
 
-    /// An open connection to the bridge, or `None` when there is none to be had.
+    /// An open connection to the bridge, or the error to answer with when there is none.
     ///
     /// The sync runtime's is whatever its slot holds. The relay's own is the one it made
-    /// last if that is still open, and otherwise one attempt to make another.
-    async fn client(&self) -> Option<Arc<BridgeClient>> {
+    /// last if that is still open, and otherwise one attempt to make another: no bridge
+    /// there is [`BRIDGE_NOT_RUNNING`], and a bridge that refuses the connection — one of
+    /// another API version, say — is its refusal, which carries no params to keep secret.
+    async fn client(&self) -> Result<Arc<BridgeClient>, RpcError> {
         match self {
-            BridgeLink::Sync(runtime) => runtime.connected_bridge(),
+            BridgeLink::Sync(runtime) => runtime.connected_bridge().ok_or_else(not_running),
             BridgeLink::Own(own) => {
                 // Held across the attempt, so calls racing in on a fresh server make one
                 // connection between them.
                 let mut current = own.current.lock().await;
                 if let Some(client) = current.as_ref().filter(|c| !c.is_closed()) {
-                    return Some(Arc::clone(client));
+                    return Ok(Arc::clone(client));
                 }
                 *current = None;
                 match own.connector.connect().await {
                     Ok(Some(client)) => {
                         let client = Arc::new(client);
                         *current = Some(Arc::clone(&client));
-                        Some(client)
+                        Ok(client)
                     }
-                    Ok(None) => None,
+                    Ok(None) => Err(not_running()),
                     Err(err) => {
                         tracing::warn!("could not connect to sapphire-bridge: {err}");
-                        None
+                        Err(RpcError::internal(err.to_string()))
                     }
                 }
             }
@@ -189,8 +191,9 @@ impl Relay {
 
     /// Forward one call, and hand back what the bridge answered.
     ///
-    /// The bridge's own errors come back unchanged. No bridge, or a connection that fails
-    /// under the call, is [`BRIDGE_NOT_RUNNING`]. Only `method` and the outcome are logged.
+    /// The bridge's own errors come back unchanged, and so does a bridge's refusal to be
+    /// connected to. No bridge, or a connection that fails under the call, is
+    /// [`BRIDGE_NOT_RUNNING`]. Only `method` and the outcome are logged.
     async fn forward(&self, method: &'static str, params: Value) -> Result<Value, RpcError> {
         let result = self.call(method, params).await;
         match &result {
@@ -205,9 +208,7 @@ impl Relay {
     /// A `bridge.restart` the bridge accepted answers only once this server is connected to
     /// the new bridge, so the client's next call finds it.
     async fn call(&self, method: &'static str, params: Value) -> Result<Value, RpcError> {
-        let Some(client) = self.link.client().await else {
-            return Err(not_running());
-        };
+        let client = self.link.client().await?;
         let result = match client.call_raw(method, params).await {
             Ok(result) => result,
             Err(sapphire_ipc::Error::Rpc(e)) => return Err(e),
@@ -222,9 +223,10 @@ impl Relay {
                 .await
                 .is_err()
         {
-            return Err(RpcError::internal(
-                "the bridge did not come back within 30 s".to_owned(),
-            ));
+            return Err(RpcError::internal(format!(
+                "the bridge did not come back within {} s",
+                RESTART_WAIT.as_secs()
+            )));
         }
         Ok(result)
     }
@@ -262,6 +264,33 @@ mod tests {
             going.disconnect();
         });
         (stub, client)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bridge_that_refuses_the_connection_is_reported_as_it_said() {
+        // An app server and a bridge of different API versions: "no bridge is running"
+        // would send the user looking for a bridge that is there.
+        let refusal = || sapphire_ipc::Error::ApiVersionMismatch {
+            running: 1,
+            ours: 2,
+            server_version: "9.9.9".into(),
+        };
+        let relay = Relay::new(BridgeLink::own(BridgeConnector::new(move || async move {
+            Err(refusal())
+        })));
+
+        let e = relay.forward("bridge.status", json!({})).await.unwrap_err();
+        assert_ne!(e.code, BRIDGE_NOT_RUNNING);
+        assert_eq!(e.message, refusal().to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_bridge_is_reported_as_not_running() {
+        let relay = Relay::new(BridgeLink::own(queued(Vec::new())));
+
+        let e = relay.forward("bridge.status", json!({})).await.unwrap_err();
+        assert_eq!(e.code, BRIDGE_NOT_RUNNING);
+        assert_eq!(e.message, "no sapphire-bridge is running");
     }
 
     #[tokio::test(flavor = "multi_thread")]

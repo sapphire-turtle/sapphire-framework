@@ -5,7 +5,7 @@ use sapphire_bridge_api::{
     DevicePrioritySetParams, DeviceRetireParams, InviteParams, JoinParams, WorkgroupCreateParams,
 };
 
-use super::conn::{Connections, unanswered};
+use super::conn::{Connections, drops_app, unanswered};
 use super::types::{ClientConfig, Command, CommandOutput, ServiceTarget};
 
 /// How long `command` may take.
@@ -42,13 +42,23 @@ pub(crate) async fn execute(
         | Command::DevicePrioritySet { .. }
         | Command::Embedding(_)
         | Command::ExternalDevice(_) => {
-            let result = tokio::time::timeout(limit, bridge_command(cfg, conns, command))
-                .await
-                .unwrap_or_else(|_| Err(unanswered("sapphire-bridge", limit)));
-            if result.is_err() {
-                conns.drop_bridge();
+            match tokio::time::timeout(limit, bridge_command(cfg, conns, command)).await {
+                Ok(Ok(Ok(out))) => Ok(out),
+                // The app server answered, for the bridge: its connection is fine.
+                Ok(Ok(Err(e))) if !drops_app(&e) => Err(bridge_failure(e)),
+                Ok(Ok(Err(e))) => {
+                    conns.drop_app();
+                    Err(bridge_failure(e))
+                }
+                Ok(Err(e)) => {
+                    conns.drop_app();
+                    Err(e)
+                }
+                Err(_) => {
+                    conns.drop_app();
+                    Err(unanswered("sapphire-bridge", limit))
+                }
             }
-            result
         }
         _ => {
             let result = tokio::time::timeout(limit, app_command(cfg, conns, command))
@@ -62,16 +72,22 @@ pub(crate) async fn execute(
     }
 }
 
+/// Run a bridge command through the app server: `Err` when the app server cannot be
+/// reached, and otherwise what the relayed call came to.
 async fn bridge_command(
     cfg: &ClientConfig,
     conns: &mut Connections,
     command: Command,
-) -> Result<CommandOutput, String> {
-    let c = conns
-        .bridge(cfg)
+) -> Result<sapphire_ipc::Result<CommandOutput>, String> {
+    let app = cfg.app.app_name;
+    conns
+        .app(cfg)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "sapphire-bridge is not running".to_owned())?;
+        .ok_or_else(|| format!("the {app} server is not running"))?;
+    let c = conns
+        .bridge(cfg)
+        .ok_or_else(|| format!("the {app} server is not running"))?;
     let out = match command {
         Command::WorkgroupCreate { name, device_name } => c
             .workgroup_create(WorkgroupCreateParams { name, device_name })
@@ -116,7 +132,16 @@ async fn bridge_command(
         Command::Embedding(request) => c.embed_request(request).await.map(|_| CommandOutput::Done),
         _ => unreachable!("execute routes only bridge commands here"),
     };
-    out.map_err(|e| e.to_string())
+    Ok(out)
+}
+
+/// The message for a relayed bridge call that failed.
+fn bridge_failure(e: sapphire_ipc::Error) -> String {
+    match e {
+        // The relay's answer that no bridge runs.
+        sapphire_ipc::Error::NotRunning(_) => "sapphire-bridge is not running".to_owned(),
+        e => e.to_string(),
+    }
 }
 
 async fn app_command(
@@ -244,6 +269,27 @@ fn install_failure(stderr: &str, stdout: &str, code: Option<i32>, manual: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::conn::tests::{config, holds_app, over_a_refusing_relay};
+
+    #[tokio::test]
+    async fn a_bridge_error_in_a_command_keeps_the_app_connection() {
+        let cfg = config();
+        let mut conns = over_a_refusing_relay().await;
+
+        let create = Command::WorkgroupCreate {
+            name: "home".into(),
+            device_name: "laptop".into(),
+        };
+        let result = execute(&cfg, &mut conns, create).await;
+        assert!(
+            matches!(&result, Err(m) if m.contains("the bridge said no")),
+            "{result:?}"
+        );
+        assert!(
+            holds_app(&conns),
+            "the app server answered: its connection is fine"
+        );
+    }
 
     #[test]
     fn an_install_gets_its_own_limit_and_a_join_three_times_the_command_limit() {
@@ -256,7 +302,6 @@ mod tests {
         let cfg = ClientConfig {
             app,
             endpoints: super::super::Endpoints {
-                bridge: sapphire_ipc::Endpoint::in_dir("b", dir.clone()),
                 app: sapphire_ipc::Endpoint::in_dir("a", dir),
             },
             service_exes: super::super::ServiceExes {

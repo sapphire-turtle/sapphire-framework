@@ -7080,6 +7080,7 @@ version = "0.21.0"
 dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -7267,6 +7268,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7274,6 +7276,7 @@ name = "sapphire-framework-server-api"
 version = "4.2.0"
 dependencies = [
  "grain-id",
+ "sapphire-framework-bridge-api",
  "serde",
  "serde_json",
 ]

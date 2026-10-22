@@ -23,7 +23,7 @@ use grain_id::GrainId;
 use sapphire_backend::protocol as proto;
 use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_bridge::{
-    Bridge, BridgeDir, HelloTiming, LoopbackNetwork, NetConfig, Workgroup,
+    Bridge, BridgeDir, HelloTiming, LoopbackNetwork, NetConfig, Workgroup, serve_restarting,
 };
 use sapphire_framework_server::{AppServer, BridgeConnector, SyncRuntime};
 use sapphire_ipc::ManagedBy;
@@ -530,36 +530,47 @@ async fn start_bridge(
     // and a bridge that started it would spawn a second copy of the test suite.
     let control = Endpoint::in_dir("bridge", runtime_dir.to_path_buf());
     let data = Endpoint::in_dir("bridge-data", runtime_dir.to_path_buf());
-    let bridge = Bridge::new(
-        bridge_dir.clone(),
-        Arc::new(net.transport(node_id)),
-        VERSION,
-    )
-    .unwrap()
-    .net(NetConfig {
-        wake_on_sync: false,
-        discovery: false,
-        relays: Vec::new(),
-        use_default_relays: false,
-        ..NetConfig::default()
-    })
-    .control_endpoint(control.clone())
-    .data_endpoint(data)
-    // Short Hello timing, so an election settles in well under a second instead of the
-    // field's default.
-    .hello_timing(HelloTiming {
-        interval: Duration::from_millis(100),
-        dead: Duration::from_millis(600),
-    });
-    let bridge = match &embed {
-        Some(provider) => bridge.embed_provider(Arc::clone(provider)),
-        None => bridge,
+    let build = {
+        let (net, node_id, bridge_dir) = (net.clone(), node_id.to_owned(), bridge_dir.clone());
+        let control = control.clone();
+        move || {
+            let bridge = Bridge::new(
+                bridge_dir.clone(),
+                Arc::new(net.transport(&node_id)),
+                VERSION,
+            )
+            .map(|bridge| {
+                let bridge = bridge
+                    .net(NetConfig {
+                        wake_on_sync: false,
+                        discovery: false,
+                        relays: Vec::new(),
+                        use_default_relays: false,
+                        ..NetConfig::default()
+                    })
+                    .control_endpoint(control.clone())
+                    .data_endpoint(data.clone())
+                    // Short Hello timing, so an election settles in well under a second
+                    // instead of the field's default.
+                    .hello_timing(HelloTiming {
+                        interval: Duration::from_millis(100),
+                        dead: Duration::from_millis(600),
+                    });
+                match &embed {
+                    Some(provider) => bridge.embed_provider(Arc::clone(provider)),
+                    None => bridge,
+                }
+            });
+            std::future::ready(bridge)
+        }
     };
     let bridge_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("a runtime for the bridge");
-    let mut bridge_task = bridge_runtime.spawn(async move { bridge.run().await });
+    // Served as the real process serves it, so `bridge.restart` brings a new bridge up on the
+    // same listeners rather than ending this one.
+    let mut bridge_task = bridge_runtime.spawn(serve_restarting(build));
     wait_until_listening(&control, "the bridge", &mut bridge_task).await;
     bridge_runtime
 }

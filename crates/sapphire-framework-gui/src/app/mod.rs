@@ -1,9 +1,9 @@
 //! [`run`]: a sapphire app's desktop window, started the same way for every app.
 //!
-//! Every desktop app is a pure client of its app server and the bridge, so they all start
-//! alike: the framework's logging, a panic hook that explains a lost GPU device, a tokio
-//! runtime, the app's directories, a [`FrameworkClient`], and an eframe window on wgpu
-//! with a backend that works on the host (see [`gpu`]). What differs — the app's name,
+//! Every desktop app is a pure client of its app server, which relays the bridge, so they
+//! all start alike: the framework's logging, a panic hook that explains a lost GPU device,
+//! a tokio runtime, the app's directories, a [`FrameworkClient`], and an eframe window on
+//! wgpu with a backend that works on the host (see [`gpu`]). What differs — the app's name,
 //! its window and its own [`eframe::App`] — goes in [`AppOptions`] and the closure.
 //!
 //! ```no_run
@@ -96,8 +96,7 @@ pub struct AppSetup<'a> {
     pub framework: FrameworkClient,
     /// Wakes the window: give it to a client of the app's own methods.
     pub repaint: Arc<dyn Fn() + Send + Sync>,
-    /// Where the bridge and the app server listen; `app` is where the app's own client
-    /// connects.
+    /// Where the app server listens, which the app's own client connects to as well.
     pub endpoints: Endpoints,
     /// The app's data directory (`<platform data dir>/<app name>`, honouring
     /// `SAPPHIRE_<APP>_DATA_DIR`), for what the window keeps between runs: its UI

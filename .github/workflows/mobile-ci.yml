@@ -1,0 +1,64 @@
+name: Mobile CI
+
+# corundum-gui is shared with asteria, which ships on phones from the start (#318), so it
+# is built for iOS and Android on every pull request that touches it. The rest of the
+# workspace is not: `-p corundum-gui` builds the crate (egui only) without it.
+#
+# Build and clippy only. Its tests are platform-independent and run on the desktops in
+# ci.yml; running them on a simulator or an emulator is later work.
+#
+# Not a required check: with the path filter it does not run on most pull requests, and a
+# required check that never runs would leave them pending.
+on:
+  pull_request:
+    paths:
+      - crates/corundum-gui/**
+      - .github/workflows/mobile-ci.yml
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # rustup installs the rust-toolchain.toml toolchain on first use; do that in its own
+      # step so the download does not land in the middle of another.
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Add the iOS targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (device and simulator)
+        run: |
+          for t in aarch64-apple-ios aarch64-apple-ios-sim; do
+            cargo clippy -p corundum-gui --target "$t" --locked -- -D warnings || exit 1
+          done
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: cargo --version
+
+      - name: Add the Android targets
+        run: rustup target add aarch64-linux-android x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # The runner has an NDK preinstalled; ANDROID_NDK_LATEST_HOME points at it.
+      - name: Clippy (arm64 phones and x86_64 emulators)
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --locked -- -D warnings

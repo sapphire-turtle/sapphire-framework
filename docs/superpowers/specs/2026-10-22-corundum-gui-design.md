@@ -25,8 +25,12 @@ The issue is split into parts, each with its own spec, plan and PR:
    *(This spec.)*
 2. **Theme** — light / dark / follow the system, contrast levels, colour tokens.
    *(Own spec.)*
-3. **Fonts for accessibility** — a dyslexia-friendly font (OpenDyslexic or similar) and the
-   mobile font lookup (see "Known gaps"). *(Own spec.)*
+3. **Mobile fonts** — the system font lookup on iOS and Android (see "Known gaps").
+   *(Own spec.)*
+
+A dyslexia-friendly font is deferred with no part assigned: the free ones (OpenDyslexic and
+similar) cover Latin only, and there seems to be no free CJK one, so switching to it would
+leave CJK text on the fallback anyway.
 
 Moving each app's icons onto corundum-gui is a PR in that app's repository, after this one
 is released.

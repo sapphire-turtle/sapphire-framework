@@ -7043,6 +7043,7 @@ dependencies = [
  "sapphire-framework-registry",
  "sapphire-framework-service",
  "sapphire-framework-session",
+ "sapphire-framework-settings",
  "sapphire-framework-sync",
  "sapphire-framework-update",
  "serde",
@@ -7052,6 +7053,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -7301,6 +7303,18 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "sapphire-framework-settings"
+version = "0.21.0"
+dependencies = [
+ "sapphire-framework-bridge-api",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -8666,6 +8680,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

@@ -472,6 +472,12 @@ impl PeerTransport for IrohTransport {
         postcard::to_stdvec(&addr)
             .map_err(|e| Error::Peer(format!("could not encode this host's address: {e}")))
     }
+
+    async fn close(&self) {
+        // Gracefully: peers are told the connections are going, and the socket is free
+        // when this returns, for the endpoint a restarted bridge binds next.
+        self.endpoint.close().await;
+    }
 }
 
 impl IrohTransport {

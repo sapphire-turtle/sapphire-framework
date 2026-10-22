@@ -130,7 +130,7 @@ Place `config.toml` inside the marker directory
 db = "redb"   # "none" | "redb"
 ```
 
-Embedding is not configured here: the bridge embeds (`<bridge dir>/embedding.toml`), and
+Embedding is not configured here: the bridge embeds (`[embed]` of the bridge's `config.toml`; see `sapphire-bridge config`), and
 `WorkspaceState::load_embedder()` asks it. Without a bridge that embeds, search is FTS only.
 
 Environment variable overrides:

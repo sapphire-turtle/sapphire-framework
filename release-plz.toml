@@ -39,6 +39,10 @@ name = "sapphire-framework-retrieve"
 version_group = "framework"
 
 [[package]]
+name = "sapphire-framework-settings"
+version_group = "framework"
+
+[[package]]
 name = "sapphire-framework-track"
 version_group = "framework"
 

@@ -9,23 +9,25 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
-    Ack, BRIDGE_NAME, DEVICE_PRIORITY_SET, DEVICE_RETIRE, DevicePrioritySetParams,
-    DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET,
-    EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
-    EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
-    EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
+    Ack, BRIDGE_NAME, CONFIG_GET, CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET, CONFIG_UNSET,
+    ConfigGetParams, ConfigListParams, ConfigListResult, ConfigSchemaResult, ConfigSetParams,
+    ConfigUnsetParams, ConfigWriteResult, DEVICE_PRIORITY_SET, DEVICE_RETIRE,
+    DevicePrioritySetParams, DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult,
+    EMBED, EMBED_DEVICE_SET, EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET,
+    EMBED_MODEL_SET, EMBED_SETTINGS, EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE,
+    EXTERNAL_DEVICE_LIST, EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
     EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult,
-    EmbedKeySetParams, EmbedModelInfo, EmbedModelSetParams, EmbedParams, EmbedResult,
+    EmbedKeySetParams, EmbedModelInfo, EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult,
     EmbedSettingsResult, ExternalDeviceAuthenticateParams, INVITE, InviteParams, InviteResult,
-    JOIN, JoinParams, JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RegisterParams,
+    JOIN, JoinParams, JoinResult, PEERS, PeerInfo, PeersResult, REGISTER, RESTART, RegisterParams,
     RegisterResult, RouteStatus, STATUS, StatusResult, UNREGISTER, UnregisterParams,
     WORKGROUP_CREATE, WORKSPACES, WorkgroupCreateParams, WorkgroupCreateResult, WorkgroupStatus,
     WorkgroupWorkspaceInfo, WorkspaceRoles, WorkspacesResult,
 };
-use sapphire_ipc::{
-    Connection, Endpoint, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve,
-};
+use sapphire_ipc::{Connection, PeerHandle, RequestCtx, Router, RpcError, ServerInfo, serve};
 use serde_json::Value;
+
+use sapphire_framework_settings::{self as settings, Op};
 
 use crate::Bridge;
 use crate::error::{Error, Result};
@@ -131,22 +133,21 @@ impl Session {
 
 // ── serving ─────────────────────────────────────────────────────────────────
 
-/// Serve control connections until the listener fails.
+/// How long `bridge.restart` waits after answering before the restart begins, so the
+/// reply is flushed before the connection closes.
+const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Serve control connections on `listener` until it fails.
 pub(crate) async fn listen(
     bridge: Arc<Bridge>,
-    endpoint: Endpoint,
+    listener: &mut sapphire_ipc::Listener,
     info: ServerInfo,
 ) -> Result<()> {
-    #[cfg(unix)]
-    let listener = sapphire_ipc::bind(&endpoint).await?;
-    #[cfg(windows)]
-    let mut listener = sapphire_ipc::bind(&endpoint)?;
-
     loop {
         let conn = listener.accept().await?;
-        let bridge = Arc::clone(&bridge);
-        let info = info.clone();
-        tokio::spawn(serve_connection(conn, bridge, info));
+        // On the bridge's own task set: a restart ends every connection, so a connected
+        // app server sees it close and reconnects to the new bridge.
+        bridge.spawn_task(serve_connection(conn, Arc::clone(&bridge), info.clone()));
     }
 }
 
@@ -304,7 +305,10 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedModelSetParams = parse(ctx, "embed.model_set")?;
-                    crate::embed_settings::set_model(&bridge.dir, params).map_err(failed)?;
+                    let request = EmbedRequest::ModelSet(params);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
@@ -317,7 +321,9 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedDeviceSetParams = parse(ctx, "embed.device_set")?;
-                    crate::embed_settings::set_device(&bridge.dir, params.slot, params.enabled)
+                    let request = EmbedRequest::DeviceSet(params);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
                         .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
@@ -331,7 +337,10 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
                 let bridge = Arc::clone(&bridge);
                 async move {
                     let params: EmbedKeySetParams = parse(ctx, "embed.key_set")?;
-                    crate::embed_settings::set_key(&bridge.dir, &params.key).map_err(failed)?;
+                    let request = EmbedRequest::KeySet(params.key);
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
                         .map_err(failed)
                         .and_then(encode)
@@ -343,8 +352,96 @@ fn router(bridge: Arc<Bridge>, session: Arc<Session>) -> Router {
             move |_| {
                 let bridge = Arc::clone(&bridge);
                 async move {
-                    crate::embed_settings::clear_key(&bridge.dir).map_err(failed)?;
+                    let request = EmbedRequest::KeyClear;
+                    bridge
+                        .write_settings(|| crate::embed_settings::apply(&bridge.dir, request))
+                        .map_err(failed)?;
                     embed_settings_report(&bridge)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(RESTART, {
+            let bridge = Arc::clone(&bridge);
+            move |_| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    tracing::info!(target: crate::logging::BRIDGE_TARGET, "a restart was requested");
+                    // Notified after the reply is on its way: the restart closes this very
+                    // connection, and the caller should hear back first.
+                    tokio::spawn(async move {
+                        tokio::task::yield_now().await;
+                        tokio::time::sleep(RESTART_DELAY).await;
+                        bridge.request_restart();
+                    });
+                    encode(Ack {})
+                }
+            }
+        })
+        .method(CONFIG_SCHEMA, {
+            let bridge = Arc::clone(&bridge);
+            move |_| {
+                let bridge = Arc::clone(&bridge);
+                async move { config_schema(&bridge).map_err(failed).and_then(encode) }
+            }
+        })
+        .method(CONFIG_LIST, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigListParams = parse(ctx, CONFIG_LIST)?;
+                    config_list(&bridge, params)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_GET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigGetParams = parse(ctx, CONFIG_GET)?;
+                    config_get(&bridge, &params.key)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_SET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigSetParams = parse(ctx, CONFIG_SET)?;
+                    let ops = params
+                        .entries
+                        .into_iter()
+                        .map(|e| Op::Set {
+                            key: e.key,
+                            value: e.value,
+                        })
+                        .collect();
+                    config_write(&bridge, params.scope, ops)
+                        .map_err(failed)
+                        .and_then(encode)
+                }
+            }
+        })
+        .method(CONFIG_UNSET, {
+            let bridge = Arc::clone(&bridge);
+            move |ctx| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let params: ConfigUnsetParams = parse(ctx, CONFIG_UNSET)?;
+                    let ops = params
+                        .keys
+                        .into_iter()
+                        .map(|key| Op::Unset { key })
+                        .collect();
+                    config_write(&bridge, params.scope, ops)
                         .map_err(failed)
                         .and_then(encode)
                 }
@@ -606,6 +703,66 @@ fn external_device(
 fn embed_settings_report(bridge: &Bridge) -> Result<EmbedSettingsResult> {
     let resolved = bridge.reload_embed()?;
     Ok(resolved.report(embed_info(bridge)))
+}
+
+/// `config.schema` — every setting's definition.
+fn config_schema(bridge: &Bridge) -> Result<ConfigSchemaResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    Ok(ConfigSchemaResult {
+        settings: reg.schema(),
+    })
+}
+
+/// `config.list`. Restart-only keys changed since the bridge started are marked.
+fn config_list(bridge: &Bridge, params: ConfigListParams) -> Result<ConfigListResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let start = bridge.start.lock().expect("start state");
+    Ok(ConfigListResult {
+        entries: settings::list(&reg, params.scope, start.as_ref())?,
+    })
+}
+
+/// `config.get`. Computed through `list` because only it knows the start state; an
+/// unknown key is the store's own `UnknownKey` error.
+fn config_get(bridge: &Bridge, key: &str) -> Result<settings::Entry> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let start = bridge.start.lock().expect("start state");
+    let entry = settings::get(&reg, key)?;
+    Ok(settings::list(&reg, None, start.as_ref())?
+        .into_iter()
+        .find(|e| e.key == key)
+        .unwrap_or(entry))
+}
+
+/// `config.set` and `config.unset`: apply the batch, pick up a live change, and report
+/// every key still waiting for a restart.
+fn config_write(
+    bridge: &Bridge,
+    scope: Option<settings::Scope>,
+    ops: Vec<Op>,
+) -> Result<ConfigWriteResult> {
+    let reg = crate::settings::registry(&bridge.dir)?;
+    let changed = bridge.write_settings(|| -> Result<Vec<String>> {
+        let applied = settings::apply(&reg, scope, ops)?;
+        if applied.live {
+            // The write succeeded; a provider that cannot be rebuilt is the embedding's
+            // problem to report, not this batch's.
+            if let Err(err) = bridge.reload_embed() {
+                tracing::warn!("could not apply the embedding settings: {err}");
+            }
+        }
+        Ok(applied.keys)
+    })?;
+    let start = bridge.start.lock().expect("start state");
+    let pending_restart = settings::list(&reg, None, start.as_ref())?
+        .into_iter()
+        .filter(|e| e.pending_restart)
+        .map(|e| e.key)
+        .collect();
+    Ok(ConfigWriteResult {
+        changed,
+        pending_restart,
+    })
 }
 
 /// A method's parameters, or the error that says they are malformed.
@@ -1613,8 +1770,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_synced_into_the_workgroup_root_is_picked_up_on_reload() {
-        use sapphire_bridge_api::ModelSettings;
-
         let tmp = tempfile::tempdir().unwrap();
         let (bridge, _builds) = settings_bridge(&tmp, true);
         bridge.reload_embed().unwrap();
@@ -1622,11 +1777,15 @@ mod tests {
 
         // What arrives from another device: the workgroup's file, written by its sync.
         let wg = bridge.workgroup().unwrap().unwrap();
-        let models = ModelSettings {
-            local: None,
-            remote: Some(remote_model("from-another-device")),
-        };
-        std::fs::write(wg.embedding_toml(), toml::to_string(&models).unwrap()).unwrap();
+        let model = remote_model("from-another-device");
+        std::fs::write(
+            wg.config_toml(),
+            format!(
+                "[embed.remote]\nendpoint = \"{}\"\nmodel = \"{}\"\ndimension = {}\n",
+                model.endpoint, model.model, model.dimension
+            ),
+        )
+        .unwrap();
         bridge.reload_embed().unwrap();
 
         let info = embed_info(&bridge);
@@ -1636,16 +1795,16 @@ mod tests {
 
     #[tokio::test]
     async fn without_avx2_a_local_only_workgroup_does_not_embed() {
-        use sapphire_bridge_api::{EmbedNote, LocalModel, Slot, SlotModel};
+        use sapphire_bridge_api::{EmbedNote, EmbedRequest, LocalModel, Slot, SlotModel};
 
         let tmp = tempfile::tempdir().unwrap();
         let (bridge, builds) = settings_bridge(&tmp, false);
-        crate::embed_settings::set_model(
+        crate::embed_settings::apply(
             &bridge.dir,
-            EmbedModelSetParams {
+            EmbedRequest::ModelSet(EmbedModelSetParams {
                 slot: Slot::Local,
                 model: Some(SlotModel::Local(LocalModel::default())),
-            },
+            }),
         )
         .unwrap();
         bridge.reload_embed().unwrap();

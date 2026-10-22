@@ -118,7 +118,7 @@ pub async fn start_with_exe(
     .await
 }
 
-/// As [`start_with_exe`], with this host's `net.toml` spelled out.
+/// As [`start_with_exe`], with this host's `[net]` spelled out.
 pub async fn start_with_net(
     net: &LoopbackNetwork,
     node_id: &str,
@@ -363,45 +363,48 @@ pub fn introduce_both(a: &Host, b: &Host) {
 /// replica this fixture opens against the joiner's workgroup, with the joiner's node
 /// re-registered on the network so it can accept the dial as a bridge would.
 ///
-/// The joiner's own record is identified once, before any replication: at that moment its
-/// ledger holds exactly the record its own join wrote, so the one that announces this
-/// host's node id is unambiguous.
+/// The joiner's own record is the one announcing `joiner_node`, the node id it joined with.
+/// It is named rather than guessed: after a first replication the joiner's ledger holds the
+/// other hosts' records too, and re-registering one of *their* nodes on the network would
+/// take its inbound streams away from that host's running bridge.
 ///
 /// The replica is dropped when the session ends, before the fixture returns: its store is a
 /// redb database, and a later call opens it again.
-pub async fn sync_workgroup(host: &Host, joiner: &BridgeDir, net: &LoopbackNetwork) {
+pub async fn sync_workgroup(
+    host: &Host,
+    joiner: &BridgeDir,
+    joiner_node: &str,
+    net: &LoopbackNetwork,
+) {
     let workgroup = Workgroup::open(joiner).unwrap().expect("a workgroup");
-    // At this moment the joiner's ledger holds exactly the record its own join wrote, so
-    // the one that announces this host's node id is unambiguous.
-    let own = workgroup
-        .devices()
-        .unwrap()
-        .entries()
-        .iter()
-        .find_map(|d| d.node_id.clone().map(|n| (d.id, n)))
-        .expect("the joiner announced its node id");
-    let (own_id, joiner_node) = own;
+    let own_id = workgroup
+        .this_device(joiner_node)
+        .expect("the joiner announced its node id")
+        .id;
 
     let replica = WorkgroupReplica::open(joiner, &workgroup, own_id).unwrap();
-    let transport = net.transport(&joiner_node);
-    let joiner_session = tokio::spawn(async move {
+    let transport = net.transport(joiner_node);
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel::<()>();
+    let joiner_sessions = tokio::spawn(async move {
         // The inviter dials the workgroup's own workspace, as a bridge would; a pairing
-        // attempt would be someone else's business.
-        let (_, _, stream) = transport
-            .accept_workspace()
-            .await
-            .expect("the inviter dialed the joiner");
-        replica.session(stream).await
+        // attempt would be someone else's business. Its running bridge may dial on its own
+        // too (a change to its root wakes its driver), so every stream is served, one at a
+        // time, until the fixture's own dial is done: a stream left unaccepted would be
+        // dropped and fail that session.
+        loop {
+            tokio::select! {
+                accepted = transport.accept_workspace() => {
+                    let (_, _, stream) = accepted.expect("the inviter dialed the joiner");
+                    replica.session(stream).await.expect("the joiner's session succeeded");
+                }
+                _ = &mut done_rx => return,
+            }
+        }
     });
 
-    host.bridge()
-        .sync_workgroup_now(&joiner_node)
-        .await
-        .unwrap();
-    joiner_session
-        .await
-        .expect("the joiner's session task")
-        .expect("the joiner's session succeeded");
+    host.bridge().sync_workgroup_now(joiner_node).await.unwrap();
+    done_tx.send(()).unwrap();
+    joiner_sessions.await.expect("the joiner's session task");
 }
 
 /// Start a bridge over `dir`, which already holds a joined workgroup.

@@ -88,11 +88,12 @@ sapphire-bridge/
     format          # directory format version
     node.key        # iroh secret key -> this device's node id
     bridge.lock     # single-instance guard, not a role election
-    net.toml        # discovery, relays, wake_on_sync
+    config.toml     # this device's settings: [net], [embed]
     routes.toml     # workspace_id -> the app server that owns it
     run/            # IPC sockets and spawn locks (SAPPHIRE_RUNTIME_DIR overrides it)
     workgroups/<workgroup-id>/
         root/       # device ledger
+        root/config.toml  # the workgroup's shared settings
         root/devices/<device-id>.toml
 ```
 
@@ -101,13 +102,21 @@ identity.
 
 ## Configuration
 
-`net.toml`, every field optional:
+`config.toml`, every field optional (`[net]` below; `[embed]` holds the embedding settings):
 
 ```toml
+[net]
 wake_on_sync = true    # start a stopped app server when a peer asks for its workspace
 discovery = true       # use discovery services to find peers
 relays = []            # relay URLs; empty disables relays
 ```
+
+Read and write settings by key with `sapphire-bridge config list|get|set|unset`
+(`--device` / `--workgroup` choose the file; `--restart` restarts the bridge for keys that need
+it, and `sapphire-bridge restart` does so on its own). A secret such as `embed.remote.key` is
+prompted for, or read from standard input with `--stdin`, and is never printed.
+A workgroup's shared settings live in `root/config.toml`. Directories from before this layout
+(`net.toml`, `embedding.toml`) are migrated on first start and kept as `*.toml.v1`.
 
 `RUST_LOG` sets the log filter, as everywhere else in the framework.
 

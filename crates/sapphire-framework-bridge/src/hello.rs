@@ -299,26 +299,26 @@ pub(crate) async fn run(bridge: Arc<Bridge>) -> crate::Result<()> {
             if !bridge.neighbours.begin_link(device.id) {
                 continue;
             }
-            let bridge = Arc::clone(&bridge);
+            let link = Arc::clone(&bridge);
             let peer = device.id;
             let neighbours = Arc::clone(&bridge.neighbours);
-            let task = tokio::spawn(async move {
-                match bridge.transport().open_hello(&node_id).await {
+            let task = bridge.spawn_task(async move {
+                match link.transport().open_hello(&node_id).await {
                     Ok(stream) => {
                         exchange(
                             stream,
                             peer,
-                            bridge.hello_tx.subscribe(),
-                            Arc::clone(&bridge.neighbours),
-                            bridge.hello_timing,
+                            link.hello_tx.subscribe(),
+                            Arc::clone(&link.neighbours),
+                            link.hello_timing,
                         )
                         .await;
                     }
                     Err(err) => tracing::debug!(%peer, "no hello link: {err}"),
                 }
-                bridge.neighbours.end_link(peer);
+                link.neighbours.end_link(peer);
             });
-            neighbours.track(peer, task.abort_handle());
+            neighbours.track(peer, task);
         }
     }
 }
@@ -328,8 +328,8 @@ pub(crate) fn serve_inbound(bridge: &Arc<Bridge>, peer: GrainId, stream: BoxedSt
     let rx = bridge.hello_tx.subscribe();
     let neighbours = Arc::clone(&bridge.neighbours);
     let timing = bridge.hello_timing;
-    let task = tokio::spawn(exchange(stream, peer, rx, Arc::clone(&neighbours), timing));
-    neighbours.track(peer, task.abort_handle());
+    let task = bridge.spawn_task(exchange(stream, peer, rx, Arc::clone(&neighbours), timing));
+    neighbours.track(peer, task);
 }
 
 #[cfg(test)]

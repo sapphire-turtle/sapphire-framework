@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::io::Write as _;
 
 use sapphire_bridge_api::{
-    BRIDGE_NAME, EmbedInfoResult, EmbedRequest, EmbedSettingsResult, EmbeddingCommand,
-    ExternalDeviceCommand, InviteParams, JoinParams, PeerInfo, StatusResult,
+    BRIDGE_NAME, ConfigCommand, EmbedInfoResult, EmbedRequest, EmbedSettingsResult,
+    EmbeddingCommand, ExternalDeviceCommand, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
 use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_service::{Environment, ServiceCommand, ServiceSpec, SystemManager};
@@ -48,6 +48,8 @@ pub enum BridgeCommand {
     Serve,
     /// Report what the bridge knows — live, or from the last snapshot it wrote.
     Status,
+    /// Restart the running bridge in place, so restart-only settings take effect.
+    Restart,
     /// Show the bridge's log. Bridge-specific: only this process writes one.
     Log {
         /// Keep printing as the log grows, as `tail -f` does.
@@ -76,6 +78,9 @@ pub enum BridgeCommand {
     /// switches and API key.
     #[command(subcommand)]
     Embedding(EmbeddingCommand),
+    /// The settings, by key: list, get, set and unset.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// The workgroup's external devices: clients that reach its apps with a key.
     #[command(subcommand)]
     ExternalDevice(ExternalDeviceCommand),
@@ -185,6 +190,7 @@ impl BridgeCommand {
         match self {
             BridgeCommand::Serve => run(version, embed).await,
             BridgeCommand::Status => status(version).await,
+            BridgeCommand::Restart => restart(version).await,
             BridgeCommand::Log { follow, lines } => log_command(follow, lines),
             // The service manager's own words, not the bridge's: `Environment::detect` reads
             // this machine once, so the deciding is a function of a value the test can build.
@@ -228,6 +234,7 @@ impl BridgeCommand {
                 }
             },
             BridgeCommand::Embedding(command) => embedding(version, command).await,
+            BridgeCommand::Config(command) => config(version, command).await,
             BridgeCommand::ExternalDevice(command) => external_device(version, command).await,
         }
     }
@@ -278,15 +285,7 @@ async fn embedding(version: &str, command: EmbeddingCommand) -> Result<i32> {
 /// Carry out `request` on the files of `dir`, and report what they resolve to. Nothing is
 /// loaded, so the report says only whether the bridge would embed.
 fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSettingsResult> {
-    match request {
-        EmbedRequest::Show => {}
-        EmbedRequest::ModelSet(params) => embed_settings::set_model(dir, params)?,
-        EmbedRequest::DeviceSet(params) => {
-            embed_settings::set_device(dir, params.slot, params.enabled)?
-        }
-        EmbedRequest::KeySet(key) => embed_settings::set_key(dir, &key)?,
-        EmbedRequest::KeyClear => embed_settings::clear_key(dir)?,
-    }
+    embed_settings::apply(dir, request)?;
     let (resolved, _) = embed_settings::load(dir, embed_settings::avx2())?;
     let info = EmbedInfoResult {
         enabled: resolved.active.is_some(),
@@ -294,6 +293,164 @@ fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSett
         ..EmbedInfoResult::default()
     };
     Ok(resolved.report(info))
+}
+
+// ── config ──────────────────────────────────────────────────────────────────
+
+/// What `config set` and `config unset` print when the batch only reached the files.
+const OFFLINE_NOTE: &str = "the bridge is not running; it applies these settings when it starts";
+
+/// What `config set --restart` and `config unset --restart` say when no bridge runs.
+const NOTHING_TO_RESTART: &str = "the bridge is not running; nothing to restart";
+
+/// `config …`: through the running bridge, or — when none runs — on the files, so a
+/// device can be set up before its bridge starts.
+async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
+    let Some(client) = connect(version).await? else {
+        let printed = config_offline(&BridgeDir::open()?, command)?;
+        for line in printed.out {
+            println!("{line}");
+        }
+        for line in printed.err {
+            eprintln!("{line}");
+        }
+        return Ok(printed.code);
+    };
+    // With `--restart`, the bridge restarts once the batch is written, so there is no
+    // restart left to ask for.
+    let write = |result: sapphire_bridge_api::ConfigWriteResult, restart: bool| {
+        if !restart && !result.pending_restart.is_empty() {
+            println!("restart required: run `sapphire-bridge restart`");
+        }
+    };
+    match command {
+        ConfigCommand::List { scope, show_origin } => {
+            let entries = client.config_list(scope.scope()).await?.entries;
+            for line in sapphire_bridge_api::describe_entries(&entries, show_origin) {
+                println!("{line}");
+            }
+        }
+        ConfigCommand::Get { key } => match client.config_get(&key).await {
+            Ok(entry) => {
+                for line in sapphire_bridge_api::describe_entries(&[entry], false) {
+                    println!("{line}");
+                }
+            }
+            // On stderr: `$(sapphire-bridge config get k)` must not take it for the value.
+            Err(err) => {
+                eprintln!("{err}");
+                return Ok(1);
+            }
+        },
+        ConfigCommand::Set {
+            entries,
+            scope,
+            stdin,
+            restart,
+        } => {
+            let schema = client.config_schema().await?.settings;
+            let entries = sapphire_bridge_api::parse_entries(&schema, &entries, stdin)
+                .map_err(Error::Config)?;
+            write(client.config_set(scope.scope(), entries).await?, restart);
+            if restart {
+                return restart_and_wait(&client).await;
+            }
+        }
+        ConfigCommand::Unset {
+            keys,
+            scope,
+            restart,
+        } => {
+            write(client.config_unset(scope.scope(), keys).await?, restart);
+            if restart {
+                return restart_and_wait(&client).await;
+            }
+        }
+    }
+    Ok(0)
+}
+
+/// What an offline `config` command prints, and its exit code.
+#[derive(Debug)]
+struct Printed {
+    /// The exit code.
+    code: i32,
+    /// Lines for stdout: the answer.
+    out: Vec<String>,
+    /// Lines for stderr: why there is no answer.
+    err: Vec<String>,
+}
+
+impl Printed {
+    fn ok(out: Vec<String>) -> Printed {
+        Printed {
+            code: 0,
+            out,
+            err: Vec::new(),
+        }
+    }
+
+    fn failed(err: String) -> Printed {
+        Printed {
+            code: 1,
+            out: Vec::new(),
+            err: vec![err],
+        }
+    }
+}
+
+/// Carry out `command` on the files of `dir`: what to print, and the exit code.
+fn config_offline(dir: &BridgeDir, command: ConfigCommand) -> Result<Printed> {
+    use sapphire_framework_settings::{Op, apply, get, list};
+
+    // Checked before anything is written: the user asked for a restart, and a write that
+    // took effect with none would be a surprise.
+    if let ConfigCommand::Set { restart: true, .. } | ConfigCommand::Unset { restart: true, .. } =
+        command
+    {
+        return Ok(Printed::failed(NOTHING_TO_RESTART.to_owned()));
+    }
+    let reg = crate::settings::registry(dir)?;
+    let done = || Ok(Printed::ok(vec![OFFLINE_NOTE.to_owned()]));
+    match command {
+        ConfigCommand::List { scope, show_origin } => {
+            let entries = list(&reg, scope.scope(), None)?;
+            Ok(Printed::ok(sapphire_bridge_api::describe_entries(
+                &entries,
+                show_origin,
+            )))
+        }
+        ConfigCommand::Get { key } => match get(&reg, &key) {
+            Ok(entry) => Ok(Printed::ok(sapphire_bridge_api::describe_entries(
+                &[entry],
+                false,
+            ))),
+            Err(err) => Ok(Printed::failed(err.to_string())),
+        },
+        ConfigCommand::Set {
+            entries,
+            scope,
+            stdin,
+            restart: _,
+        } => {
+            let entries = sapphire_bridge_api::parse_entries(&reg.schema(), &entries, stdin)
+                .map_err(Error::Config)?;
+            let ops = entries
+                .into_iter()
+                .map(|e| Op::Set {
+                    key: e.key,
+                    value: e.value,
+                })
+                .collect();
+            apply(&reg, scope.scope(), ops)?;
+            done()
+        }
+        ConfigCommand::Unset { keys, scope, .. } => {
+            let ops = keys.into_iter().map(|key| Op::Unset { key }).collect();
+            apply(&reg, scope.scope(), ops)?;
+            done()
+        }
+    }
 }
 
 // ── run ─────────────────────────────────────────────────────────────────────
@@ -305,7 +462,7 @@ fn embedding_offline(dir: &BridgeDir, request: EmbedRequest) -> Result<EmbedSett
 async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Result<i32> {
     let dir = BridgeDir::open()?;
     // Held for as long as the bridge runs; dropping it frees the next start. The lock is
-    // taken before anything reads `net.toml` or `node.key`, so a directory of a newer format
+    // taken before anything reads `config.toml` or `node.key`, so a directory of a newer format
     // stops us here rather than after a new identity has been minted (see `BridgeDir::at`).
     let _lock = match InstanceLock::acquire(&dir) {
         Ok(lock) => lock,
@@ -328,11 +485,20 @@ async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Resul
         "sapphire-bridge {version} starting (pid {})",
         std::process::id()
     );
-    let mut bridge = build_bridge(dir, version).await?;
-    if let Some(factory) = embed {
-        bridge = bridge.embed_factory(factory);
-    }
-    bridge.run().await?;
+    // The lock and the log stay across restarts: the pid, the lock file and the log file
+    // are the same before and after one. Each build reads the settings again.
+    crate::serve_restarting(|| {
+        let dir = dir.clone();
+        let embed = embed.clone();
+        async move {
+            let mut bridge = build_bridge(dir, version).await?;
+            if let Some(factory) = embed {
+                bridge = bridge.embed_factory(factory);
+            }
+            Ok(bridge)
+        }
+    })
+    .await?;
     Ok(0)
 }
 
@@ -354,10 +520,22 @@ pub async fn serve_in_process(
         target: crate::logging::BRIDGE_TARGET,
         "sapphire-bridge {version} starting in-process"
     );
-    let bridge = build_bridge(dir, version).await?;
+    // The first bridge is built here, so a configuration that cannot start is the caller's
+    // error now rather than the task's later; a restart builds the next ones in the task.
+    let mut first = Some(build_bridge(dir.clone(), version).await?);
     Ok(tokio::spawn(async move {
         let _lock = lock;
-        bridge.run().await
+        crate::serve_restarting(move || {
+            let first = first.take();
+            let dir = dir.clone();
+            async move {
+                match first {
+                    Some(bridge) => Ok(bridge),
+                    None => build_bridge(dir, version).await,
+                }
+            }
+        })
+        .await
     }))
 }
 
@@ -365,9 +543,9 @@ pub async fn serve_in_process(
 #[cfg(feature = "node")]
 async fn build_bridge(dir: BridgeDir, version: &'static str) -> Result<Bridge> {
     // Read once, and hand the same configuration to the bridge: it would otherwise read
-    // `net.toml` again when it starts its loops, and the two reads could disagree.
-    let net = NetConfig::load(&dir.net_toml())?;
-    // The workgroup's published `net.toml` is read inside `new_with_relays`, so a
+    // `[net]` again when it starts its loops, and the two reads could disagree.
+    let net = NetConfig::load(&dir.config_toml())?;
+    // The workgroup's published `[net]` is read inside `new_with_relays`, so a
     // publish that landed between the two reads is not split across them either.
     let transport = Arc::new(
         crate::iroh::IrohTransport::new_with_relays(
@@ -400,6 +578,47 @@ async fn connect(version: &str) -> Result<Option<BridgeClient>> {
         return Ok(None);
     }
     Ok(Some(BridgeClient::connect("cli", version).await?))
+}
+
+/// How long `restart` and `--restart` wait for the bridge to come back.
+const RESTART_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often they look.
+const RESTART_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// `restart`: restart the running bridge in place, and wait until it answers again.
+async fn restart(version: &str) -> Result<i32> {
+    let Some(client) = connect(version).await? else {
+        println!("no sapphire-bridge is running");
+        return Ok(1);
+    };
+    restart_and_wait(&client).await
+}
+
+/// Ask the bridge `client` is connected to to restart, and wait until it is back.
+///
+/// "Back" is two facts in order: the connection that asked has closed — the old bridge
+/// stopped serving, and its listener with it — and the control endpoint answers again. The
+/// first is watched on the connection itself rather than by probing, so a restart quicker
+/// than one poll is still seen.
+async fn restart_and_wait(client: &BridgeClient) -> Result<i32> {
+    client.restart().await?;
+    let endpoint = Endpoint::in_dir(BRIDGE_NAME, sapphire_ipc::runtime_dir()?);
+    let deadline = tokio::time::Instant::now() + RESTART_TIMEOUT;
+    let came_back = async {
+        client.closed().await;
+        while !sapphire_ipc::probe(&endpoint).await.unwrap_or(false) {
+            tokio::time::sleep(RESTART_POLL).await;
+        }
+    };
+    if tokio::time::timeout_at(deadline, came_back).await.is_err() {
+        return Err(Error::Peer(format!(
+            "the bridge did not come back within {} s",
+            RESTART_TIMEOUT.as_secs()
+        )));
+    }
+    println!("the bridge restarted");
+    Ok(0)
 }
 
 /// Report what the running bridge knows about itself.
@@ -928,6 +1147,9 @@ mod tests {
             vec!["b", "workspace", "list"],
             vec!["b", "service", "install"],
             vec!["b", "log", "--lines", "50"],
+            vec!["b", "restart"],
+            vec!["b", "config", "set", "net.discovery=false", "--restart"],
+            vec!["b", "config", "unset", "net.discovery", "--restart"],
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }
@@ -999,6 +1221,17 @@ mod tests {
         let code = test_env::with_dirs(tmp.path(), |bridge| async move {
             BridgeDir::at(bridge).unwrap();
             BridgeCommand::Status.dispatch("0.0.0").await.unwrap()
+        })
+        .await;
+        assert_eq!(code, 1);
+    }
+
+    #[tokio::test]
+    async fn restart_against_no_bridge_exits_non_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = test_env::with_dirs(tmp.path(), |bridge| async move {
+            BridgeDir::at(bridge).unwrap();
+            BridgeCommand::Restart.dispatch("0.0.0").await.unwrap()
         })
         .await;
         assert_eq!(code, 1);
@@ -1235,6 +1468,83 @@ mod pairing_cli_tests {
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn offline_set_writes_the_files_and_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().to_path_buf()).unwrap();
+        let command = |args: &[&str]| {
+            let mut argv = vec!["b", "config"];
+            argv.extend_from_slice(args);
+            match Probe::try_parse_from(argv).unwrap().command {
+                BridgeCommand::Config(c) => c,
+                _ => panic!("not a config command"),
+            }
+        };
+        let printed = config_offline(&dir, command(&["set", "net.discovery=false"])).unwrap();
+        assert_eq!(printed.code, 0);
+        assert_eq!(
+            printed.out,
+            ["the bridge is not running; it applies these settings when it starts"]
+        );
+        assert!(printed.err.is_empty());
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
+        assert!(
+            text.contains("[net]") && text.contains("discovery = false"),
+            "{text}"
+        );
+
+        let printed = config_offline(&dir, command(&["get", "net.discovery"])).unwrap();
+        assert_eq!(printed.out, ["net.discovery = false"]);
+        // `$(sapphire-bridge config get k)` must never capture an error as the value.
+        let printed = config_offline(&dir, command(&["get", "net.nope"])).unwrap();
+        assert_eq!(printed.code, 1);
+        assert!(printed.out.is_empty(), "{:?}", printed.out);
+        assert!(printed.err[0].contains("net.nope"), "{:?}", printed.err);
+
+        let printed = config_offline(&dir, command(&["unset", "net.discovery"])).unwrap();
+        assert_eq!(printed.out.len(), 1);
+        let lines = config_offline(&dir, command(&["list", "--device"]))
+            .unwrap()
+            .out;
+        assert!(
+            !lines.iter().any(|l| l.starts_with("net.discovery")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn offline_restart_flag_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = BridgeDir::at(tmp.path().to_path_buf()).unwrap();
+        let before: Vec<_> = std::fs::read_dir(&dir.root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        for args in [
+            vec!["b", "config", "set", "net.discovery=false", "--restart"],
+            vec!["b", "config", "unset", "net.discovery", "--restart"],
+        ] {
+            let BridgeCommand::Config(command) = Probe::try_parse_from(&args).unwrap().command
+            else {
+                panic!("not a config command");
+            };
+            let printed = config_offline(&dir, command).unwrap();
+            assert_eq!(printed.code, 1, "{args:?}");
+            assert!(printed.out.is_empty(), "{args:?}");
+            assert_eq!(
+                printed.err,
+                ["the bridge is not running; nothing to restart"]
+            );
+        }
+        // Nothing was written: the check comes before the batch.
+        assert!(!dir.config_toml().exists());
+        let after: Vec<_> = std::fs::read_dir(&dir.root)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(before, after);
     }
 
     #[test]

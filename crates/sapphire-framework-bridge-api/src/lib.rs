@@ -27,6 +27,14 @@ pub enum ManagedBy {
     Spawned,
 }
 
+mod config;
+pub use config::{
+    ConfigEntry, ConfigGetParams, ConfigListParams, ConfigListResult, ConfigSchemaResult,
+    ConfigSetParams, ConfigUnsetParams, ConfigWriteResult,
+};
+pub mod settings;
+pub use settings::{Apply, Entry, EntryValue, Kind, Origin, Scope, SecretState, SettingDef, Value};
+
 mod embed;
 pub use embed::{
     ApiKey, DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, DeviceSettings, EmbedDeviceSetParams,
@@ -47,8 +55,8 @@ pub use external::{
 mod cli;
 #[cfg(feature = "cli")]
 pub use cli::{
-    EmbeddingCommand, ExternalDeviceCommand, KeyCommand, LocalCommand, RemoteCommand, Switch,
-    read_key,
+    ConfigCommand, EmbeddingCommand, ExternalDeviceCommand, KeyCommand, LocalCommand,
+    RemoteCommand, ScopeFlags, Switch, describe_entries, parse_entries, read_key, read_secret,
 };
 
 /// The version of the bridge's control-plane API: the methods below and their types.
@@ -128,6 +136,19 @@ pub const EMBED_DEVICE_SET: &str = "embed.device_set";
 pub const EMBED_KEY_SET: &str = "embed.key_set";
 /// Remove the remote slot's API key from this device.
 pub const EMBED_KEY_CLEAR: &str = "embed.key_clear";
+
+/// The settings the bridge knows: every key's definition.
+pub const CONFIG_SCHEMA: &str = "config.schema";
+/// The settings' effective values, or what one scope's file holds.
+pub const CONFIG_LIST: &str = "config.list";
+/// One setting's effective value.
+pub const CONFIG_GET: &str = "config.get";
+/// Set settings, as one batch.
+pub const CONFIG_SET: &str = "config.set";
+/// Remove settings, as one batch.
+pub const CONFIG_UNSET: &str = "config.unset";
+/// Restart the bridge, so that restart-only settings take effect.
+pub const RESTART: &str = "bridge.restart";
 
 /// Set a device's election priority.
 pub const DEVICE_PRIORITY_SET: &str = "bridge.device_priority_set";
@@ -659,6 +680,20 @@ mod tests {
         ] {
             assert!(name.starts_with("bridge."), "{name}");
         }
+    }
+
+    #[test]
+    fn config_method_names_are_namespaced() {
+        for name in [
+            CONFIG_SCHEMA,
+            CONFIG_LIST,
+            CONFIG_GET,
+            CONFIG_SET,
+            CONFIG_UNSET,
+        ] {
+            assert!(name.starts_with("config."), "{name}");
+        }
+        assert!(RESTART.starts_with("bridge."));
     }
 
     #[test]

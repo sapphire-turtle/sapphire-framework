@@ -16,7 +16,7 @@ use crate::peer::PeerTransport;
 /// The ignore file written into every workgroup root at `create` and `join`.
 ///
 /// The workgroup's root is not a user's workspace — it is the workgroup's own state
-/// (`workgroup.toml`, `devices/`, `workspaces/`, `net.toml`), and every file in it has
+/// (`workgroup.toml`, `devices/`, `workspaces/`, `config.toml`), and every file in it has
 /// exactly one right answer at any moment: whatever device wrote it last. A retirement
 /// arriving over a device record this host had not yet seen is *meant* to overwrite it.
 /// Keeping the superseded version alive as a `devices/*.conflict-*.toml` copy would
@@ -128,6 +128,26 @@ impl Workgroup {
 
     /// The workgroup this host belongs to, if any.
     pub fn open(dir: &BridgeDir) -> Result<Option<Workgroup>> {
+        let Some(workgroup) = Workgroup::find(dir)? else {
+            return Ok(None);
+        };
+        // The root is synced: a format-1 file may arrive from a device that has not been
+        // upgraded yet, at any time, so every open checks for one. One that cannot be
+        // moved is left where it is and reported: it must not take the workgroup — and
+        // with it the bridge — down.
+        if let Err(err) = crate::config_file::migrate_workgroup(&workgroup) {
+            tracing::warn!(
+                target: crate::logging::BRIDGE_TARGET,
+                workgroup = %workgroup.name,
+                "could not move the workgroup's format-1 settings into config.toml: {err}"
+            );
+        }
+        Ok(Some(workgroup))
+    }
+
+    /// As [`open`](Self::open), without migrating the root's format-1 files: for the
+    /// device's migration, which must see the root as it was before.
+    pub(crate) fn find(dir: &BridgeDir) -> Result<Option<Workgroup>> {
         let entries = match std::fs::read_dir(dir.workgroups_dir()) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -158,12 +178,13 @@ impl Workgroup {
             })?;
             let parsed: WorkgroupFile = toml::from_str(&text)
                 .map_err(|e| Error::Config(format!("{}: {e}", file.display())))?;
-            return Ok(Some(Workgroup {
+            let workgroup = Workgroup {
                 id,
                 name: parsed.name,
                 dir: entry.path(),
                 devices_dir: dir.devices_dir(id),
-            }));
+            };
+            return Ok(Some(workgroup));
         }
         Ok(None)
     }
@@ -417,17 +438,27 @@ impl Workgroup {
 
     /// Announce this workgroup's network configuration, replacing what was published before.
     ///
-    /// What a self-hosted server writes so its devices learn about its relay: the file lives
-    /// in the synced root, so every device of the workgroup reads the same one. Each device
-    /// then merges it with its own `net.toml` in [`relays`](crate::relays) — announced never
-    /// replaces local.
+    /// What a self-hosted server writes so its devices learn about its relay: `[net]` of the
+    /// workgroup's `config.toml`, in the synced root, so every device of the workgroup reads
+    /// the same one. Each device then merges it with its own `[net]` in
+    /// [`relays`](crate::relays) — announced never replaces local. The rest of the file, and
+    /// its comments, are kept.
     pub fn publish_net(&self, net: &NetConfig) -> Result<()> {
-        crate::routes::write_atomic(
-            &self.net_toml(),
-            "# The network configuration this workgroup announces to its devices.\n",
-            &toml::to_string_pretty(net)
-                .map_err(|e| Error::Config(format!("could not encode net.toml: {e}")))?,
-        )
+        let path = self.config_toml();
+        let mut doc = match std::fs::read_to_string(&path) {
+            Ok(text) => text
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| Error::Config(format!("{}: {e}", path.display())))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        let encoded = toml::to_string(net)
+            .map_err(|e| Error::Config(format!("could not encode [net]: {e}")))?
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| Error::Config(format!("could not encode [net]: {e}")))?;
+        doc.insert("net", toml_edit::Item::Table(encoded.as_table().clone()));
+        sapphire_framework_settings::write_atomic(&path, &doc.to_string())?;
+        Ok(())
     }
 
     /// The workgroup's published [`NetConfig`], or the defaults when nothing is published.
@@ -436,24 +467,34 @@ impl Workgroup {
     /// announced a configuration is a normal state, not a broken one. An unreadable one
     /// fails, for the same reason an unreadable `workgroup.toml` does — guessing at what a
     /// half-written configuration meant is worse than reporting it.
+    ///
+    /// Only `[net]` is read: an `[embed]` key this build does not know, synced in from a
+    /// newer device, must not cut the network off.
     pub fn published_net(&self) -> Result<NetConfig> {
-        match std::fs::read_to_string(self.net_toml()) {
-            Ok(text) => toml::from_str(&text)
-                .map_err(|e| Error::Config(format!("{}: {e}", self.net_toml().display()))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NetConfig::default()),
-            Err(e) => Err(Error::Io(e)),
-        }
+        Ok(
+            crate::config_file::read_table(&self.config_toml(), crate::config_file::NET)?
+                .unwrap_or_default(),
+        )
     }
 
-    /// The workgroup's embedding models, `root/embedding.toml`, inside the synced root.
-    pub fn embedding_toml(&self) -> PathBuf {
-        self.dir
-            .join("root")
-            .join(crate::embed_settings::SETTINGS_FILE)
+    /// The format-1 embedding models, `root/embedding.toml`, now `[embed]` of
+    /// [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    pub(crate) fn legacy_embedding_toml(&self) -> PathBuf {
+        self.dir.join("root").join("embedding.toml")
     }
 
-    /// The workgroup's published `root/net.toml`, inside the synced root.
-    fn net_toml(&self) -> PathBuf {
+    /// The workgroup's settings by key, `root/config.toml`, inside the synced root.
+    pub fn config_toml(&self) -> PathBuf {
+        self.dir.join("root").join("config.toml")
+    }
+
+    /// The format-1 published network configuration, `root/net.toml`, now `[net]` of
+    /// [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    pub(crate) fn legacy_net_toml(&self) -> PathBuf {
         self.dir.join("root").join("net.toml")
     }
 }
@@ -602,7 +643,7 @@ mod tests {
     #[test]
     fn net_configuration_defaults_to_waking_owners() {
         let (_tmp, dir) = bridge_dir();
-        let net = NetConfig::load(&dir.net_toml()).unwrap();
+        let net = NetConfig::load(&dir.config_toml()).unwrap();
         assert!(net.wake_on_sync);
         assert!(net.discovery);
         assert!(net.relays.is_empty());
@@ -864,5 +905,34 @@ mod workspace_list_tests {
     fn an_empty_workgroup_lists_nothing() {
         let (_tmp, _dir, wg) = workgroup();
         assert!(wg.workspaces().unwrap().is_empty());
+    }
+
+    #[test]
+    fn publishing_the_net_table_keeps_the_rest_of_the_file() {
+        let (_tmp, _dir, wg) = workgroup();
+        std::fs::write(
+            wg.config_toml(),
+            "# the workgroup's settings\n[embed.remote]\nendpoint = \"https://api.example.org\"\n\
+             model = \"m\"\ndimension = 8\n",
+        )
+        .unwrap();
+        let net = NetConfig {
+            relays: vec!["https://relay.example/".to_owned()],
+            ..NetConfig::default()
+        };
+        wg.publish_net(&net).unwrap();
+        let text = std::fs::read_to_string(wg.config_toml()).unwrap();
+        assert!(text.starts_with("# the workgroup's settings\n"), "{text}");
+        assert!(text.contains("[embed.remote]"), "{text}");
+        assert!(text.contains("[net]"), "{text}");
+        assert_eq!(wg.published_net().unwrap().relays, net.relays);
+    }
+
+    #[test]
+    fn nothing_published_is_the_defaults() {
+        let (_tmp, _dir, wg) = workgroup();
+        assert!(wg.published_net().unwrap().relays.is_empty());
+        std::fs::write(wg.config_toml(), "[embed]\n").unwrap();
+        assert!(wg.published_net().unwrap().use_default_relays);
     }
 }

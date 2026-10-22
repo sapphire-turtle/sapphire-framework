@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 pub const BRIDGE_DIR_ENV: &str = "SAPPHIRE_BRIDGE_DIR";
 
 /// On-disk format version of the bridge directory.
-pub const BRIDGE_FORMAT_VERSION: u32 = 1;
+pub const BRIDGE_FORMAT_VERSION: u32 = 2;
 
 /// The bridge's directory.
 ///
@@ -65,8 +65,11 @@ impl BridgeDir {
                     )));
                 }
                 if found < BRIDGE_FORMAT_VERSION {
-                    // No older format exists yet. When one does, migrate here — idempotently
-                    // — before writing the new stamp.
+                    // Format 1 kept `net.toml` and `embedding.toml`; format 2 folds them into
+                    // `config.toml`. The migration is idempotent, so a CLI and a starting
+                    // bridge may both run it, and one stopped half-way runs again here
+                    // because the stamp is written only after it.
+                    crate::config_file::migrate_device(self)?;
                     std::fs::write(&format, BRIDGE_FORMAT_VERSION.to_string())?;
                 }
             }
@@ -88,14 +91,23 @@ impl BridgeDir {
         self.root.join("bridge.lock")
     }
 
-    /// Host-local network configuration.
-    pub fn net_toml(&self) -> PathBuf {
+    /// The format-1 network configuration, now `[net]` of [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    pub(crate) fn legacy_net_toml(&self) -> PathBuf {
         self.root.join("net.toml")
     }
 
-    /// This device's embedding settings (not synced).
-    pub fn embedding_toml(&self) -> PathBuf {
-        self.root.join(crate::embed_settings::SETTINGS_FILE)
+    /// This device's settings by key: `[net]` and `[embed]` (not synced).
+    pub fn config_toml(&self) -> PathBuf {
+        self.root.join("config.toml")
+    }
+
+    /// The format-1 embedding settings, now `[embed]` of [`config_toml`](Self::config_toml).
+    ///
+    /// Read only by the migration to format 2.
+    pub(crate) fn legacy_embedding_toml(&self) -> PathBuf {
+        self.root.join("embedding.toml")
     }
 
     /// The remote embedding model's API key, readable by the owner only.

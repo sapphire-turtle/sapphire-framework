@@ -1,10 +1,10 @@
-//! Host-local network configuration (`net.toml`).
+//! Host-local network configuration (`[net]` of the bridge's `config.toml`).
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// What this host does on the network.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -24,8 +24,8 @@ pub struct NetConfig {
     pub use_default_relays: bool,
     /// Run a relay for this workgroup from inside this process.
     ///
-    /// Off unless `net.toml` names it: a relay needs a publicly reachable address and a
-    /// certificate, and most hosts have neither. The field is always present, so a `net.toml`
+    /// Off unless `[net]` names it: a relay needs a publicly reachable address and a
+    /// certificate, and most hosts have neither. The field is always present, so a `[net]`
     /// that names a relay still parses on a build without the `embedded-relay` feature — such
     /// a build simply starts none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,18 +45,15 @@ impl Default for NetConfig {
 }
 
 impl NetConfig {
-    /// Read the file, or the defaults if it is not there.
+    /// Read `[net]` of the device's `config.toml` at `path`, or the defaults if the file
+    /// or the table is not there.
     ///
-    /// Every field is optional in the file: a `net.toml` that sets only `wake_on_sync`
-    /// leaves discovery on, the relay list empty, and the public relays on.
+    /// Every field is optional: a `[net]` that sets only `wake_on_sync` leaves discovery on,
+    /// the relay list empty, and the public relays on. A file that is not TOML, or a `[net]`
+    /// that does not parse, is an error naming the file, so a typo is reported when the
+    /// bridge starts; the rest of the file is the embedding loader's to judge.
     pub fn load(path: &Path) -> Result<NetConfig> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(NetConfig::default()),
-            Err(e) => Err(Error::Io(e)),
-        }
+        Ok(crate::config_file::read_table(path, crate::config_file::NET)?.unwrap_or_default())
     }
 }
 
@@ -67,7 +64,7 @@ mod tests {
     #[test]
     fn a_missing_file_is_the_defaults() {
         let tmp = tempfile::tempdir().unwrap();
-        let net = NetConfig::load(&tmp.path().join("net.toml")).unwrap();
+        let net = NetConfig::load(&tmp.path().join("config.toml")).unwrap();
         assert!(net.wake_on_sync);
         assert!(net.discovery);
         assert!(net.relays.is_empty());
@@ -75,26 +72,38 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_file_keeps_the_other_defaults() {
+    fn net_config_reads_the_net_table() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("net.toml");
-        std::fs::write(&path, "wake_on_sync = false\ndiscovery = false\n").unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "[net]\nwake_on_sync = false\n").unwrap();
 
         let net = NetConfig::load(&path).unwrap();
         assert!(!net.wake_on_sync);
-        assert!(!net.discovery);
+        assert!(net.discovery);
         assert!(net.relays.is_empty());
         assert!(net.use_default_relays);
     }
 
     #[test]
-    fn relays_round_trip_through_the_file() {
+    fn the_embed_table_beside_it_does_not_matter() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("net.toml");
+        let path = tmp.path().join("config.toml");
         std::fs::write(
             &path,
-            "wake_on_sync = false\ndiscovery = false\nrelays = [\"https://relay.example/\"]\n\
-             use_default_relays = false\n",
+            "[net]\ndiscovery = false\n[embed.local]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(!NetConfig::load(&path).unwrap().discovery);
+    }
+
+    #[test]
+    fn relays_round_trip_through_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[net]\nwake_on_sync = false\ndiscovery = false\n\
+             relays = [\"https://relay.example/\"]\nuse_default_relays = false\n",
         )
         .unwrap();
 
@@ -106,10 +115,10 @@ mod tests {
     #[test]
     fn an_unreadable_file_names_itself_in_the_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("net.toml");
-        std::fs::write(&path, "wake_on_sync = \"yes\"\n").unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "[net]\nwake_on_sync = \"yes\"\n").unwrap();
 
         let err = NetConfig::load(&path).unwrap_err();
-        assert!(err.to_string().contains("net.toml"), "{err}");
+        assert!(err.to_string().contains("config.toml"), "{err}");
     }
 }

@@ -11,6 +11,7 @@
 
 mod availability;
 mod command;
+pub mod config_file;
 mod control;
 mod data;
 mod dir;
@@ -29,14 +30,17 @@ mod pairing;
 mod peer;
 mod relay;
 mod routes;
+pub mod settings;
 mod status;
 #[cfg(any(test, feature = "test-util"))]
 mod testing;
 mod wgsync;
 mod workgroup;
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use grain_id::GrainId;
 use sapphire_bridge_api::{BRIDGE_DATA_NAME, BRIDGE_NAME, ManagedBy, WorkspaceRegistration};
@@ -93,8 +97,9 @@ pub struct Bridge {
     version: &'static str,
     control: Endpoint,
     data: Endpoint,
-    /// `None` means "read `net.toml` when `run` starts", which is what a real caller wants:
-    /// the file may have been edited since this bridge was built. Tests set it outright.
+    /// `None` means "read `[net]` of `config.toml` when `run` starts", which is what a real
+    /// caller wants: the file may have been edited since this bridge was built. Tests set it
+    /// outright.
     net: Option<NetConfig>,
     /// The routing table, held in memory rather than re-read per call: two app servers
     /// registering at the same moment would otherwise load-modify-write over each other. Only
@@ -125,13 +130,93 @@ pub struct Bridge {
     /// This host's availability tier, as its record last measured it (#190). `None` with
     /// too little history.
     availability: Mutex<Option<u8>>,
+    /// What the settings resolved to when serving began, to tell which restart-only keys
+    /// have been changed since. `None` until `serve_loops` captures it.
+    start: Mutex<Option<sapphire_framework_settings::StartState>>,
+    /// Held across every settings write this bridge makes for a client — `config.set`,
+    /// `config.unset` and the `embed.*` writes — so two batches never interleave their
+    /// read-check-write of the same files.
+    settings_write: Mutex<()>,
+    /// Fired by `bridge.restart`: the loops end with [`Exit::Restart`].
+    restart: tokio::sync::Notify,
+    /// The long-lived tasks spawned for this bridge outside its loops — control and data
+    /// connections, workgroup sessions, Hello links. Aborted when the loops end, so nothing
+    /// of an old bridge keeps serving (or keeps it alive) after a restart.
+    tasks: Mutex<tokio::task::JoinSet<()>>,
+    /// The control and data listeners. A bridge of its own binds them; under
+    /// [`serve_restarting`] every bridge borrows the same ones, so a restart never rebinds:
+    /// on Windows a pipe name lives as long as any client still holds an instance of it,
+    /// and binding it anew would fail while clients of the old bridge are connected.
+    listeners: Arc<Listeners>,
+}
+
+/// The listeners a bridge serves on, with the endpoints they were bound to.
+#[derive(Default)]
+pub(crate) struct Listeners {
+    control: tokio::sync::Mutex<Option<(Endpoint, sapphire_ipc::Listener)>>,
+    data: tokio::sync::Mutex<Option<(Endpoint, sapphire_ipc::Listener)>>,
+}
+
+/// Make `slot` hold a listener bound to `endpoint`: the one already there when it is bound
+/// to the same endpoint, a new one otherwise.
+async fn ensure_bound(
+    slot: &mut Option<(Endpoint, sapphire_ipc::Listener)>,
+    endpoint: &Endpoint,
+) -> Result<()> {
+    if slot.as_ref().is_some_and(|(bound, _)| bound == endpoint) {
+        return Ok(());
+    }
+    *slot = None;
+    #[cfg(unix)]
+    let listener = sapphire_ipc::bind(endpoint).await?;
+    #[cfg(windows)]
+    let listener = sapphire_ipc::bind(endpoint)?;
+    *slot = Some((endpoint.clone(), listener));
+    Ok(())
+}
+
+/// Why [`Bridge::run`] returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// A loop ended on its own. The bridge is done.
+    Stopped,
+    /// `bridge.restart` asked for a new bridge: build one from the settings and run it.
+    Restart,
+}
+
+/// How long ending a bridge waits for the last user of its workgroup replica to let go —
+/// a replication step on a blocking thread is not cancelled by an abort.
+const REPLICA_RELEASE_WAIT: Duration = Duration::from_secs(10);
+
+/// Build a bridge with `build` and run it; on [`Exit::Restart`], build another and run that.
+///
+/// The restart in place behind `bridge.restart`: each build reads `config.toml` and the
+/// workgroup again, so restart-only settings take effect, while the process — its pid, and
+/// whatever the caller holds around this call, such as the instance lock and the log —
+/// stays. Returns when a bridge stops for good, or when a build or a run fails.
+pub async fn serve_restarting<F, Fut>(mut build: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Bridge>>,
+{
+    let listeners = Arc::new(Listeners::default());
+    loop {
+        let mut bridge = build().await?;
+        bridge.listeners = Arc::clone(&listeners);
+        match bridge.run().await? {
+            Exit::Stopped => return Ok(()),
+            Exit::Restart => {
+                tracing::info!(target: BRIDGE_TARGET, "restarting (requested over IPC)");
+            }
+        }
+    }
 }
 
 impl Bridge {
     /// A bridge over `dir`, reaching other devices through `transport`, reporting `version`.
     ///
     /// The endpoints default to the built-in ones in this user's runtime directory, and the
-    /// network configuration to whatever `net.toml` says. Tests override all three.
+    /// network configuration to whatever `[net]` says. Tests override all three.
     pub fn new(
         dir: BridgeDir,
         transport: Arc<dyn PeerTransport>,
@@ -158,6 +243,11 @@ impl Bridge {
             hello_tx: tokio::sync::watch::channel(None).0,
             roles: Mutex::default(),
             availability: Mutex::new(None),
+            start: Mutex::new(None),
+            settings_write: Mutex::new(()),
+            restart: tokio::sync::Notify::new(),
+            tasks: Mutex::new(tokio::task::JoinSet::new()),
+            listeners: Arc::default(),
         })
     }
 
@@ -173,7 +263,7 @@ impl Bridge {
         self
     }
 
-    /// Use this network configuration instead of reading `net.toml`.
+    /// Use this network configuration instead of reading `[net]`.
     pub fn net(mut self, net: NetConfig) -> Bridge {
         self.net = Some(net);
         self
@@ -190,17 +280,24 @@ impl Bridge {
         (self.control.clone(), self.data.clone())
     }
 
-    /// Serve the control plane, the data plane and the inbound peer loop until one fails.
+    /// Serve the control plane, the data plane and the inbound peer loop until one fails or
+    /// a restart is requested.
+    ///
+    /// Returns [`Exit::Restart`] when `bridge.restart` (or [`Bridge::request_restart`]) asked
+    /// for one; by then everything this bridge spawned has stopped — its listeners, its
+    /// connections, its workgroup driver and replica, its status writer — and its transport
+    /// is closed, so a new bridge can be built over the same directory and endpoints. See
+    /// [`serve_restarting`], which does that.
     ///
     /// Nothing here takes the single-instance lock: that is the caller's, because "a bridge
     /// is already running" is a normal outcome for a command and an error for a caller to
     /// interpret.
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(mut self) -> Result<Exit> {
         let net = match self.net.take() {
             Some(net) => net,
             // Read up front rather than at the first peer request, so an unreadable file is
             // reported when the bridge starts.
-            None => NetConfig::load(&self.dir.net_toml())?,
+            None => NetConfig::load(&self.dir.config_toml())?,
         };
         Arc::new(self).run_shared(net).await
     }
@@ -210,7 +307,7 @@ impl Bridge {
     ///
     /// The form a fixture needs: a running bridge whose handle can still call back into it
     /// — the workgroup session the dialing side runs on its own replica.
-    pub async fn run_shared(self: Arc<Self>, net: NetConfig) -> Result<()> {
+    pub async fn run_shared(self: Arc<Self>, net: NetConfig) -> Result<Exit> {
         // The bridge is the app server of the workgroup's own workspace: it registers it
         // with itself, so a peer stream for it is routed like any other. Its owner is never
         // "online" in the app-server sense — the bridge serves it itself.
@@ -280,10 +377,46 @@ impl Bridge {
         Ok(())
     }
 
-    /// The three serving loops, over this shared bridge.
-    async fn serve_loops(self: Arc<Self>, net: NetConfig) -> Result<()> {
+    /// Run `write`, a settings write, while no other settings write of this bridge runs.
+    pub(crate) fn write_settings<T>(&self, write: impl FnOnce() -> T) -> T {
+        // A write that panicked left the files as a batch leaves them on failure: whole.
+        let _guard = self
+            .settings_write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        write()
+    }
+
+    /// Ask the running bridge to end its loops with [`Exit::Restart`].
+    ///
+    /// A request made before the loops wait for one is kept, not lost.
+    pub fn request_restart(&self) {
+        self.restart.notify_one();
+    }
+
+    /// Spawn a long-lived task for this bridge: it is aborted when the loops end.
+    pub(crate) fn spawn_task<F>(&self, task: F) -> tokio::task::AbortHandle
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.tasks.lock().expect("bridge tasks");
+        // Reap what has finished, so a long-running bridge does not collect them.
+        while tasks.try_join_next().is_some() {}
+        tasks.spawn(task)
+    }
+
+    /// The serving loops, over this shared bridge.
+    async fn serve_loops(self: Arc<Self>, net: NetConfig) -> Result<Exit> {
         let (control_endpoint, data_endpoint) = self.endpoints();
         let bridge = self;
+        // Taken before any client can write: a restart-only key counts as pending when it
+        // differs from what the settings said at this moment.
+        match settings::registry(&bridge.dir)
+            .and_then(|reg| sapphire_framework_settings::StartState::capture(&reg))
+        {
+            Ok(start) => *bridge.start.lock().expect("start state") = Some(start),
+            Err(err) => tracing::warn!("could not capture the settings at start: {err}"),
+        }
         let info = ServerInfo {
             version: bridge.version.to_owned(),
             api: sapphire_bridge_api::API_VERSION,
@@ -312,16 +445,67 @@ impl Bridge {
             tracing::warn!("could not read the embedding settings: {err}");
         }
 
+        // Held for as long as the loops run, and left in place when they end: the next
+        // bridge of a restart serves on the same ones.
+        let listeners = Arc::clone(&bridge.listeners);
+        let mut control_listener = listeners.control.lock().await;
+        let mut data_listener = listeners.data.lock().await;
+        ensure_bound(&mut control_listener, &control_endpoint).await?;
+        ensure_bound(&mut data_listener, &data_endpoint).await?;
+        let (_, control_listener) = control_listener.as_mut().expect("bound");
+        let (_, data_listener) = data_listener.as_mut().expect("bound");
+
+        // The loops run until one fails; none ends with `Ok` on its own, and one that did
+        // would mean this bridge has stopped.
+        let stopped = |result: Result<()>| result.map(|()| Exit::Stopped);
         let result = tokio::select! {
-            result = control::listen(Arc::clone(&bridge), control_endpoint, info) => result,
-            result = Arc::clone(&bridge).watch_embed_settings() => result,
-            result = data::listen(Arc::clone(&bridge), data_endpoint) => result,
-            result = hello::run(Arc::clone(&bridge)) => result,
-            result = availability::run(Arc::clone(&bridge)) => result,
-            result = data::inbound(bridge, net) => result,
+            result = control::listen(Arc::clone(&bridge), control_listener, info) => stopped(result),
+            result = Arc::clone(&bridge).watch_embed_settings() => stopped(result),
+            result = data::listen(Arc::clone(&bridge), data_listener) => stopped(result),
+            result = hello::run(Arc::clone(&bridge)) => stopped(result),
+            result = availability::run(Arc::clone(&bridge)) => stopped(result),
+            result = data::inbound(Arc::clone(&bridge), net) => stopped(result),
+            () = bridge.restart.notified() => Ok(Exit::Restart),
         };
+        // The listeners went with the `select!`: nothing new connects. What they started
+        // goes now.
         drop(status);
+        bridge.stop_serving().await;
         result
+    }
+
+    /// End everything this bridge started besides its loops (which the caller has dropped
+    /// already): the workgroup driver, the tasks of [`Bridge::spawn_task`], the workgroup
+    /// replica, and the transport.
+    ///
+    /// Awaited rather than only signalled, because a restart builds the next bridge at once:
+    /// its replica store and its transport's socket must be free by then.
+    async fn stop_serving(&self) {
+        let driver = self
+            .workgroup_driver
+            .lock()
+            .expect("workgroup driver")
+            .take();
+        if let Some(driver) = driver {
+            driver.abort();
+            let _ = driver.await;
+        }
+        let mut tasks = std::mem::take(&mut *self.tasks.lock().expect("bridge tasks"));
+        tasks.shutdown().await;
+        let replica = self
+            .workgroup_replica
+            .lock()
+            .expect("workgroup replica")
+            .take();
+        if let Some(replica) = replica {
+            // A replication step already on a blocking thread holds its own handle until it
+            // finishes; the store closes when the last one goes.
+            let deadline = tokio::time::Instant::now() + REPLICA_RELEASE_WAIT;
+            while Arc::strong_count(&replica) > 1 && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        self.transport.close().await;
     }
 
     // ── what the loops share ────────────────────────────────────────────────

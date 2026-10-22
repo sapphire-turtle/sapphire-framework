@@ -259,7 +259,7 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
 ### bridge はホスト常駐の交換台（`bridge/`）
 
 1 ユーザー 1 プロセスの独立バイナリ。`<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）に
-`node.key`、`routes.toml`（workspace_id → 所有サーバ）、workgroup 台帳、`status.json`
+`node.key`、`config.toml`（このデバイスの設定）、`routes.toml`（workspace_id → 所有サーバ）、workgroup 台帳、`status.json`
 （5 秒ごと＋変化時、アトミック）、`logs/node.log`（10 MiB × 3 ローテーション）を置く。
 ワークスペースの中身は見ない。役割:
 
@@ -277,16 +277,26 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
 4. **埋め込み** — ホストに 1 つだけモデルを持つ。制御面の `embed.info` / `embed.embed`（画像は
    `embed.embed_images`、ローカルのモデルだけ）で bridge の埋め込みコンポーネント
    （`sapphire-framework-bridge-embed`、Qwen3-VL-Embedding-2B を CPU で、または OpenAI 互換 REST）が
-   ベクトルを作る。設定は持ち主ごとに 3 か所（#186）:
-   モデルは workgroup で共通 — ローカル 1 つとリモート 1 つの枠を `<workgroup root>/embedding.toml`
-   に置き、同期する。デバイスごと（同期しない）には枠ごとの on/off（未設定は自動: ローカルは
-   AVX2 が無ければ off、リモートは on）、キャッシュ置き場、ローカルのモデルの量子化（`[local] qtype`
-   = `f32` / `f16`（既定）/ `q8_0` / `q4_k`、#307。ベクトルの互換性には影響しない）を
-   `<bridge dir>/embedding.toml` に、
-   リモートの API キーを `<bridge dir>/embedding.key`（0600）に置く。使うのはリモートが on なら
-   リモート、でなければローカル。設定は `embedding` コマンド（bridge とアプリの CLI）、
-   Settings の Embedding 画面、制御面の `embed.settings` / `embed.model_set` /
-   `embed.device_set` / `embed.key_set` / `embed.key_clear` で変える。bridge は設定が変わると
+   ベクトルを作る。設定は持ち主（スコープ）ごとに 1 つの `config.toml`（#186, #314）:
+   デバイスごと（同期しない）は `<bridge dir>/config.toml`、workgroup 共通（同期する）は
+   `<workgroup root>/config.toml`。どちらも `[net]` と `[embed]` を持ち、キーは TOML のパスそのもの
+   （`embed.remote.endpoint` = `[embed.remote] endpoint`）。モデル（ローカル 1 つとリモート 1 つの枠）は
+   workgroup で共通 — workgroup に参加しているホストでは、`root/config.toml` が空でも workgroup 側が勝つ。
+   デバイスごとには枠ごとの on/off（未設定は自動: ローカルは AVX2 が無ければ off、リモートは on）、
+   キャッシュ置き場、ローカルのモデルの量子化（`embed.local.qtype` = `f32` / `f16`（既定）/ `q8_0` /
+   `q4_k`、#307。ベクトルの互換性には影響しない）を置く。workgroup を持たないホストだけはモデルも
+   自分の `config.toml` に置く。リモートの API キー（秘密）は `<bridge dir>/embedding.key`（0600）で、
+   `get` / `list` には出ない。使うのはリモートが on ならリモート、でなければローカル。設定は `config`
+   コマンド（`list` / `get` / `set` / `unset`、`--device` / `--workgroup`、秘密は `--stdin` か
+   プロンプト、再起動が要るキーは `--restart`。制御面は `config.schema` / `config.list` /
+   `config.get` / `config.set` / `config.unset`）で、設定レジストリ
+   （`sapphire-framework-settings`）を通して行う。バッチは全体を検証してから書き、コメントは
+   保たれる。`restart` コマンド（`bridge.restart`）はその場で bridge を再起動する。
+   従来の `embedding` コマンド、Settings の Embedding 画面、`embed.settings` / `embed.model_set` /
+   `embed.device_set` / `embed.key_set` / `embed.key_clear` も同じファイルを書く。
+   ディレクトリ形式は 2 で、初回起動時に旧 `net.toml` / `embedding.toml` を取り込み
+   `*.toml.v1` として残す（設計: `docs/superpowers/specs/2026-10-21-settings-registry-design.md`）。
+   bridge は設定が変わると
    その場でプロバイダを作り直し（設定の呼び出し後と、ステータス周期 5 秒ごと — 他デバイスが
    変えたモデルは同期された workgroup root から届く）、アプリは `sync_and_embed` のたびに
    `embed.info` を聞き直してベクトルの保存先を合わせる。ワーカーは 1 本で、最初の要求でモデルを

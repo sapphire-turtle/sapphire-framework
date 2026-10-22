@@ -1,99 +1,36 @@
-//! Where the embedding settings live, and what they resolve to (#186).
+//! Where the embedding settings live, and what they resolve to (#186, #314).
 //!
-//! Three places, by owner:
+//! Three places, by owner, all under `[embed]` of a `config.toml` but the key:
 //!
-//! - the workgroup's synced `root/embedding.toml` holds the two model slots;
-//! - this host's `embedding.toml` holds its switch per slot, the local model's cache
-//!   directory and quantization (`[local] qtype`), and — only for a host without a
-//!   workgroup's file — its own `[models]`;
+//! - the workgroup's synced `root/config.toml` holds the two model slots;
+//! - this host's `config.toml` holds its switch per slot, the local model's cache
+//!   directory and quantization (`[embed.local] qtype`), and — only on a host
+//!   without a workgroup — the model slots too;
 //! - this host's `embedding.key` holds the remote slot's API key, readable by the owner only.
 //!
-//! [`load`] reads all three and [`resolve`]s them; the RPCs and the bridge's offline CLI
-//! write them through the `set_*` functions.
+//! [`load`] reads all three and [`resolve`]s them. Changes are settings batches: the RPCs
+//! and the bridge's offline CLI turn their request into one with [`embed_ops`] and carry it
+//! out with [`apply`].
 
 use std::path::{Path, PathBuf};
 
 use sapphire_bridge_api::{
-    ApiKey, DeviceSettings, EmbedInfoResult, EmbedModelSetParams, EmbedNote, EmbedSettingsResult,
-    LocalModel, ModelSettings, ModelSource, QType, RemoteModel, Slot, SlotModel,
+    ApiKey, DeviceSettings, EmbedDeviceSetParams, EmbedInfoResult, EmbedModelSetParams, EmbedNote,
+    EmbedRequest, EmbedSettingsResult, LocalModel, ModelSettings, ModelSource, QType, RemoteModel,
+    Slot, SlotModel,
 };
-use serde::{Deserialize, Serialize};
+use sapphire_framework_settings::{Op, Scope, Value};
 
+use crate::config_file::{EMBED, EmbedTable, read_table};
 use crate::dir::BridgeDir;
 use crate::error::{Error, Result};
 use crate::workgroup::Workgroup;
 
-/// The settings file's name, in the bridge directory and in a workgroup's root alike.
-pub const SETTINGS_FILE: &str = "embedding.toml";
 /// The API key's file name, in the bridge directory.
 pub const KEY_FILE: &str = "embedding.key";
 
-/// This host's `embedding.toml`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct DeviceFile {
-    /// Where the local model's files are cached.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cache_dir: Option<PathBuf>,
-    /// The local slot's switch and quantization.
-    #[serde(default, skip_serializing_if = "LocalSwitch::is_default")]
-    local: LocalSwitch,
-    /// The remote slot's switch.
-    #[serde(default, skip_serializing_if = "Switch::is_auto")]
-    remote: Switch,
-    /// The model settings of a host that has no workgroup's file.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    models: Option<ModelSettings>,
-}
-
-/// One slot's switch in [`DeviceFile`]: `[local]` / `[remote]`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Switch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
-}
-
-impl Switch {
-    fn is_auto(&self) -> bool {
-        self.enabled.is_none()
-    }
-}
-
-/// `[local]` in [`DeviceFile`]: the switch, and how this device holds the model's weights.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct LocalSwitch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    enabled: Option<bool>,
-    /// `None` is [`QType::default`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    qtype: Option<QType>,
-}
-
-impl LocalSwitch {
-    fn is_default(&self) -> bool {
-        *self == LocalSwitch::default()
-    }
-}
-
-impl DeviceFile {
-    fn settings(&self) -> DeviceSettings {
-        DeviceSettings {
-            local_enabled: self.local.enabled,
-            remote_enabled: self.remote.enabled,
-            cache_dir: self.cache_dir.clone(),
-            local_qtype: self.local.qtype,
-        }
-    }
-
-    fn enabled_mut(&mut self, slot: Slot) -> &mut Option<bool> {
-        match slot {
-            Slot::Local => &mut self.local.enabled,
-            Slot::Remote => &mut self.remote.enabled,
-        }
-    }
-}
+/// The key of the API key in the settings registry.
+const KEY_SETTING: &str = "embed.remote.key";
 
 /// What the bridge serves, and with what: the input of the [`EmbedFactory`](crate::EmbedFactory).
 ///
@@ -126,7 +63,7 @@ pub struct Resolved {
     pub models: ModelSettings,
     /// Where they come from.
     pub source: Option<ModelSource>,
-    /// This host's own `[models]` is ignored because the workgroup's file wins.
+    /// This host's own models are ignored because the workgroup's settings win.
     pub shadowed: bool,
     /// This host's switches and cache directory, as written.
     pub device: DeviceSettings,
@@ -180,38 +117,45 @@ pub fn avx2() -> bool {
 
 /// Resolve the three sources. Pure: the files are read by [`load`].
 ///
-/// `shared` is the workgroup's file: `None` when there is none (or no workgroup), an `Err`
-/// when it cannot be parsed.
+/// `shared` is the workgroup's models: `None` when the host has no workgroup, an `Err` when
+/// its file cannot be read as models. `device` is this host's `[embed]`; its models count
+/// only without a workgroup, and are reported as shadowed with one.
 fn resolve(
     shared: Option<std::result::Result<ModelSettings, String>>,
-    device: &DeviceFile,
+    device: &EmbedTable,
     key_set: bool,
     avx2: bool,
 ) -> Resolved {
+    let own = device.models();
+    // A slot half-written on this device still counts as configured here: it is shadowed.
+    let own_configured = !matches!(&own, Ok(models) if models.is_empty());
     let (models, source, shadowed, invalid) = match shared {
-        Some(Ok(models)) => (
-            models,
-            Some(ModelSource::Workgroup),
-            device.models.is_some(),
-            None,
-        ),
+        Some(Ok(models)) => (models, Some(ModelSource::Workgroup), own_configured, None),
         Some(Err(why)) => (
             ModelSettings::default(),
             Some(ModelSource::Workgroup),
-            device.models.is_some(),
+            own_configured,
             Some(why),
         ),
-        None => match &device.models {
-            Some(models) => (models.clone(), Some(ModelSource::Device), false, None),
-            None => (ModelSettings::default(), None, false, None),
+        None => match own {
+            Ok(models) if models.is_empty() => (ModelSettings::default(), None, false, None),
+            Ok(models) => (models, Some(ModelSource::Device), false, None),
+            Err(why) => (
+                ModelSettings::default(),
+                Some(ModelSource::Device),
+                false,
+                Some(why),
+            ),
         },
     };
     // A file that parses but breaks the rules is as unusable as one that does not parse.
     let invalid = invalid.or_else(|| models.validate().err());
     let usable = invalid.is_none();
 
-    let local_enabled = usable && models.local.is_some() && device.local.enabled.unwrap_or(avx2);
-    let remote_enabled = usable && models.remote.is_some() && device.remote.enabled.unwrap_or(true);
+    let settings = device_settings(device);
+    let local_enabled = usable && models.local.is_some() && settings.local_enabled.unwrap_or(avx2);
+    let remote_enabled =
+        usable && models.remote.is_some() && settings.remote_enabled.unwrap_or(true);
     let active = if remote_enabled {
         Some(Slot::Remote)
     } else if local_enabled {
@@ -225,7 +169,7 @@ fn resolve(
     } else if models.is_empty() {
         Some(EmbedNote::NotConfigured)
     } else if active.is_none() {
-        let only_auto_local = models.remote.is_none() && device.local.enabled.is_none();
+        let only_auto_local = models.remote.is_none() && settings.local_enabled.is_none();
         Some(if only_auto_local && !avx2 {
             EmbedNote::NoAvx2
         } else {
@@ -241,24 +185,38 @@ fn resolve(
         models,
         source,
         shadowed,
-        device: device.settings(),
+        device: settings,
         local_enabled,
         remote_enabled,
         active,
-        local_qtype: device.local.qtype.unwrap_or_default(),
+        local_qtype: device
+            .local
+            .as_ref()
+            .and_then(|t| t.qtype)
+            .unwrap_or_default(),
         avx2,
         key_set,
         note,
     }
 }
 
+/// This host's switches and cache directory, as written in its `[embed]`.
+fn device_settings(device: &EmbedTable) -> DeviceSettings {
+    DeviceSettings {
+        local_enabled: device.local.as_ref().and_then(|t| t.enabled),
+        remote_enabled: device.remote.as_ref().and_then(|t| t.enabled),
+        cache_dir: device.cache_dir.clone(),
+        local_qtype: device.local.as_ref().and_then(|t| t.qtype),
+    }
+}
+
 /// Read and resolve the settings; the config is what the bridge should serve.
 pub fn load(dir: &BridgeDir, avx2: bool) -> Result<(Resolved, Option<EmbedConfig>)> {
     let shared = match Workgroup::open(dir)? {
-        Some(wg) => read_shared(&wg.embedding_toml())?,
+        Some(wg) => Some(read_shared(&wg.config_toml())?),
         None => None,
     };
-    let device = read_device(&dir.embedding_toml());
+    let device = read_device_embed(&dir.config_toml());
     let key = read_key(&dir.embedding_key())?;
     let resolved = resolve(shared, &device, key.is_some(), avx2);
     let config = match resolved.active {
@@ -281,134 +239,120 @@ pub fn load(dir: &BridgeDir, avx2: bool) -> Result<(Resolved, Option<EmbedConfig
     Ok((resolved, config))
 }
 
-/// Set or clear one slot: in the workgroup's file when the host has a workgroup, in this
-/// host's `[models]` otherwise.
-pub fn set_model(dir: &BridgeDir, params: EmbedModelSetParams) -> Result<()> {
-    if let Some(model) = &params.model
-        && model.slot() != params.slot
-    {
-        return Err(Error::Config(format!(
-            "a {} model cannot go in the {} slot",
-            model.slot(),
-            params.slot
-        )));
+/// The settings batch that carries out `request`, with the scope it targets (`None`: each
+/// key's home); `None` for [`EmbedRequest::Show`], which changes nothing.
+///
+/// Setting a model sets every field of its slot, so the new model replaces the old one
+/// whole. Clearing one removes the slot's model keys from the scope that holds the models
+/// and keeps this device's switch beside them. A model given for the other slot, or an
+/// empty key, is an error.
+pub fn embed_ops(request: EmbedRequest) -> Result<Option<(Option<Scope>, Vec<Op>)>> {
+    fn set(key: &str, value: Value) -> Op {
+        Op::Set {
+            key: key.to_owned(),
+            value,
+        }
     }
-    let apply = |models: &mut ModelSettings| match params.model.clone() {
-        Some(SlotModel::Local(m)) => models.local = Some(m),
-        Some(SlotModel::Remote(m)) => models.remote = Some(m),
-        None => match params.slot {
-            Slot::Local => models.local = None,
-            Slot::Remote => models.remote = None,
+    fn unset(key: &str) -> Op {
+        Op::Unset {
+            key: key.to_owned(),
+        }
+    }
+    // An integer the registry does not accept is refused by its range check, not here.
+    fn int(n: impl TryInto<i64>) -> Value {
+        Value::Int(n.try_into().unwrap_or(i64::MAX))
+    }
+    let batch = match request {
+        EmbedRequest::Show => return Ok(None),
+        EmbedRequest::ModelSet(EmbedModelSetParams { slot, model }) => match model {
+            Some(model) if model.slot() != slot => {
+                return Err(Error::Config(format!(
+                    "a {} model cannot go in the {slot} slot",
+                    model.slot()
+                )));
+            }
+            Some(SlotModel::Local(m)) => (
+                None,
+                vec![
+                    set("embed.local.model", Value::String(m.model)),
+                    set("embed.local.dimension", int(m.dimension)),
+                    set("embed.local.max_tokens", int(m.max_tokens)),
+                ],
+            ),
+            Some(SlotModel::Remote(m)) => (
+                None,
+                vec![
+                    set("embed.remote.endpoint", Value::String(m.endpoint)),
+                    set("embed.remote.model", Value::String(m.model)),
+                    set("embed.remote.dimension", int(m.dimension)),
+                ],
+            ),
+            // The slot's table also holds this device's switch, which lives in the device
+            // scope: name the models' scope, or the prefix spans two.
+            None => (
+                Some(Scope::Workgroup),
+                vec![unset(&format!("embed.{slot}"))],
+            ),
         },
-    };
-    match Workgroup::open(dir)? {
-        Some(wg) => {
-            let path = wg.embedding_toml();
-            let mut models = match read_shared(&path)? {
-                Some(Ok(models)) => models,
-                None => ModelSettings::default(),
-                // Rewriting a file nobody can read would silently drop the other slot.
-                Some(Err(why)) => {
-                    return Err(Error::Config(format!(
-                        "{}: {why}; fix or remove it first",
-                        path.display()
-                    )));
-                }
-            };
-            apply(&mut models);
-            models.validate().map_err(Error::Config)?;
-            // An empty file stays: it says the workgroup has no model, which a device's own
-            // `[models]` must not override.
-            write_toml(
-                &path,
-                "# The embedding models this workgroup uses. Set with `embedding local|remote set`.",
-                &models,
+        EmbedRequest::DeviceSet(EmbedDeviceSetParams { slot, enabled }) => {
+            let key = format!("embed.{slot}.enabled");
+            (
+                None,
+                vec![match enabled {
+                    Some(on) => set(&key, Value::Bool(on)),
+                    None => unset(&key),
+                }],
             )
         }
-        None => {
-            let path = dir.embedding_toml();
-            let mut device = read_device_strict(&path)?;
-            let mut models = device.models.take().unwrap_or_default();
-            apply(&mut models);
-            models.validate().map_err(Error::Config)?;
-            device.models = (!models.is_empty()).then_some(models);
-            write_device(&path, &device)
+        EmbedRequest::KeySet(key) => {
+            if key.is_empty() {
+                return Err(Error::Config("the API key is empty".to_owned()));
+            }
+            (
+                None,
+                vec![set(KEY_SETTING, Value::String(key.expose().to_owned()))],
+            )
         }
-    }
+        EmbedRequest::KeyClear => (None, vec![unset(KEY_SETTING)]),
+    };
+    Ok(Some(batch))
 }
 
-/// Switch one slot on this device; `None` is auto.
-pub fn set_device(dir: &BridgeDir, slot: Slot, enabled: Option<bool>) -> Result<()> {
-    let path = dir.embedding_toml();
-    let mut device = read_device_strict(&path)?;
-    *device.enabled_mut(slot) = enabled;
-    write_device(&path, &device)
-}
-
-/// Store the remote slot's key, readable by the owner only.
-pub fn set_key(dir: &BridgeDir, key: &ApiKey) -> Result<()> {
-    if key.is_empty() {
-        return Err(Error::Config("the API key is empty".to_owned()));
+/// Carry out `request` on the settings files of `dir`, as one batch.
+pub fn apply(dir: &BridgeDir, request: EmbedRequest) -> Result<()> {
+    if let Some((scope, ops)) = embed_ops(request)? {
+        sapphire_framework_settings::apply(&crate::settings::registry(dir)?, scope, ops)?;
     }
-    write_private(&dir.embedding_key(), key.expose())
-}
-
-/// Remove the remote slot's key. Removing an absent key is not an error.
-pub fn clear_key(dir: &BridgeDir) -> Result<()> {
-    match std::fs::remove_file(dir.embedding_key()) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
-    }
+    Ok(())
 }
 
 // ── files ───────────────────────────────────────────────────────────────────
 
-/// The workgroup's file: `None` when absent, `Some(Err)` when it does not parse.
-fn read_shared(path: &Path) -> Result<Option<std::result::Result<ModelSettings, String>>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(
-            toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
-        )),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+/// The workgroup's models: none when its file is absent, `Err` when the file or its
+/// `[embed]` does not parse or its slots break the rules. `[net]` is not looked at.
+fn read_shared(path: &Path) -> Result<std::result::Result<ModelSettings, String>> {
+    match read_table::<EmbedTable>(path, EMBED) {
+        Ok(Some(embed)) => Ok(embed
+            .models()
+            .map_err(|why| format!("{}: {why}", path.display()))),
+        Ok(None) => Ok(Ok(ModelSettings::default())),
+        Err(Error::Config(why)) => Ok(Err(why)),
+        Err(e) => Err(e),
     }
 }
 
-/// This host's file for reading: absent or unparsable means the defaults (logged).
-fn read_device(path: &Path) -> DeviceFile {
-    read_device_strict(path).unwrap_or_else(|err| {
-        tracing::warn!(
-            target: crate::logging::BRIDGE_TARGET,
-            "{err}; using the default embedding settings for this device"
-        );
-        DeviceFile::default()
-    })
-}
-
-/// This host's file for rewriting: an unparsable one is an error, not silently replaced.
-fn read_device_strict(path: &Path) -> Result<DeviceFile> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => {
-            toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DeviceFile::default()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-fn write_device(path: &Path, device: &DeviceFile) -> Result<()> {
-    write_toml(
-        path,
-        "# This device's embedding settings (not synced). Set with `embedding … device`.",
-        device,
-    )
-}
-
-fn write_toml(path: &Path, header: &str, value: &impl Serialize) -> Result<()> {
-    let body = toml::to_string_pretty(value)
-        .map_err(|e| Error::Config(format!("could not encode {}: {e}", path.display())))?;
-    crate::routes::write_atomic(path, header, &body)
+/// This host's `[embed]` for reading: absent or unparsable means the defaults (logged), so
+/// a broken file never stops the bridge from serving. A batch still refuses to rewrite it.
+fn read_device_embed(path: &Path) -> EmbedTable {
+    read_table(path, EMBED)
+        .map(Option::unwrap_or_default)
+        .unwrap_or_else(|err| {
+            tracing::warn!(
+                target: crate::logging::BRIDGE_TARGET,
+                "{err}; using the default embedding settings for this device"
+            );
+            EmbedTable::default()
+        })
 }
 
 fn read_key(path: &Path) -> Result<Option<ApiKey>> {
@@ -419,32 +363,11 @@ fn read_key(path: &Path) -> Result<Option<ApiKey>> {
     }
 }
 
-/// Write `body` to `path` through a temporary file created owner-only, then rename.
-fn write_private(path: &Path, body: &str) -> Result<()> {
-    use std::io::Write;
-
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        file.write_all(body.as_bytes())?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config_file::{LocalTable, RemoteTable};
+    use sapphire_bridge_api::{EmbedDeviceSetParams, LOCAL_MODEL};
 
     fn local() -> LocalModel {
         LocalModel::default()
@@ -465,27 +388,30 @@ mod tests {
         }
     }
 
-    fn device(local: Option<bool>, remote: Option<bool>) -> DeviceFile {
-        DeviceFile {
-            local: LocalSwitch {
+    fn device(local: Option<bool>, remote: Option<bool>) -> EmbedTable {
+        EmbedTable {
+            local: Some(LocalTable {
                 enabled: local,
-                ..LocalSwitch::default()
-            },
-            remote: Switch { enabled: remote },
-            ..DeviceFile::default()
+                ..LocalTable::default()
+            }),
+            remote: Some(RemoteTable {
+                enabled: remote,
+                ..RemoteTable::default()
+            }),
+            ..EmbedTable::default()
         }
     }
 
     #[test]
     fn nothing_configured_is_off() {
-        let r = resolve(None, &DeviceFile::default(), false, true);
+        let r = resolve(None, &EmbedTable::default(), false, true);
         assert_eq!((r.active, r.source), (None, None));
         assert_eq!(r.note, Some(EmbedNote::NotConfigured));
     }
 
     #[test]
     fn the_remote_slot_wins_when_both_are_on() {
-        let r = resolve(Some(Ok(both())), &DeviceFile::default(), true, true);
+        let r = resolve(Some(Ok(both())), &EmbedTable::default(), true, true);
         assert_eq!(r.active, Some(Slot::Remote));
         assert!(r.local_enabled && r.remote_enabled);
         assert_eq!(r.note, None);
@@ -499,7 +425,7 @@ mod tests {
         };
         let r = resolve(
             Some(Ok(local_only.clone())),
-            &DeviceFile::default(),
+            &EmbedTable::default(),
             false,
             false,
         );
@@ -518,7 +444,7 @@ mod tests {
 
     #[test]
     fn the_remote_slot_stays_on_without_avx2() {
-        let r = resolve(Some(Ok(both())), &DeviceFile::default(), true, false);
+        let r = resolve(Some(Ok(both())), &EmbedTable::default(), true, false);
         assert!(!r.local_enabled && r.remote_enabled);
         assert_eq!(r.active, Some(Slot::Remote));
     }
@@ -539,19 +465,19 @@ mod tests {
 
     #[test]
     fn a_remote_slot_without_a_key_still_serves_but_says_so() {
-        let r = resolve(Some(Ok(both())), &DeviceFile::default(), false, true);
+        let r = resolve(Some(Ok(both())), &EmbedTable::default(), false, true);
         assert_eq!(r.active, Some(Slot::Remote));
         assert_eq!(r.note, Some(EmbedNote::KeyMissing));
     }
 
     #[test]
     fn the_workgroup_wins_over_the_device_models() {
-        let d = DeviceFile {
-            models: Some(ModelSettings {
-                local: Some(local()),
-                remote: None,
+        let d = EmbedTable {
+            local: Some(LocalTable {
+                model: Some(LOCAL_MODEL.to_owned()),
+                ..LocalTable::default()
             }),
-            ..DeviceFile::default()
+            ..EmbedTable::default()
         };
         let shared = ModelSettings {
             local: None,
@@ -562,21 +488,34 @@ mod tests {
         assert!(r.shadowed);
         assert_eq!(r.active, Some(Slot::Remote));
 
-        // Without a workgroup's file, the device's own apply.
+        // Without a workgroup, the device's own apply.
         let r = resolve(None, &d, false, true);
         assert_eq!(r.source, Some(ModelSource::Device));
         assert_eq!(r.active, Some(Slot::Local));
     }
 
     #[test]
+    fn a_table_with_only_enabled_configures_no_slot() {
+        let d = device(Some(true), Some(true));
+        // No workgroup: the switches alone are no model.
+        let r = resolve(None, &d, true, true);
+        assert_eq!((r.source, r.active), (None, None));
+        assert_eq!(r.note, Some(EmbedNote::NotConfigured));
+        // With one: nothing of the device's is shadowed.
+        let r = resolve(Some(Ok(both())), &d, true, true);
+        assert!(!r.shadowed);
+        assert_eq!(r.active, Some(Slot::Remote));
+    }
+
+    #[test]
     fn invalid_settings_turn_embedding_off() {
-        let r = resolve(Some(Err("bad".into())), &DeviceFile::default(), true, true);
+        let r = resolve(Some(Err("bad".into())), &EmbedTable::default(), true, true);
         assert_eq!(r.active, None);
         assert_eq!(r.note, Some(EmbedNote::Invalid("bad".into())));
 
         let mut broken = both();
         broken.remote.as_mut().unwrap().dimension = 0;
-        let r = resolve(Some(Ok(broken)), &DeviceFile::default(), true, true);
+        let r = resolve(Some(Ok(broken)), &EmbedTable::default(), true, true);
         assert_eq!(r.active, None);
         assert!(matches!(r.note, Some(EmbedNote::Invalid(_))));
     }
@@ -587,19 +526,36 @@ mod tests {
         (tmp, dir)
     }
 
+    /// Carry out `request` as the RPCs and the offline CLI do: as one settings batch.
+    fn run(dir: &BridgeDir, request: EmbedRequest) -> Result<()> {
+        let (scope, ops) = embed_ops(request)?.expect("a change");
+        sapphire_framework_settings::apply(&crate::settings::registry(dir)?, scope, ops)?;
+        Ok(())
+    }
+
+    fn model_set(slot: Slot, model: Option<SlotModel>) -> EmbedRequest {
+        EmbedRequest::ModelSet(EmbedModelSetParams { slot, model })
+    }
+
+    fn device_set(slot: Slot, enabled: Option<bool>) -> EmbedRequest {
+        EmbedRequest::DeviceSet(EmbedDeviceSetParams { slot, enabled })
+    }
+
+    #[test]
+    fn show_is_no_change() {
+        assert!(embed_ops(EmbedRequest::Show).unwrap().is_none());
+    }
+
     #[test]
     fn without_a_workgroup_models_go_in_the_device_file() {
         let (_tmp, dir) = bridge_dir();
-        set_model(
+        run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Remote,
-                model: Some(SlotModel::Remote(remote())),
-            },
+            model_set(Slot::Remote, Some(SlotModel::Remote(remote()))),
         )
         .unwrap();
-        set_device(&dir, Slot::Local, Some(false)).unwrap();
-        set_key(&dir, &ApiKey::new("sk-x")).unwrap();
+        run(&dir, device_set(Slot::Local, Some(false))).unwrap();
+        run(&dir, EmbedRequest::KeySet(ApiKey::new("sk-x"))).unwrap();
 
         let (r, config) = load(&dir, true).unwrap();
         assert_eq!(r.source, Some(ModelSource::Device));
@@ -612,29 +568,61 @@ mod tests {
             })
         );
 
-        // Clearing the only slot removes the table.
-        set_model(
+        // Clearing the only slot removes its fields and keeps this device's switches.
+        run(&dir, model_set(Slot::Remote, None)).unwrap();
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
+        assert!(!text.contains("[embed.remote]"), "{text}");
+        assert!(!text.contains("endpoint"), "{text}");
+        assert!(text.contains("[embed.local]"), "{text}");
+        assert!(text.contains("enabled = false"), "{text}");
+        assert_eq!(load(&dir, true).unwrap().0.source, None);
+    }
+
+    #[test]
+    fn clearing_a_slot_keeps_its_device_switch() {
+        let (_tmp, dir) = bridge_dir();
+        run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Remote,
-                model: None,
-            },
+            model_set(Slot::Remote, Some(SlotModel::Remote(remote()))),
         )
         .unwrap();
-        let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
-        assert!(!text.contains("[models"), "{text}");
-        assert!(text.contains("[local]"), "{text}");
+        run(&dir, device_set(Slot::Remote, Some(false))).unwrap();
+        run(&dir, model_set(Slot::Remote, None)).unwrap();
+        let (r, _) = load(&dir, true).unwrap();
+        assert_eq!(r.models.remote, None);
+        assert_eq!(r.device.remote_enabled, Some(false));
+    }
+
+    #[test]
+    fn setting_a_model_replaces_every_field_of_its_slot() {
+        let (_tmp, dir) = bridge_dir();
+        run(
+            &dir,
+            model_set(
+                Slot::Local,
+                Some(SlotModel::Local(LocalModel {
+                    dimension: 512,
+                    max_tokens: 128,
+                    ..local()
+                })),
+            ),
+        )
+        .unwrap();
+        run(
+            &dir,
+            model_set(Slot::Local, Some(SlotModel::Local(local()))),
+        )
+        .unwrap();
+        let (r, _) = load(&dir, true).unwrap();
+        assert_eq!(r.models.local, Some(local()));
     }
 
     #[test]
     fn the_local_qtype_comes_from_this_devices_file() {
         let (_tmp, dir) = bridge_dir();
-        set_model(
+        run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Local,
-                model: Some(SlotModel::Local(local())),
-            },
+            model_set(Slot::Local, Some(SlotModel::Local(local()))),
         )
         .unwrap();
         let qtype_of = |dir: &BridgeDir| match load(dir, true).unwrap() {
@@ -643,52 +631,48 @@ mod tests {
         };
         assert_eq!(qtype_of(&dir), (None, QType::default()));
 
-        // Written by hand next to what the CLI wrote; a switch change keeps it.
-        let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
-        std::fs::write(
-            dir.embedding_toml(),
-            format!("{text}\n[local]\nqtype = \"q4_k\"\n"),
+        // Set by key; a switch change through the embedding command keeps it.
+        sapphire_framework_settings::apply(
+            &crate::settings::registry(&dir).unwrap(),
+            None,
+            vec![sapphire_framework_settings::Op::Set {
+                key: "embed.local.qtype".to_owned(),
+                value: sapphire_framework_settings::Value::String("q4_k".to_owned()),
+            }],
         )
         .unwrap();
         assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
-        set_device(&dir, Slot::Local, Some(true)).unwrap();
+        run(&dir, device_set(Slot::Local, Some(true))).unwrap();
         assert_eq!(qtype_of(&dir), (Some(QType::Q4K), QType::Q4K));
-        let text = std::fs::read_to_string(dir.embedding_toml()).unwrap();
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
         assert!(text.contains("qtype = \"q4_k\""), "{text}");
 
-        // An unknown type is a broken file: the switch command refuses to rewrite it.
-        std::fs::write(dir.embedding_toml(), "[local]\nqtype = \"fp16\"\n").unwrap();
-        assert!(set_device(&dir, Slot::Local, None).is_err());
+        // An unknown type is a broken file: a batch refuses to rewrite it, and reading
+        // falls back to the defaults.
+        std::fs::write(dir.config_toml(), "[embed.local]\nqtype = \"fp16\"\n").unwrap();
+        assert!(run(&dir, device_set(Slot::Local, None)).is_err());
+        assert_eq!(load(&dir, true).unwrap().0.device.local_qtype, None);
     }
 
     #[test]
     fn with_a_workgroup_models_go_in_its_root() {
         let (_tmp, dir) = bridge_dir();
         let wg = Workgroup::create(&dir, "wg", "this", "node").unwrap();
-        set_model(
+        run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Local,
-                model: Some(SlotModel::Local(local())),
-            },
+            model_set(Slot::Local, Some(SlotModel::Local(local()))),
         )
         .unwrap();
-        assert!(wg.embedding_toml().is_file());
-        assert!(!dir.embedding_toml().exists());
+        assert!(wg.config_toml().is_file());
+        assert!(!dir.config_toml().exists());
         let (r, config) = load(&dir, true).unwrap();
         assert_eq!(r.source, Some(ModelSource::Workgroup));
         assert!(matches!(config, Some(EmbedConfig::Local { .. })));
 
-        // Clearing keeps the (now empty) file: the workgroup says "no model".
-        set_model(
-            &dir,
-            EmbedModelSetParams {
-                slot: Slot::Local,
-                model: None,
-            },
-        )
-        .unwrap();
-        assert!(wg.embedding_toml().is_file());
+        // Clearing leaves the workgroup with no model.
+        run(&dir, model_set(Slot::Local, None)).unwrap();
+        let text = std::fs::read_to_string(wg.config_toml()).unwrap();
+        assert!(!text.contains("[embed.local]"), "{text}");
         assert_eq!(
             load(&dir, true).unwrap().0.note,
             Some(EmbedNote::NotConfigured)
@@ -696,36 +680,48 @@ mod tests {
     }
 
     #[test]
+    fn with_a_workgroup_the_device_models_are_shadowed() {
+        let (_tmp, dir) = bridge_dir();
+        run(
+            &dir,
+            model_set(Slot::Local, Some(SlotModel::Local(local()))),
+        )
+        .unwrap();
+        Workgroup::create(&dir, "wg", "this", "node").unwrap();
+        let (r, config) = load(&dir, true).unwrap();
+        assert_eq!(r.source, Some(ModelSource::Workgroup));
+        assert!(r.shadowed);
+        assert_eq!(config, None);
+    }
+
+    #[test]
     fn a_model_must_match_its_slot_and_validate() {
         let (_tmp, dir) = bridge_dir();
-        let err = set_model(
+        let err = run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Local,
-                model: Some(SlotModel::Remote(remote())),
-            },
+            model_set(Slot::Local, Some(SlotModel::Remote(remote()))),
         )
         .unwrap_err();
         assert!(err.to_string().contains("remote model"), "{err}");
-        let err = set_model(
+        let err = run(
             &dir,
-            EmbedModelSetParams {
-                slot: Slot::Remote,
-                model: Some(SlotModel::Remote(RemoteModel {
+            model_set(
+                Slot::Remote,
+                Some(SlotModel::Remote(RemoteModel {
                     dimension: 0,
                     ..remote()
                 })),
-            },
+            ),
         )
         .unwrap_err();
         assert!(err.to_string().contains("dimension"), "{err}");
-        assert!(!dir.embedding_toml().exists(), "nothing written");
+        assert!(!dir.config_toml().exists(), "nothing written");
     }
 
     #[test]
     fn the_key_file_is_private_and_clearable() {
         let (_tmp, dir) = bridge_dir();
-        set_key(&dir, &ApiKey::new("sk-secret\n")).unwrap();
+        run(&dir, EmbedRequest::KeySet(ApiKey::new("sk-secret\n"))).unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.embedding_key()).unwrap(),
             "sk-secret"
@@ -739,10 +735,10 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        clear_key(&dir).unwrap();
-        clear_key(&dir).unwrap();
+        run(&dir, EmbedRequest::KeyClear).unwrap();
+        run(&dir, EmbedRequest::KeyClear).unwrap();
         assert!(!dir.embedding_key().exists());
-        assert!(set_key(&dir, &ApiKey::new(" ")).is_err());
+        assert!(run(&dir, EmbedRequest::KeySet(ApiKey::new(" "))).is_err());
     }
 
     #[test]
@@ -757,13 +753,51 @@ mod tests {
     #[test]
     fn an_unparsable_device_file_reads_as_defaults_but_is_not_overwritten() {
         let (_tmp, dir) = bridge_dir();
+        let bad = "enabled = true\nprovider = \"local\"\n";
+        std::fs::write(dir.config_toml(), bad).unwrap();
+        let (r, _) = load(&dir, true).unwrap();
+        assert_eq!(r.device, DeviceSettings::default());
+        assert!(run(&dir, device_set(Slot::Local, Some(true))).is_err());
+        assert_eq!(std::fs::read_to_string(dir.config_toml()).unwrap(), bad);
+    }
+
+    #[test]
+    fn a_malformed_net_table_does_not_invalidate_embedding() {
+        let (_tmp, dir) = bridge_dir();
+        let wg = Workgroup::create(&dir, "wg", "this", "node").unwrap();
         std::fs::write(
-            dir.embedding_toml(),
-            "enabled = true\nprovider = \"local\"\n",
+            wg.config_toml(),
+            format!(
+                "[net]\nrelays = 5\n[embed.local]\nmodel = \"{}\"\n",
+                sapphire_bridge_api::LOCAL_MODEL
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.config_toml(),
+            "[net]\nwake_on_sync = \"yes\"\n[embed.local]\nenabled = false\n",
         )
         .unwrap();
         let (r, _) = load(&dir, true).unwrap();
-        assert_eq!(r.device, DeviceSettings::default());
-        assert!(set_device(&dir, Slot::Local, Some(true)).is_err());
+        assert_eq!(r.models.local, Some(local()));
+        assert_eq!(r.device.local_enabled, Some(false));
+    }
+
+    #[test]
+    fn a_device_net_section_survives_an_embedding_change() {
+        let (_tmp, dir) = bridge_dir();
+        std::fs::write(dir.config_toml(), "[net]\n# keep\ndiscovery = false\n").unwrap();
+        run(&dir, device_set(Slot::Local, Some(false))).unwrap();
+        let text = std::fs::read_to_string(dir.config_toml()).unwrap();
+        assert!(
+            text.starts_with("[net]\n# keep\ndiscovery = false\n"),
+            "{text}"
+        );
+        assert!(text.contains("[embed.local]"), "{text}");
+        assert!(
+            !crate::net::NetConfig::load(&dir.config_toml())
+                .unwrap()
+                .discovery
+        );
     }
 }

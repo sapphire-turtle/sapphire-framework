@@ -302,8 +302,15 @@ impl BridgeClient {
         scope: Option<Scope>,
         entries: Vec<ConfigEntry>,
     ) -> sapphire_ipc::Result<ConfigWriteResult> {
-        self.call(CONFIG_SET, ConfigSetParams { scope, entries })
-            .await
+        self.call(
+            CONFIG_SET,
+            ConfigSetParams {
+                scope,
+                entries,
+                dry_run: false,
+            },
+        )
+        .await
     }
 
     /// Remove several settings (or prefixes) as one batch.
@@ -312,8 +319,15 @@ impl BridgeClient {
         scope: Option<Scope>,
         keys: Vec<String>,
     ) -> sapphire_ipc::Result<ConfigWriteResult> {
-        self.call(CONFIG_UNSET, ConfigUnsetParams { scope, keys })
-            .await
+        self.call(
+            CONFIG_UNSET,
+            ConfigUnsetParams {
+                scope,
+                keys,
+                dry_run: false,
+            },
+        )
+        .await
     }
 
     /// Ask the bridge to restart, so restart-only settings take effect.

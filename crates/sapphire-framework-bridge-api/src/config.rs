@@ -40,6 +40,9 @@ pub struct ConfigSetParams {
     pub scope: Option<Scope>,
     /// The changes.
     pub entries: Vec<ConfigEntry>,
+    /// Check the batch, validators included, and write nothing.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 // The values may be secrets, and this crate cannot tell which keys are: so no value is
@@ -58,6 +61,7 @@ impl fmt::Debug for ConfigSetParams {
         f.debug_struct("ConfigSetParams")
             .field("scope", &self.scope)
             .field("entries", &self.entries)
+            .field("dry_run", &self.dry_run)
             .finish()
     }
 }
@@ -70,6 +74,9 @@ pub struct ConfigUnsetParams {
     pub scope: Option<Scope>,
     /// The keys, or prefixes of several keys.
     pub keys: Vec<String>,
+    /// Check the batch, validators included, and write nothing.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Result of `config.schema`.
@@ -107,6 +114,7 @@ mod tests {
                 key: "embed.remote.key".into(),
                 value: Value::String("sk-hunter2".into()),
             }],
+            dry_run: false,
         };
         let shown = format!("{params:?}");
         assert!(!shown.contains("hunter2"), "{shown}");
@@ -121,11 +129,20 @@ mod tests {
                 key: "net.discovery".into(),
                 value: Value::Bool(false),
             }],
+            dry_run: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         assert_eq!(
             serde_json::from_str::<ConfigSetParams>(&json).unwrap(),
             params
         );
+    }
+
+    #[test]
+    fn dry_run_defaults_to_false() {
+        let set: ConfigSetParams = serde_json::from_str(r#"{"entries":[]}"#).unwrap();
+        assert!(!set.dry_run);
+        let unset: ConfigUnsetParams = serde_json::from_str(r#"{"keys":[]}"#).unwrap();
+        assert!(!unset.dry_run);
     }
 }

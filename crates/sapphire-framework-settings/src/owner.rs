@@ -81,7 +81,7 @@ impl fmt::Display for FieldError {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
-    use crate::{Apply, Kind, Scope, SettingDef};
+    use crate::{Apply, Kind, Process, Scope, SettingDef};
 
     pub struct TestOwner {
         pub dir: tempfile::TempDir,
@@ -132,6 +132,7 @@ pub(crate) mod test_support {
             default: None,
             section: "test".into(),
             doc: "test".into(),
+            process: Process::Bridge,
         }
     }
 }

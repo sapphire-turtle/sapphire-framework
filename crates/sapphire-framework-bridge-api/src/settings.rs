@@ -131,6 +131,17 @@ impl fmt::Display for Value {
     }
 }
 
+/// Which process owns a setting: the one that stores, validates and applies it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Process {
+    /// The bridge.
+    #[default]
+    Bridge,
+    /// The app server.
+    App,
+}
+
 /// The registry's description of one setting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingDef {
@@ -150,6 +161,9 @@ pub struct SettingDef {
     pub section: String,
     /// One-line help text.
     pub doc: String,
+    /// The process that owns it; an older peer's definitions read as the bridge's.
+    #[serde(default)]
+    pub process: Process,
 }
 
 impl SettingDef {
@@ -354,7 +368,17 @@ mod tests {
             default: None,
             section: "test".into(),
             doc: "test".into(),
+            process: Process::Bridge,
         }
+    }
+
+    #[test]
+    fn an_older_def_reads_as_the_bridges() {
+        let json = r#"{"key":"a.b","kind":"bool","scopes":["device"],"overridable":false,
+            "apply":"live","default":null,"section":"s","doc":"d"}"#;
+        let def: SettingDef = serde_json::from_str(json).unwrap();
+        assert_eq!(def.process, Process::Bridge);
+        assert_eq!(serde_json::to_value(Process::App).unwrap(), "app");
     }
 
     #[test]

@@ -767,6 +767,7 @@ fn read_status_report() -> Result<Option<StatusReport>> {
                 // The last snapshot recorded what the bridge was embedding; a snapshot
                 // written before the line existed simply has none.
                 embedding: snapshot.embedding,
+                config_dry_run: false,
             },
             stale: true,
         })),

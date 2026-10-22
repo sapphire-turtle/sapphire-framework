@@ -184,6 +184,7 @@ impl StubBridge {
                         workgroup: None,
                         routes: vec![],
                         embedding: None,
+                        config_dry_run: false,
                     })
                     .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
                 }),

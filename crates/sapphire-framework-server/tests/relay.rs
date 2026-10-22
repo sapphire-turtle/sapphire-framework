@@ -236,9 +236,9 @@ async fn the_bridges_own_errors_come_back_unchanged() {
     let stub = stub_in_queue(&bridges).await;
     let f = Fixture::own(&bridges, &attempts).await;
 
-    let e = rpc(f.call("config.schema", json!({})).await);
+    let e = rpc(f.call("embed.settings", json!({})).await);
     assert_eq!(e.code, codes::METHOD_NOT_FOUND);
-    assert_eq!(e.message, "the stub has no answer for config.schema");
+    assert_eq!(e.message, "the stub has no answer for embed.settings");
     assert_eq!(stub.calls().len(), 1, "the bridge was asked");
 }
 

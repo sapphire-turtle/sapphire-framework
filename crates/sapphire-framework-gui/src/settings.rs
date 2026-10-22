@@ -318,6 +318,7 @@ mod tests {
                     }),
                     routes: vec![],
                     embedding: None,
+                    config_dry_run: false,
                 },
                 peers: vec![
                     PeerInfo {

@@ -511,6 +511,7 @@ mod tests {
             default: None,
             section: "t".into(),
             doc: "t".into(),
+            process: crate::settings::Process::Bridge,
         }
     }
 

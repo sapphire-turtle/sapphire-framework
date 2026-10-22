@@ -837,6 +837,8 @@ fn status(bridge: &Bridge) -> Result<StatusResult> {
         workgroup: workgroup.as_ref().map(workgroup_status).transpose()?,
         embedding: Some(embed_info(bridge)),
         routes: route_statuses(bridge),
+        // Set once the bridge implements `dry_run`.
+        config_dry_run: false,
     })
 }
 

@@ -45,12 +45,47 @@ enum SecretEdit {
     Remove,
 }
 
+/// A batch that passed every check: the edited files and secrets, not yet written.
+struct Checks {
+    applied: Applied,
+    staged: Staged,
+    secrets: BTreeMap<PathBuf, SecretEdit>,
+}
+
 /// Apply `ops` to the scope files, all or nothing.
 ///
 /// `scope: None` targets each key's home scope; `Some(s)` must be allowed for every key.
 /// Every op is checked and every touched owner validates the edited files before anything
 /// is written; then the files are written atomically, then the secrets.
 pub fn apply(reg: &Registry, scope: Option<Scope>, ops: Vec<Op>) -> Result<Applied> {
+    let Checks {
+        applied,
+        staged,
+        secrets,
+    } = run_checks(reg, scope, ops)?;
+    for (path, text) in &staged.files {
+        write_atomic(path, text)?;
+    }
+    for (path, edit) in &secrets {
+        match edit {
+            SecretEdit::Write(text) => write_private(path, text)?,
+            SecretEdit::Remove => match std::fs::remove_file(path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => {}
+            },
+        }
+    }
+    Ok(applied)
+}
+
+/// Everything [`apply`] does up to and including the owners' `validate`, writing nothing:
+/// the same `Applied`, or the same error, that `apply` would produce.
+pub fn check(reg: &Registry, scope: Option<Scope>, ops: Vec<Op>) -> Result<Applied> {
+    run_checks(reg, scope, ops).map(|checked| checked.applied)
+}
+
+/// The shared part of [`apply`] and [`check`].
+fn run_checks(reg: &Registry, scope: Option<Scope>, ops: Vec<Op>) -> Result<Checks> {
     let mut applied = Applied::default();
     let mut docs: BTreeMap<PathBuf, DocumentMut> = BTreeMap::new();
     let mut secrets: BTreeMap<PathBuf, SecretEdit> = BTreeMap::new();
@@ -120,19 +155,11 @@ pub fn apply(reg: &Registry, scope: Option<Scope>, ops: Vec<Op>) -> Result<Appli
         owner.validate(&staged).map_err(Error::Rejected)?;
     }
 
-    for (path, text) in &staged.files {
-        write_atomic(path, text)?;
-    }
-    for (path, edit) in &secrets {
-        match edit {
-            SecretEdit::Write(text) => write_private(path, text)?,
-            SecretEdit::Remove => match std::fs::remove_file(path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-                _ => {}
-            },
-        }
-    }
-    Ok(applied)
+    Ok(Checks {
+        applied,
+        staged,
+        secrets,
+    })
 }
 
 /// The scope a key is written in: the requested one if the key allows it, else (with none
@@ -600,6 +627,41 @@ mod tests {
 
         apply(&reg, None, vec![unset_op("embed.remote.token")]).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn check_writes_nothing_and_reports_what_apply_would() {
+        let (owner, reg) = setup(vec![def("a.min", int())]);
+        let ops = || vec![set_op("a.min", Value::Int(3))];
+        let checked = check(&reg, None, ops()).unwrap();
+        assert!(!wg(&owner).exists());
+        let applied = apply(&reg, None, ops()).unwrap();
+        assert_eq!(checked, applied);
+        assert!(wg(&owner).exists());
+    }
+
+    #[test]
+    fn check_reports_the_same_errors() {
+        let (owner, reg) = setup(vec![def("a.min", int()), def("a.max", int())]);
+        let wrong = || vec![set_op("a.min", Value::String("x".into()))];
+        let (c, a) = (
+            check(&reg, None, wrong()).unwrap_err(),
+            apply(&reg, None, wrong()).unwrap_err(),
+        );
+        assert_eq!(c.to_string(), a.to_string());
+        let rejected = || {
+            vec![
+                set_op("a.min", Value::Int(10)),
+                set_op("a.max", Value::Int(5)),
+            ]
+        };
+        let (c, a) = (
+            check(&reg, None, rejected()).unwrap_err(),
+            apply(&reg, None, rejected()).unwrap_err(),
+        );
+        assert!(matches!(c, Error::Rejected(_)));
+        assert_eq!(c.to_string(), a.to_string());
+        assert!(!wg(&owner).exists());
     }
 
     #[test]

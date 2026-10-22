@@ -331,8 +331,7 @@ impl BridgeClient {
     }
 
     /// Check a `config.set` batch without writing it: the result a write would give, or
-    /// the error it would. A bridge too old to know `dry_run` would write, so callers
-    /// gate this on the status's `config_dry_run`.
+    /// the error it would.
     pub async fn config_check_set(
         &self,
         scope: Option<Scope>,

@@ -35,11 +35,6 @@ use serde_json::Value;
 use crate::relay::{self, Relay};
 use crate::settings::{self, Settings};
 
-/// What a batch with a bridge part says to a bridge that would write it rather than check
-/// it.
-const TOO_OLD: &str =
-    "this sapphire-bridge is too old to check settings without writing them; update it";
-
 /// What answers `config.*`.
 struct Config {
     settings: Settings,
@@ -253,13 +248,10 @@ impl Config {
                 Err(e) => return Err(e),
             };
             // A batch of the bridge's keys alone is the bridge's to check as it writes; one
-            // with this server's keys too must not reach a bridge that would write it
-            // before this server's part is known to pass.
+            // with this server's keys too is checked there first, so neither side writes
+            // before both parts are known to pass. Every bridge that passes the handshake
+            // knows `dry_run`.
             if !mine.is_empty() || dry_run {
-                let status = bridge.status().await.map_err(from_bridge)?;
-                if !status.config_dry_run {
-                    return Err(RpcError::internal(TOO_OLD));
-                }
                 let checked = theirs.send(&bridge, scope, true).await?;
                 if dry_run {
                     bridge_result = Some(checked);

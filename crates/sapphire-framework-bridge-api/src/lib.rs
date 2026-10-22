@@ -552,10 +552,6 @@ pub struct StatusResult {
     /// The embedding service, when this bridge reports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbedInfoResult>,
-    /// Whether this bridge checks `config.set` and `config.unset` batches without writing
-    /// them (`dry_run`); an older bridge does not, and would write them.
-    #[serde(default)]
-    pub config_dry_run: bool,
 }
 
 /// Parameters of the [`INCOMING`] notification.

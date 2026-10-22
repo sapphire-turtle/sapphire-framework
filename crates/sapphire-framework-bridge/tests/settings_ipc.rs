@@ -175,12 +175,3 @@ async fn a_dry_run_reports_the_error_a_write_would() {
         .unwrap_err();
     assert!(unset.to_string().contains("no.such.key"), "{unset}");
 }
-
-#[tokio::test]
-async fn the_status_says_dry_run_is_supported() {
-    let net = LoopbackNetwork::new();
-    let host = common::start(&net, common::NODE_A, "host-a").await;
-    let client = common::connect(&host).await;
-
-    assert!(client.status().await.unwrap().config_dry_run);
-}

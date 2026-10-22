@@ -466,34 +466,6 @@ async fn without_a_bridge_a_batch_with_a_bridge_key_fails() {
     );
 }
 
-static CTX_OLD: AppContext = AppContext::new("cfgold");
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_old_bridge_refuses_mixed_batches() {
-    let (stub, bridge) = stub().await;
-    stub.set_config_dry_run(false);
-    let f = Fixture::start(&CTX_OLD, Some(bridge)).await;
-
-    let e = rpc(f
-        .set(&[
-            (&f.key("note"), Value::String("x".into())),
-            ("net.discovery", Value::Bool(false)),
-        ])
-        .await);
-    assert_eq!(
-        e.message,
-        "this sapphire-bridge is too old to check settings without writing them; update it"
-    );
-    assert!(bridge_sets(&stub).is_empty(), "{:?}", stub.calls());
-    assert!(!f.device_file().contains("note"), "{}", f.device_file());
-
-    // A batch of the app server's own keys never asks the bridge.
-    f.set(&[(&f.key("note"), Value::String("x".into()))])
-        .await
-        .unwrap();
-    assert!(f.device_file().contains("note"), "{}", f.device_file());
-}
-
 static CTX_LIVE: AppContext = AppContext::new("cfglive");
 
 #[tokio::test(flavor = "multi_thread")]

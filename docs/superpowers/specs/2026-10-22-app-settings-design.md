@@ -25,11 +25,16 @@ Success means:
 
 ## Decisions
 
-1. **Device file `<config_dir>/config.toml`**, replacing `server.toml` (migrated). Workspace
-   file `{root}/.{app}/config.toml`. No workgroup scope for app-server keys.
+1. **Device file `<config_dir>/config.toml`**, replacing `server.toml` (migrated), and
+   **shared with the application's own config file** (sapphire-agent keeps `[anthropic]`,
+   `[matrix]`, tokens and more there; sapphire-timer `[cache]`, `[workspace]`, a top-level
+   `sync_interval_minutes`). The framework checks and writes only its own keys and the
+   app's, and leaves the rest of the file as it is. Workspace file
+   `{root}/.{app}/config.toml`. No workgroup scope for app-server keys.
 2. **Mixed batches are checked on both sides first.** `config.set` / `config.unset` gain
    `dry_run`; the app server checks its part, has the bridge check its part, and only then
-   writes (bridge first, then its own).
+   writes (bridge first, then its own). The new fields make `sapphire-framework-bridge-api`
+   3.0 (below).
 3. **In-place restart, as the bridge does it.** The app hands the framework a function that
    builds its `AppServer`; `server.restart` rebuilds from it on the same listeners.
 4. **Offline edits.** With no app server running, `<app> config` edits the framework's and
@@ -52,14 +57,22 @@ The app server builds one `Registry` (from `sapphire-framework-settings`) of two
 
 Reserved top-level names in the app server's registry: `http`, `update`, `sync`, `retrieve`,
 `workspace` (framework), `<app_name>` (the app), and `net`, `embed` (the bridge's, owned by
-no one here), so the merged namespace never has a key two processes claim. `sync` and
-`retrieve` are only reserved; no keys are defined for them yet.
+no one here), so the merged namespace never has a key two processes claim. `sync`,
+`retrieve` and `workspace` are only reserved; no keys are defined for them yet.
+
+The device file is checked, at start and before every write, only under `[http]` and
+`[update]` — an unknown key there or a value of the wrong kind is an error — and for the old
+`[mcp]` table. Every other top-level name, `sync`, `retrieve` and `workspace` included (an
+app may keep its own `[workspace]` there), is the application's: its `<app_name>` table goes
+to the app's `validate`, and the rest is not looked at. A write edits only the keys it names
+(through `toml_edit`), so the rest of the file — comments included — is kept byte for byte,
+and the file keeps its permissions (it may hold the app's tokens).
 
 ### Files
 
 | Scope | File |
 |---|---|
-| Device | `<config_dir>/config.toml` |
+| Device | `<config_dir>/config.toml` (shared with the app's own config) |
 | Workspace | `{root}/.{app}/config.toml` (synced with the workspace) |
 | Secrets | `<config_dir>/secrets/<key>`, 0600, never synced |
 
@@ -69,11 +82,20 @@ to the registry, not an unknown key, and the existing clean-up on first mapping 
 
 ### Migration from `server.toml`
 
-When the app server starts (and when the offline CLI opens the files): if
-`<config_dir>/config.toml` does not exist and `<config_dir>/server.toml` does, its text is
-written to `config.toml` unchanged and `server.toml` is renamed `server.toml.v1`. The layout
-(`[http]`, `[http.mcp]`, `[http.metrics]`, `[update]`) is already the keys' layout. A file
-with the old `[mcp]` table still fails with today's message naming where the setting moved.
+When the app server starts (and when the offline CLI opens the files), if
+`<config_dir>/server.toml` exists:
+
+- with no `config.toml`, its text is written to `config.toml` unchanged;
+- with one (the app's own), `server.toml`'s tables are merged into it with `toml_edit`,
+  keeping `config.toml`'s comments and content; a key `config.toml` already has wins, and
+  each such key is named (never its value) in a warning. The write keeps the file's
+  permissions.
+
+Then `server.toml` is renamed `server.toml.v1`; a rename that fails after the write is a
+warning (on Windows the file may be held open), and the next start merges again, changing
+nothing. The layout (`[http]`, `[http.mcp]`, `[http.metrics]`, `[update]`) is already the
+keys' layout. A file with the old `[mcp]` table still fails with today's message naming where
+the setting moved.
 
 `ServerConfig` is no longer deserialized from a file: `run` builds it from the registry's
 effective values. `AppServer::config(cfg)` keeps overriding it for tests and embedders.
@@ -119,10 +141,13 @@ process whose effective value differs from what that process started with.
 settings crate splits `apply` into a check (everything up to and including the owners'
 `validate`) and the write; with `dry_run` the bridge answers the check's outcome and writes
 nothing (the result's `changed` lists what would change; `pending_restart` is the current
-list). A bridge too old to know `dry_run` would ignore it and write, so the app server sends
-a mixed batch only to a bridge that reports support for it: `bridge.status` gains
-`#[serde(default)] config_dry_run: bool`, and a mixed batch to a bridge without it fails
-with `this sapphire-bridge is too old to check settings without writing them; update it`.
+list).
+
+The new fields (`dry_run` here, `SettingDef::process` below) are added to exhaustive structs,
+so `sapphire-framework-bridge-api`'s next release is a major, 3.0, and the handshake's API
+version (the crate's major) moves with it: a bridge older than this one fails the handshake,
+so every bridge the app server talks to knows `dry_run`. The bridge and the apps are updated
+together; `sapphire-framework-server-api` (which re-exports bridge-api) follows.
 
 ### Which process to restart
 
@@ -215,13 +240,11 @@ fails with `the {app} server is not running; start it, or use sapphire-bridge co
 
 - Settings crate: the check-only split writes nothing and reports the same errors as a real
   write.
-- Bridge: `config.set` / `config.unset` with `dry_run` validate and write nothing;
-  `bridge.status` reports `config_dry_run`.
+- Bridge: `config.set` / `config.unset` with `dry_run` validate and write nothing.
 - App server (against `StubBridge` and a real bridge):
   - `config.schema` / `list` merge both sides; `--workgroup` / `--workspace` filter;
   - a mixed batch with an error on either side writes nothing on either side;
   - with no bridge: app-server keys read and write; a batch with a bridge key fails;
-  - a mixed batch to a bridge without `config_dry_run` is refused;
   - values never appear in the captured log (`http.allowed_hosts` and an app secret).
 - Migration: `server.toml` becomes `config.toml` plus `server.toml.v1`; `[mcp]` still fails
   with its message; `ServerConfig` comes out as before.

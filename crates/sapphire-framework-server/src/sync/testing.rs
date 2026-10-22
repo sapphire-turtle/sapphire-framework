@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use sapphire_bridge_api::{
@@ -45,9 +45,6 @@ pub struct StubBridge {
     /// What it answers the relayed methods, and `config.*`, it has no handler of its own
     /// for.
     answers: Answers,
-    /// What `bridge.status` says of `config_dry_run`: whether this bridge checks a
-    /// `config.*` batch without writing it.
-    config_dry_run: Arc<AtomicBool>,
     /// Every call to one of those, with its params, in order.
     calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
     /// Where the client looks for the bridge's data endpoint.
@@ -96,8 +93,6 @@ impl StubBridge {
 
         // Every relayed method answers from `answers` and is recorded; the handlers below
         // replace this for the methods the stub knows itself.
-        let config_dry_run = Arc::new(AtomicBool::new(true));
-
         let canned = sapphire_bridge_api::RELAYED
             .iter()
             .chain(sapphire_bridge_api::ANSWERED_BY_APP_SERVER)
@@ -192,22 +187,15 @@ impl StubBridge {
                         }
                     }
                 })
-                .method(sapphire_bridge_api::STATUS, {
-                    let config_dry_run = Arc::clone(&config_dry_run);
-                    move |_| {
-                        let config_dry_run = config_dry_run.load(Ordering::Relaxed);
-                        async move {
-                            serde_json::to_value(StatusResult {
-                                version: "stub".into(),
-                                node_id: "stub".into(),
-                                workgroup: None,
-                                routes: vec![],
-                                embedding: None,
-                                config_dry_run,
-                            })
-                            .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
-                        }
-                    }
+                .method(sapphire_bridge_api::STATUS, |_| async {
+                    serde_json::to_value(StatusResult {
+                        version: "stub".into(),
+                        node_id: "stub".into(),
+                        workgroup: None,
+                        routes: vec![],
+                        embedding: None,
+                    })
+                    .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
                 }),
         );
 
@@ -240,7 +228,6 @@ impl StubBridge {
                 listed,
                 peers,
                 answers,
-                config_dry_run,
                 calls,
                 runtime_dir,
                 device_id,
@@ -330,13 +317,6 @@ impl StubBridge {
             .lock()
             .expect("stub")
             .insert(method, Arc::new(respond));
-    }
-
-    /// Have `bridge.status` report `config_dry_run` as `on` from now on; a new stub reports
-    /// it on, as a current bridge does, and off is a bridge too old to check a `config.*`
-    /// batch without writing it.
-    pub fn set_config_dry_run(&self, on: bool) {
-        self.config_dry_run.store(on, Ordering::Relaxed);
     }
 
     /// Every call to a method answered by [`answer`](Self::answer) or

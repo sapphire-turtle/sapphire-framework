@@ -148,8 +148,10 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 デスクトップの同期 GUI が共有する部品。2 層に分かれる。GUI は**サーバも bridge も自プロセス内で
 起動しない** — 不在はエラーではなく「表示される状態」。
 
-- **データ層（egui 非依存）**: `client::FrameworkClient` が app server と bridge に非同期で問い合わせ、
+- **データ層（egui 非依存）**: `client::FrameworkClient` が app server に 1 本だけ接続し、bridge の分もその
+  接続越しに（サーバの中継経由で）問い合わせ、
   1 回の更新で現況のスナップショット（サーバ・bridge・workgroup・デバイス・ワークスペース）を作る。
+  サーバが居ないと bridge の状態は分からない（「{app} サーバが動いていない」というエラー状態）。
   コマンド（workgroup 作成・invite・参加・デバイス退避・ワークスペースの有効化/無効化/忘却）も
   同じクライアントが発行する。更新は 5 秒、コマンドは 30 秒（参加のみ 90 秒）で打ち切る
   （`ClientConfig::{fetch_timeout, command_timeout}` で変更可）— 相手が応答しなくても UI は固まらない。
@@ -231,8 +233,19 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
 `dirs` が解決できないため、`SAPPHIRE_RUNTIME_DIR` / `SAPPHIRE_BRIDGE_DIR` /
 `SAPPHIRE_<APP>_{DATA,CACHE,CONFIG}_DIR` をアプリの private storage 配下に向ける
 （設計: `docs/superpowers/specs/2026-10-16-mobile-android-design.md`）。
-制御面の路由は所有権に従う: `workspace` コマンドはアプリのサーバへ、`workgroup` / `device`
-コマンドは bridge へ直接。`status` の報告書は CLI と IPC `server.info` が同じ
+クライアントが話す相手は自分のアプリサーバだけである。`workspace` / `workgroup` / `device` /
+`embedding` / `external-device` はすべてサーバに接続し（`connect_app`）、bridge の
+クライアント向けメソッド（`bridge.status` / `peers` / `workspaces`・workgroup 系・`embed.*` の設定・
+`external_device.*`・`config.*`・`bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
+サーバが同じ名前のまま中継する（#314）。中継は params と結果・エラーを書き換えず、bridge への接続は
+同期ランタイムのものを使い、無ければ最初の中継時に自前で張る（落ちたら次の呼び出しで張り直す）。
+bridge が居ないか中継中に切れれば `BRIDGE_NOT_RUNNING`（-32001）で答え、
+`BridgeClient::relayed` がそれを従来の `NotRunning` に戻す。中継した params と結果はログに出さない
+（API キーやトークンを運ぶ）。`bridge.restart` は新しい bridge に繋がるまで（最長 30 秒）答えを
+待たせる。中継しないのは `bridge.register` / `unregister` / `incoming`・`embed.info` / `embed` /
+`embed.embed_images`・`external_device.authenticate`（`NOT_RELAYED`）。例外は `sapphire-bridge` 自身の
+CLI で、通る先のアプリサーバが無いので bridge に直接つなぐ。サーバが無いとアプリの bridge 系コマンドは
+`no {app} server is running` で失敗する。`status` の報告書は CLI と IPC `server.info` が同じ
 `StatusReport` 型を共有する（`sapphire-framework-server-api` にあり、`backend::protocol` として
 re-export）。
 

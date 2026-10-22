@@ -340,10 +340,10 @@ mod tests {
         egui::CentralPanel::default().show(ui, |ui| ui.label("screen"));
     }
 
-    /// Lay `shell` out over two frames, then click where `at` says, at 900 × 600.
-    fn click(shell: &mut Shell<Screen>, at: impl Fn(&Shell<Screen>) -> egui::Pos2) {
+    /// Lay `shell` out over two frames of a `size` screen, then click where `at` says.
+    fn click(shell: &mut Shell<Screen>, size: [f32; 2], at: impl Fn(&Shell<Screen>) -> egui::Pos2) {
         let ctx = egui::Context::default();
-        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0));
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size[0], size[1]));
         let frame = |events: Vec<egui::Event>, shell: &mut Shell<Screen>| {
             let input = egui::RawInput {
                 screen_rect: Some(rect),
@@ -400,7 +400,7 @@ mod tests {
     fn a_clicked_action_is_taken_once_and_opens_nothing() {
         let mut shell =
             shell().with_actions(vec![Action::new("new", crate::icons::plus(), "New entry")]);
-        click(&mut shell, |s| s.action_rects[0].center());
+        click(&mut shell, SIZES[0], |s| s.action_rects[0].center());
         assert_eq!(shell.take_action(), Some("new"));
         assert_eq!(shell.take_action(), None);
         assert_eq!(shell.current(), Some(Screen::Entries));
@@ -431,9 +431,13 @@ mod tests {
 
     #[test]
     fn clicking_a_footer_destination_opens_it() {
+        for size in SIZES {
+            let mut shell = shell().with_footer(prefs());
+            click(&mut shell, size, |s| s.footer_rects[0].center());
+            assert_eq!(shell.current(), Some(Screen::Prefs), "{size:?}");
+        }
         let mut shell = shell().with_footer(prefs());
-        click(&mut shell, |s| s.footer_rects[0].center());
-        assert_eq!(shell.current(), Some(Screen::Prefs));
+        shell.open(Screen::Prefs);
         let mut drawn = Vec::new();
         render([900.0, 600.0], |ui| {
             shell.ui(ui, |ui, s| {

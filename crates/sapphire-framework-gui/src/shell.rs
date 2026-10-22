@@ -247,6 +247,8 @@ mod tests {
         frame(vec![button(false)], &mut shell);
         assert_eq!(shell.current(), None);
         assert!(shell.settings.about_open());
+        // Drawn in the frame of the click, not the one after.
+        assert!(shell.settings.about_drawn());
     }
 
     #[test]

@@ -11,8 +11,12 @@ name: Mobile CI
 # required check that never runs would leave them pending.
 on:
   pull_request:
+    # Cargo.lock too: a dependency bump (egui, resvg, fontdb) can break a mobile build.
     paths:
       - crates/corundum-gui/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - .github/workflows/mobile-ci.yml
 
 defaults:

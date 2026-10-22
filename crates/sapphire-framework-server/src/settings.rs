@@ -508,6 +508,44 @@ impl Settings {
         })
     }
 
+    /// Every key at its default, with no file read, migrated or checked: for the commands
+    /// that must work whatever the files hold (`update`, `service`, `mcp`).
+    ///
+    /// The registry still points at the usual files, but nothing here opens them. An error
+    /// only when the application's own definitions break the registry's rules.
+    pub(crate) fn defaults(ctx: &AppContext, app: Arc<dyn AppSettings>) -> Result<Settings> {
+        let config_dir = ctx
+            .try_config_dir()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let files = SettingsFiles {
+            selection: SelectionFile::at(config_dir.join(crate::selection::SELECTION_FILE)),
+            config_dir,
+            app_name: ctx.app_name,
+        };
+        let registry = registry(ctx, &files, app)?;
+        let values = registry
+            .schema()
+            .into_iter()
+            .filter(|def| def.kind != Kind::Secret)
+            .filter_map(|def| def.default.map(|value| (def.key, value)))
+            .collect();
+        Ok(Settings {
+            inner: Arc::new(Inner {
+                registry,
+                start: StartState::default(),
+                values: RwLock::new(values),
+                changed: watch::channel(0).0,
+            }),
+        })
+    }
+
+    /// The config directory's `config.toml`, where the device's settings are: for a message
+    /// about them. `None` while the directory is unresolved.
+    pub(crate) fn device_file(ctx: &AppContext) -> Option<PathBuf> {
+        ctx.try_config_dir().map(|dir| dir.join(SERVER_CONFIG_FILE))
+    }
+
     /// The effective value of `key`: `None` for a secret, an unset key or an unknown one.
     pub fn get(&self, key: &str) -> Option<Value> {
         self.inner

@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig};
+use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig, serve_restarting};
 use sapphire_ipc::Endpoint;
 use tokio::io::AsyncWriteExt;
 
@@ -111,33 +111,62 @@ impl Host {
     }
 
     /// Start a bridge on this host's runtime directory, where the server looks for one.
-    async fn bridge(&self) -> Arc<Bridge> {
+    ///
+    /// Served as the real process serves it, so `bridge.restart` brings a new bridge up on
+    /// the same listeners rather than ending this one. Wake-on-sync is off: the exe a route
+    /// names would be `server-test-app`.
+    async fn bridge(&self) -> tokio::task::JoinHandle<sapphire_framework_bridge::Result<()>> {
         let dir = BridgeDir::at(self.tmp.path().join("bridge")).unwrap();
         let control = Endpoint::in_dir("bridge", self.runtime());
-        let node_id = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
-        let bridge = Arc::new(
-            Bridge::new(
-                dir,
-                Arc::new(LoopbackNetwork::new().transport(node_id)),
-                "0.0.0",
-            )
-            .unwrap()
-            .net(NetConfig::default())
-            .control_endpoint(control.clone())
-            .data_endpoint(Endpoint::in_dir("bridge-data", self.runtime())),
-        );
-        let shared = Arc::clone(&bridge);
-        tokio::spawn(async move {
-            let _ = shared.run_shared(NetConfig::default()).await;
-        });
+        let data = Endpoint::in_dir("bridge-data", self.runtime());
+        let net = LoopbackNetwork::new();
+        let build = {
+            let control = control.clone();
+            move || {
+                let bridge = Bridge::new(dir.clone(), Arc::new(net.transport(NODE)), "0.0.0").map(
+                    |bridge| {
+                        bridge
+                            .net(NetConfig {
+                                wake_on_sync: false,
+                                discovery: false,
+                                relays: Vec::new(),
+                                use_default_relays: false,
+                                ..NetConfig::default()
+                            })
+                            .control_endpoint(control.clone())
+                            .data_endpoint(data.clone())
+                    },
+                );
+                std::future::ready(bridge)
+            }
+        };
+        let task = tokio::spawn(serve_restarting(build));
         let deadline = tokio::time::Instant::now() + DEADLINE;
         while !sapphire_ipc::probe(&control).await.unwrap_or(false) {
+            assert!(!task.is_finished(), "the bridge stopped");
             assert!(tokio::time::Instant::now() < deadline, "no bridge");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        bridge
+        task
+    }
+
+    /// `config list`, once the server has reached the bridge: it connects on its own.
+    async fn list_with_bridge(&self) -> Run {
+        let deadline = tokio::time::Instant::now() + DEADLINE;
+        loop {
+            let list = self.cli(&["config", "list"], None).await;
+            assert_ok(&list);
+            if list.out.contains("net.") {
+                return list;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{list:?}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 }
+
+/// The bridge's node id.
+const NODE: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
 
 fn assert_ok(run: &Run) {
     assert_eq!(run.code, 0, "{run:?}");
@@ -220,17 +249,7 @@ async fn config_list_shows_both_sides() {
     );
 
     let _bridge = host.bridge().await;
-    let deadline = tokio::time::Instant::now() + DEADLINE;
-    let list = loop {
-        // The server connects to the bridge on its own; give it the time to.
-        let list = host.cli(&["config", "list"], None).await;
-        assert_ok(&list);
-        if list.out.contains("net.") {
-            break list;
-        }
-        assert!(tokio::time::Instant::now() < deadline, "{list:?}");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    };
+    let list = host.list_with_bridge().await;
     assert!(list.out.contains("http.mcp.enabled = false"), "{list:?}");
     assert!(list.out.contains("update.check = true"), "{list:?}");
     assert!(!list.out.contains("not shown"), "{list:?}");
@@ -446,4 +465,98 @@ async fn a_secret_comes_from_stdin_only() {
         .cli(&["config", "get", "sapphire-servertest.token"], None)
         .await;
     assert_eq!(get.out.trim(), "sapphire-servertest.token = <set>");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_restart_restarts_the_bridge_then_the_app_server() {
+    let host = Host::new();
+    let _bridge = host.bridge().await;
+    let mut server = host.serve().await;
+    host.list_with_bridge().await;
+
+    // One batch, a key of each process: both wait, and both restart, the bridge first.
+    let set = host
+        .cli(
+            &[
+                "config",
+                "set",
+                "net.discovery=false",
+                "http.mcp.enabled=true",
+                "--restart",
+            ],
+            None,
+        )
+        .await;
+    assert_ok(&set);
+    let bridge = set.out.find("sapphire-bridge restarted");
+    let app = set.out.find("the sapphire-servertest server restarted");
+    assert!(
+        bridge.is_some() && app.is_some() && bridge < app,
+        "the bridge restarts before the server: {set:?}"
+    );
+    assert!(!set.out.contains("restart required"), "{set:?}");
+
+    assert!(server.try_wait().unwrap().is_none(), "the server exited");
+    let list = host.list_with_bridge().await;
+    assert!(list.out.contains("net.discovery = false"), "{list:?}");
+    assert!(list.out.contains("http.mcp.enabled = true"), "{list:?}");
+    assert!(!list.out.contains("restart required"), "{list:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offline_list_says_whether_the_bridge_runs() {
+    let host = Host::new();
+    let _bridge = host.bridge().await;
+
+    let list = host.cli(&["config", "list"], None).await;
+    assert_ok(&list);
+    assert!(
+        list.out
+            .contains("start the sapphire-servertest server to see sapphire-bridge's settings"),
+        "{list:?}"
+    );
+    assert!(!list.out.contains("not running; its settings"), "{list:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offline_workspace_scope_needs_a_selected_workspace() {
+    let host = Host::new();
+    let set = host
+        .cli(
+            &[
+                "config",
+                "set",
+                "sapphire-servertest.greeting=hi",
+                "--workspace",
+            ],
+            None,
+        )
+        .await;
+    assert_ne!(set.code, 0, "{set:?}");
+    assert!(set.err.contains("no workspace is selected"), "{set:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn update_goes_on_past_a_broken_config_file() {
+    let host = Host::new();
+    let file = host.config_dir().join("config.toml");
+    std::fs::write(&file, "this is = = not toml\n").unwrap();
+
+    // `--no-bridge`, and no releases named: nothing reaches the network.
+    let run = host.cli(&["update", "--check", "--no-bridge"], None).await;
+    assert!(
+        run.err.contains("warning: could not read")
+            && run.err.contains(&file.display().to_string()),
+        "one warning naming the file: {run:?}"
+    );
+    assert_eq!(run.err.matches("warning").count(), 1, "{run:?}");
+    assert!(
+        run.out
+            .contains("sapphire-servertest does not say where its releases are"),
+        "update went on: {run:?}"
+    );
+
+    // `config` and `serve` still refuse the file.
+    let list = host.cli(&["config", "list"], None).await;
+    assert_ne!(list.code, 0, "{list:?}");
 }

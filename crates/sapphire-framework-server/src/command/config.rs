@@ -116,7 +116,12 @@ pub(super) async fn config<A: AppSettings + Clone>(
 ) -> Result<i32> {
     let app = ctx.app_name;
     let Some(client) = super::try_connect_app(app, version).await? else {
-        let printed = offline(ctx, Arc::new(owner), command)?;
+        // Only `list` speaks of the bridge, and only to say whether it runs.
+        let bridge_running = matches!(command, AppConfigCommand::List { .. })
+            && sapphire_ipc::probe(&Endpoint::for_bridge()?)
+                .await
+                .unwrap_or(false);
+        let printed = offline(ctx, Arc::new(owner), command, bridge_running)?;
         for line in printed.out {
             println!("{line}");
         }
@@ -138,7 +143,7 @@ async fn online(
     command: AppConfigCommand,
 ) -> Result<i32> {
     let bridge = BridgeClient::relayed(Arc::clone(&client), sapphire_ipc::runtime_dir()?);
-    let (written, restart) = match command {
+    let (written, restart, schema) = match command {
         AppConfigCommand::List { scope, show_origin } => {
             let entries = bridge.config_list(scope.scope()).await?.entries;
             for line in sapphire_bridge_api::describe_entries(&entries, show_origin) {
@@ -179,7 +184,9 @@ async fn online(
             restart,
         } => {
             let schema = bridge.config_schema().await?.settings;
-            // A key nobody here knows may be the bridge's, when it is not running to say.
+            // Checked here, not left to the server: `parse_entries` needs each key's kind to
+            // read `key=value`, so a key missing from the schema would fail as unknown before
+            // the server could say that the bridge, which may know it, is not running.
             if !has_bridge(&schema)
                 && let Some(key) = entries
                     .iter()
@@ -192,18 +199,29 @@ async fn online(
             }
             let entries = sapphire_bridge_api::parse_entries(&schema, &entries, stdin)
                 .map_err(Error::Config)?;
-            (bridge.config_set(scope.scope(), entries).await?, restart)
+            (
+                bridge.config_set(scope.scope(), entries).await?,
+                restart,
+                Some(schema),
+            )
         }
         AppConfigCommand::Unset {
             keys,
             scope,
             restart,
-        } => (bridge.config_unset(scope.scope(), keys).await?, restart),
+        } => (
+            bridge.config_unset(scope.scope(), keys).await?,
+            restart,
+            None,
+        ),
     };
 
     // Which process each pending key waits on, through the schema; a key it does not list
     // is the bridge's, as an older bridge's definitions are.
-    let schema = bridge.config_schema().await?.settings;
+    let schema = match schema {
+        Some(schema) => schema,
+        None => bridge.config_schema().await?.settings,
+    };
     let waits_on = |process: Process| {
         written.pending_restart.iter().any(|key| {
             schema
@@ -328,11 +346,12 @@ impl Printed {
 ///
 /// The files are opened as the server opens them — `server.toml` migrated first, the
 /// device file and the application's files checked — so a file the server would refuse is
-/// refused here too, by name.
+/// refused here too, by name. `bridge_running` says which line `list` ends with.
 fn offline(
     ctx: &'static AppContext,
     owner: Arc<dyn AppSettings>,
     command: AppConfigCommand,
+    bridge_running: bool,
 ) -> Result<Printed> {
     let app = ctx.app_name;
     // Checked before anything is written: the user asked for a restart, and a write that
@@ -364,8 +383,13 @@ fn offline(
                 scope => list(reg, scope, None)?,
             };
             let mut out = sapphire_bridge_api::describe_entries(&entries, show_origin);
+            // The bridge's settings reach this command through the server alone.
             if scope.scope() != Some(Scope::Workspace) {
-                out.push(BRIDGE_NOT_SHOWN.to_owned());
+                out.push(if bridge_running {
+                    format!("start the {app} server to see sapphire-bridge's settings")
+                } else {
+                    BRIDGE_NOT_SHOWN.to_owned()
+                });
             }
             Ok(Printed::ok(out))
         }

@@ -98,9 +98,12 @@ impl FrameworkCommand {
         F: Fn(&Settings) -> AppServer,
     {
         let app = ctx.app_name;
-        // Built only by the commands that need a server, and then once.
-        let server =
-            |owner: A| -> Result<AppServer> { Ok(build(&Settings::load(ctx, Arc::new(owner))?)) };
+        // Built only by the commands that need a server, and then once. These are the way
+        // out of a bad release or a broken install, so settings that cannot be read are
+        // warned about and replaced by the defaults rather than stopping them.
+        let server = |owner: A| -> Result<AppServer> {
+            Ok(build(&settings_or_defaults(ctx, Arc::new(owner))?))
+        };
         match self {
             FrameworkCommand::Serve => {
                 crate::serve_restarting(ctx, owner, build).await?;
@@ -151,6 +154,23 @@ impl FrameworkCommand {
                 server(owner)?.serve_mcp_stdio(version).await?;
                 Ok(0)
             }
+        }
+    }
+}
+
+/// `ctx`'s application's settings, or — when they cannot be read — every key at its
+/// default, after one warning on stderr naming the device file and the error.
+///
+/// For `update`, `service` and `mcp`, which must work whatever the files hold: `update` is
+/// the way out of a bad release, and `service uninstall` must always be possible.
+fn settings_or_defaults(ctx: &AppContext, owner: Arc<dyn AppSettings>) -> Result<Settings> {
+    match Settings::load(ctx, Arc::clone(&owner)) {
+        Ok(settings) => Ok(settings),
+        Err(err) => {
+            let file = Settings::device_file(ctx)
+                .map_or_else(|| "the settings".to_owned(), |f| f.display().to_string());
+            eprintln!("warning: could not read {file} ({err}); going on with the default settings");
+            Settings::defaults(ctx, owner)
         }
     }
 }

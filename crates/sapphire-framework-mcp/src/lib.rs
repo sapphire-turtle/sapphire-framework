@@ -67,6 +67,7 @@
 
 #![warn(missing_docs)]
 
+mod change;
 mod context;
 mod error;
 mod server;

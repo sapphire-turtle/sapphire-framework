@@ -3,28 +3,24 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams,
+    ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 
 use crate::context::ToolContext;
+use crate::subscriptions::Subscriptions;
 use crate::tools::framework_tools;
 
 /// What an application's MCP server says about itself: its name and version, that it has
-/// tools, and instructions naming the workspace they act on.
+/// tools whose list a `subscriptions/listen` may follow, and instructions naming the
+/// workspace they act on.
 ///
-/// An application's own handler returns this from `get_info`, or starts from it.
+/// An application's own handler returns this from `get_info`, or starts from it; one that
+/// offers resources on `subscriptions/listen` returns [`Subscriptions::server_info`] instead.
 pub fn server_info(ctx: &ToolContext) -> ServerConfig {
-    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-        .with_server_info(Implementation::new(ctx.app(), ctx.version()))
-        .with_instructions(format!(
-            "Tools of {app}, a local-first application whose data is a workspace of plain-text \
-             files on this host. Paths are relative to the workspace root; `workspace_show` \
-             says which workspace that is. The {app} server must be running.",
-            app = ctx.app()
-        ))
+    Subscriptions::new().server_info(ctx)
 }
 
 /// An MCP handler with the framework's tools ([`framework_tools`]) and nothing else.

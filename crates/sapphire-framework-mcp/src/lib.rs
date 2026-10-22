@@ -17,6 +17,7 @@
 //! - [`framework_tools`] and [`workspace_write_tools`]: the framework's tools, generic over
 //!   the application's handler so an app adds them to its own `ToolRouter`.
 //! - [`FrameworkServer`]: the handler an app gets when it adds no tools of its own.
+//! - [`Subscriptions`]: what a handler offers on `subscriptions/listen`.
 //! - [`McpService`]: an application's handler factory, type-erased, with the stdio and HTTP
 //!   transports.
 //!
@@ -72,12 +73,14 @@ mod context;
 mod error;
 mod server;
 mod service;
+mod subscriptions;
 mod tools;
 
 pub use context::ToolContext;
 pub use error::{Error, Result};
 pub use server::{FrameworkServer, server_info};
 pub use service::{LOOPBACK_HOSTS, McpService};
+pub use subscriptions::Subscriptions;
 pub use tools::{framework_tools, workspace_write_tools};
 
 /// The MCP implementation the framework builds on, so an application implements its handler

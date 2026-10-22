@@ -7256,6 +7256,7 @@ dependencies = [
  "sapphire-framework-server",
  "sapphire-framework-service",
  "sapphire-framework-session",
+ "sapphire-framework-settings",
  "sapphire-framework-sync",
  "sapphire-framework-update",
  "sapphire-framework-workspace",

@@ -2,7 +2,7 @@
 //! subcommand dials the server with.
 //!
 //! The HTTP side is driven with raw requests in MCP's Streamable HTTP transport, so the
-//! test pins what a client on the network sees: off unless `server.toml` says so, a token
+//! test pins what a client on the network sees: off unless `config.toml` says so, a token
 //! before anything else, and the framework's tools reaching the server's workspace.
 //!
 //! Each test owns its `AppContext` (the directories are first-writer-wins per context).
@@ -254,7 +254,7 @@ async fn mcp_over_http_is_off_unless_the_config_turns_it_on() {
     let endpoint = Endpoint::in_dir(CTX_OFF.app_name, tmp.path().join("run"));
     let port = free_port();
 
-    // The application has a default address, and no server.toml says anything.
+    // The application has a default address, and no config.toml says anything.
     let server = AppServer::new(&CTX_OFF, "0.0.0")
         .http_listen(([127, 0, 0, 1], port).into())
         .http_auth(AuthConfig::new(Arc::new(Fake)));

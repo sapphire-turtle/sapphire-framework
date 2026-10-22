@@ -52,6 +52,7 @@ mod http;
 mod instrument;
 mod relay;
 mod selection;
+mod settings;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
@@ -69,8 +70,12 @@ pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
+pub use sapphire_framework_settings::{
+    Apply, FieldError, Kind, Process, Scope, SettingDef, Staged, Value,
+};
 pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
+pub use settings::{AppSettings, FromValue, Settings};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).
@@ -99,7 +104,7 @@ pub struct AppServer {
     status_rows: Option<Arc<dyn Fn() -> Vec<StatusRow> + Send + Sync>>,
     /// The version of the application's own API, reported in the handshake.
     app_api: Option<u32>,
-    /// `server.toml`'s settings, when given rather than read from the config directory.
+    /// The framework's settings, when given rather than read from `config.toml`.
     config: Option<ServerConfig>,
     /// Where the application's releases are published: what the server looks for newer
     /// ones in, and what `update` installs from.
@@ -110,7 +115,7 @@ pub struct AppServer {
     /// What the application sets on every scrape of `/metrics`. Kept in a build without
     /// feature `metrics` too, so the builder method needs no gate; `run` never calls them there.
     metrics_collectors: Vec<Arc<dyn Fn() + Send + Sync>>,
-    /// Where the HTTP listener binds when `server.toml` does not say.
+    /// Where the HTTP listener binds when `config.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
     /// The application's own HTTP routes.
@@ -252,13 +257,13 @@ impl AppServer {
         self
     }
 
-    /// Use `config` rather than reading `<config dir>/server.toml`: for fixtures.
+    /// Use `config` rather than reading `<config dir>/config.toml`: for fixtures.
     pub fn config(mut self, config: ServerConfig) -> AppServer {
         self.config = Some(config);
         self
     }
 
-    /// Where the HTTP listener binds unless `server.toml` says otherwise: the application's
+    /// Where the HTTP listener binds unless `config.toml` says otherwise: the application's
     /// own port. Without it, a host that serves anything over HTTP names the address in
     /// `[http] listen`.
     #[cfg(feature = "http")]
@@ -269,7 +274,7 @@ impl AppServer {
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
-    /// `/mcp` only when `server.toml` turns it on.
+    /// `/mcp` only when `config.toml` turns it on.
     ///
     /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
     /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
@@ -287,7 +292,7 @@ impl AppServer {
     }
 
     /// Answer MCP with the application's own handler, rather than the framework's tools
-    /// alone: on stdio for the `mcp` subcommand, and at `/mcp` when `server.toml` turns it
+    /// alone: on stdio for the `mcp` subcommand, and at `/mcp` when `config.toml` turns it
     /// on.
     #[cfg(feature = "mcp")]
     pub fn mcp(mut self, service: sapphire_framework_mcp::McpService) -> AppServer {
@@ -390,7 +395,7 @@ impl AppServer {
     /// framework's `sapphire_*` names. Labels carry no identifiers, paths or names: the
     /// endpoint is served without a token, so anything in a label is public.
     ///
-    /// A build without feature `metrics`, or a server whose `server.toml` leaves
+    /// A build without feature `metrics`, or a server whose `config.toml` leaves
     /// `[http.metrics]` off, never calls it.
     pub fn metrics_collector(mut self, collect: Arc<dyn Fn() + Send + Sync>) -> AppServer {
         self.metrics_collectors.push(collect);
@@ -400,7 +405,7 @@ impl AppServer {
     /// Where this application's releases are published.
     ///
     /// The server looks there for newer ones once at start and once a day after, unless
-    /// `server.toml` says `[update] check = false`; `status` and the GUI show what it found.
+    /// `config.toml` says `[update] check = false`; `status` and the GUI show what it found.
     /// The `update` command installs from there, when `source` names the release's
     /// [asset](ReleaseSource::asset).
     pub fn releases(mut self, source: ReleaseSource) -> AppServer {
@@ -499,21 +504,26 @@ impl AppServer {
         // routes the file layer at `<data dir>/logs/`.
         let _log = sapphire_workspace::logging::install(ctx)?;
 
+        // A context whose config directory was never resolved has no file to read, and
+        // gets the defaults — as it gets no log file.
         let config = match config {
             Some(config) => config,
-            None => ServerConfig::load_for_app(ctx)?,
+            None if ctx.try_config_dir().is_some() => {
+                ServerConfig::from_settings(&Settings::load(ctx, Arc::new(()))?)?
+            }
+            None => ServerConfig::default(),
         };
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
             tracing::warn!(
-                "server.toml turns MCP over HTTP on, but this build of {} has no MCP",
+                "config.toml turns MCP over HTTP on, but this build of {} has no MCP",
                 ctx.app_name
             );
         }
         #[cfg(not(feature = "metrics"))]
         if config.http.metrics.enabled {
             tracing::warn!(
-                "server.toml turns metrics on, but this build of {} has no metrics",
+                "config.toml turns metrics on, but this build of {} has no metrics",
                 ctx.app_name
             );
         }

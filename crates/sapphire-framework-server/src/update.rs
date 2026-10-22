@@ -8,7 +8,7 @@
 //!
 //! The server only looks. Installing is the `update` command's
 //! ([`sapphire_framework_update::run`]), run by the user; restarting the server afterwards
-//! is the user's too. `[update] check = false` in `server.toml` turns the looking off.
+//! is the user's too. `[update] check = false` in `config.toml` turns the looking off.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

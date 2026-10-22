@@ -82,7 +82,7 @@ pub use sapphire_framework_settings::{
 };
 pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
-pub use settings::{AppSettings, FromValue, Settings};
+pub use settings::{AppFiles, AppSettings, FromValue, Settings};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).

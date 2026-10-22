@@ -64,8 +64,36 @@ pub trait AppSettings: Send + Sync + 'static {
 
     /// Check the edited files as a whole, before anything is written; also run once when
     /// the server starts, against the files as they are.
-    fn validate(&self, _staged: &Staged) -> std::result::Result<(), Vec<FieldError>> {
+    ///
+    /// `files` says where the application's files are; `staged.read(path)` gives a file as
+    /// the write would leave it, falling back to what is on disk for a file the write does
+    /// not touch.
+    fn validate(
+        &self,
+        _files: &AppFiles,
+        _staged: &Staged,
+    ) -> std::result::Result<(), Vec<FieldError>> {
         Ok(())
+    }
+}
+
+/// Where an application's settings files are, for [`AppSettings::validate`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppFiles {
+    device: PathBuf,
+    workspace: Option<PathBuf>,
+}
+
+impl AppFiles {
+    /// The device's file, `<config dir>/config.toml`.
+    pub fn device(&self) -> &Path {
+        &self.device
+    }
+
+    /// The selected workspace's file, `{root}/.{app}/config.toml`; `None` when no
+    /// workspace is selected.
+    pub fn workspace(&self) -> Option<&Path> {
+        self.workspace.as_deref()
     }
 }
 
@@ -123,6 +151,14 @@ impl SettingsFiles {
                 .join(format!(".{}", self.app_name))
                 .join("config.toml")),
             None => Err(Error::Config(NO_WORKSPACE.to_owned())),
+        }
+    }
+
+    /// The application's files, as its `validate` is told them now.
+    fn app_files(&self) -> AppFiles {
+        AppFiles {
+            device: self.device(),
+            workspace: self.workspace().ok(),
         }
     }
 
@@ -246,7 +282,7 @@ impl SettingsOwner for AppOwner {
     }
 
     fn validate(&self, staged: &Staged) -> std::result::Result<(), Vec<FieldError>> {
-        self.app.validate(staged)
+        self.app.validate(&self.files.app_files(), staged)
     }
 }
 
@@ -693,7 +729,7 @@ fn startup_check(files: &SettingsFiles, app: &dyn AppSettings) -> Result<()> {
     let mut errors = Vec::new();
     for result in [
         check_device_file(files, &Staged::default()),
-        app.validate(&Staged::default()),
+        app.validate(&files.app_files(), &Staged::default()),
     ] {
         if let Err(e) = result {
             errors.extend(e);
@@ -1222,6 +1258,64 @@ mod tests {
         // Nothing changed, nothing announced.
         settings.refresh().unwrap();
         assert!(!changed.has_changed().unwrap());
+    }
+
+    /// `settingstest.a` needs `settingstest.b`: a cross-key rule over the device file.
+    struct Paired;
+
+    impl AppSettings for Paired {
+        fn defs(&self) -> Vec<SettingDef> {
+            ["settingstest.a", "settingstest.b"]
+                .map(|key| app_def(key, Kind::Bool, vec![Scope::Device], Apply::Live))
+                .into()
+        }
+
+        fn validate(
+            &self,
+            files: &AppFiles,
+            staged: &Staged,
+        ) -> std::result::Result<(), Vec<FieldError>> {
+            assert_eq!(files.workspace(), None, "no workspace is selected");
+            let text = staged.read(files.device()).unwrap().unwrap_or_default();
+            let table: toml::Table = text.parse().unwrap();
+            let has = |k: &str| table.get("settingstest").and_then(|t| t.get(k)).is_some();
+            if has("a") && !has("b") {
+                return Err(vec![FieldError {
+                    key: Some("settingstest.a".into()),
+                    file: Some(files.device().to_path_buf()),
+                    message: "needs settingstest.b".into(),
+                }]);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_apps_validate_sees_the_files_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let settings = Settings::load(&ctx, Arc::new(Paired)).unwrap();
+        let reg = settings.registry();
+
+        let err = apply(reg, None, vec![set("settingstest.a", Value::Bool(true))])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs settingstest.b"), "{err}");
+        assert!(!ctx.config_dir().join("config.toml").exists());
+
+        apply(reg, None, vec![set("settingstest.b", Value::Bool(true))]).unwrap();
+        // `b` is read from the file on disk, untouched by this batch.
+        apply(reg, None, vec![set("settingstest.a", Value::Bool(true))]).unwrap();
+        let err = apply(
+            reg,
+            None,
+            vec![Op::Unset {
+                key: "settingstest.b".into(),
+            }],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("needs settingstest.b"), "{err}");
     }
 
     #[test]

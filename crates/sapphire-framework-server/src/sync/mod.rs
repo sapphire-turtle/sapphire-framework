@@ -2315,7 +2315,7 @@ mod tests {
             .unwrap();
         let settings =
             crate::settings::Settings::load_with(ctx, Arc::new(NoteApp), selection).unwrap();
-        let mut changed = settings.changed();
+        let changed = settings.changed();
         f.runtime.set_settings(Some(settings.clone()));
         f.runtime.enable(&f.root).await.unwrap();
         let watching = tokio::spawn(Arc::clone(&f.runtime).watch_changes());

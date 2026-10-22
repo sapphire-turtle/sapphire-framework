@@ -68,9 +68,9 @@ async fn a_gui_client_sees_bridge_and_server_without_sockets() {
 
     let run = tmp.path().join("run");
     let endpoints = Endpoints {
-        bridge: Endpoint::in_dir("bridge", run.clone()),
         app: Endpoint::in_dir(APP.app_name, run.clone()),
     };
+    let control = Endpoint::in_dir("bridge", run.clone());
 
     // The bridge.
     let net = LoopbackNetwork::new();
@@ -80,14 +80,14 @@ async fn a_gui_client_sees_bridge_and_server_without_sockets() {
         "0.0.0",
     )
     .unwrap()
-    .control_endpoint(endpoints.bridge.clone())
+    .control_endpoint(control.clone())
     .data_endpoint(Endpoint::in_dir("bridge-data", run.clone()));
     tokio::spawn(async move { Arc::new(bridge).run_shared(NetConfig::default()).await });
 
     // The app server, reaching the bridge the way a phone's does, without signal handlers.
     let runtime = Arc::new(SyncRuntime::connecting(
         &CTX,
-        BridgeConnector::at(endpoints.bridge.clone(), "test", "0.0.0"),
+        BridgeConnector::at(control, "test", "0.0.0"),
         PathBuf::from("/nonexistent/app"),
         ManagedBy::Service,
     ));

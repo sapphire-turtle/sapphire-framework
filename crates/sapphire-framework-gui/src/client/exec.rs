@@ -46,7 +46,7 @@ pub(crate) async fn execute(
                 .await
                 .unwrap_or_else(|_| Err(unanswered("sapphire-bridge", limit)));
             if result.is_err() {
-                conns.drop_bridge();
+                conns.drop_app();
             }
             result
         }
@@ -67,11 +67,15 @@ async fn bridge_command(
     conns: &mut Connections,
     command: Command,
 ) -> Result<CommandOutput, String> {
-    let c = conns
-        .bridge(cfg)
+    let app = cfg.app.app_name;
+    conns
+        .app(cfg)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "sapphire-bridge is not running".to_owned())?;
+        .ok_or_else(|| format!("the {app} server is not running"))?;
+    let c = conns
+        .bridge(cfg)
+        .ok_or_else(|| format!("the {app} server is not running"))?;
     let out = match command {
         Command::WorkgroupCreate { name, device_name } => c
             .workgroup_create(WorkgroupCreateParams { name, device_name })
@@ -116,7 +120,11 @@ async fn bridge_command(
         Command::Embedding(request) => c.embed_request(request).await.map(|_| CommandOutput::Done),
         _ => unreachable!("execute routes only bridge commands here"),
     };
-    out.map_err(|e| e.to_string())
+    out.map_err(|e| match e {
+        // The relay's answer that no bridge runs.
+        sapphire_ipc::Error::NotRunning(_) => "sapphire-bridge is not running".to_owned(),
+        e => e.to_string(),
+    })
 }
 
 async fn app_command(
@@ -256,7 +264,6 @@ mod tests {
         let cfg = ClientConfig {
             app,
             endpoints: super::super::Endpoints {
-                bridge: sapphire_ipc::Endpoint::in_dir("b", dir.clone()),
                 app: sapphire_ipc::Endpoint::in_dir("a", dir),
             },
             service_exes: super::super::ServiceExes {

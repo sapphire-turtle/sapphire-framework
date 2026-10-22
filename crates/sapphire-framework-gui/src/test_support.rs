@@ -7,8 +7,9 @@ use sapphire_ipc::Endpoint;
 
 use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient, ServiceExes};
 
-/// A client of nothing: its endpoints are in a directory no process listens in, so the
-/// snapshot reads both processes as absent. Keep the runtime for as long as the client.
+/// A client of nothing: its endpoint is in a directory no process listens in, so the
+/// snapshot reads the app server as absent and the bridge as unknown. Keep the runtime for
+/// as long as the client.
 pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
@@ -22,7 +23,6 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
             version: "0.0.0",
         },
         endpoints: Endpoints {
-            bridge: Endpoint::in_dir("bridge", dir.clone()),
             app: Endpoint::in_dir("app", dir.clone()),
         },
         service_exes: ServiceExes {

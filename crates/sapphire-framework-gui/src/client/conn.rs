@@ -1,5 +1,6 @@
 //! Cached connections, and turning failures into [`Conn`] states.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
@@ -28,24 +29,20 @@ pub(crate) fn unanswered(process: &str, limit: Duration) -> String {
     }
 }
 
-/// One cached connection per process. A failed call drops the cache, so the next refresh
-/// reconnects — and finds the process gone, or back.
+/// The one cached connection, to the app server, which relays the bridge's methods too. A
+/// failed call drops the cache, so the next refresh reconnects — and finds the server gone,
+/// or back.
 #[derive(Default)]
 pub(crate) struct Connections {
-    bridge: Option<BridgeClient>,
-    app: Option<Client>,
+    app: Option<Arc<Client>>,
 }
 
 impl Connections {
-    pub(crate) async fn bridge(
-        &mut self,
-        cfg: &ClientConfig,
-    ) -> sapphire_ipc::Result<Option<&BridgeClient>> {
-        if self.bridge.is_none() {
-            self.bridge =
-                BridgeClient::connect_at(&cfg.endpoints.bridge, "gui", cfg.app.version).await?;
-        }
-        Ok(self.bridge.as_ref())
+    /// The bridge, through the cached app-server connection; `None` until
+    /// [`app`](Self::app) has connected.
+    pub(crate) fn bridge(&self, cfg: &ClientConfig) -> Option<BridgeClient> {
+        let client = Arc::clone(self.app.as_ref()?);
+        Some(BridgeClient::relayed(client, cfg.endpoints.app.dir.clone()))
     }
 
     pub(crate) async fn app(
@@ -62,23 +59,22 @@ impl Connections {
             };
             self.app = sapphire_ipc::connect_or_absent(&cfg.endpoints.app, cfg.app.app_name, info)
                 .await?
-                .map(|(client, _)| client);
+                .map(|(client, _)| Arc::new(client));
         }
-        Ok(self.app.as_ref())
-    }
-
-    pub(crate) fn drop_bridge(&mut self) {
-        self.bridge = None;
+        Ok(self.app.as_deref())
     }
 
     pub(crate) fn drop_app(&mut self) {
         self.app = None;
     }
 
-    /// Ask the bridge everything the views show.
+    /// Ask the bridge, through the app server, everything the views show.
     pub(crate) async fn fetch_bridge(&mut self, cfg: &ClientConfig) -> Conn<BridgeState> {
         let result = tokio::time::timeout(cfg.fetch_timeout, async {
-            let Some(c) = self.bridge(cfg).await? else {
+            if self.app(cfg).await?.is_none() {
+                return Ok(None);
+            }
+            let Some(c) = self.bridge(cfg) else {
                 return Ok(None);
             };
             let status = c.status().await?;
@@ -114,13 +110,16 @@ impl Connections {
         .await;
         match result {
             Ok(Ok(Some(state))) => Conn::Up(state),
-            Ok(Ok(None)) => Conn::Absent,
+            // Without its app server the GUI cannot tell whether a bridge runs.
+            Ok(Ok(None)) => Conn::Error(format!("the {} server is not running", cfg.app.app_name)),
+            // The relay's answer that no bridge runs: the app server itself is fine.
+            Ok(Err(err @ sapphire_ipc::Error::NotRunning(_))) => classify(&err),
             Ok(Err(err)) => {
-                self.drop_bridge();
+                self.drop_app();
                 classify(&err)
             }
             Err(_) => {
-                self.drop_bridge();
+                self.drop_app();
                 Conn::Error(unanswered("sapphire-bridge", cfg.fetch_timeout))
             }
         }

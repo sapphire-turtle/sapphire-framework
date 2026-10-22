@@ -25,7 +25,7 @@ use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_bridge::{
     Bridge, BridgeDir, HelloTiming, LoopbackNetwork, NetConfig, Workgroup, serve_restarting,
 };
-use sapphire_framework_server::{AppServer, BridgeConnector, SyncRuntime};
+use sapphire_framework_server::{AppServer, BridgeConnector, Settings, SyncRuntime};
 use sapphire_ipc::ManagedBy;
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::AppContext;
@@ -103,6 +103,9 @@ pub struct Host {
     bridge: Option<tokio::runtime::Runtime>,
     /// The embedding provider its bridge serves, kept so a restart serves it again.
     embed: Option<Arc<dyn sapphire_framework_bridge::EmbedProvider>>,
+    /// Whether the app server runs under `serve_restarting`, so `server.restart` rebuilds
+    /// it in place.
+    restarting: bool,
 }
 
 /// A fresh host, with a bridge and an app server of its own and sync wired but not enabled.
@@ -132,6 +135,7 @@ pub async fn start_host_with_priority(
         None,
         tempfile::tempdir().expect("a host tree"),
         false,
+        false,
     )
     .await
 }
@@ -152,6 +156,29 @@ pub async fn start_host_embedding(
         Some(provider),
         tempfile::tempdir().expect("a host tree"),
         false,
+        false,
+    )
+    .await
+}
+
+/// A fresh host like [`start_host`], its app server run by `serve_restarting`: it answers
+/// `server.restart` by rebuilding itself, sync runtime and all, in place. The fixture holds
+/// no runtime of its own ([`Host::runtime`] is `None`), so nothing here pins the replica
+/// store across a restart.
+pub async fn start_host_restarting(
+    net: &LoopbackNetwork,
+    node_id: &str,
+    device_name: &str,
+) -> Host {
+    build(
+        net,
+        node_id,
+        device_name,
+        0,
+        None,
+        tempfile::tempdir().expect("a host tree"),
+        false,
+        true,
     )
     .await
 }
@@ -175,6 +202,7 @@ pub async fn star_hosts(net: &LoopbackNetwork, spec: &[(&str, &str, u8)]) -> Vec
 ///
 /// Everything on disk is left as it is: an existing workgroup is reopened rather than
 /// founded, so a host that restarts keeps its device record, its ledger and its replica.
+#[allow(clippy::too_many_arguments)] // One fixture, every knob a test turns.
 async fn build(
     net: &LoopbackNetwork,
     node_id: &str,
@@ -183,6 +211,7 @@ async fn build(
     embed: Option<Arc<dyn sapphire_framework_bridge::EmbedProvider>>,
     tmp: tempfile::TempDir,
     server_first: bool,
+    restarting: bool,
 ) -> Host {
     let ctx = ctx();
     let runtime_dir = tmp.path().join("run");
@@ -214,27 +243,33 @@ async fn build(
     // endpoint rather than `BridgeConnector::standard`, which would look the bridge up in the
     // process environment — one value, two hosts.
     let endpoint = Endpoint::in_dir(ctx.app_name, runtime_dir.clone());
-    let runtime = Arc::new(
-        SyncRuntime::connecting(
-            ctx,
-            BridgeConnector::at(control.clone(), "test", VERSION),
-            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
-            ManagedBy::Service,
-        )
-        // Embedding asks this host's own bridge, not the process environment's.
-        .with_bridge_endpoint(control.clone()),
-    );
-    // A test cannot wait ten minutes: the primary fills in at once, and looks every second.
-    runtime.set_backfill_timing(sapphire_framework_server::BackfillTiming {
-        grace: Duration::ZERO,
-        interval: Duration::from_secs(1),
-    });
     // Each host its own selection: the hosts share this process's config directory.
-    let server = AppServer::new(ctx, VERSION)
-        .endpoint(endpoint.clone())
-        .selection_file(tmp.path().join("workspace.toml"))
-        .sync(Arc::clone(&runtime));
-    let mut server_task = tokio::spawn(async move { server.run().await });
+    let selection = tmp.path().join("workspace.toml");
+    let (runtime, mut server_task) = if restarting {
+        // A runtime of each build's own, as `sync_via_bridge` makes one: the old one must
+        // be gone for the new one to open the replica store.
+        let (endpoint, control) = (endpoint.clone(), control.clone());
+        let build = move |_: &Settings| {
+            AppServer::new(ctx, VERSION)
+                .endpoint(endpoint.clone())
+                .selection_file(selection.clone())
+                .sync(sync_runtime(ctx, &control))
+        };
+        (
+            None,
+            tokio::spawn(sapphire_framework_server::serve_restarting(ctx, (), build)),
+        )
+    } else {
+        let runtime = sync_runtime(ctx, &control);
+        let server = AppServer::new(ctx, VERSION)
+            .endpoint(endpoint.clone())
+            .selection_file(selection)
+            .sync(Arc::clone(&runtime));
+        (
+            Some(runtime),
+            tokio::spawn(async move { server.run().await }),
+        )
+    };
     wait_until_listening(&endpoint, "the app server", &mut server_task).await;
 
     if server_first {
@@ -284,11 +319,32 @@ async fn build(
         client,
         net: net.clone(),
         bridge_client,
-        runtime: Some(runtime),
+        runtime,
         server: Some(server_task),
         bridge: bridge_runtime,
         embed,
+        restarting,
     }
+}
+
+/// A sync runtime reaching the bridge at `control`, with the test's backfill timing.
+fn sync_runtime(ctx: &'static AppContext, control: &Endpoint) -> Arc<SyncRuntime> {
+    let runtime = Arc::new(
+        SyncRuntime::connecting(
+            ctx,
+            BridgeConnector::at(control.clone(), "test", VERSION),
+            std::env::current_exe().unwrap_or_else(|_| PathBuf::from("sapphire")),
+            ManagedBy::Service,
+        )
+        // Embedding asks this host's own bridge, not the process environment's.
+        .with_bridge_endpoint(control.clone()),
+    );
+    // A test cannot wait ten minutes: the primary fills in at once, and looks every second.
+    runtime.set_backfill_timing(sapphire_framework_server::BackfillTiming {
+        grace: Duration::ZERO,
+        interval: Duration::from_secs(1),
+    });
+    runtime
 }
 
 impl Host {
@@ -385,8 +441,39 @@ impl Host {
             embed,
             tmp,
             server_first,
+            self.restarting,
         )
         .await
+    }
+
+    /// Ask the app server to restart itself in place (`server.restart`, a host from
+    /// [`start_host_restarting`]), wait until the old server has closed this host's
+    /// connection, and connect to the new one.
+    pub async fn restart_in_place(&mut self) {
+        assert!(self.restarting, "only a restarting host restarts in place");
+        let _: proto::Ack = self
+            .client
+            .call(proto::SERVER_RESTART, serde_json::json!({}))
+            .await
+            .expect("server.restart answers");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let answer: std::result::Result<serde_json::Value, _> = self
+                .client
+                .call(proto::SERVER_INFO, serde_json::json!({}))
+                .await;
+            if answer.is_err() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the old app server kept serving");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let endpoint = Endpoint::in_dir(ctx().app_name, self.runtime_dir.clone());
+        let (client, _) = connect_or_absent(&endpoint, ctx().app_name, client_info("cli"))
+            .await
+            .unwrap()
+            .expect("the app server is listening again");
+        self.client = client;
     }
 
     /// Start this host's bridge again after [`stop_bridge`](Self::stop_bridge), against the

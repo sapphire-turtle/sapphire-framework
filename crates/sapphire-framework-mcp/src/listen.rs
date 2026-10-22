@@ -96,9 +96,7 @@ fn everything(accepted: &SubscriptionFilter) -> Vec<Change> {
 mod tests {
     use std::time::Duration;
 
-    use rmcp::model::{
-        ProtocolVersion, ServerConfig, ServerNotification, SubscriptionFilter,
-    };
+    use rmcp::model::{ProtocolVersion, ServerConfig, ServerNotification, SubscriptionFilter};
     use rmcp::service::{RunningService, SubscriptionContext};
     use rmcp::{
         ClientLifecycleMode, ClientServiceExt as _, ErrorData, RoleClient, ServerHandler,
@@ -191,8 +189,14 @@ mod tests {
         assert!(allowed(&accepted, &Change::ToolListChanged));
         assert!(!allowed(&accepted, &Change::ResourceListChanged));
         assert!(allowed(&accepted, &Change::ResourceUpdated("x://a".into())));
-        assert!(!allowed(&accepted, &Change::ResourceUpdated("x://b".into())));
-        assert!(!allowed(&SubscriptionFilter::new(), &Change::ToolListChanged));
+        assert!(!allowed(
+            &accepted,
+            &Change::ResourceUpdated("x://b".into())
+        ));
+        assert!(!allowed(
+            &SubscriptionFilter::new(),
+            &Change::ToolListChanged
+        ));
     }
 
     #[test]
@@ -222,7 +226,9 @@ mod tests {
         assert_eq!(subscription.acknowledged().tools_list_changed, Some(true));
         wait_for_listeners(&ctx, 1).await;
         ctx.notify_tool_list_changed();
-        let next = tokio::time::timeout(WAIT, subscription.next()).await.unwrap();
+        let next = tokio::time::timeout(WAIT, subscription.next())
+            .await
+            .unwrap();
         assert!(matches!(
             next,
             Ok(Some(ServerNotification::ToolListChangedNotification(_)))
@@ -245,7 +251,9 @@ mod tests {
         wait_for_listeners(&ctx, 1).await;
         ctx.notify_resource_updated("x://b");
         ctx.notify_resource_updated("x://a");
-        let next = tokio::time::timeout(WAIT, subscription.next()).await.unwrap();
+        let next = tokio::time::timeout(WAIT, subscription.next())
+            .await
+            .unwrap();
         match next {
             Ok(Some(ServerNotification::ResourceUpdatedNotification(n))) => {
                 assert_eq!(n.params.uri, "x://a")

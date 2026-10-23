@@ -46,7 +46,8 @@ pub fn key_difference(r: &Resources, a: &str, b: &str) -> Vec<String> {
 
 /// Every string literal `"<prefix>…"` (the rest lowercase letters, digits and `-`) in the
 /// `.rs` files under `src` that `lang`'s file lacks, as `"<file>:<line>: <id>"`; those in
-/// `ignore` are not ids.
+/// `ignore` are not ids. A directory or file that cannot be read is reported too, and so is
+/// a `src` with no `.rs` files under it, so a wrong path fails rather than passes.
 pub fn unknown_ids(
     r: &Resources,
     lang: &str,
@@ -56,9 +57,12 @@ pub fn unknown_ids(
 ) -> Vec<String> {
     let known = keys(r, lang);
     let mut files = Vec::new();
-    rust_files(src, &mut files);
-    files.sort();
     let mut found = Vec::new();
+    rust_files(src, &mut files, &mut found);
+    if files.is_empty() {
+        found.push(format!("{}: no .rs files under it", src.display()));
+    }
+    files.sort();
     for file in files {
         let Ok(text) = std::fs::read_to_string(&file) else {
             found.push(format!("{}: unreadable", file.display()));
@@ -91,14 +95,19 @@ fn keys(r: &Resources, lang: &str) -> BTreeSet<String> {
     keys
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+/// The `.rs` files under `dir` into `out`; a directory that cannot be read into `found`.
+fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>, found: &mut Vec<String>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            found.push(format!("{}: unreadable: {error}", dir.display()));
+            return;
+        }
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            rust_files(&path, out);
+            rust_files(&path, out, found);
         } else if path.extension().is_some_and(|e| e == "rs") {
             out.push(path);
         }
@@ -145,6 +154,42 @@ mod tests {
         assert_eq!(
             unknown_ids(&CORUNDUM, "en", &src, "corundum-", &["corundum-gui"]),
             Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn ids_in_finds_whole_literals() {
+        // `probe-`, not `corundum-`: `corundum_ids_exist` scans this file too.
+        let line = r#"f("probe-a-b", "probe-x.y", "probe-", "probe-c1")"#;
+        assert_eq!(ids_in(line, "probe-"), ["probe-a-b", "probe-c1"]);
+        assert_eq!(ids_in(r#"x("probe-one")"#, "probe-"), ["probe-one"]);
+        assert_eq!(ids_in("no literals here", "probe-"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn unknown_ids_reports_unknown_ids_and_bad_paths() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // Only `corundum-language` is known, so the other ids in src are reported.
+        let r = Resources {
+            name: "t",
+            files: &[("en", "corundum-language = L\n")],
+        };
+        let found = unknown_ids(&r, "en", &src, "corundum-", &["corundum-gui"]);
+        assert!(
+            found
+                .iter()
+                .any(|f| f.ends_with(": corundum-language-name")),
+            "{found:?}"
+        );
+        assert!(!found.iter().any(|f| f.ends_with(": corundum-language")));
+
+        let missing = src.join("no-such-dir");
+        let found = unknown_ids(&CORUNDUM, "en", &missing, "corundum-", &[]);
+        assert!(!found.is_empty());
+        assert!(
+            found
+                .iter()
+                .all(|f| f.starts_with(&missing.display().to_string()))
         );
     }
 

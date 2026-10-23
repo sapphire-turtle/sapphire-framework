@@ -92,7 +92,7 @@ Red through Purple line up with Base16's base08–base0E for a later import.
 pub struct Theme { /* the 9 × 9 table, computed when built */ }
 
 impl Theme {
-    pub fn new(dark: bool, contrast: Contrast, accent: Accent) -> Theme;
+    pub fn new(dark: bool, contrast: Contrast, accent: Tint) -> Theme;
     pub fn is_dark(&self) -> bool;
     pub fn color(&self, tone: Tone, swatch: Swatch) -> Color32;
     pub fn text(&self, swatch: Swatch) -> Color32;   // color(Text, swatch)
@@ -123,12 +123,13 @@ egui's) and sets the colours:
 
 ```rust
 pub enum Contrast { Low, Medium, High }          // default Medium
-pub struct Accent { pub chroma: f32, pub hue: f32 } // OKLCH C, H in degrees; default a blue
+// The accent is a `Tint` (see 2026-10-23-corundum-tint-picker-design.md); this design
+// first had `Accent { chroma, hue }`, replaced before release.
 
 pub struct ThemeSettings {
     pub preference: egui::ThemePreference,       // default System
     pub contrast: Contrast,
-    pub accent: Accent,
+    pub accent: Option<Tint>,                    // None: the default, Blue
 }
 
 pub fn install(ctx: &egui::Context, settings: &ThemeSettings);
@@ -152,13 +153,13 @@ pub fn settings_ui(ui: &mut egui::Ui, settings: &mut ThemeSettings) -> bool;
   as it installs the image loaders. An app that installed its saved settings first is left
   alone.
 - Feature `serde = ["dep:serde", "egui/serde"]` derives `Serialize` / `Deserialize` on
-  `ThemeSettings`, `Contrast` and `Accent`.
+  `ThemeSettings`, `Contrast` and `Tint`.
 
 ### Module layout
 
 ```
 crates/corundum-gui/src/theme/
-  mod.rs       ThemeSettings, Contrast, Accent, install, is_installed, current
+  mod.rs       ThemeSettings, Contrast, install, is_installed, current
   color.rs     OKLCH, gamut mapping, contrast ratio
   palette.rs   Tone, Swatch, the six ladders, the swatch constants, Theme
   visuals.rs   Theme::visuals

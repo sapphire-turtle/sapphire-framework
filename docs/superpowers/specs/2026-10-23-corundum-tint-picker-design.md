@@ -29,8 +29,11 @@ Out: storing or syncing tints (#327); label UIs in the apps.
 3. **Random and hashed tints are uniform over the disk's area.** Chroma's density grows
    with the radius, so vivid tints are common and greys rare (under 4% within the inner
    fifth of the radius) — and it is what poking the disk at random would give.
-4. **The hash is FNV-1a 64, written in the crate.** std's `DefaultHasher` may change between
-   Rust releases; a tint from a label's name must be the same on every device and version.
+4. **The hash is FNV-1a 64 followed by MurmurHash3's 64-bit finaliser, written in the
+   crate.** std's `DefaultHasher` may change between Rust releases; a tint from a label's
+   name must be the same on every device and version. FNV-1a alone leaves similar short
+   names ("label1", "label2", …) with nearly the same high bits: 0.2% of them landed within
+   0.3 of the radius where an even spread puts 9%. The finaliser restores the spread.
    Random numbers come from std's `RandomState`: no `rand` dependency.
 5. **The caller picks the tone the picker draws in** (default `Tone::Text`): an accent is
    seen as text, a label as a fill.
@@ -52,7 +55,7 @@ pub enum Tint {
 impl Tint {
     pub const MAX_CHROMA: f32 = 0.25;           // the disk's rim (was Accent::MAX_CHROMA)
     pub fn from_unit(u1: f32, u2: f32) -> Tint; // chroma √u1 · MAX_CHROMA, hue 360 · u2
-    pub fn from_bytes(bytes: &[u8]) -> Tint;    // FNV-1a 64, high and low 32 bits → u1, u2
+    pub fn from_bytes(bytes: &[u8]) -> Tint;    // fmix64(FNV-1a 64), high / low 32 bits → u1, u2
     pub fn random() -> Tint;                    // a RandomState hash → from_unit
 }
 ```
@@ -123,8 +126,9 @@ theme's way and never rewritten), so nothing is rewritten on first draw.
 
 - `from_unit`: `(0, x)` is chroma 0; `(1−ε, 0.25)` is chroma ≈ `MAX_CHROMA`, hue ≈ 90°. A
   100 × 100 grid of inputs puts 25% ± 1% at chroma ≤ `MAX_CHROMA / 2`.
-- `from_bytes`: `b"bug"` and `b""` give fixed values (pinned in the test); `b"bug"` and
-  `b"feature"` differ.
+- `from_bytes`: `b"bug"` gives a fixed value (pinned in the test); `b"bug"` and
+  `b"feature"` differ; 2000 names `label0…` spread over the disk (6–12% within 0.3 of the
+  radius).
 - `random`: 100 draws, each in range; not all equal.
 - `Theme::tint`: `Swatch(s)` equals `color(tone, s)` for every tone and swatch; `Custom`
   with hue -30 equals hue 330; chroma 0 equals Neutral; NaN reads as the default accent.

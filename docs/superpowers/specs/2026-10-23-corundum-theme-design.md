@@ -143,8 +143,11 @@ pub fn settings_ui(ui: &mut egui::Ui, settings: &mut ThemeSettings) -> bool;
 - `current` returns the one for `ctx.theme()`; before any `install`, a theme built from the
   default settings (egui's visuals untouched).
 - `settings_ui`: light / dark / system; low / medium / high; an accent hue slider (0–360°),
-  a chroma slider, and a preview swatch. On a change it calls `install` and returns `true`;
-  the app saves the settings then.
+  a chroma slider, and a preview swatch. On a change it calls `install` at once (a slider
+  being dragged previews live) and returns `true` once the change is made — a click, or the
+  end of a drag — so an app saving then saves once per drag. An accent outside the sliders'
+  range is first brought in as the theme reads it (hue modulo 360, chroma clamped), which is
+  not reported as a change.
 - `Shell::ui` installs the default settings on its first frame if nothing is installed yet,
   as it installs the image loaders. An app that installed its saved settings first is left
   alone.

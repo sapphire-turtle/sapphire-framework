@@ -5,13 +5,12 @@ use std::collections::HashMap;
 
 use crate::Health;
 use crate::client::{CommandId, FrameworkClient};
+use corundum_gui::COMPACT_WIDTH;
+
 use crate::views::{
     DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
     WorkspacePicker,
 };
-
-/// Below this width Settings shows the list or one page, not both.
-pub const COMPACT_WIDTH: f32 = 600.0;
 
 /// A page the app adds to [`Settings`], under its own heading.
 pub trait SettingsSection {
@@ -77,6 +76,9 @@ pub struct Settings {
     embedding: EmbeddingView,
     external: ExternalDeviceList,
     pending: HashMap<CommandId, Origin>,
+    /// The page the last [`ui`](Self::ui) drew, for the tests.
+    #[cfg(test)]
+    drawn: Option<Page>,
 }
 
 impl Settings {
@@ -95,6 +97,8 @@ impl Settings {
             embedding: EmbeddingView::default(),
             external: ExternalDeviceList::default(),
             pending: HashMap::new(),
+            #[cfg(test)]
+            drawn: None,
         }
     }
 
@@ -117,6 +121,18 @@ impl Settings {
     /// The services' state, as of the last refresh.
     pub fn health(&self) -> Health {
         Health::of(&self.client.snapshot())
+    }
+
+    /// Whether About is the page open.
+    #[cfg(test)]
+    pub(crate) fn about_open(&self) -> bool {
+        self.page == Some(Page::About)
+    }
+
+    /// Whether the last [`ui`](Self::ui) drew About.
+    #[cfg(test)]
+    pub(crate) fn about_drawn(&self) -> bool {
+        self.drawn == Some(Page::About)
     }
 
     /// Open About, where the services' state is.
@@ -167,6 +183,10 @@ impl Settings {
     /// [`COMPACT_WIDTH`] — the list, or the open page under a way back to it.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.poll();
+        #[cfg(test)]
+        {
+            self.drawn = self.page;
+        }
         if self.own_banner && self.health() == Health::Problem {
             egui::Panel::top("settings_status").show(ui, |ui| self.status_ui(ui));
         }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::model::{self, Entry, Preview};
-use crate::settings::COMPACT_WIDTH;
+use corundum_gui::COMPACT_WIDTH;
 
 /// A read in flight or done, tagged with what it was for so a stale answer is dropped.
 struct Slot<T> {

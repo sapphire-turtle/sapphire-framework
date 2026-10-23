@@ -1437,6 +1437,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
+name = "corundum-gui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui_extras",
+ "fontdb",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "tracing",
+ "ttf-parser",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5103,6 +5116,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-text"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
+dependencies = [
+ "bitflags 2.13.2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-core-wlan"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7124,10 +7147,9 @@ version = "0.21.0"
 dependencies = [
  "android-activity",
  "android_log-sys",
+ "corundum-gui",
  "eframe",
  "egui",
- "egui_extras",
- "fontdb",
  "grain-id",
  "jni 0.21.1",
  "ndk-context",
@@ -7144,7 +7166,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "ttf-parser",
 ]
 
 [[package]]

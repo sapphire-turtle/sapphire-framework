@@ -11,10 +11,11 @@ categories = ["gui"]
 # egui-only by default: these are widgets/screens rendered inside a host app's
 # egui context. All consuming apps must use the same egui major version.
 #
-# `eframe` adds `app::run`, which starts a desktop window (wgpu renderer, logging,
-# the framework client) for apps that are an eframe app and nothing more.
+# `eframe` adds `app::run`, which starts a desktop window (corundum-gui's window, with
+# logging and the framework client) for apps that are an eframe app and nothing more.
+# Without it, nothing here pulls eframe in, corundum-gui's included.
 [features]
-eframe = ["dep:eframe", "dep:sapphire-workspace", "tokio/rt-multi-thread"]
+eframe = ["dep:eframe", "corundum-gui/eframe", "dep:sapphire-workspace", "tokio/rt-multi-thread"]
 # `mobile::run_android` (and later iOS): the window, with the bridge and the app server
 # hosted in this process over the in-process IPC carrier.
 mobile = [
@@ -31,7 +32,7 @@ sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.
 sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version = "0.21.0", path = "../sapphire-framework-bridge-client" }
 sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.21.0", path = "../sapphire-framework-ipc" }
 # The look shared with asteria: the frame, the fonts and the icons (#318).
-corundum-gui = { version = "0.1.0", path = "../corundum-gui" }
+corundum-gui = { version = "0.1.0", path = "../corundum-gui", default-features = false }
 egui = "0.36"
 eframe = { version = "0.36", optional = true }
 sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.21.0", path = "../sapphire-framework-workspace", default-features = false, optional = true }

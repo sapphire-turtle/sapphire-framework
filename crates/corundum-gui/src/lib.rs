@@ -4,7 +4,7 @@
 //! [`Shell`] is the window frame: the app's screens on a rail (a bottom bar when narrow, as
 //! on a phone), with a footer for Settings and a slot of the app's own. [`fonts`] finds a
 //! CJK fallback font on the system; [`icons`] is a set of Lucide icons and the SVG loader
-//! that draws them.
+//! that draws them; [`theme`] is the colours — light and dark, the contrast, the accent.
 //!
 //! The components depend on egui alone, so they render inside any host's egui context, on
 //! the desktops and on phones. With the `eframe` feature (on by default), [`window::run`]
@@ -24,6 +24,7 @@ pub mod fonts;
 pub mod gpu;
 pub mod icons;
 mod shell;
+pub mod theme;
 #[cfg(feature = "eframe")]
 pub mod window;
 

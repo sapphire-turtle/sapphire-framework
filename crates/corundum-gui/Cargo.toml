@@ -18,6 +18,8 @@ categories = ["gui"]
 [features]
 default = ["eframe"]
 eframe = ["dep:eframe"]
+# Serialize / Deserialize on the theme settings, for the app to save them.
+serde = ["dep:serde", "egui/serde"]
 
 [dependencies]
 eframe = { version = "0.36", optional = true }
@@ -27,6 +29,10 @@ egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 fontdb = "0.24"
 ttf-parser = "0.25"
 tracing.workspace = true
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
 
 # iOS's sandbox refuses to list the system font directories, so the font files are found
 # through CoreText instead (fonts::apple).

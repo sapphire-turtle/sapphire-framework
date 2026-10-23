@@ -491,7 +491,11 @@ mod tests {
         crate::theme::install(&ctx, &settings);
         let mut shell = shell();
         crate::test_support::render_in(&ctx, [900.0, 600.0], |ui| shell.ui(ui, |ui, _| screen(ui)));
-        let high = crate::theme::Theme::new(true, Contrast::High, Default::default());
+        let high = crate::theme::Theme::new(
+            true,
+            Contrast::High,
+            crate::theme::Tint::Swatch(crate::theme::Swatch::Blue),
+        );
         assert_eq!(*crate::theme::current(&ctx), high);
     }
 

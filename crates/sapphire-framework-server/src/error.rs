@@ -83,6 +83,10 @@ pub enum Error {
     #[error("{0}")]
     Config(String),
 
+    /// Reading or writing the settings failed, or they were refused.
+    #[error(transparent)]
+    Settings(#[from] sapphire_framework_settings::Error),
+
     /// The MCP session on stdio could not start or ended abnormally.
     #[error("{0}")]
     Mcp(String),

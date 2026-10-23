@@ -180,12 +180,22 @@ impl PipeListener {
     }
 
     /// Accept the next connected instance, unframed.
+    ///
+    /// Cancel-safe: the waiting instance stays in `next` until a client has connected to it.
+    /// A server that stops accepting for a while — between the rounds of an in-place
+    /// restart — therefore keeps the pipe in existence, and a client connecting meanwhile
+    /// waits on it instead of finding no pipe at all.
     async fn accept_stream(&mut self) -> Result<NamedPipeServer> {
-        let server = match self.next.take() {
-            Some(s) => s,
-            None => Self::create_instance(&self.name, false)?,
-        };
-        server.connect().await?;
+        if self.next.is_none() {
+            self.next = Some(Self::create_instance(&self.name, false)?);
+        }
+        let waiting = self.next.as_ref().expect("an instance is waiting");
+        if let Err(err) = waiting.connect().await {
+            // That instance is spent; the next call makes a fresh one.
+            self.next = None;
+            return Err(err.into());
+        }
+        let server = self.next.take().expect("the connected instance");
         self.next = Some(Self::create_instance(&self.name, false)?);
         Ok(server)
     }

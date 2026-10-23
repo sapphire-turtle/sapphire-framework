@@ -119,7 +119,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
 | `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
 | `sapphire-framework-server-api` | アプリサーバ共通 API の wire 型（`workspace.*` / `sync.*` / `server.info` のメソッド名・引数・結果、`BackendEvent`・`SearchMode`・`FileSearchResult`）。serde と grain-id のみに依存。**単独でバージョン管理**（4.0.0 — メジャー == `API_VERSION`）。各アプリの API crate はこれに依存する |
-| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを external device のトークンで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/server.toml` |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを external device のトークンで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/config.toml`（下記「アプリサーバの設定」） |
 | `sapphire-framework-frontmatter` | YAML フロントマター付き Markdown（#237）: `split` / `parse` / `render` と、コメント・キー順・改行コードを保ったまま 1 キーだけ書き換える `set_top_level_key`。YAML は `serde-saphyr`、型の決まらない値は `serde_json::Value`（`preserve_order`）。ファサード feature `frontmatter` |
 | `sapphire-framework-mcp` | アプリ共通の MCP ツール（`ToolContext`・`framework_tools`・`workspace_write_tools`・`FrameworkServer`）と、stdio / Streamable HTTP の両トランスポートで任意のハンドラを提供する `McpService`。ファサード feature `mcp`（`native` には入れない — sapphire-agent は MCP を持たない） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
@@ -236,7 +236,7 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
 クライアントが話す相手は自分のアプリサーバだけである。`workspace` / `workgroup` / `device` /
 `embedding` / `external-device` はすべてサーバに接続し（`connect_app`）、bridge の
 クライアント向けメソッド（`bridge.status` / `peers` / `workspaces`・workgroup 系・`embed.*` の設定・
-`external_device.*`・`config.*`・`bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
+`external_device.*`・`bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
 サーバが同じ名前のまま中継する（#314）。中継は params と結果・エラーを書き換えず、bridge への接続は
 同期ランタイムのものを使い、無ければ最初の中継時に自前で張る（落ちたら次の呼び出しで張り直す）。
 bridge が居ないか中継中に切れれば `BRIDGE_NOT_RUNNING`（-32001）で答え、
@@ -248,6 +248,21 @@ CLI で、通る先のアプリサーバが無いので bridge に直接つな�
 `no {app} server is running` で失敗する。`status` の報告書は CLI と IPC `server.info` が同じ
 `StatusReport` 型を共有する（`sapphire-framework-server-api` にあり、`backend::protocol` として
 re-export）。
+
+**アプリサーバの設定（#314）**: アプリサーバも設定レジストリ（`sapphire-framework-settings`）を使う。
+キーはフレームワークのもの（`http.listen` / `http.allowed_hosts` / `http.mcp.enabled` /
+`http.metrics.enabled` / `update.check`、すべて再起動で反映）とアプリのもの（`AppSettings`、キーは
+`<app>.` で始まる）。デバイスは `<config dir>/config.toml`（旧 `server.toml` は初回に取り込み
+`server.toml.v1` として残す）、workspace は `{root}/.{app}/config.toml`（workspace と同期する）、
+秘密は `<config dir>/secrets/<key>`（0600・同期しない）。アプリは `serve_restarting(ctx, owner, build)`
+で起動し、`build` が受け取る `Settings` ハンドルで値を読み（`get` / `get_as`）、`Live` キーの変更は
+`changed()` で知る。`config.*` 5 メソッドは中継せずアプリサーバが自分で答え、自分のキーと bridge の
+キーを合わせて返す。混在バッチは `dry_run` で両側を検査してから、bridge、アプリサーバの順に書く
+（`SettingDef::process` が再起動すべきプロセスを示す）。`server.restart` はアプリサーバを同じ
+IPC リスナー・pid・インスタンスロックのままその場で作り直す（`AppServer::run()` で起動したものは
+自分では再起動できない）。`<app> config` はサーバが居なければフレームワークとアプリのキーに限り
+ファイルを直接読み書きし、bridge のキーはエラーになる。`update` / `service` / `mcp` は設定が
+読めなくても警告して既定値で動く（設計: `docs/superpowers/specs/2026-10-22-app-settings-design.md`）。
 
 **API のバージョン**: 公開 API（クライアントとサーバが合意すべきもの）は wire 型だけの crate に
 切り出し、crate のメジャーをそのまま `API_VERSION` にする — bridge 制御面は
@@ -359,14 +374,14 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
   返す。サーバが再起動したら次の呼び出しで張り直す（書き込みの二重適用を避けるため、呼び出し自体は
   再送しない）。stdout はプロトコルなので、ログは stderr に出す（#232 — 下記）。
 - **HTTP（サーバ側）**: サーバの HTTP リスナー上の `/mcp`（全アプリ共通のパス）。external device の
-  Bearer トークンを `protect` で確かめる。**既定で無効**で、`<config dir>/server.toml` の
+  Bearer トークンを `protect` で確かめる。**既定で無効**で、`<config dir>/config.toml` の
   `[http.mcp] enabled = true` で有効になる（読むのは起動時）。bind 先は `[http] listen`、なければアプリの既定
   （`AppServer::http_listen`）。ツールはプロセス内チャネル（`Connection::pair`）でサーバ自身の
   ルーターに IPC 接続する — stdio と同じ経路なので、同じツール実装がそのまま動く。bind に失敗しても
   サーバは止めず、エラーを記録して IPC と同期を続ける。`[http] allowed_hosts` は rmcp の Host
   検査（DNS rebinding 対策）に足す名前で、ループバックは常に許可。
 - **メトリクス（Prometheus）**: 同じリスナー上の `GET /metrics`（feature `metrics`）。**既定で無効**で、
-  `server.toml` の `[http.metrics] enabled = true` で有効になる。トークンで守られない唯一のルートで、
+  `config.toml` の `[http.metrics] enabled = true` で有効になる。トークンで守られない唯一のルートで、
   プロセス指標、`sapphire_build_info`、ワークスペース・同期・埋め込み・更新の状態、IPC 接続数、
   再インデックスと同期セッションの回数を返す。ラベルは `app` / `version` / `result` だけで、識別子・
   パス・名前は載せない。アプリは `sapphire_framework::metrics` で自前の指標を作り、

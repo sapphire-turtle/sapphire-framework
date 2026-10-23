@@ -38,6 +38,7 @@ pub use watch::{DEBOUNCE, Watcher};
 use live::{LivePeers, dial_backoff};
 
 use crate::error::{Error, Result};
+use crate::settings::Settings;
 
 use crate::host::WorkspaceHost;
 
@@ -250,6 +251,9 @@ pub struct SyncRuntime {
     /// Absent for a runtime nobody has wired to an app server (a test stub driving the
     /// replica directly). Nothing then indexes, which is correct: nothing owns an index.
     host: OnceCell<Arc<WorkspaceHost>>,
+    /// The app server's settings, whose workspace scope is a file in the selected
+    /// workspace's marker: read again when a session or a local edit changes the files.
+    settings: std::sync::Mutex<Option<Settings>>,
     /// Serialises re-indexing, so two sessions finishing at once do not both sweep the
     /// workspace through the same store.
     reindexing: Mutex<()>,
@@ -345,6 +349,7 @@ impl SyncRuntime {
             device_id: OnceCell::new(),
             watcher: OnceCell::new(),
             host: OnceCell::new(),
+            settings: std::sync::Mutex::new(None),
             reindexing: Mutex::new(()),
             embed_wanted: Mutex::new(std::collections::HashSet::new()),
             embedding: Mutex::new(()),
@@ -438,6 +443,29 @@ impl SyncRuntime {
 
     pub(crate) fn set_host(&self, host: Arc<WorkspaceHost>) {
         let _ = self.host.set(host);
+    }
+
+    /// Read `settings` again whenever a workspace's files change under this runtime — a
+    /// session wrote them, or someone edited them — so workspace keys follow the marker's
+    /// `config.toml`. Replaced, not kept, by a later call (a restarted server's).
+    pub(crate) fn set_settings(&self, settings: Option<Settings>) {
+        *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = settings;
+    }
+
+    /// Read the settings again after the files under a workspace changed. Cheap — two
+    /// small files — and holding no lock past the read, so it runs on every change.
+    fn refresh_settings(&self) {
+        let settings = self
+            .settings
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(settings) = settings
+            && settings.refresh().is_err()
+        {
+            // The error may quote the file; the change itself went through.
+            tracing::warn!("could not read the settings again after a change to the files");
+        }
     }
 
     /// Start syncing `root`, returning its identity across devices.
@@ -891,6 +919,8 @@ impl SyncRuntime {
     /// here must not be reported as the session's. It is logged and the next session, local
     /// edit or explicit `workspace.reindex` tries again.
     async fn reindex(&self, root: &Path) {
+        // The marker's `config.toml` may be among what arrived.
+        self.refresh_settings();
         let Some(host) = self.host.get() else {
             return;
         };
@@ -1790,6 +1820,8 @@ impl SyncRuntime {
         }
 
         while let Some(root) = rx.recv().await {
+            // An edit of the marker's `config.toml` changes the workspace's settings.
+            self.refresh_settings();
             // Logged, not fatal: a failed scan or dial leaves the replica behind, and the
             // next report tries again. Neither may take the app server down (spec §10).
             if let Err(err) = self.scan(&root).await {
@@ -2244,6 +2276,64 @@ mod tests {
         std::fs::create_dir_all(root.join(".sapphire-synctest")).unwrap();
         let root = root.canonicalize().unwrap();
         (tmp, env, root)
+    }
+
+    /// An application with one `Live` key in the workspace: `sapphire-synctest.note`.
+    struct NoteApp;
+
+    impl crate::settings::AppSettings for NoteApp {
+        fn defs(&self) -> Vec<sapphire_framework_settings::SettingDef> {
+            vec![sapphire_framework_settings::SettingDef {
+                key: "sapphire-synctest.note".into(),
+                kind: sapphire_framework_settings::Kind::String { non_empty: false },
+                scopes: vec![sapphire_framework_settings::Scope::Workspace],
+                overridable: false,
+                apply: sapphire_framework_settings::Apply::Live,
+                default: None,
+                section: "Test".into(),
+                doc: "test".into(),
+                process: sapphire_framework_settings::Process::App,
+            }]
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_workspace_config_changed_under_the_watcher_reaches_the_settings() {
+        let f = fixture().await;
+        // A context of its own, so its config directory is this test's: `CTX`'s is
+        // whichever test resolved it first.
+        let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new("sapphire-synctest")));
+        ctx.set_config_dir(f._tmp.path().join("settings"));
+        let selection = crate::selection::SelectionFile::at(
+            f._tmp.path().join("settings").join("workspace.toml"),
+        );
+        selection
+            .save(&crate::selection::Selection {
+                root: f.root.clone(),
+                sync: true,
+            })
+            .unwrap();
+        let settings =
+            crate::settings::Settings::load_with(ctx, Arc::new(NoteApp), selection).unwrap();
+        let changed = settings.changed();
+        f.runtime.set_settings(Some(settings.clone()));
+        f.runtime.enable(&f.root).await.unwrap();
+        let watching = tokio::spawn(Arc::clone(&f.runtime).watch_changes());
+        // Until the watcher is up, a write may go unseen: keep writing until it is noticed.
+        let config = f.root.join(".sapphire-synctest").join("config.toml");
+        eventually("the settings hear of the new value", async || {
+            std::fs::write(&config, "[sapphire-synctest]\nnote = \"synced\"\n").unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            changed.has_changed().unwrap()
+        })
+        .await;
+        assert_eq!(
+            settings
+                .get_as::<String>("sapphire-synctest.note")
+                .as_deref(),
+            Some("synced")
+        );
+        watching.abort();
     }
 
     #[tokio::test(flavor = "multi_thread")]

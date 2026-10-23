@@ -19,6 +19,7 @@ use crate::error::{Error, Result};
 use crate::handlers::rpc_error;
 use crate::host::WorkspaceHost;
 use crate::selection::{Selection, SelectionFile, slug};
+use crate::settings::Settings;
 use crate::sync::{SYNC_ID_FILE, SyncRuntime};
 
 /// How long a move or a delete waits for the workspace's replica store to close.
@@ -30,6 +31,9 @@ pub struct Current {
     host: Arc<WorkspaceHost>,
     sync: Option<Arc<SyncRuntime>>,
     file: SelectionFile,
+    /// The settings whose workspace scope is the selected workspace's file, read again
+    /// whenever the selection changes.
+    settings: Option<Settings>,
     /// One selection, and one sync switch, at a time.
     switching: AsyncMutex<()>,
 }
@@ -56,8 +60,16 @@ impl Current {
             host,
             sync,
             file,
+            settings: None,
             switching: AsyncMutex::new(()),
         }
+    }
+
+    /// Read `settings` again whenever the selected workspace changes, so its workspace
+    /// keys follow the selection.
+    pub(crate) fn with_settings(mut self, settings: Settings) -> Current {
+        self.settings = Some(settings);
+        self
     }
 
     /// The host holding the open workspace.
@@ -192,6 +204,7 @@ impl Current {
         }
         self.host.close();
         self.file.clear()?;
+        self.refresh_settings();
         if delete {
             match std::fs::remove_dir_all(&root) {
                 Ok(()) => {}
@@ -329,6 +342,7 @@ impl Current {
                 tracing::warn!(root = %selection.root.display(), "could not restore the workspace: {err}");
                 return None;
             }
+            self.refresh_settings();
         }
         if !selection.sync {
             return None;
@@ -379,6 +393,17 @@ impl Current {
         };
         if let Err(err) = self.file.save(&selection) {
             tracing::warn!(root = %root.display(), "could not record the selected workspace: {err}");
+        }
+        self.refresh_settings();
+    }
+
+    /// Read the settings again, the workspace scope now the selected workspace's file.
+    fn refresh_settings(&self) {
+        if let Some(settings) = &self.settings
+            && settings.refresh().is_err()
+        {
+            // The error may quote the file; the selection itself succeeded.
+            tracing::warn!("could not read the settings of the selected workspace");
         }
     }
 
@@ -550,9 +575,13 @@ fn drop_bare_registry(path: &Path) -> Result<()> {
 /// The marker's `config.toml` as a table; an empty one when there is no file.
 fn read_config(path: &Path) -> Result<toml::Table> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text
-            .parse()
-            .map_err(|e: toml::de::Error| Error::Config(format!("{}: {e}", path.display()))),
+        Ok(text) => text.parse().map_err(|e: toml::de::Error| {
+            Error::Config(format!(
+                "{}: {}",
+                path.display(),
+                sapphire_framework_settings::describe_toml_error(&text, e.span(), e.message())
+            ))
+        }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(toml::Table::new()),
         Err(e) => Err(Error::Io(e)),
     }
@@ -578,6 +607,82 @@ mod tests {
         std::fs::write(&path, format!("schema_version = 2\n\n{REGISTRY_ONLY}")).unwrap();
         drop_bare_registry(&path).unwrap();
         assert!(path.exists());
+    }
+
+    /// An application with one `Live` key in the workspace: `<app>.note`.
+    struct NoteApp(&'static str);
+
+    impl crate::settings::AppSettings for NoteApp {
+        fn defs(&self) -> Vec<sapphire_framework_settings::SettingDef> {
+            vec![sapphire_framework_settings::SettingDef {
+                key: format!("{}.note", self.0),
+                kind: sapphire_framework_settings::Kind::String { non_empty: false },
+                scopes: vec![sapphire_framework_settings::Scope::Workspace],
+                overridable: false,
+                apply: sapphire_framework_settings::Apply::Live,
+                default: None,
+                section: "Test".into(),
+                doc: "test".into(),
+                process: sapphire_framework_settings::Process::App,
+            }]
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn workspace_settings_follow_the_selection() {
+        const APP: &str = "sapphire-curtest";
+        let dir = tempfile::tempdir().unwrap();
+        let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new(APP)));
+        ctx.set_config_dir(dir.path().join("config"));
+        ctx.set_cache_dir(dir.path().join("cache"));
+        ctx.set_data_dir(dir.path().join("data"));
+        let file = SelectionFile::at(dir.path().join("config").join("workspace.toml"));
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for (root, value) in [(&a, "from a"), (&b, "from b")] {
+            std::fs::create_dir_all(root).unwrap();
+            init_workspace(ctx, root).unwrap();
+            std::fs::write(
+                root.join(format!(".{APP}")).join("config.toml"),
+                format!("[{APP}]\nnote = \"{value}\"\n"),
+            )
+            .unwrap();
+        }
+        let settings = crate::settings::Settings::load_with(
+            ctx,
+            std::sync::Arc::new(NoteApp(APP)),
+            file.clone(),
+        )
+        .unwrap();
+        let key = format!("{APP}.note");
+        let current = Current::new(ctx, Arc::new(WorkspaceHost::new(ctx)), None, file)
+            .with_settings(settings.clone());
+        let mut changed = settings.changed();
+
+        current.select(&a).await.unwrap();
+        assert!(changed.has_changed().unwrap());
+        changed.mark_unchanged();
+        assert_eq!(settings.get_as::<String>(&key).as_deref(), Some("from a"));
+
+        current.select(&b).await.unwrap();
+        assert!(changed.has_changed().unwrap());
+        changed.mark_unchanged();
+        assert_eq!(settings.get_as::<String>(&key).as_deref(), Some("from b"));
+
+        // No workspace, no workspace value.
+        current.remove(false).await.unwrap();
+        assert!(changed.has_changed().unwrap());
+        assert_eq!(settings.get(&key), None);
+    }
+
+    #[test]
+    fn an_unparsable_marker_config_is_never_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[app]\ntoken = \"hunter2\" x\n").unwrap();
+        let err = read_config(&path).unwrap_err().to_string();
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        assert!(err.contains("line 2"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
     }
 
     #[test]

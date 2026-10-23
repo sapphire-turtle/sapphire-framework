@@ -1,4 +1,4 @@
-//! `/metrics` on the server's HTTP listener: off unless `server.toml` says so, open to a
+//! `/metrics` on the server's HTTP listener: off unless `config.toml` says so, open to a
 //! scraper without a token, and no way around the token for anything else.
 //!
 //! Each test owns its `AppContext` (the directories are first-writer-wins per context). The

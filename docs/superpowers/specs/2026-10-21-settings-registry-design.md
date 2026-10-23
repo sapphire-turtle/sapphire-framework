@@ -471,7 +471,12 @@ Bridge:
   again, and a changed `net.*` value is in effect after it;
 - the existing `embedding` tests pass unchanged.
 
-## Part 3 (outline): App integration
+## Part 3: App integration
+
+Settled in two specs: `2026-10-22-bridge-relay-design.md` (3a: clients reach the bridge
+through their app server) and `2026-10-22-app-settings-design.md` (3b: the app's own
+settings, merged `config.*`, `server.restart`). The outline below is the original
+sketch; where they differ, the two specs win.
 
 - The app registers a `SettingsOwner` with the framework (through the same builder that
   registers the app's commands). Its keys are prefixed with the app's name; the framework

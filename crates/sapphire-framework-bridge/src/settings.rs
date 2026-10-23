@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use sapphire_bridge_api::{DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, LOCAL_MODEL, MAX_TOKENS, QType};
 use sapphire_framework_settings::{
-    Apply, FieldError, Kind, Registry, Scope, SettingDef, SettingsOwner, Staged, Value,
+    Apply, FieldError, Kind, Process, Registry, Scope, SettingDef, SettingsOwner, Staged, Value,
 };
 
 use crate::config_file::{DeviceConfig, WorkgroupConfig, parse};
@@ -40,6 +40,7 @@ pub fn bridge_defs() -> Vec<SettingDef> {
         default,
         section: section.into(),
         doc: doc.into(),
+        process: Process::Bridge,
     };
     let int = |min: i64, max: i64| Kind::Int { min, max };
     vec![

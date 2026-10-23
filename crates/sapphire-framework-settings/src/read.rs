@@ -49,7 +49,7 @@ impl Cache {
             let table = match std::fs::read_to_string(path) {
                 Ok(text) => Some(text.parse::<toml::Table>().map_err(|e| Error::Unparsable {
                     file: path.to_path_buf(),
-                    message: e.to_string(),
+                    message: crate::describe_toml_error(&text, e.span(), e.message()),
                 })?),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
@@ -363,6 +363,15 @@ mod tests {
             Error::Unparsable { file, .. } => assert_eq!(file, o.dir.path().join("wg.toml")),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_unparsable_file_is_named_by_line_not_quoted() {
+        let (o, reg) = setup(def("a.b", int()));
+        o.write("wg.toml", "a = 1\ntoken = \"hunter2\" x\n");
+        let err = get(&reg, "a.b").err().unwrap().to_string();
+        assert!(err.contains("line 2"), "{err}");
+        assert!(!err.contains("hunter2"), "{err}");
     }
 
     #[test]

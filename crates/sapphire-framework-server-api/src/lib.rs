@@ -232,6 +232,13 @@ pub const SERVER_INFO: &str = "server.info";
 /// A server older than this method answers method-not-found; a client reads that as
 /// "nothing known" rather than an error.
 pub const SERVER_UPDATE: &str = "server.update";
+/// Restart the app server in place: it answers [`Ack`], stops what it serves (HTTP, sync,
+/// the update check, open connections), reads its settings again and serves anew on the
+/// same endpoint, in the same process. A client reconnects to reach the new server.
+///
+/// A server that cannot restart itself (one not run by the framework's restarting entry
+/// point) answers an error; a server older than this method answers method-not-found.
+pub const SERVER_RESTART: &str = "server.restart";
 
 /// Parameters naming a path inside the workspace.
 #[derive(Clone, Debug, Serialize, Deserialize)]

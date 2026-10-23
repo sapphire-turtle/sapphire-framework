@@ -167,7 +167,7 @@ const RECONNECT_INTERVAL: Duration = Duration::from_millis(100);
 const SYNC_WAIT: Duration = Duration::from_secs(1);
 
 /// The relay's answer when there is no bridge to forward to.
-fn not_running() -> RpcError {
+pub(crate) fn not_running() -> RpcError {
     RpcError {
         code: BRIDGE_NOT_RUNNING,
         message: "no sapphire-bridge is running".to_owned(),
@@ -203,13 +203,25 @@ impl Relay {
 
     /// `router` with every method of [`RELAYED`] forwarded.
     pub(crate) fn routes(self: Arc<Self>, router: Router) -> Router {
-        RELAYED.iter().fold(router, |router, &method| {
+        self.routes_for(router, RELAYED)
+    }
+
+    /// `router` with each of `methods` forwarded: for `config.*` on a server with no
+    /// settings of its own to merge in.
+    pub(crate) fn routes_for(self: Arc<Self>, router: Router, methods: &[&'static str]) -> Router {
+        methods.iter().fold(router, |router, &method| {
             let relay = Arc::clone(&self);
             router.method(method, move |ctx| {
                 let relay = Arc::clone(&relay);
                 async move { relay.forward(method, ctx.params).await }
             })
         })
+    }
+
+    /// An open connection to the bridge, or the error to answer with when there is none:
+    /// [`BRIDGE_NOT_RUNNING`] when no bridge is running, a bridge's refusal as it said it.
+    pub(crate) async fn bridge(&self) -> Result<Arc<BridgeClient>, RpcError> {
+        self.link.client().await
     }
 
     /// Forward one call, and hand back what the bridge answered.

@@ -29,6 +29,9 @@ use sapphire_backend::protocol as proto;
 use sapphire_framework_service::ServiceSpec;
 use sapphire_ipc::{Endpoint, ManagedBy, Router, ServerInfo, serve};
 use sapphire_workspace::AppContext;
+use tokio::sync::Notify;
+
+use crate::restart::Exit;
 
 /// How long a server's shutdown waits for its open connections to wind down on their own.
 ///
@@ -40,6 +43,7 @@ const SERVE_GRACE: Duration = Duration::from_secs(2);
 
 mod command;
 mod config;
+mod config_methods;
 mod current;
 mod error;
 mod events;
@@ -51,15 +55,18 @@ mod host;
 mod http;
 mod instrument;
 mod relay;
+mod restart;
 mod selection;
+mod settings;
 pub mod sync;
 #[cfg(test)]
 mod test_support;
 mod update;
 
 pub use command::{
-    AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport, StatusRow, WorkgroupCommand,
-    WorkspaceCommand, WorkspaceSyncCommand, render_workspace, render_workspace_show,
+    AppConfigCommand, AppScopeFlags, AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport,
+    StatusRow, WorkgroupCommand, WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
+    render_workspace_show,
 };
 pub use config::{
     HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,
@@ -69,8 +76,13 @@ pub use error::{Error, Result};
 pub use events::subscribe_method;
 pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
+pub use restart::serve_restarting;
+pub use sapphire_framework_settings::{
+    Apply, FieldError, Kind, Process, Scope, SettingDef, Staged, Value,
+};
 pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
+pub use settings::{AppFiles, AppSettings, FromValue, Settings};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).
@@ -99,8 +111,11 @@ pub struct AppServer {
     status_rows: Option<Arc<dyn Fn() -> Vec<StatusRow> + Send + Sync>>,
     /// The version of the application's own API, reported in the handshake.
     app_api: Option<u32>,
-    /// `server.toml`'s settings, when given rather than read from the config directory.
+    /// The framework's settings, when given rather than read from `config.toml`.
     config: Option<ServerConfig>,
+    /// The settings `config.*` reads and writes, and `config` comes from unless given;
+    /// `None` reads the framework's alone when `run` starts.
+    pub(crate) settings: Option<Settings>,
     /// Where the application's releases are published: what the server looks for newer
     /// ones in, and what `update` installs from.
     releases: Option<ReleaseSource>,
@@ -110,7 +125,7 @@ pub struct AppServer {
     /// What the application sets on every scrape of `/metrics`. Kept in a build without
     /// feature `metrics` too, so the builder method needs no gate; `run` never calls them there.
     metrics_collectors: Vec<Arc<dyn Fn() + Send + Sync>>,
-    /// Where the HTTP listener binds when `server.toml` does not say.
+    /// Where the HTTP listener binds when `config.toml` does not say.
     #[cfg(feature = "http")]
     http_listen: Option<std::net::SocketAddr>,
     /// The application's own HTTP routes.
@@ -139,13 +154,24 @@ struct Sigterm(tokio::signal::unix::Signal);
 #[cfg(not(unix))]
 struct Sigterm;
 
+impl Sigterm {
+    /// The stream a server that listens for signals awaits SIGTERM on.
+    ///
+    /// Registered before the listener binds, so a signal arriving the instant the socket
+    /// is up is queued by tokio instead of killing the process with the default handler.
+    /// SIGINT is listened to only through `ctrl_c` (which swallows the default handler on
+    /// both platforms): a Unix `SignalKind::interrupt()` stream would double-fire for ^C.
+    fn register() -> Result<Option<Sigterm>> {
+        #[cfg(unix)]
+        return Ok(Some(Sigterm::new()?));
+        #[cfg(not(unix))]
+        return Ok(Some(Sigterm));
+    }
+}
+
 #[cfg(unix)]
 impl Sigterm {
-    /// Register interest in SIGTERM.
-    ///
-    /// Called before the listener binds, so a signal arriving the instant the
-    /// socket is up is queued by tokio instead of killing the process with the
-    /// default handler.
+    /// Register interest in SIGTERM: see [`register`](Self::register).
     fn new() -> Result<Self> {
         Ok(Self(tokio::signal::unix::signal(
             tokio::signal::unix::SignalKind::terminate(),
@@ -165,9 +191,18 @@ impl Sigterm {
     /// A future that is never ready — the arm awaits it for the macro's sake only.
     ///
     /// There is no `new`: this platform has no SIGTERM to register interest in, so
-    /// the loop binds the unit value directly.
+    /// [`register`](Self::register) makes the unit value directly.
     async fn recv(&mut self) {
         std::future::pending::<()>().await
+    }
+}
+
+/// The file the selected workspace is kept in: at `path` when a fixture moved it, in the
+/// config directory otherwise.
+fn selection_at(ctx: &AppContext, path: Option<PathBuf>) -> SelectionFile {
+    match path {
+        Some(path) => SelectionFile::at(path),
+        None => SelectionFile::for_app(ctx),
     }
 }
 
@@ -205,6 +240,7 @@ impl AppServer {
             status_rows: None,
             app_api: None,
             config: None,
+            settings: None,
             releases: None,
             signals: true,
             metrics_collectors: Vec::new(),
@@ -220,9 +256,6 @@ impl AppServer {
     }
 
     /// The application this server serves, as its [`AppContext`] names it.
-    ///
-    /// [`FrameworkCommand`](crate::FrameworkCommand) reads it to build the CLI's endpoint,
-    /// so an application never passes its own name twice.
     pub fn app_name(&self) -> &'static str {
         self.ctx.app_name
     }
@@ -252,13 +285,48 @@ impl AppServer {
         self
     }
 
-    /// Use `config` rather than reading `<config dir>/server.toml`: for fixtures.
+    /// Use `config` rather than the one `<config dir>/config.toml` gives: for fixtures.
+    /// `config.*` still reads and writes the file.
     pub fn config(mut self, config: ServerConfig) -> AppServer {
         self.config = Some(config);
         self
     }
 
-    /// Where the HTTP listener binds unless `server.toml` says otherwise: the application's
+    /// Serve the application's settings `app` beside the framework's, read now: for
+    /// fixtures. Called after [`selection_file`](Self::selection_file), whose selected
+    /// workspace holds the workspace scope.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub fn app_settings(mut self, app: Arc<dyn AppSettings>) -> Result<AppServer> {
+        let selection = self.selection();
+        self.settings = Some(Settings::load_with(self.ctx, app, selection)?);
+        Ok(self)
+    }
+
+    /// The settings `config.*` serves, once [`app_settings`](Self::app_settings) has read
+    /// them: for fixtures.
+    #[cfg(feature = "test-util")]
+    #[doc(hidden)]
+    pub fn settings(&self) -> Option<&Settings> {
+        self.settings.as_ref()
+    }
+
+    /// The endpoint this server listens on: the one [`endpoint`](Self::endpoint) gave, or
+    /// the application's own.
+    fn endpoint_or_default(&self) -> Result<Endpoint> {
+        match &self.endpoint {
+            Some(e) => Ok(e.clone()),
+            None => Ok(Endpoint::for_app(self.ctx.app_name)?),
+        }
+    }
+
+    /// The file the selected workspace is kept in.
+    #[cfg(feature = "test-util")]
+    fn selection(&self) -> SelectionFile {
+        selection_at(self.ctx, self.selection_file.clone())
+    }
+
+    /// Where the HTTP listener binds unless `config.toml` says otherwise: the application's
     /// own port. Without it, a host that serves anything over HTTP names the address in
     /// `[http] listen`.
     #[cfg(feature = "http")]
@@ -269,7 +337,7 @@ impl AppServer {
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
-    /// `/mcp` only when `server.toml` turns it on.
+    /// `/mcp` only when `config.toml` turns it on.
     ///
     /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
     /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
@@ -287,7 +355,7 @@ impl AppServer {
     }
 
     /// Answer MCP with the application's own handler, rather than the framework's tools
-    /// alone: on stdio for the `mcp` subcommand, and at `/mcp` when `server.toml` turns it
+    /// alone: on stdio for the `mcp` subcommand, and at `/mcp` when `config.toml` turns it
     /// on.
     #[cfg(feature = "mcp")]
     pub fn mcp(mut self, service: sapphire_framework_mcp::McpService) -> AppServer {
@@ -390,7 +458,7 @@ impl AppServer {
     /// framework's `sapphire_*` names. Labels carry no identifiers, paths or names: the
     /// endpoint is served without a token, so anything in a label is public.
     ///
-    /// A build without feature `metrics`, or a server whose `server.toml` leaves
+    /// A build without feature `metrics`, or a server whose `config.toml` leaves
     /// `[http.metrics]` off, never calls it.
     pub fn metrics_collector(mut self, collect: Arc<dyn Fn() + Send + Sync>) -> AppServer {
         self.metrics_collectors.push(collect);
@@ -400,7 +468,7 @@ impl AppServer {
     /// Where this application's releases are published.
     ///
     /// The server looks there for newer ones once at start and once a day after, unless
-    /// `server.toml` says `[update] check = false`; `status` and the GUI show what it found.
+    /// `config.toml` says `[update] check = false`; `status` and the GUI show what it found.
     /// The `update` command installs from there, when `source` names the release's
     /// [asset](ReleaseSource::asset).
     pub fn releases(mut self, source: ReleaseSource) -> AppServer {
@@ -449,11 +517,53 @@ impl AppServer {
     }
 
     /// Listen until told to stop, or until a signal arrives.
+    ///
+    /// A server run this way answers `server.restart` with an error: nothing would bring it
+    /// back. [`serve_restarting`] runs one that can.
     pub async fn run(self) -> Result<()> {
+        let endpoint = self.endpoint_or_default()?;
+        // The app's log file, held for as long as this server serves: the guard's drop
+        // flushes the writer thread, so the last lines of a clean shutdown land in the file.
+        // The subscriber itself was installed by `ctx.init`; this is what routes the file
+        // layer at `<data dir>/logs/`.
+        let _log = sapphire_workspace::logging::install(self.ctx)?;
+        // Registered before the bind: see `Sigterm::register`.
+        let mut sigterm = if self.signals {
+            Sigterm::register()?
+        } else {
+            None
+        };
+        #[cfg(unix)]
+        let mut listener = sapphire_ipc::bind(&endpoint).await?;
+        #[cfg(windows)]
+        let mut listener = sapphire_ipc::bind(&endpoint)?;
+        let exit = self.serve_on(&mut listener, None, &mut sigterm).await;
+        drop(listener); // removes the socket file on Unix
+        debug_assert!(
+            !matches!(exit, Ok(Exit::Restart)),
+            "nothing can ask for one"
+        );
+        exit.map(|_| ())
+    }
+
+    /// Serve on `listener` until told to stop, a signal arrives, or `restart` fires.
+    ///
+    /// `restart` is what `server.restart` fires; `None` answers it with an error.
+    /// `sigterm` is the caller's, so it outlives one server: see [`serve_restarting`].
+    /// The listener, the log and the process stay with the caller; everything else this
+    /// server started is stopped before it returns — on [`Exit::Restart`] down to the last
+    /// task that held the sync runtime, so the next server's runtime can open the replica
+    /// store.
+    pub(crate) async fn serve_on(
+        self,
+        listener: &mut sapphire_ipc::Listener,
+        restart: Option<Arc<Notify>>,
+        sigterm: &mut Option<Sigterm>,
+    ) -> Result<Exit> {
         let AppServer {
             ctx,
             version,
-            endpoint,
+            endpoint: _,
             selection_file,
             host,
             sync,
@@ -462,6 +572,7 @@ impl AppServer {
             status_rows,
             app_api,
             config,
+            settings,
             releases,
             signals,
             metrics_collectors,
@@ -478,10 +589,6 @@ impl AppServer {
         #[cfg(not(feature = "metrics"))]
         let _ = metrics_collectors;
 
-        let endpoint = match endpoint {
-            Some(e) => e,
-            None => Endpoint::for_app(ctx.app_name)?,
-        };
         // A server is always-on from here on: only `serve` and the service manager start
         // one, and the service manager starts it for keeps. There is no spawned mode left
         // to report.
@@ -493,27 +600,32 @@ impl AppServer {
             managed_by: ManagedBy::Service,
         };
 
-        // The app's log file, held for as long as this server serves: the guard's
-        // drop flushes the writer thread, so the last lines of a clean shutdown land
-        // in the file. The subscriber itself was installed by `ctx.init`; this is what
-        // routes the file layer at `<data dir>/logs/`.
-        let _log = sapphire_workspace::logging::install(ctx)?;
-
-        let config = match config {
-            Some(config) => config,
-            None => ServerConfig::load_for_app(ctx)?,
+        let file = selection_at(ctx, selection_file);
+        // A context whose config directory was never resolved has no file to read, and
+        // gets the defaults — as it gets no log file — and no settings of its own to serve.
+        let settings = match settings {
+            Some(settings) => Some(settings),
+            None if ctx.try_config_dir().is_some() => {
+                Some(Settings::load_with(ctx, Arc::new(()), file.clone())?)
+            }
+            None => None,
+        };
+        let config = match (config, &settings) {
+            (Some(config), _) => config,
+            (None, Some(settings)) => ServerConfig::from_settings(settings)?,
+            (None, None) => ServerConfig::default(),
         };
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
             tracing::warn!(
-                "server.toml turns MCP over HTTP on, but this build of {} has no MCP",
+                "config.toml turns MCP over HTTP on, but this build of {} has no MCP",
                 ctx.app_name
             );
         }
         #[cfg(not(feature = "metrics"))]
         if config.http.metrics.enabled {
             tracing::warn!(
-                "server.toml turns metrics on, but this build of {} has no metrics",
+                "config.toml turns metrics on, but this build of {} has no metrics",
                 ctx.app_name
             );
         }
@@ -530,11 +642,16 @@ impl AppServer {
             runtime.connect().await?;
         }
 
-        let file = match selection_file {
-            Some(path) => SelectionFile::at(path),
-            None => SelectionFile::for_app(ctx),
-        };
-        let current = Arc::new(Current::new(ctx, Arc::clone(&host), sync.clone(), file));
+        // Workspace keys follow the selection and the marker's `config.toml` as sync or an
+        // edit changes it.
+        let mut current = Current::new(ctx, Arc::clone(&host), sync.clone(), file);
+        if let Some(settings) = &settings {
+            current = current.with_settings(settings.clone());
+        }
+        if let Some(runtime) = &sync {
+            runtime.set_settings(settings.clone());
+        }
+        let current = Arc::new(current);
         // Back to the workspace this host had, before the first client can ask for it.
         let restoring = current.restore().await;
 
@@ -557,7 +674,14 @@ impl AppServer {
                     .unwrap_or_else(|| BridgeConnector::standard(ctx.app_name, version)),
             ),
         };
-        router = Arc::new(relay::Relay::new(link)).routes(router);
+        let relay = Arc::new(relay::Relay::new(link));
+        router = Arc::clone(&relay).routes(router);
+        // `config.*`: this server's settings merged with the bridge's. Without settings of
+        // its own, the bridge's alone, relayed.
+        router = match settings {
+            Some(settings) => config_methods::routes(router, settings, relay),
+            None => relay.routes_for(router, sapphire_bridge_api::ANSWERED_BY_APP_SERVER),
+        };
         // `server.info` answers the typed [`StatusReport`] — the same shape the CLI's
         // `status` renders — so the CLI and a future GUI read one record. The rows come
         // from the application's builder, called once per report.
@@ -595,6 +719,17 @@ impl AppServer {
                     }
                 }
             })
+            .method(proto::SERVER_RESTART, {
+                let restart = restart.clone();
+                move |_| {
+                    let answer = restart::request(restart.clone());
+                    async move {
+                        answer?;
+                        serde_json::to_value(proto::Ack {})
+                            .map_err(|e| sapphire_ipc::RpcError::internal(e.to_string()))
+                    }
+                }
+            })
             .method(sapphire_ipc::SHUTDOWN_METHOD, {
                 let stop_tx = stop_tx.clone();
                 move |_| {
@@ -611,30 +746,29 @@ impl AppServer {
         }
         let router = Arc::new(router);
 
-        // Registered before the bind, so a SIGTERM arriving the instant the socket is up
-        // cannot fall through to the default handler and kill the process. SIGINT is
-        // listened to only through `ctrl_c` (which swallows the default handler on both
-        // platforms): a Unix `SignalKind::interrupt()` stream would double-fire for ^C.
-        #[cfg(unix)]
-        let mut sigterm = if signals { Some(Sigterm::new()?) } else { None };
-        #[cfg(not(unix))]
-        let mut sigterm = signals.then_some(Sigterm);
-
-        #[cfg(unix)]
-        let listener = sapphire_ipc::bind(&endpoint).await?;
-        #[cfg(windows)]
-        let mut listener = sapphire_ipc::bind(&endpoint)?;
+        // The caller's SIGTERM stream, unless this server leaves signals to the process.
+        let mut no_sigterm = None;
+        let sigterm = if signals { sigterm } else { &mut no_sigterm };
+        // What `server.restart` fires; never, where there is no restarting.
+        let restarted = async {
+            match &restart {
+                Some(restart) => restart.notified().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(restarted);
+        let mut exit = Exit::Stopped;
 
         let mut connections = tokio::task::JoinSet::new();
 
-        // The HTTP listener, when anything is served over it. Started once the IPC socket
-        // is bound, for the same reason as the sync tasks below. `/mcp`'s tools reach this
+        // The HTTP listener, when anything is served over it. Started with the IPC socket
+        // bound, for the same reason as the sync tasks below. `/mcp`'s tools reach this
         // server the way the `mcp` subcommand's do — over IPC — on an in-process connection
         // served like any other. `/metrics` is the one public route, served without a token.
         #[cfg(feature = "http")]
         let http_stop = tokio_util::sync::CancellationToken::new();
         #[cfg(feature = "http")]
-        let _http = {
+        let http_task = {
             #[cfg(feature = "mcp")]
             let routes = if config.http.mcp.enabled {
                 let (ours, theirs) = sapphire_ipc::Connection::pair();
@@ -720,7 +854,7 @@ impl AppServer {
         // leave tasks running for a server that never served. All of them are allowed to
         // fail: only sync stops when they do, and the app server keeps serving files
         // (spec §10). They are aborted with the server.
-        let _sync_tasks = match &sync {
+        let sync_tasks = match &sync {
             Some(runtime) => {
                 let driver = Arc::clone(runtime);
                 let announcements = tokio::spawn(async move {
@@ -766,8 +900,13 @@ impl AppServer {
                     tracing::info!("interrupted; shutting down");
                     break;
                 }
-                _ = terminated(&mut sigterm) => {
+                _ = terminated(sigterm) => {
                     tracing::info!("terminated; shutting down");
+                    break;
+                }
+                () = &mut restarted => {
+                    tracing::info!("stopping to restart");
+                    exit = Exit::Restart;
                     break;
                 }
                 accepted = listener.accept() => {
@@ -786,22 +925,27 @@ impl AppServer {
             }
         }
 
+        // Awaited, not only aborted: the restoring task holds `Current`, and with it the
+        // sync runtime, until it is dropped — which a restart must see done before the
+        // next server opens the replica store.
         if let Some(restoring) = restoring {
             restoring.abort();
+            let _ = restoring.await;
         }
         // HTTP first: its sessions hold a connection to this server, which the reaping
-        // below waits for.
+        // below waits for. Awaited after the abort too, for the same reason as above.
         #[cfg(feature = "http")]
         {
             http_stop.cancel();
-            if let Some((_, mut task)) = _http
+            if let Some((_, mut task)) = http_task
                 && tokio::time::timeout(SERVE_GRACE, &mut task).await.is_err()
             {
                 tracing::debug!("the HTTP listener did not stop in time");
                 task.abort();
+                let _ = task.await;
             }
         }
-        if let Some(tasks) = _sync_tasks {
+        if let Some(tasks) = sync_tasks {
             // Each loop pins the sync runtime, and with it the replica stores. An aborted task
             // is only dropped once its current poll returns — which, mid-scan, can take a
             // while — so wait for that rather than return with a loop still holding a store
@@ -823,7 +967,8 @@ impl AppServer {
             runtime.drop_connections().await;
         }
         host.close();
-        drop(listener); // removes the socket file on Unix
+        // The listener is the caller's: it stays bound, and a client that connects now waits
+        // in its backlog for the next server of a restart.
 
         // Reap the per-connection serve tasks. Each one pins the router, the router pins
         // the sync runtime, and the runtime's replica stores are redb databases that stay
@@ -838,7 +983,9 @@ impl AppServer {
         .await;
         connections.abort_all();
         while connections.join_next().await.is_some() {}
-        Ok(())
+        // Everything else of this server — the router, the relay, `Current`, the host and
+        // the sync runtime — goes as this returns, before a restart builds the next one.
+        Ok(exit)
     }
 }
 

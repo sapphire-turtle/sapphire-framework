@@ -183,12 +183,17 @@ pub const RELAYED: &[&str] = &[
     EXTERNAL_DEVICE_RETIRE,
     EXTERNAL_DEVICE_RESTORE,
     EXTERNAL_DEVICE_SET_APPS,
+    RESTART,
+];
+
+/// The methods an app server answers itself, merging its own settings with the bridge's
+/// where both have some, instead of relaying them.
+pub const ANSWERED_BY_APP_SERVER: &[&str] = &[
     CONFIG_SCHEMA,
     CONFIG_LIST,
     CONFIG_GET,
     CONFIG_SET,
     CONFIG_UNSET,
-    RESTART,
 ];
 
 /// The methods an app server does not relay, because only an app server or the HTTP
@@ -747,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn every_method_is_either_relayed_or_not() {
+    fn every_method_is_relayed_answered_or_not() {
         let all: std::collections::BTreeSet<&str> = [
             REGISTER,
             UNREGISTER,
@@ -786,6 +791,15 @@ mod tests {
         .collect();
         let relayed: std::collections::BTreeSet<&str> = RELAYED.iter().copied().collect();
         let not_relayed: std::collections::BTreeSet<&str> = NOT_RELAYED.iter().copied().collect();
+        let answered: std::collections::BTreeSet<&str> =
+            ANSWERED_BY_APP_SERVER.iter().copied().collect();
+        assert_eq!(
+            answered.len(),
+            ANSWERED_BY_APP_SERVER.len(),
+            "ANSWERED_BY_APP_SERVER repeats a method"
+        );
+        assert!(relayed.is_disjoint(&answered));
+        assert!(not_relayed.is_disjoint(&answered));
         assert_eq!(relayed.len(), RELAYED.len(), "RELAYED repeats a method");
         assert_eq!(
             not_relayed.len(),
@@ -793,8 +807,11 @@ mod tests {
             "NOT_RELAYED repeats a method"
         );
         assert!(relayed.is_disjoint(&not_relayed));
-        let union: std::collections::BTreeSet<&str> =
-            relayed.union(&not_relayed).copied().collect();
+        let union: std::collections::BTreeSet<&str> = relayed
+            .union(&not_relayed)
+            .chain(answered.iter())
+            .copied()
+            .collect();
         assert_eq!(union, all);
     }
 

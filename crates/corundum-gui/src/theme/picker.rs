@@ -283,14 +283,14 @@ pub(super) fn report(changed: bool, dragging: bool, held: &mut bool) -> bool {
 
 /// Where the last picker drew its chips and disk, for the tests to click.
 #[derive(Clone)]
-struct PickerRects {
-    chips: Vec<Rect>,
-    disk: Rect,
+pub(super) struct PickerRects {
+    pub(super) chips: Vec<Rect>,
+    pub(super) disk: Rect,
 }
 
 #[cfg(test)]
 impl PickerRects {
-    fn id() -> egui::Id {
+    pub(super) fn id() -> egui::Id {
         egui::Id::new("corundum_tint_picker_rects")
     }
 }

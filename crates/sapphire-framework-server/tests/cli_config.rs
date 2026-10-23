@@ -172,11 +172,14 @@ fn assert_ok(run: &Run) {
     assert_eq!(run.code, 0, "{run:?}");
 }
 
-/// Whether `text` names `file`. On Windows the framework's paths come out in the verbatim
-/// form (`\\?\C:\…`), so that form counts too.
+/// Whether `text` names `file`, as given or canonicalized. On Windows the framework's paths
+/// come out canonical — verbatim (`\\?\C:\…`) and with long names where the temp directory
+/// may be given in its 8.3 short form (`RUNNER~1`) — so that form counts too.
 fn names(text: &str, file: &std::path::Path) -> bool {
-    let path = file.display().to_string();
-    text.contains(&path) || text.contains(&format!(r"\\?\{path}"))
+    let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    [file, canonical.as_path()]
+        .iter()
+        .any(|p| text.contains(&p.display().to_string()))
 }
 
 /// The device file's text, or "" when there is none.

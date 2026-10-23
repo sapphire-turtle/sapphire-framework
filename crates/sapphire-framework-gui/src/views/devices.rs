@@ -193,7 +193,7 @@ impl DeviceList {
                         ui.strong(&peer.name);
                         ui.small(short_id(&peer.device_id));
                         for role in role_badges(peer, &bridge.peer_roles) {
-                            ui.small(format!("[{role}]"));
+                            ui.small(format!("[{}]", crate::i18n::tr(ui.ctx(), role)));
                         }
                         if let Some(tier) = peer.availability {
                             ui.small(format!("availability {tier}/3")).on_hover_text(

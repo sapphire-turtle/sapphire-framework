@@ -39,8 +39,22 @@ mod shell;
 pub mod views;
 
 #[cfg(test)]
+mod i18n_check;
+#[cfg(test)]
 mod test_support;
 
+/// This crate's own strings: register them with [`i18n::register`]. [`Shell`] and
+/// [`Settings`] do so themselves on their first frame.
+pub const RESOURCES: i18n::Resources = i18n::Resources {
+    name: "sapphire-framework-gui",
+    files: &[
+        ("en", include_str!("../locales/en/sapphire.ftl")),
+        ("ja", include_str!("../locales/ja/sapphire.ftl")),
+    ],
+};
+
+/// corundum-gui's translation support, for apps to register their own strings with.
+pub use corundum_gui::i18n;
 pub use corundum_gui::{Action, COMPACT_WIDTH, Destination};
 /// The system CJK fallback font and the Lucide icons, from corundum-gui (shared with asteria).
 pub use corundum_gui::{fonts, icons, theme};

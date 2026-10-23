@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 
 use super::model::{self, Entry, Preview};
 use corundum_gui::COMPACT_WIDTH;
+use corundum_gui::i18n::Message;
 
 /// A read in flight or done, tagged with what it was for so a stale answer is dropped.
 struct Slot<T> {
     for_path: PathBuf,
-    result: Option<Result<T, String>>,
+    result: Option<Result<T, Message>>,
 }
 
 type Shared<T> = Arc<Mutex<Option<Slot<T>>>>;
@@ -134,7 +135,7 @@ impl FileBrowser {
             Some(Err(err)) => {
                 ui.colored_label(
                     crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
-                    err,
+                    err.text(ui.ctx()),
                 );
             }
             Some(Ok(entries)) if entries.is_empty() => {
@@ -195,7 +196,7 @@ impl FileBrowser {
             Some(Err(err)) => {
                 ui.colored_label(
                     crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
-                    err,
+                    err.text(ui.ctx()),
                 );
             }
             Some(Ok(Preview::Binary { size })) => {
@@ -245,7 +246,7 @@ impl FileBrowser {
         &self,
         slot: &Shared<T>,
         for_path: PathBuf,
-        read: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+        read: impl FnOnce() -> Result<T, Message> + Send + 'static,
     ) {
         *lock(slot) = Some(Slot {
             for_path: for_path.clone(),
@@ -254,7 +255,7 @@ impl FileBrowser {
         let slot = Arc::clone(slot);
         let repaint = Arc::clone(&self.repaint);
         self.runtime.spawn_blocking(move || {
-            let result = read().map_err(|e| e.to_string());
+            let result = read();
             let mut guard = lock(&slot);
             // A later request replaced this one: its answer is the one to show.
             if let Some(current) = guard.as_mut()

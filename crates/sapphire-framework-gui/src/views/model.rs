@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use corundum_gui::i18n::Message;
 use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, Topology};
 use sapphire_bridge_api::{
@@ -34,26 +35,20 @@ pub enum Badge {
 
 impl Badge {
     /// The text shown beside the workspace.
-    pub fn label(&self) -> String {
+    pub fn label(&self) -> Message {
         match self {
             Badge::Syncing {
                 peers,
                 star,
                 embedding_pending,
-            } => format!(
-                "syncing · {peers} peer{}{}{}",
-                if *peers == 1 { "" } else { "s" },
-                if *star { " · star" } else { "" },
-                if *embedding_pending > 0 {
-                    format!(" · embedding {embedding_pending} pending")
-                } else {
-                    String::new()
-                }
-            ),
-            Badge::Paused(why) => format!("paused: {why}"),
-            Badge::Error(e) => format!("error: {e}"),
-            Badge::NotSynced => "not synced".to_owned(),
-            Badge::Unreachable => "unreachable".to_owned(),
+            } => Message::new("sapphire-badge-syncing")
+                .arg("peers", *peers)
+                .arg("star", if *star { "yes" } else { "no" })
+                .arg("pending", *embedding_pending),
+            Badge::Paused(why) => Message::new("sapphire-badge-paused").arg("reason", why.as_str()),
+            Badge::Error(e) => Message::new("sapphire-badge-error").arg("reason", e.as_str()),
+            Badge::NotSynced => Message::new("sapphire-badge-not-synced"),
+            Badge::Unreachable => Message::new("sapphire-badge-unreachable"),
         }
     }
 }
@@ -171,36 +166,36 @@ pub fn bring_target(picked: &Path, workspace_name: &str, app_name: &str) -> Path
 
 /// Where "Move…" puts the workspace at `root` when the user picked `picked`: a folder of
 /// the same name inside it, which must not exist yet. The error is the message to show.
-pub fn move_target(picked: &Path, root: &Path) -> Result<PathBuf, String> {
-    let name = root
-        .file_name()
-        .ok_or_else(|| format!("{} cannot be moved", display_path(root).display()))?;
+pub fn move_target(picked: &Path, root: &Path) -> Result<PathBuf, Message> {
+    let name = root.file_name().ok_or_else(|| {
+        Message::new("sapphire-move-unmovable")
+            .arg("path", display_path(root).display().to_string())
+    })?;
     let target = picked.join(name);
     if target.exists() {
-        return Err(format!(
-            "{} already has a {}",
-            display_path(picked).display(),
-            name.to_string_lossy()
-        ));
+        return Err(Message::new("sapphire-move-exists")
+            .arg("folder", display_path(picked).display().to_string())
+            .arg("name", name.to_string_lossy().into_owned()));
     }
     Ok(target)
 }
 
 /// Whether "New…" may create a workspace in `picked`: it must already be a workspace of
 /// `app_name`, or be empty. The error is the message to show.
-pub fn new_target_ok(picked: &Path, app_name: &str) -> Result<(), String> {
+pub fn new_target_ok(picked: &Path, app_name: &str) -> Result<(), Message> {
     if has_marker(picked, app_name) {
         return Ok(());
     }
-    let mut entries =
-        std::fs::read_dir(picked).map_err(|e| format!("{}: {e}", picked.display()))?;
+    let mut entries = std::fs::read_dir(picked).map_err(|e| {
+        Message::new("sapphire-new-unreadable")
+            .arg("path", picked.display().to_string())
+            .arg("error", e.to_string())
+    })?;
     if entries.next().is_none() {
         Ok(())
     } else {
-        Err(format!(
-            "Choose an empty folder ({} is not empty)",
-            display_path(picked).display()
-        ))
+        Err(Message::new("sapphire-new-not-empty")
+            .arg("path", display_path(picked).display().to_string()))
     }
 }
 
@@ -223,14 +218,15 @@ pub fn display_path(p: &Path) -> PathBuf {
     }
 }
 
-/// The roles `peer` holds in any workspace, each named once: what its device row shows.
+/// The message ids of the roles `peer` holds in any workspace, each named once: what its
+/// device row shows.
 pub fn role_badges(peer: &PeerInfo, roles: &[WorkspaceRoles]) -> Vec<&'static str> {
     let mut out = Vec::new();
     if roles.iter().any(|r| r.primary == Some(peer.device_id)) {
-        out.push("primary");
+        out.push("sapphire-role-primary");
     }
     if roles.iter().any(|r| r.secondary == Some(peer.device_id)) {
-        out.push("secondary");
+        out.push("sapphire-role-secondary");
     }
     out
 }
@@ -251,49 +247,57 @@ pub fn display_name(entry: &CurrentWorkspace) -> String {
 
 // ── embedding ───────────────────────────────────────────────────────────────
 
-/// The embedding screen's status line, and whether it is a warning.
-pub fn embedding_status(s: &EmbedSettingsResult) -> (String, bool) {
+/// The embedding screen's status line, and whether it is a warning. The bridge's note
+/// reaches the message as it wrote it.
+pub fn embedding_status(s: &EmbedSettingsResult) -> (Message, bool) {
     let note = s.info.note.as_ref();
     match (s.active, &s.info.model) {
         (Some(slot), Some(model)) => {
-            let state = if s.info.loaded {
-                "loaded"
+            let line = Message::new(if note.is_some() {
+                "sapphire-embedding-active-note"
             } else {
-                "not loaded"
-            };
-            let line = format!(
-                "Embedding with the {slot} model {} ({} dimensions), {state}",
-                model.model, model.dimension
-            );
+                "sapphire-embedding-active"
+            })
+            .arg("slot", slot.to_string())
+            .arg("model", model.model.as_str())
+            .arg("dimension", model.dimension)
+            .arg("loaded", if s.info.loaded { "yes" } else { "no" });
             match note {
-                Some(n) => (format!("{line} — {n}"), true),
+                Some(n) => (line.arg("note", n.to_string()), true),
                 None => (line, false),
             }
         }
         (Some(slot), None) => (
-            format!("The {slot} model is configured, but this bridge cannot run it"),
+            Message::new("sapphire-embedding-unrunnable").arg("slot", slot.to_string()),
             true,
         ),
-        (None, _) => (
-            format!(
-                "Embedding is off{}",
-                note.map(|n| format!(": {n}")).unwrap_or_default()
-            ),
-            matches!(note, Some(sapphire_bridge_api::EmbedNote::Invalid(_))),
-        ),
+        (None, _) => {
+            let off = match note {
+                Some(n) => Message::new("sapphire-embedding-off-note").arg("note", n.to_string()),
+                None => Message::new("sapphire-embedding-off"),
+            };
+            (
+                off,
+                matches!(note, Some(sapphire_bridge_api::EmbedNote::Invalid(_))),
+            )
+        }
     }
 }
 
-/// A slot's three-way switch on this device: `None` is Auto.
-pub const SWITCH_CHOICES: [(&str, Option<bool>); 3] =
-    [("Auto", None), ("On", Some(true)), ("Off", Some(false))];
+/// A slot's three-way switch on this device, as message ids: `None` is Auto.
+pub const SWITCH_CHOICES: [(&str, Option<bool>); 3] = [
+    ("sapphire-switch-auto", None),
+    ("sapphire-switch-on", Some(true)),
+    ("sapphire-switch-off", Some(false)),
+];
 
-/// What Auto resolves to for `slot`, and why, for the label beside the switch.
+/// The message id of what Auto resolves to for `slot`, and why, for the label beside the
+/// switch.
 pub fn auto_resolution(s: &EmbedSettingsResult, slot: Slot) -> &'static str {
     match slot {
-        Slot::Local if !s.avx2 => "Auto: off — this CPU has no AVX2",
-        Slot::Local => "Auto: on",
-        Slot::Remote => "Auto: on",
+        Slot::Local if !s.avx2 => "sapphire-auto-off-no-avx2",
+        Slot::Local => "sapphire-auto-on",
+        Slot::Remote => "sapphire-auto-on",
     }
 }
 
@@ -323,17 +327,18 @@ impl LocalForm {
     }
 
     /// The model this form describes, checked as the bridge would.
-    pub fn parse(&self) -> Result<LocalModel, String> {
+    pub fn parse(&self) -> Result<LocalModel, Message> {
         let model = LocalModel {
             model: LOCAL_MODEL.to_owned(),
             dimension: number(&self.dimension, "dimension")?,
-            max_tokens: number(&self.max_tokens, "max tokens")?,
+            max_tokens: number(&self.max_tokens, "max-tokens")?,
         };
         ModelSettings {
             local: Some(model.clone()),
             remote: None,
         }
-        .validate()?;
+        .validate()
+        .map_err(invalid)?;
         Ok(model)
     }
 }
@@ -352,7 +357,7 @@ impl RemoteForm {
     }
 
     /// The model this form describes, checked as the bridge would.
-    pub fn parse(&self) -> Result<RemoteModel, String> {
+    pub fn parse(&self) -> Result<RemoteModel, Message> {
         let model = RemoteModel {
             endpoint: self.endpoint.trim().to_owned(),
             model: self.model.trim().to_owned(),
@@ -362,15 +367,24 @@ impl RemoteForm {
             local: None,
             remote: Some(model.clone()),
         }
-        .validate()?;
+        .validate()
+        .map_err(invalid)?;
         Ok(model)
     }
 }
 
-fn number<T: std::str::FromStr>(text: &str, what: &str) -> Result<T, String> {
-    text.trim()
-        .parse()
-        .map_err(|_| format!("{what}: `{}` is not a number", text.trim()))
+/// The bridge's complaint about a model, in its words.
+fn invalid(error: String) -> Message {
+    Message::new("sapphire-form-invalid").arg("error", error)
+}
+
+/// `text` as the number `what` (`dimension` or `max-tokens`, the selector in the message).
+fn number<T: std::str::FromStr>(text: &str, what: &'static str) -> Result<T, Message> {
+    text.trim().parse().map_err(|_| {
+        Message::new("sapphire-form-not-a-number")
+            .arg("what", what)
+            .arg("value", text.trim())
+    })
 }
 
 #[cfg(test)]
@@ -440,7 +454,10 @@ mod tests {
         });
         assert_eq!(
             badge(&entry("a", None, true, s)).label(),
-            "syncing · 1 peer · embedding 4 pending"
+            Message::new("sapphire-badge-syncing")
+                .arg("peers", 1)
+                .arg("star", "no")
+                .arg("pending", 4)
         );
     }
 
@@ -565,7 +582,16 @@ mod tests {
         assert_eq!(move_target(tmp.path(), root), Ok(tmp.path().join("Notes")));
         std::fs::create_dir(tmp.path().join("Notes")).unwrap();
         let err = move_target(tmp.path(), root).unwrap_err();
-        assert!(err.contains("already has a Notes"), "{err}");
+        assert_eq!(err.id, "sapphire-move-exists");
+        assert_eq!(
+            err.args,
+            vec![
+                ("folder", tmp.path().display().to_string().into()),
+                ("name", "Notes".into()),
+            ]
+        );
+        let err = move_target(tmp.path(), Path::new("/")).unwrap_err();
+        assert_eq!(err.id, "sapphire-move-unmovable");
     }
 
     #[test]
@@ -606,8 +632,13 @@ mod tests {
         assert_eq!(new_target_ok(tmp.path(), "app"), Ok(()));
         std::fs::write(tmp.path().join("file.txt"), "x").unwrap();
         let err = new_target_ok(tmp.path(), "app").unwrap_err();
-        assert!(err.starts_with("Choose an empty folder"), "{err}");
-        assert!(err.contains("is not empty"), "{err}");
+        assert_eq!(err.id, "sapphire-new-not-empty");
+        assert_eq!(
+            err.args,
+            vec![("path", tmp.path().display().to_string().into())]
+        );
+        let err = new_target_ok(&tmp.path().join("missing"), "app").unwrap_err();
+        assert_eq!(err.id, "sapphire-new-unreadable");
         std::fs::create_dir(tmp.path().join(".app")).unwrap();
         assert_eq!(new_target_ok(tmp.path(), "app"), Ok(()));
     }
@@ -674,7 +705,10 @@ mod tests {
                 secondary: Some(me),
             },
         ];
-        assert_eq!(role_badges(&p, &roles), vec!["primary", "secondary"]);
+        assert_eq!(
+            role_badges(&p, &roles),
+            vec!["sapphire-role-primary", "sapphire-role-secondary"]
+        );
     }
 
     #[test]
@@ -686,8 +720,46 @@ mod tests {
         };
         assert_eq!(
             badge(&entry("a", None, true, s)).label(),
-            "syncing · 2 peers · star"
+            Message::new("sapphire-badge-syncing")
+                .arg("peers", 2)
+                .arg("star", "yes")
+                .arg("pending", 0)
         );
+    }
+
+    /// The English the old `format!` produced, from the message the badge now returns.
+    #[test]
+    fn badge_text_in_english() {
+        let ctx = egui::Context::default();
+        corundum_gui::i18n::register(&ctx, crate::RESOURCES);
+        corundum_gui::i18n::install(
+            &ctx,
+            &corundum_gui::i18n::LanguageSettings {
+                language: corundum_gui::i18n::Language::Explicit("en".into()),
+            },
+        );
+        let one = Badge::Syncing {
+            peers: 1,
+            star: false,
+            embedding_pending: 0,
+        };
+        assert_eq!(one.label().text(&ctx), "syncing · 1 peer");
+        let two = Badge::Syncing {
+            peers: 2,
+            star: true,
+            embedding_pending: 3,
+        };
+        assert_eq!(
+            two.label().text(&ctx),
+            "syncing · 2 peers · star · embedding 3 pending"
+        );
+        assert_eq!(
+            Badge::Paused("why".into()).label().text(&ctx),
+            "paused: why"
+        );
+        assert_eq!(Badge::Error("e".into()).label().text(&ctx), "error: e");
+        assert_eq!(Badge::NotSynced.label().text(&ctx), "not synced");
+        assert_eq!(Badge::Unreachable.label().text(&ctx), "unreachable");
     }
 
     // ── embedding ───────────────────────────────────────────────────────────
@@ -707,8 +779,17 @@ mod tests {
         s.info.note = Some(EmbedNote::NotConfigured);
         assert_eq!(
             embedding_status(&s),
-            ("Embedding is off: no model is configured".to_owned(), false)
+            (
+                Message::new("sapphire-embedding-off-note").arg("note", "no model is configured"),
+                false
+            )
         );
+        s.info.note = None;
+        assert_eq!(
+            embedding_status(&s),
+            (Message::new("sapphire-embedding-off"), false)
+        );
+        s.info.note = Some(EmbedNote::NotConfigured);
 
         s.active = Some(Slot::Remote);
         s.info = EmbedInfoResult {
@@ -726,23 +807,36 @@ mod tests {
         };
         let (line, warn) = embedding_status(&s);
         assert!(warn);
-        assert!(line.starts_with("Embedding with the remote model m (8 dimensions), loaded"));
-        assert!(
-            line.ends_with("no API key is set for the remote model"),
-            "{line}"
+        assert_eq!(
+            line,
+            Message::new("sapphire-embedding-active-note")
+                .arg("slot", "remote")
+                .arg("model", "m")
+                .arg("dimension", 8)
+                .arg("loaded", "yes")
+                .arg("note", "no API key is set for the remote model")
+        );
+        s.active = Some(Slot::Local);
+        s.info.model = None;
+        assert_eq!(
+            embedding_status(&s),
+            (
+                Message::new("sapphire-embedding-unrunnable").arg("slot", "local"),
+                true
+            )
         );
     }
 
     #[test]
     fn auto_says_why_the_local_slot_is_off() {
         let mut s = embed_settings();
-        assert_eq!(auto_resolution(&s, Slot::Local), "Auto: on");
+        assert_eq!(auto_resolution(&s, Slot::Local), "sapphire-auto-on");
         s.avx2 = false;
         assert_eq!(
             auto_resolution(&s, Slot::Local),
-            "Auto: off — this CPU has no AVX2"
+            "sapphire-auto-off-no-avx2"
         );
-        assert_eq!(auto_resolution(&s, Slot::Remote), "Auto: on");
+        assert_eq!(auto_resolution(&s, Slot::Remote), "sapphire-auto-on");
     }
 
     #[test]
@@ -753,12 +847,19 @@ mod tests {
             dimension: "4096".into(),
             ..local.clone()
         };
-        assert!(too_big.parse().unwrap_err().contains("dimension"));
+        let err = too_big.parse().unwrap_err();
+        assert_eq!(err.id, "sapphire-form-invalid");
+        assert!(format!("{:?}", err.args).contains("dimension"), "{err:?}");
         let nan = LocalForm {
             max_tokens: "lots".into(),
             ..local
         };
-        assert!(nan.parse().unwrap_err().contains("not a number"));
+        assert_eq!(
+            nan.parse().unwrap_err(),
+            Message::new("sapphire-form-not-a-number")
+                .arg("what", "max-tokens")
+                .arg("value", "lots")
+        );
 
         let remote = RemoteForm {
             endpoint: " https://e ".into(),

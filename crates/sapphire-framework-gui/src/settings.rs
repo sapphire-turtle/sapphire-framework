@@ -204,6 +204,7 @@ impl Settings {
     /// Render into `ui`: the list beside the open page, or — narrower than
     /// [`COMPACT_WIDTH`] — the list, or the open page under a way back to it.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        crate::i18n::register(ui.ctx(), crate::RESOURCES);
         self.poll();
         #[cfg(test)]
         {

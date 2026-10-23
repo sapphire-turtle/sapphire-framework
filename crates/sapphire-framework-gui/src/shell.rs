@@ -115,6 +115,7 @@ impl<D: Copy + PartialEq> Shell<D> {
     /// into what the frame leaves of `ui`, as it would at the root: its own panels, then a
     /// `CentralPanel`.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
+        crate::i18n::register(ui.ctx(), crate::RESOURCES);
         self.settings.poll();
         let health = self.settings.health();
         // Set by the dot, read by Settings in the same frame: the two closures cannot both

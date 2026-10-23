@@ -72,7 +72,7 @@ impl WorkspacePicker {
                                         }
                                         _ => theme.text(Swatch::WARNING),
                                     };
-                                    ui.colored_label(colour, b.label());
+                                    ui.colored_label(colour, b.label().text(ui.ctx()));
                                 });
                                 ui.small(display_path(&current.root).display().to_string());
                             });
@@ -100,7 +100,7 @@ impl WorkspacePicker {
                                 {
                                     match move_target(&dir, &current.root) {
                                         Ok(dir) => out = Some(Command::WorkspaceMove { dir }),
-                                        Err(e) => self.error = Some(e),
+                                        Err(e) => self.error = Some(e.text(ui.ctx())),
                                     }
                                 }
                                 if platform::file_manager_available()
@@ -162,7 +162,7 @@ impl WorkspacePicker {
                 {
                     match new_target_ok(&dir, cx.app_name) {
                         Ok(()) => out = Some(Command::WorkspaceInit { dir, sync: true }),
-                        Err(e) => self.error = Some(e),
+                        Err(e) => self.error = Some(e.text(ui.ctx())),
                     }
                 }
             });

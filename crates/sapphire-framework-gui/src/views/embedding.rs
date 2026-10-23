@@ -49,9 +49,10 @@ impl EmbeddingView {
 
         let (line, warn) = embedding_status(s);
         if warn {
+            let line = line.text(ui.ctx());
             ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::WARNING), line);
         } else {
-            ui.label(line);
+            ui.label(line.text(ui.ctx()));
         }
         let whose = match s.source {
             Some(ModelSource::Device) => "this device",
@@ -177,7 +178,7 @@ impl EmbeddingView {
                             },
                         )));
                     }
-                    Err(e) => self.error = Some(e),
+                    Err(e) => self.error = Some(e.text(ui.ctx())),
                 }
             }
             if configured
@@ -207,7 +208,13 @@ impl EmbeddingView {
             ui.label("On this device");
             for (label, value) in SWITCH_CHOICES {
                 if ui
-                    .add_enabled(!cx.busy, egui::Button::selectable(current == value, label))
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::selectable(
+                            current == value,
+                            crate::i18n::tr(ui.ctx(), label),
+                        ),
+                    )
                     .clicked()
                     && current != value
                 {
@@ -220,7 +227,7 @@ impl EmbeddingView {
                 }
             }
             if current.is_none() {
-                ui.small(auto_resolution(s, slot));
+                ui.small(crate::i18n::tr(ui.ctx(), auto_resolution(s, slot)));
             }
         });
         out

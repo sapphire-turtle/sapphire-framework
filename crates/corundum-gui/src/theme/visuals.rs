@@ -57,10 +57,10 @@ impl Theme {
 mod tests {
     use super::*;
     use crate::theme::color::contrast_ratio;
-    use crate::theme::{Accent, Contrast};
+    use crate::theme::{Contrast, Tint};
 
     fn both() -> [Theme; 2] {
-        [true, false].map(|dark| Theme::new(dark, Contrast::Medium, Accent::default()))
+        [true, false].map(|dark| Theme::new(dark, Contrast::Medium, Tint::Swatch(Swatch::Blue)))
     }
 
     #[test]
@@ -108,9 +108,11 @@ mod tests {
                 Contrast::High => 7.0,
             };
             let accents =
-                std::iter::once(Accent::default()).chain((0..360).step_by(30).map(|h| Accent {
-                    chroma: Accent::MAX_CHROMA,
-                    hue: h as f32,
+                std::iter::once(Tint::Swatch(Swatch::Blue)).chain((0..360).step_by(30).map(|h| {
+                    Tint::Custom {
+                        chroma: Tint::MAX_CHROMA,
+                        hue: h as f32,
+                    }
                 }));
             for accent in accents {
                 for dark in [true, false] {

@@ -3,7 +3,7 @@
 use egui::Color32;
 
 use super::color::{Oklch, to_color32};
-use super::{Accent, Contrast};
+use super::{Contrast, Tint};
 
 /// A lightness level, from the background side to the text side.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,10 +57,11 @@ impl Tone {
 
 /// A hue and a chroma. Red to Purple line up with Base16's base08 to base0E.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Swatch {
     /// Greys.
     Neutral,
-    /// The user's [`Accent`].
+    /// The user's accent ([`ThemeSettings::accent`](super::ThemeSettings::accent)).
     Accent,
     Red,
     Orange,
@@ -93,20 +94,34 @@ impl Swatch {
     /// Something to know.
     pub const INFO: Swatch = Swatch::Blue;
 
-    /// OKLCH (chroma, hue).
-    fn chroma_hue(self, accent: Accent) -> (f32, f32) {
+    /// OKLCH (chroma, hue); the accent's here is the default's, Blue's.
+    pub(crate) fn chroma_hue(self) -> (f32, f32) {
         match self {
             Swatch::Neutral => (0.0, 0.0),
-            Swatch::Accent => (accent.chroma.clamp(0.0, Accent::MAX_CHROMA), accent.hue),
+            Swatch::Accent | Swatch::Blue => (0.15, 255.0),
             Swatch::Red => (0.17, 25.0),
             Swatch::Orange => (0.15, 55.0),
             Swatch::Yellow => (0.14, 95.0),
             Swatch::Green => (0.14, 145.0),
             Swatch::Cyan => (0.12, 200.0),
-            Swatch::Blue => (0.15, 255.0),
             Swatch::Purple => (0.15, 305.0),
         }
     }
+}
+
+/// `tint`'s OKLCH (chroma, hue), with `accent`'s for the accent swatch: hue modulo 360,
+/// chroma within `[0, MAX_CHROMA]`, and a value that is not a number read as the default
+/// accent's.
+fn resolve(tint: Tint, accent: (f32, f32)) -> (f32, f32) {
+    let (chroma, hue) = match tint {
+        Tint::Swatch(Swatch::Accent) => return accent,
+        Tint::Swatch(s) => return s.chroma_hue(),
+        Tint::Custom { chroma, hue } => (chroma, hue),
+    };
+    if !(chroma.is_finite() && hue.is_finite()) {
+        return Swatch::Blue.chroma_hue();
+    }
+    (chroma.clamp(0.0, Tint::MAX_CHROMA), hue.rem_euclid(360.0))
 }
 
 /// Each tone's OKLCH lightness, in [`Tone::ALL`]'s order.
@@ -121,29 +136,60 @@ fn ladder(dark: bool, contrast: Contrast) -> [f32; 9] {
     }
 }
 
+/// The colour of (chroma, hue) at `tone` of `ladder`.
+fn cell(ladder: [f32; 9], tone: Tone, (c, h): (f32, f32)) -> Color32 {
+    to_color32(Oklch {
+        l: ladder[tone as usize],
+        c: c * tone.chroma_scale(),
+        h,
+    })
+}
+
 /// The colours of one theme: every [`Tone`] of every [`Swatch`], worked out when built.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Theme {
     dark: bool,
+    ladder: [f32; 9],
+    /// The accent's (chroma, hue).
+    accent: (f32, f32),
     cells: [[Color32; 9]; 9],
 }
 
 impl Theme {
     /// The dark or the light theme at `contrast`, with `accent`.
-    pub fn new(dark: bool, contrast: Contrast, accent: Accent) -> Theme {
+    /// The accent [`Swatch::Accent`] as `accent` is read as the default, Blue.
+    pub fn new(dark: bool, contrast: Contrast, accent: Tint) -> Theme {
         let ladder = ladder(dark, contrast);
+        let accent = resolve(accent, Swatch::Blue.chroma_hue());
         let cells = std::array::from_fn(|t| {
-            let tone = Tone::ALL[t];
             std::array::from_fn(|s| {
-                let (c, h) = Swatch::ALL[s].chroma_hue(accent);
-                to_color32(Oklch {
-                    l: ladder[t],
-                    c: c * tone.chroma_scale(),
-                    h,
-                })
+                cell(
+                    ladder,
+                    Tone::ALL[t],
+                    resolve(Tint::Swatch(Swatch::ALL[s]), accent),
+                )
             })
         });
-        Theme { dark, cells }
+        Theme {
+            dark,
+            ladder,
+            accent,
+            cells,
+        }
+    }
+
+    /// `tint`'s OKLCH (chroma, hue) as this theme reads it: the accent's for the accent
+    /// swatch, a custom tint brought into range.
+    pub(crate) fn chroma_hue(&self, tint: Tint) -> (f32, f32) {
+        resolve(tint, self.accent)
+    }
+
+    /// `tint` at `tone`: a swatch's cell, or a custom tint worked out the way the cells are.
+    pub fn tint(&self, tone: Tone, tint: Tint) -> Color32 {
+        match tint {
+            Tint::Swatch(s) => self.color(tone, s),
+            Tint::Custom { .. } => cell(self.ladder, tone, resolve(tint, self.accent)),
+        }
     }
 
     /// Whether this is the dark theme.
@@ -171,7 +217,7 @@ impl Theme {
 mod tests {
     use super::*;
     use crate::theme::color::{contrast_ratio, from_color32};
-    use crate::theme::{Accent, Contrast};
+    use crate::theme::{Contrast, Tint};
 
     const CONTRASTS: [Contrast; 3] = [Contrast::Low, Contrast::Medium, Contrast::High];
 
@@ -184,7 +230,7 @@ mod tests {
         }
     }
 
-    fn themes(accent: Accent) -> impl Iterator<Item = (Theme, Contrast)> {
+    fn themes(accent: Tint) -> impl Iterator<Item = (Theme, Contrast)> {
         [false, true]
             .into_iter()
             .flat_map(move |dark| CONTRASTS.map(|c| (Theme::new(dark, c, accent), c)))
@@ -196,7 +242,7 @@ mod tests {
 
     #[test]
     fn every_ladder_meets_its_targets() {
-        for (t, contrast) in themes(Accent::default()) {
+        for (t, contrast) in themes(Tint::Swatch(Swatch::Blue)) {
             let (text, muted) = targets(contrast);
             let name = format!("dark {} {contrast:?}", t.is_dark());
             let r = on_base(&t, t.color(Tone::Text, Swatch::Neutral));
@@ -212,7 +258,7 @@ mod tests {
 
     #[test]
     fn ladders_are_monotonic() {
-        for (t, contrast) in themes(Accent::default()) {
+        for (t, contrast) in themes(Tint::Swatch(Swatch::Blue)) {
             let l: Vec<f32> = Tone::ALL
                 .iter()
                 .map(|&tone| from_color32(t.color(tone, Swatch::Neutral)).l)
@@ -232,8 +278,8 @@ mod tests {
     #[test]
     fn accent_extremes_meet_the_swatch_target() {
         for hue in (0..360).step_by(10) {
-            let accent = Accent {
-                chroma: Accent::MAX_CHROMA,
+            let accent = Tint::Custom {
+                chroma: Tint::MAX_CHROMA,
                 hue: hue as f32,
             };
             for (t, contrast) in themes(accent) {
@@ -250,7 +296,7 @@ mod tests {
     #[test]
     fn grey_accent_is_neutral() {
         for hue in [0.0, 123.0, 300.0] {
-            let t = Theme::new(true, Contrast::Medium, Accent { chroma: 0.0, hue });
+            let t = Theme::new(true, Contrast::Medium, Tint::Custom { chroma: 0.0, hue });
             for tone in Tone::ALL {
                 assert_eq!(
                     t.color(tone, Swatch::Accent),
@@ -263,11 +309,11 @@ mod tests {
     #[test]
     fn hue_wraps() {
         for (hue, same) in [(360.0, 0.0), (-30.0, 330.0), (720.0, 0.0)] {
-            let a = Theme::new(false, Contrast::Medium, Accent { chroma: 0.15, hue });
+            let a = Theme::new(false, Contrast::Medium, Tint::Custom { chroma: 0.15, hue });
             let b = Theme::new(
                 false,
                 Contrast::Medium,
-                Accent {
+                Tint::Custom {
                     chroma: 0.15,
                     hue: same,
                 },
@@ -288,5 +334,76 @@ mod tests {
         assert_eq!(Swatch::WARNING, Swatch::Orange);
         assert_eq!(Swatch::DANGER, Swatch::Red);
         assert_eq!(Swatch::INFO, Swatch::Blue);
+    }
+
+    fn medium(dark: bool) -> Theme {
+        Theme::new(dark, Contrast::Medium, Tint::Swatch(Swatch::Blue))
+    }
+
+    #[test]
+    fn tint_of_a_swatch_is_its_cell() {
+        for dark in [true, false] {
+            let t = medium(dark);
+            for tone in Tone::ALL {
+                for s in Swatch::ALL {
+                    assert_eq!(t.tint(tone, Tint::Swatch(s)), t.color(tone, s));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custom_hue_wraps_and_grey_is_neutral() {
+        let t = medium(true);
+        let custom = |chroma, hue| Tint::Custom { chroma, hue };
+        for tone in Tone::ALL {
+            assert_eq!(
+                t.tint(tone, custom(0.15, -30.0)),
+                t.tint(tone, custom(0.15, 330.0))
+            );
+            assert_eq!(
+                t.tint(tone, custom(0.0, 77.0)),
+                t.color(tone, Swatch::Neutral)
+            );
+        }
+    }
+
+    #[test]
+    fn non_finite_reads_as_default_accent() {
+        let t = medium(false);
+        for tint in [
+            Tint::Custom {
+                chroma: f32::NAN,
+                hue: 10.0,
+            },
+            Tint::Custom {
+                chroma: 0.1,
+                hue: f32::INFINITY,
+            },
+        ] {
+            for tone in Tone::ALL {
+                assert_eq!(t.tint(tone, tint), t.tint(tone, Tint::Swatch(Swatch::Blue)));
+            }
+        }
+        let nan_accent = Theme::new(
+            false,
+            Contrast::Medium,
+            Tint::Custom {
+                chroma: f32::NAN,
+                hue: 0.0,
+            },
+        );
+        assert_eq!(
+            nan_accent.color(Tone::Text, Swatch::Accent),
+            t.color(Tone::Text, Swatch::Blue)
+        );
+    }
+
+    #[test]
+    fn accent_swatch_accent_is_blue() {
+        let t = Theme::new(true, Contrast::Medium, Tint::Swatch(Swatch::Accent));
+        for tone in Tone::ALL {
+            assert_eq!(t.color(tone, Swatch::Accent), t.color(tone, Swatch::Blue));
+        }
     }
 }

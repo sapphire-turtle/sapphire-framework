@@ -24,9 +24,11 @@ pub use unic_langid::LanguageIdentifier;
 pub mod check;
 mod message;
 mod system;
+mod ui;
 
 pub use message::{Arg, Message};
 pub use system::system_languages;
+pub use ui::settings_ui;
 
 /// What the user chose: what the app saves, and hands to [`install`] at start.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]

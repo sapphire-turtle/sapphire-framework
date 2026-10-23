@@ -2,6 +2,7 @@
 //! person has typed, and how a write's outcome is routed. No rendering.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
 
 use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{ConfigEntry, Entry, EntryValue, Kind, Origin, Scope, SettingDef, Value};
@@ -12,6 +13,7 @@ use crate::client::{CommandError, ConfigState};
 const SCOPES: [Scope; 3] = [Scope::Device, Scope::Workgroup, Scope::Workspace];
 
 /// Where a page is listed.
+#[allow(dead_code)] // The settings screen (task 5) lists the pages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
     /// Under the app's heading, before its own pages.
@@ -37,6 +39,7 @@ pub(crate) struct PageSpec {
 
 /// The pages the schema makes, one per distinct section, in schema order. `screens` are the
 /// labels of the existing screens a section may join.
+#[allow(dead_code)] // The settings screen (task 5) lists the pages.
 pub(crate) fn pages(schema: &[SettingDef], app_name: &str, screens: &[&str]) -> Vec<PageSpec> {
     let prefix = format!("{app_name}.");
     let mut sections: Vec<(&str, Vec<&SettingDef>)> = Vec::new();
@@ -72,8 +75,9 @@ pub(crate) fn pages(schema: &[SettingDef], app_name: &str, screens: &[&str]) -> 
         .collect()
 }
 
-/// One drafted change to a key.
-#[derive(Clone, Debug, PartialEq)]
+/// One drafted change to a key. Its `Debug` never shows the text or the value: a draft may
+/// hold a typed secret.
+#[derive(Clone, PartialEq)]
 pub(crate) enum Edit {
     /// Set the key to the typed text.
     Set {
@@ -84,6 +88,29 @@ pub(crate) enum Edit {
     },
     /// Remove the key from this scope.
     Unset,
+}
+
+impl fmt::Debug for Edit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Edit::Set { parsed, .. } => f
+                .debug_struct("Set")
+                .field("text", &format_args!("<redacted>"))
+                .field(
+                    "parsed",
+                    &format_args!(
+                        "{}",
+                        if parsed.is_ok() {
+                            "Ok(<redacted>)"
+                        } else {
+                            "Err(<redacted>)"
+                        }
+                    ),
+                )
+                .finish(),
+            Edit::Unset => f.write_str("Unset"),
+        }
+    }
 }
 
 /// Parse typed text as a value of `kind`. A list takes one item per line, blank lines
@@ -112,14 +139,24 @@ pub(crate) fn parse_text(kind: &Kind, text: &str) -> Result<Value, String> {
     }
 }
 
-/// What a person has typed into one tab of one page.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// What a person has typed into one tab of one page. Its `Debug` shows the keys and the
+/// edits (redacted), never a value.
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct Draft {
     /// The drafted changes by key.
     pub edits: BTreeMap<String, Edit>,
     /// What this scope held for each drafted key when it was first seen with a draft; a
     /// reload that finds something else marks the key "changed elsewhere".
     pub base: BTreeMap<String, Option<EntryValue>>,
+}
+
+impl fmt::Debug for Draft {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Draft")
+            .field("edits", &self.edits)
+            .field("base", &self.base.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 /// What `scope`'s file holds for `key`.
@@ -219,9 +256,15 @@ impl Draft {
 }
 
 /// Every draft, by page (section) and tab (scope). A draft outlives its page being hidden
-/// and its tab being disabled.
-#[derive(Debug, Default)]
+/// and its tab being disabled. Its `Debug` is [`Draft`]'s: no value.
+#[derive(Default)]
 pub(crate) struct Drafts(pub HashMap<(String, Scope), Draft>);
+
+impl fmt::Debug for Drafts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.0.iter()).finish()
+    }
+}
 
 impl Drafts {
     /// The draft of a tab, made empty when there is none.
@@ -235,6 +278,7 @@ impl Drafts {
     }
 
     /// The pages with an unsaved draft.
+    #[allow(dead_code)] // The settings screen (task 5) marks dirty pages.
     pub(crate) fn dirty_sections(&self) -> BTreeSet<String> {
         self.0
             .iter()
@@ -277,6 +321,7 @@ pub(crate) fn route_errors(
 }
 
 /// The keys awaiting a restart, by the process that owns them.
+#[allow(dead_code)] // The settings screen (task 5) feeds the restart banner.
 pub(crate) fn pending_restarts(state: &ConfigState) -> BTreeMap<Process, Vec<String>> {
     let mut out: BTreeMap<Process, Vec<String>> = BTreeMap::new();
     for Entry {
@@ -486,6 +531,60 @@ mod tests {
         );
         drafts.get_mut("S", Scope::Device).revert();
         assert!(drafts.dirty_sections().is_empty());
+    }
+
+    #[test]
+    fn debug_never_shows_a_typed_value() {
+        let mut state = ConfigState::default();
+        state.by_scope.insert(
+            Scope::Device,
+            vec![entry(
+                "plain",
+                EntryValue::Value(Value::String("visible-value".into())),
+                false,
+            )],
+        );
+        let mut drafts = Drafts::default();
+        let d = drafts.get_mut("S", Scope::Device);
+        d.set("token", &Kind::Secret, "hunter2-secret");
+        d.set("plain", &string(), "typed-text");
+        d.set("n", &Kind::Int { min: 0, max: 1 }, "typed-int-99");
+        d.observe(&state, Scope::Device);
+        let shown = format!("{drafts:?} {:?}", drafts.get("S", Scope::Device));
+        for value in [
+            "hunter2-secret",
+            "typed-text",
+            "typed-int-99",
+            "visible-value",
+        ] {
+            assert!(!shown.contains(value), "{value} leaked into {shown}");
+        }
+        assert!(shown.contains("token") && shown.contains("<redacted>"));
+    }
+
+    #[test]
+    fn observe_keeps_the_first_base() {
+        let mut state = ConfigState::default();
+        let one = |v: &str| {
+            vec![entry(
+                "a",
+                EntryValue::Value(Value::String(v.into())),
+                false,
+            )]
+        };
+        state.by_scope.insert(Scope::Device, one("1"));
+        let mut d = Draft::default();
+        d.set("a", &string(), "mine");
+        d.observe(&state, Scope::Device);
+        state.by_scope.insert(Scope::Device, one("2"));
+        d.set("a", &string(), "mine again");
+        d.observe(&state, Scope::Device);
+        assert_eq!(
+            d.base["a"],
+            Some(EntryValue::Value(Value::String("1".into()))),
+            "a later edit does not move the base"
+        );
+        assert_eq!(d.on_reload(&state, Scope::Device).len(), 1);
     }
 
     #[test]

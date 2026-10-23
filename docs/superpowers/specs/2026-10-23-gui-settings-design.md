@@ -94,7 +94,7 @@ The settings are not part of the 2-second poll. The client gains:
   30 s`).
 
 A command's failure keeps its field errors: `Outcome.result`'s error side becomes a
-`CommandError { message: String, fields: Vec<FieldError> }` (today a `String`), where
+`CommandError { message: String, fields: Vec<ConfigFieldError> }` (today a `String`), where
 `fields` is read from `RpcError.data` when it holds `ConfigFieldErrors`.
 
 ### When to load
@@ -114,19 +114,21 @@ drafts. Revert drops the tab's draft.
 
 Apply sends the tab's draft as one `ConfigWrite` with that tab's scope. On success the draft
 is cleared (secret fields emptied) and the page reloads. On failure the draft stays; each
-`FieldError` whose key is on the page shows under its field, the rest and the message show
+`ConfigFieldError` whose key is on the page shows under its field, the rest and the message show
 as an error line above the footer.
 
 ## Field errors on the wire
 
-`sapphire-framework-bridge-api` gains `ConfigFieldErrors { fields: Vec<FieldError> }` and
-`FieldError { key: String, message: String }` (new types, no change to existing ones; the
+`sapphire-framework-bridge-api` gains `ConfigFieldErrors { fields: Vec<ConfigFieldError> }` and
+`ConfigFieldError { key: String, message: String }` (new types, no change to existing ones; the
 settings crate's own `FieldError` is re-exported from or converted to it). When `config.set`
 or `config.unset` (dry run or not) is rejected for reasons tied to keys — a kind or scope
 error, an owner's `validate` — the bridge and the app server answer an `RpcError` whose
 `data` is the serialized `ConfigFieldErrors` and whose message stays what it is today. The
 app server passes the bridge's `data` through unchanged. Messages never include values.
 `<app> config` and `sapphire-bridge config` print each field error as `{key}: {message}`.
+Reading it back from an `RpcError` is `ConfigFieldErrorsExt::from_rpc` in `sapphire-framework-bridge-client`
+(an extension trait on `ConfigFieldErrors`, since the type lives in bridge-api).
 
 ## Restart banner
 

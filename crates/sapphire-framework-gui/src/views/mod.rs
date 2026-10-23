@@ -3,6 +3,7 @@
 
 pub mod model;
 
+pub(crate) mod appearance;
 mod banner;
 pub(crate) mod config;
 mod devices;

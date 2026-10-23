@@ -863,3 +863,72 @@ async fn restart_app_of_a_server_that_cannot_says_so() {
     // The refusal was an answer: the server stays up.
     let _ = load(&client).await;
 }
+
+/// The snapshot's theme value of `key`, once the bridge is up.
+fn gui_value(client: &FrameworkClient, key: &str) -> Option<Value> {
+    let snapshot = client.snapshot();
+    snapshot.bridge.up()?.gui.as_ref()?.get(key).cloned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_theme_reaches_the_snapshot() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Workgroup,
+        set: vec![set("gui.theme.contrast", Value::String("high".into()))],
+        unset: Vec::new(),
+    });
+    assert!(matches!(
+        outcome(&client, id).await,
+        Ok(CommandOutput::Written(_))
+    ));
+    wait(|| async {
+        gui_value(&client, "gui.theme.contrast") == Some(Value::String("high".into()))
+    })
+    .await;
+    assert_eq!(
+        gui_value(&client, "gui.theme.accent_hue"),
+        Some(Value::Int(255))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_override_is_what_the_snapshot_shows() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    for (scope, value) in [(Scope::Workgroup, "high"), (Scope::Device, "low")] {
+        let id = client.send(Command::ConfigWrite {
+            scope,
+            set: vec![set("gui.theme.contrast", Value::String(value.into()))],
+            unset: Vec::new(),
+        });
+        assert!(matches!(
+            outcome(&client, id).await,
+            Ok(CommandOutput::Written(_))
+        ));
+    }
+    wait(|| async {
+        gui_value(&client, "gui.theme.contrast") == Some(Value::String("low".into()))
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_bridge_leaves_the_theme_unread_and_the_server_up() {
+    let f = fixture();
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().fetched }).await;
+    let snapshot = client.snapshot();
+    assert!(snapshot.server.up().is_some());
+    assert!(snapshot.bridge.up().is_none());
+}

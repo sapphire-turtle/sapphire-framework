@@ -9,7 +9,7 @@ use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
 use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{
     ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedSettingsResult, Entry,
-    ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo, Scope, SettingDef, StatusResult,
+    ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo, Scope, SettingDef, StatusResult, Value,
     WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
 use sapphire_ipc::Endpoint;
@@ -138,7 +138,13 @@ pub struct BridgeState {
     pub embedding: Option<EmbedSettingsResult>,
     /// `external_device.list` (empty without a workgroup); `None` from an older bridge.
     pub external_devices: Option<Vec<ExternalDeviceInfo>>,
+    /// The theme's settings (`gui.theme.*`), effective values; `None` from a bridge that
+    /// does not know them.
+    pub gui: Option<GuiValues>,
 }
+
+/// The effective values of the window's settings, by key.
+pub type GuiValues = BTreeMap<String, Value>;
 
 /// What the app server said.
 #[derive(Clone, Debug)]

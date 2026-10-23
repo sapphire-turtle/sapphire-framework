@@ -6,16 +6,18 @@ use std::path::PathBuf;
 
 use crate::Health;
 use crate::client::{
-    Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, Snapshot,
+    Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, GuiValues,
+    Snapshot,
 };
 use corundum_gui::COMPACT_WIDTH;
 use corundum_gui::theme::{self, ThemeSettings};
 
+use crate::views::appearance::{AppearanceCtx, AppearancePage, OLD_BRIDGE, theme_settings};
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
     DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
-    WorkspacePicker, error_line,
+    WorkspacePicker, error_line, unavailable,
 };
 
 /// A page the app adds to [`Settings`], under its own heading.
@@ -48,6 +50,9 @@ const SYNC_SCREENS: [(Screen, &str); 5] = [
 /// The screen a settings section of the same name joins, below its own content.
 const JOINED_SCREEN: (Screen, &str) = (Screen::Embedding, "Embedding");
 
+/// The settings section the Appearance page draws itself, with the theme widget.
+const APPEARANCE: &str = "Appearance";
+
 /// Which page is open.
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Page {
@@ -70,6 +75,8 @@ enum Origin {
     Load,
     /// The restart banner.
     Restart,
+    /// The Appearance page's writes.
+    Appearance,
 }
 
 /// One line of the list.
@@ -124,10 +131,9 @@ pub struct Settings {
     /// The app server's workspace as last seen (`Some(None)`: it has none).
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
-    /// What the Appearance page edits.
-    theme: ThemeSettings,
-    /// Whether the user changed `theme` since the app last took it.
-    theme_changed: bool,
+    /// The theme's settings as last installed from the snapshot.
+    seen_gui: Option<GuiValues>,
+    appearance: AppearancePage,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -163,8 +169,8 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
-            theme: ThemeSettings::default(),
-            theme_changed: false,
+            seen_gui: None,
+            appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
             #[cfg(test)]
@@ -185,18 +191,17 @@ impl Settings {
         self
     }
 
-    /// Start the Appearance page from the theme settings the app saved. This only records
-    /// them: the app installs them ([`theme::install`]), or the shell installs the
-    /// defaults.
-    pub fn with_theme(mut self, theme: ThemeSettings) -> Settings {
-        self.theme = theme;
+    /// Does nothing: the framework keeps the theme in the settings registry, synced
+    /// across the workgroup, and installs it itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
+    pub fn with_theme(self, _theme: ThemeSettings) -> Settings {
         self
     }
 
-    /// The theme settings, once, after the user changed them on the Appearance page (which
-    /// has installed them already): the app saves these.
+    /// Always `None`: the framework saves the theme itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
-        std::mem::take(&mut self.theme_changed).then(|| self.theme.clone())
+        None
     }
 
     /// The client the framework's pages use.
@@ -240,6 +245,28 @@ impl Settings {
         }
     }
 
+    /// Install the theme the settings hold, whenever the bridge reports other values than
+    /// last time: at start, after a write, after a sync from another device. Only a change
+    /// of the values installs, so a slider being dragged on the Appearance page keeps its
+    /// preview. Without the values (no bridge, or an older one) the theme stays. A
+    /// [`Shell`](crate::Shell) calls this every frame; on its own, [`ui`](Self::ui) does.
+    pub fn follow_theme(&mut self, ctx: &egui::Context) {
+        let snapshot = self.snapshot();
+        let Some(gui) = snapshot.bridge.up().and_then(|b| b.gui.as_ref()) else {
+            return;
+        };
+        if self.seen_gui.as_ref() != Some(gui) {
+            theme::install(ctx, &theme_settings(gui));
+            self.seen_gui = Some(gui.clone());
+        }
+    }
+
+    /// Install the stored theme again on the next [`follow_theme`](Self::follow_theme),
+    /// even if its values have not changed: the look has moved off them.
+    pub(crate) fn forget_seen_theme(&mut self) {
+        self.seen_gui = None;
+    }
+
     /// Render the status banner: the services and their install buttons, a newer release,
     /// an install's failure.
     pub fn status_ui(&mut self, ui: &mut egui::Ui) {
@@ -258,6 +285,9 @@ impl Settings {
     /// [`COMPACT_WIDTH`] — the list, or the open page under a way back to it.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.poll();
+        if self.own_banner {
+            self.follow_theme(ui.ctx());
+        }
         #[cfg(test)]
         {
             self.drawn = self.page.clone();
@@ -391,11 +421,7 @@ impl Settings {
                 Some(section) => section.ui(ui),
                 None => self.page = None,
             },
-            Page::Appearance => {
-                if theme::settings_ui(ui, &mut self.theme) {
-                    self.theme_edited();
-                }
-            }
+            Page::Appearance => self.appearance_ui(ui),
             Page::Sync(screen) => self.screen_ui(ui, screen),
             Page::Config(section) => {
                 let snapshot = self.snapshot();
@@ -414,6 +440,38 @@ impl Settings {
             }
             Page::About => self.about_ui(ui),
         }
+    }
+
+    fn appearance_ui(&mut self, ui: &mut egui::Ui) {
+        let snapshot = self.snapshot();
+        if snapshot.server.up().is_none() {
+            unavailable(ui, &format!("The {} server", self.client.app().app_name));
+            return;
+        }
+        self.ensure_loaded(&snapshot);
+        let bridge = snapshot.bridge.up();
+        let why = match bridge {
+            None => Some("sapphire-bridge is not running"),
+            Some(b) if b.gui.is_none() => Some(OLD_BRIDGE),
+            Some(_) => None,
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("settings_page")
+            .show(ui, |ui| {
+                if self.config.is_none() && why.is_none() {
+                    self.unloaded_ui(ui, &snapshot);
+                    return;
+                }
+                let cx = AppearanceCtx {
+                    state: self.config.as_ref(),
+                    unavailable: why,
+                    busy: self.busy(&Origin::Appearance),
+                    workgroup: bridge.is_some_and(|b| b.status.workgroup.is_some()),
+                };
+                if let Some(command) = self.appearance.ui(ui, &cx) {
+                    self.send(command, Origin::Appearance);
+                }
+            });
     }
 
     fn screen_ui(&mut self, ui: &mut egui::Ui, screen: Screen) {
@@ -550,7 +608,10 @@ impl Settings {
             Origin::Load => match result {
                 Ok(CommandOutput::Config(state)) => self.loaded(state.clone()),
                 Ok(_) => {}
-                Err(e) => self.load_error = Some(e.message.clone()),
+                Err(e) => {
+                    self.load_error = Some(e.message.clone());
+                    self.appearance.reloaded();
+                }
             },
             Origin::Restart => {
                 self.restart.on_outcome(result);
@@ -558,18 +619,19 @@ impl Settings {
                     self.load();
                 }
             }
+            Origin::Appearance => {
+                if self.appearance.on_outcome(result) {
+                    self.forget_seen_theme();
+                }
+                self.load();
+            }
         }
-    }
-
-    /// The user changed the theme on the Appearance page.
-    fn theme_edited(&mut self) {
-        self.theme_changed = true;
     }
 
     /// Keep a load's settings, and the pages their schema makes. Drafts are untouched.
     fn loaded(&mut self, state: ConfigState) {
         let app_name = self.client.app().app_name;
-        self.pages = pages(&state.schema, app_name, &[JOINED_SCREEN.1]);
+        self.pages = pages(&state.schema, app_name, &[JOINED_SCREEN.1, APPEARANCE]);
         for spec in &self.pages {
             let page = self
                 .config_pages
@@ -580,6 +642,7 @@ impl Settings {
         }
         self.config = Some(state);
         self.load_error = None;
+        self.appearance.reloaded();
     }
 
     /// Reload once the app server's workspace changes, the settings having been loaded.
@@ -665,6 +728,7 @@ mod tests {
         Snapshot {
             fetched: true,
             bridge: Conn::Up(BridgeState {
+                gui: None,
                 status: StatusResult {
                     version: "1".into(),
                     node_id: "aaaa".into(),
@@ -1051,24 +1115,123 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_change_is_taken_once() {
-        let (mut settings, _rt) = settings();
-        settings.theme.contrast = corundum_gui::theme::Contrast::High;
-        settings.theme_edited();
-        let taken = settings.take_theme_changed().expect("a change");
-        assert_eq!(taken.contrast, corundum_gui::theme::Contrast::High);
+    #[allow(deprecated)]
+    fn take_theme_changed_answers_none_after_a_change() {
+        let (settings, _rt) = settings();
+        let mut settings = settings.with_theme(ThemeSettings {
+            contrast: corundum_gui::theme::Contrast::Low,
+            ..Default::default()
+        });
+        settings.on_outcome(Origin::Appearance, &Ok(CommandOutput::Done));
+        // The framework stores the theme now: nothing for the app to take.
         assert_eq!(settings.take_theme_changed(), None);
     }
 
+    // ── following the theme ─────────────────────────────────────────────────
+
+    /// `rich()` with the bridge reporting `gui`.
+    fn with_gui(gui: Option<crate::client::GuiValues>) -> Snapshot {
+        let mut snapshot = rich();
+        if let Conn::Up(bridge) = &mut snapshot.bridge {
+            bridge.gui = gui;
+        }
+        snapshot
+    }
+
+    fn contrast(value: &str) -> Option<crate::client::GuiValues> {
+        Some(crate::client::GuiValues::from([(
+            "gui.theme.contrast".to_owned(),
+            sapphire_bridge_api::Value::String(value.into()),
+        )]))
+    }
+
+    fn is_drawn_with(ctx: &egui::Context, contrast: corundum_gui::theme::Contrast) -> bool {
+        let dark = ctx.theme() == egui::Theme::Dark;
+        *theme::current(ctx)
+            == corundum_gui::theme::Theme::new(dark, contrast, ThemeSettings::default().accent())
+    }
+
     #[test]
-    fn with_theme_is_what_the_page_edits() {
-        let (settings, _rt) = settings();
-        let saved = ThemeSettings {
+    fn a_new_theme_in_the_snapshot_is_installed() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        settings.test_snapshot = Some(with_gui(contrast("low")));
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_installs_nothing() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        // A drag's preview, say.
+        let preview = ThemeSettings {
             contrast: corundum_gui::theme::Contrast::Low,
             ..Default::default()
         };
-        let mut settings = settings.with_theme(saved.clone());
-        assert_eq!(settings.theme, saved);
-        assert_eq!(settings.take_theme_changed(), None);
+        theme::install(&ctx, &preview);
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn no_gui_leaves_the_theme() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(None));
+        settings.follow_theme(&ctx);
+        assert!(!theme::is_installed(&ctx));
+    }
+
+    #[test]
+    fn a_forgotten_theme_is_installed_again() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        theme::install(&ctx, &ThemeSettings::default());
+        settings.forget_seen_theme();
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+    }
+
+    #[test]
+    fn the_appearance_section_is_not_listed_under_configuration() {
+        let (mut settings, _rt) = settings();
+        let mut state = config_state();
+        state
+            .schema
+            .push(def("gui.theme.contrast", "Appearance", Process::Bridge));
+        settings.loaded(state);
+        let items = settings.list();
+        assert!(
+            !items
+                .iter()
+                .any(|i| matches!(i, ListItem::Entry(Page::Config(s), _) if s == "Appearance")),
+            "{items:?}"
+        );
+        assert!(
+            items
+                .iter()
+                .any(|i| matches!(i, ListItem::Entry(Page::Appearance, _))),
+            "{items:?}"
+        );
+    }
+
+    #[test]
+    fn a_failed_appearance_write_forgets_the_seen_theme() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        theme::install(&ctx, &ThemeSettings::default());
+        settings.on_outcome(Origin::Appearance, &Err("rejected".into()));
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
     }
 }

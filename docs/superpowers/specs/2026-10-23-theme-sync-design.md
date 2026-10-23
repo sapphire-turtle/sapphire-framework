@@ -85,11 +85,13 @@ The client stays egui-free: it holds the raw values. The conversion lives beside
 
 ### Installing
 
-`Settings::poll` (which the shell calls every frame) compares `theme_settings` of the latest
-snapshot with the settings it last installed, and calls `theme::install` when they differ —
-skipping it while the user drags a slider on the Appearance page, so the drag's preview is
-not undone mid-drag. With `gui == None` nothing is installed: the theme stays as it is (the
-defaults the shell installs at start, until the first answer).
+`Settings::follow_theme(ctx)` (which the shell calls every frame, after `poll`) installs
+`theme_settings` of the snapshot's `gui` when it differs from the `gui` it last saw — on a
+change of the values, not of the installed look — so a drag's live preview on the
+Appearance page is never undone by a poll that brings nothing new. A failed write on the
+page forgets the last seen values, so the next poll restores the stored theme. With
+`gui == None` nothing is installed: the theme stays as it is (the defaults the shell
+installs at start, until the first answer).
 
 At start the defaults show until the first poll answers, usually well under a second with
 the services running. There is no local cache of the theme.

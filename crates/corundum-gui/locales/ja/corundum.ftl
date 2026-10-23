@@ -17,3 +17,18 @@ corundum-theme-medium = 中
 corundum-theme-high = 高
 # The accent row's label.
 corundum-theme-accent = アクセント
+
+# The accent picker (`theme::TintPicker`): the chips' hover names, and the preview's words.
+corundum-theme-default = デフォルト
+corundum-theme-random = ランダム
+corundum-theme-swatch-neutral = ニュートラル
+corundum-theme-swatch-red = 赤
+corundum-theme-swatch-orange = オレンジ
+corundum-theme-swatch-yellow = 黄
+corundum-theme-swatch-green = 緑
+corundum-theme-swatch-cyan = シアン
+corundum-theme-swatch-blue = 青
+corundum-theme-swatch-purple = 紫
+corundum-theme-link = リンク
+corundum-theme-label = ラベル
+corundum-theme-selected = 選択中

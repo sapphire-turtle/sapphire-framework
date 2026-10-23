@@ -4,6 +4,7 @@
 pub mod model;
 
 mod banner;
+mod config;
 mod devices;
 mod embedding;
 mod external;

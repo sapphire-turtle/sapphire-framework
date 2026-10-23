@@ -132,7 +132,7 @@ impl fmt::Display for Value {
 }
 
 /// Which process owns a setting: the one that stores, validates and applies it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Process {
     /// The bridge.

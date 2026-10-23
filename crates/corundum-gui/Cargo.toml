@@ -10,9 +10,17 @@ repository.workspace = true
 keywords = ["gui", "egui", "icons", "fonts"]
 categories = ["gui"]
 
-# egui only: the components render inside a host app's egui context, on the desktops and
-# on phones alike. All consuming apps must use the same egui major version.
+# The components render inside a host app's egui context, on the desktops and on phones
+# alike. All consuming apps must use the same egui major version.
+#
+# `eframe` (default) adds the window: `window::run` opens a desktop window on wgpu, set up
+# by `gpu`. Turn default features off for an app that renders egui without eframe.
+[features]
+default = ["eframe"]
+eframe = ["dep:eframe"]
+
 [dependencies]
+eframe = { version = "0.36", optional = true }
 egui = "0.36"
 # The SVG loader for the bundled Lucide icons (assets/icons), and for the apps' own.
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }

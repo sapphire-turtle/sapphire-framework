@@ -39,7 +39,13 @@ pub(crate) fn error_line(ui: &mut egui::Ui, error: &mut Option<String>) {
         if ui.small_button("×").clicked() {
             *error = None;
         }
-        ui.add(egui::Label::new(egui::RichText::new(msg).color(egui::Color32::LIGHT_RED)).wrap());
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(msg)
+                    .color(crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER)),
+            )
+            .wrap(),
+        );
     });
 }
 

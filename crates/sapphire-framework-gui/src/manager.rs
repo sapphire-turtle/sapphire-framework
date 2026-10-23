@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use egui::{Align, Color32, Layout};
+use egui::{Align, Layout};
+
+use crate::theme::Swatch;
 use sapphire_backend::{WorkspaceEntry, WorkspaceRegistry};
 
 /// App-specific hooks the [`WorkspaceManager`] needs.
@@ -109,7 +111,7 @@ impl WorkspaceManager {
 
         if let Some(msg) = self.error.clone() {
             ui.horizontal(|ui| {
-                ui.colored_label(Color32::LIGHT_RED, msg);
+                ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::DANGER), msg);
                 if ui.small_button("×").clicked() {
                     self.error = None;
                 }
@@ -168,7 +170,10 @@ impl WorkspaceManager {
                     ui.horizontal(|ui| {
                         ui.strong(&name);
                         if !reachable {
-                            ui.colored_label(Color32::YELLOW, "unreachable");
+                            ui.colored_label(
+                                crate::theme::current(ui.ctx()).text(Swatch::WARNING),
+                                "unreachable",
+                            );
                         }
                     });
                     ui.small(subtitle);

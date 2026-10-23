@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use egui::{Align, Color32, Layout};
+use egui::{Align, Layout};
+
+use crate::theme::{Swatch, Tone};
 use grain_id::GrainId;
 
 use crate::client::{Command, CommandOutput};
@@ -181,10 +183,11 @@ impl DeviceList {
             for peer in &bridge.peers {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        let theme = crate::theme::current(ui.ctx());
                         let (dot, colour) = if peer.connected {
-                            ("●", Color32::GREEN)
+                            ("●", theme.text(Swatch::SUCCESS))
                         } else {
-                            ("○", Color32::GRAY)
+                            ("○", theme.color(Tone::Muted, Swatch::Neutral))
                         };
                         ui.colored_label(colour, dot);
                         ui.strong(&peer.name);

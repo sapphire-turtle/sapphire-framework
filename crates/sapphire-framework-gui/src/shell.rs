@@ -159,7 +159,10 @@ fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
     let visuals = ui.visuals();
     let (color, text) = match health {
         Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
-        Health::Healthy => (egui::Color32::from_rgb(80, 180, 100), "Services running"),
+        Health::Healthy => (
+            crate::theme::current(ui.ctx()).text(crate::theme::Swatch::SUCCESS),
+            "Services running",
+        ),
         Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
         Health::Problem => (visuals.error_fg_color, "A service needs attention"),
     };

@@ -70,12 +70,18 @@ mod tests {
             assert_eq!(v.dark_mode, t.is_dark());
             assert_eq!(v.panel_fill, t.color(Tone::Base, Swatch::Neutral));
             assert_eq!(v.extreme_bg_color, t.color(Tone::Sunken, Swatch::Neutral));
-            assert_eq!(v.widgets.inactive.weak_bg_fill, t.color(Tone::Raised, Swatch::Neutral));
+            assert_eq!(
+                v.widgets.inactive.weak_bg_fill,
+                t.color(Tone::Raised, Swatch::Neutral)
+            );
             assert_eq!(v.selection.bg_fill, t.color(Tone::Pressed, Swatch::Accent));
             assert_eq!(v.hyperlink_color, t.text(Swatch::Accent));
             assert_eq!(v.error_fg_color, t.text(Swatch::DANGER));
             assert_eq!(v.warn_fg_color, t.text(Swatch::WARNING));
-            assert_eq!(v.weak_text_color, Some(t.color(Tone::Muted, Swatch::Neutral)));
+            assert_eq!(
+                v.weak_text_color,
+                Some(t.color(Tone::Muted, Swatch::Neutral))
+            );
         }
     }
 
@@ -83,7 +89,11 @@ mod tests {
     fn non_colour_fields_are_eguis() {
         for t in both() {
             let v = t.visuals();
-            let egui = if t.is_dark() { Visuals::dark() } else { Visuals::light() };
+            let egui = if t.is_dark() {
+                Visuals::dark()
+            } else {
+                Visuals::light()
+            };
             assert_eq!(v.window_corner_radius, egui.window_corner_radius);
             assert_eq!(v.window_shadow.offset, egui.window_shadow.offset);
         }
@@ -97,11 +107,11 @@ mod tests {
                 Contrast::Medium => 4.5,
                 Contrast::High => 7.0,
             };
-            let accents = std::iter::once(Accent::default()).chain(
-                (0..360)
-                    .step_by(30)
-                    .map(|h| Accent { chroma: Accent::MAX_CHROMA, hue: h as f32 }),
-            );
+            let accents =
+                std::iter::once(Accent::default()).chain((0..360).step_by(30).map(|h| Accent {
+                    chroma: Accent::MAX_CHROMA,
+                    hue: h as f32,
+                }));
             for accent in accents {
                 for dark in [true, false] {
                     let v = Theme::new(dark, contrast, accent).visuals();

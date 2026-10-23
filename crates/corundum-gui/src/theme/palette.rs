@@ -219,7 +219,12 @@ mod tests {
                 .collect();
             for w in l.windows(2) {
                 let rising = w[1] > w[0];
-                assert_eq!(rising, t.is_dark(), "dark {} {contrast:?}: {l:?}", t.is_dark());
+                assert_eq!(
+                    rising,
+                    t.is_dark(),
+                    "dark {} {contrast:?}: {l:?}",
+                    t.is_dark()
+                );
             }
         }
     }
@@ -227,7 +232,10 @@ mod tests {
     #[test]
     fn accent_extremes_meet_the_swatch_target() {
         for hue in (0..360).step_by(10) {
-            let accent = Accent { chroma: Accent::MAX_CHROMA, hue: hue as f32 };
+            let accent = Accent {
+                chroma: Accent::MAX_CHROMA,
+                hue: hue as f32,
+            };
             for (t, contrast) in themes(accent) {
                 let r = on_base(&t, t.text(Swatch::Accent));
                 assert!(
@@ -244,7 +252,10 @@ mod tests {
         for hue in [0.0, 123.0, 300.0] {
             let t = Theme::new(true, Contrast::Medium, Accent { chroma: 0.0, hue });
             for tone in Tone::ALL {
-                assert_eq!(t.color(tone, Swatch::Accent), t.color(tone, Swatch::Neutral));
+                assert_eq!(
+                    t.color(tone, Swatch::Accent),
+                    t.color(tone, Swatch::Neutral)
+                );
             }
         }
     }
@@ -253,9 +264,20 @@ mod tests {
     fn hue_wraps() {
         for (hue, same) in [(360.0, 0.0), (-30.0, 330.0), (720.0, 0.0)] {
             let a = Theme::new(false, Contrast::Medium, Accent { chroma: 0.15, hue });
-            let b = Theme::new(false, Contrast::Medium, Accent { chroma: 0.15, hue: same });
+            let b = Theme::new(
+                false,
+                Contrast::Medium,
+                Accent {
+                    chroma: 0.15,
+                    hue: same,
+                },
+            );
             for tone in Tone::ALL {
-                assert_eq!(a.color(tone, Swatch::Accent), b.color(tone, Swatch::Accent), "{hue}");
+                assert_eq!(
+                    a.color(tone, Swatch::Accent),
+                    b.color(tone, Swatch::Accent),
+                    "{hue}"
+                );
             }
         }
     }

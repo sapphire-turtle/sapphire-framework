@@ -1,4 +1,5 @@
-//! OKLCH, converted to sRGB by hand (Björn Ottosson's OKLab), and the WCAG contrast ratio.
+//! OKLCH, converted to sRGB by hand (Björn Ottosson's OKLab). The way back and the WCAG
+//! contrast ratio are for the tests, which hold the themes to their contrast targets.
 
 use egui::Color32;
 
@@ -32,6 +33,7 @@ pub(crate) fn to_color32(c: Oklch) -> Color32 {
 }
 
 /// `c` in OKLCH; its alpha is ignored.
+#[cfg(test)]
 pub(crate) fn from_color32(c: Color32) -> Oklch {
     let [r, g, b] = [c.r(), c.g(), c.b()].map(|x| decode(x as f32 / 255.0));
     let l = 0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b;
@@ -49,11 +51,13 @@ pub(crate) fn from_color32(c: Color32) -> Oklch {
 }
 
 /// The WCAG 2 contrast ratio of `a` and `b`, from 1 (the same) to 21 (black on white).
+#[cfg(test)]
 pub(crate) fn contrast_ratio(a: Color32, b: Color32) -> f32 {
     let (a, b) = (luminance(a), luminance(b));
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+#[cfg(test)]
 fn luminance(c: Color32) -> f32 {
     let [r, g, b] = [c.r(), c.g(), c.b()].map(|x| decode(x as f32 / 255.0));
     0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -88,6 +92,7 @@ fn encode(x: f32) -> f32 {
 }
 
 /// Encoded sRGB to linear.
+#[cfg(test)]
 fn decode(x: f32) -> f32 {
     if x <= 0.040_45 {
         x / 12.92
@@ -129,7 +134,11 @@ mod tests {
 
     #[test]
     fn out_of_gamut_keeps_lightness_and_hue() {
-        let out = from_color32(to_color32(Oklch { l: 0.3, c: 0.4, h: 95.0 }));
+        let out = from_color32(to_color32(Oklch {
+            l: 0.3,
+            c: 0.4,
+            h: 95.0,
+        }));
         assert!((out.l - 0.3).abs() < 0.01, "{out:?}");
         assert!((out.h - 95.0).abs() < 2.0, "{out:?}");
     }

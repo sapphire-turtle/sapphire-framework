@@ -7,7 +7,9 @@ use sapphire_backend::protocol as proto;
 use sapphire_bridge_client::BridgeClient;
 use sapphire_ipc::{Client, ClientInfo};
 
-use super::types::{BridgeState, ClientConfig, Conn, ServerState};
+use sapphire_bridge_api::settings::EntryValue;
+
+use super::types::{BridgeState, ClientConfig, Conn, GuiValues, ServerState};
 
 /// What a failure means for the display.
 pub fn classify<T>(err: &sapphire_ipc::Error) -> Conn<T> {
@@ -39,6 +41,17 @@ pub(crate) fn drops_app(err: &sapphire_ipc::Error) -> bool {
         err,
         sapphire_ipc::Error::Rpc(_) | sapphire_ipc::Error::NotRunning(_)
     )
+}
+
+/// The effective value of each of the theme's settings.
+async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<GuiValues> {
+    let mut values = GuiValues::new();
+    for key in sapphire_bridge_api::settings::gui::THEME_KEYS {
+        if let EntryValue::Value(value) = c.config_get(key).await?.value {
+            values.insert(key.to_owned(), value);
+        }
+    }
+    Ok(values)
 }
 
 /// The one cached connection, to the app server, which relays the bridge's methods too. A
@@ -116,6 +129,8 @@ impl Connections {
             } else {
                 Some(Vec::new())
             };
+            // A bridge older than the theme's settings does not know them: the theme stays.
+            let gui = gui_values(&c).await.ok();
             Ok::<_, sapphire_ipc::Error>(Some(BridgeState {
                 status,
                 peers,
@@ -123,6 +138,7 @@ impl Connections {
                 ledger,
                 embedding,
                 external_devices,
+                gui,
             }))
         })
         .await;

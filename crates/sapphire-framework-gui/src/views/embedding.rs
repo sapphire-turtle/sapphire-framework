@@ -116,6 +116,7 @@ mod tests {
         let snapshot = Snapshot {
             fetched: true,
             bridge: Conn::Up(BridgeState {
+                gui: None,
                 status: StatusResult {
                     version: "1".into(),
                     node_id: "aaaa".into(),

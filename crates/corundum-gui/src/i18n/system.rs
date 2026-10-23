@@ -21,21 +21,37 @@ pub fn system_languages() -> Vec<String> {
 /// cannot be reached.
 #[cfg(target_os = "android")]
 fn android_languages() -> Option<Vec<String>> {
-    read_locale_list()
-        .ok()
-        .map(|tags| tags.split(',').map(str::to_owned).collect())
+    let tags = read_locale_list().ok()?;
+    Some(
+        tags.split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "android")]
 fn read_locale_list() -> jni::errors::Result<String> {
     use jni::JavaVM;
-    use jni::objects::JString;
 
     let ctx = ndk_context::android_context();
     // SAFETY: `ndk_context` holds the process's JavaVM, set by android-activity before
     // `android_main` runs and valid for the process's lifetime.
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }?;
     let mut env = vm.attach_current_thread()?;
+    let tags = read_tags(&mut env);
+    // A failed call leaves its Java exception pending, and the next JNI call on this
+    // thread would fail with it: clear it, the caller falls back.
+    if tags.is_err() && env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    tags
+}
+
+#[cfg(target_os = "android")]
+fn read_tags(env: &mut jni::JNIEnv) -> jni::errors::Result<String> {
+    use jni::objects::JString;
     // The thread may stay attached, so locals made here would never be freed: a frame
     // frees them on the way out.
     env.with_local_frame(16, |env| {

@@ -116,6 +116,7 @@ impl<D: Copy + PartialEq> Shell<D> {
     /// `CentralPanel`.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
         self.settings.poll();
+        self.settings.follow_theme(ui.ctx());
         let health = self.settings.health();
         // Set by the dot, read by Settings in the same frame: the two closures cannot both
         // hold `settings`.

@@ -6,11 +6,13 @@ use std::path::PathBuf;
 
 use crate::Health;
 use crate::client::{
-    Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, Snapshot,
+    Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, GuiValues,
+    Snapshot,
 };
 use corundum_gui::COMPACT_WIDTH;
 use corundum_gui::theme::{self, ThemeSettings};
 
+use crate::views::appearance::theme_settings;
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
@@ -128,6 +130,8 @@ pub struct Settings {
     theme: ThemeSettings,
     /// Whether the user changed `theme` since the app last took it.
     theme_changed: bool,
+    /// The theme's settings as last installed from the snapshot.
+    seen_gui: Option<GuiValues>,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -165,6 +169,7 @@ impl Settings {
             pending: HashMap::new(),
             theme: ThemeSettings::default(),
             theme_changed: false,
+            seen_gui: None,
             #[cfg(test)]
             drawn: None,
             #[cfg(test)]
@@ -240,6 +245,28 @@ impl Settings {
         }
     }
 
+    /// Install the theme the settings hold, whenever the bridge reports other values than
+    /// last time: at start, after a write, after a sync from another device. Only a change
+    /// of the values installs, so a slider being dragged on the Appearance page keeps its
+    /// preview. Without the values (no bridge, or an older one) the theme stays. A
+    /// [`Shell`](crate::Shell) calls this every frame; on its own, [`ui`](Self::ui) does.
+    pub fn follow_theme(&mut self, ctx: &egui::Context) {
+        let snapshot = self.snapshot();
+        let Some(gui) = snapshot.bridge.up().and_then(|b| b.gui.as_ref()) else {
+            return;
+        };
+        if self.seen_gui.as_ref() != Some(gui) {
+            theme::install(ctx, &theme_settings(gui));
+            self.seen_gui = Some(gui.clone());
+        }
+    }
+
+    /// Install the stored theme again on the next [`follow_theme`](Self::follow_theme),
+    /// even if its values have not changed: the look has moved off them.
+    pub(crate) fn forget_seen_theme(&mut self) {
+        self.seen_gui = None;
+    }
+
     /// Render the status banner: the services and their install buttons, a newer release,
     /// an install's failure.
     pub fn status_ui(&mut self, ui: &mut egui::Ui) {
@@ -258,6 +285,9 @@ impl Settings {
     /// [`COMPACT_WIDTH`] — the list, or the open page under a way back to it.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         self.poll();
+        if self.own_banner {
+            self.follow_theme(ui.ctx());
+        }
         #[cfg(test)]
         {
             self.drawn = self.page.clone();
@@ -1071,5 +1101,77 @@ mod tests {
         let mut settings = settings.with_theme(saved.clone());
         assert_eq!(settings.theme, saved);
         assert_eq!(settings.take_theme_changed(), None);
+    }
+
+    // ── following the theme ─────────────────────────────────────────────────
+
+    /// `rich()` with the bridge reporting `gui`.
+    fn with_gui(gui: Option<crate::client::GuiValues>) -> Snapshot {
+        let mut snapshot = rich();
+        if let Conn::Up(bridge) = &mut snapshot.bridge {
+            bridge.gui = gui;
+        }
+        snapshot
+    }
+
+    fn contrast(value: &str) -> Option<crate::client::GuiValues> {
+        Some(crate::client::GuiValues::from([(
+            "gui.theme.contrast".to_owned(),
+            sapphire_bridge_api::Value::String(value.into()),
+        )]))
+    }
+
+    fn is_drawn_with(ctx: &egui::Context, contrast: corundum_gui::theme::Contrast) -> bool {
+        let dark = ctx.theme() == egui::Theme::Dark;
+        *theme::current(ctx) == corundum_gui::theme::Theme::new(dark, contrast, Default::default())
+    }
+
+    #[test]
+    fn a_new_theme_in_the_snapshot_is_installed() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        settings.test_snapshot = Some(with_gui(contrast("low")));
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_installs_nothing() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        // A drag's preview, say.
+        let preview = ThemeSettings {
+            contrast: corundum_gui::theme::Contrast::Low,
+            ..Default::default()
+        };
+        theme::install(&ctx, &preview);
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn no_gui_leaves_the_theme() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(None));
+        settings.follow_theme(&ctx);
+        assert!(!theme::is_installed(&ctx));
+    }
+
+    #[test]
+    fn a_forgotten_theme_is_installed_again() {
+        let (mut settings, _rt) = settings();
+        let ctx = egui::Context::default();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        theme::install(&ctx, &ThemeSettings::default());
+        settings.forget_seen_theme();
+        settings.follow_theme(&ctx);
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
     }
 }

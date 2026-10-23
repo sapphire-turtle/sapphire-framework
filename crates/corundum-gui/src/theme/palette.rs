@@ -57,6 +57,7 @@ impl Tone {
 
 /// A hue and a chroma. Red to Purple line up with Base16's base08 to base0E.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Swatch {
     /// Greys.
     Neutral,

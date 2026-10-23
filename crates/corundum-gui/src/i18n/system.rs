@@ -3,7 +3,8 @@
 /// The system's preferred languages, as BCP 47 tags, most preferred first.
 ///
 /// Android has a list of them, read from `LocaleList`; elsewhere the platform's locale
-/// (or locales) as `sys-locale` reports it. Tags use `-`, not `_`, and none is empty.
+/// (or locales) as `sys-locale` reports it. Every tag parses as a language identifier and
+/// uses `-`, not `_`; anything else, such as the `C` or `POSIX` locale, is dropped.
 pub fn system_languages() -> Vec<String> {
     #[cfg(target_os = "android")]
     let raw = android_languages()
@@ -11,9 +12,16 @@ pub fn system_languages() -> Vec<String> {
         .unwrap_or_else(|| sys_locale::get_locales().collect());
     #[cfg(not(target_os = "android"))]
     let raw: Vec<String> = sys_locale::get_locales().collect();
+    normalise(raw)
+}
+
+/// Each tag trimmed, with `_` made `-`; empty and unparseable ones (`C`, `POSIX`) dropped.
+fn normalise(raw: impl IntoIterator<Item = String>) -> Vec<String> {
     raw.into_iter()
         .map(|t| t.trim().replace('_', "-"))
-        .filter(|t| !t.is_empty())
+        // "POSIX" is even a well-formed language subtag, so it is named.
+        .filter(|t| !t.eq_ignore_ascii_case("posix"))
+        .filter(|t| t.parse::<unic_langid::LanguageIdentifier>().is_ok())
         .collect()
 }
 
@@ -74,6 +82,12 @@ fn read_tags(env: &mut jni::JNIEnv) -> jni::errors::Result<String> {
 mod tests {
     use super::*;
     use unic_langid::LanguageIdentifier;
+
+    #[test]
+    fn normalise_cleans_and_drops() {
+        let raw = ["en_US", " ja-JP ", "", "C", "POSIX"].map(String::from);
+        assert_eq!(normalise(raw), ["en-US", "ja-JP"]);
+    }
 
     #[test]
     fn system_languages_parse_or_are_empty() {

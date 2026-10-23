@@ -225,16 +225,22 @@ fn gui_defs() -> Vec<SettingDef> {
             "How far apart text and background are",
         ),
         def(
+            gui::THEME_ACCENT,
+            choices(&gui::ACCENT_CHOICES),
+            Value::String("default".into()),
+            "The accent: the default, one of the theme's colours, or custom (its hue and chroma)",
+        ),
+        def(
             gui::THEME_ACCENT_HUE,
             Kind::Int { min: 0, max: 360 },
             Value::Int(255),
-            "The accent's hue, in degrees",
+            "A custom accent's hue, in degrees",
         ),
         def(
             gui::THEME_ACCENT_CHROMA,
             Kind::Int { min: 0, max: 250 },
             Value::Int(150),
-            "The accent's chroma, in thousandths",
+            "A custom accent's chroma, in thousandths",
         ),
     ]
 }
@@ -452,6 +458,7 @@ mod tests {
             ("embed.local.max_tokens", Value::Int(256)),
             ("gui.theme.preference", s("dark")),
             ("gui.theme.contrast", s("high")),
+            ("gui.theme.accent", s("custom")),
             ("gui.theme.accent_hue", Value::Int(30)),
             ("gui.theme.accent_chroma", Value::Int(200)),
         ];
@@ -594,6 +601,7 @@ mod tests {
         for (key, value) in [
             (gui::THEME_PREFERENCE, s("system")),
             (gui::THEME_CONTRAST, s("medium")),
+            (gui::THEME_ACCENT, s("default")),
             (gui::THEME_ACCENT_HUE, Value::Int(255)),
             (gui::THEME_ACCENT_CHROMA, Value::Int(150)),
         ] {
@@ -629,6 +637,8 @@ mod tests {
             (gui::THEME_ACCENT_HUE, Value::Int(361)),
             (gui::THEME_ACCENT_CHROMA, Value::Int(251)),
             (gui::THEME_CONTRAST, s("loud")),
+            (gui::THEME_ACCENT, s("accent")),
+            (gui::THEME_ACCENT, s("mauve")),
         ] {
             assert!(apply(&reg, None, vec![set(key, value)]).is_err(), "{key}");
         }

@@ -362,14 +362,23 @@ pub mod gui {
     pub const THEME_PREFERENCE: &str = "gui.theme.preference";
     /// How far apart text and background are.
     pub const THEME_CONTRAST: &str = "gui.theme.contrast";
-    /// The accent's hue, in whole degrees.
+    /// The accent: one of [`ACCENT_CHOICES`].
+    pub const THEME_ACCENT: &str = "gui.theme.accent";
+    /// A custom accent's hue, in whole degrees.
     pub const THEME_ACCENT_HUE: &str = "gui.theme.accent_hue";
-    /// The accent's chroma, in thousandths.
+    /// A custom accent's chroma, in thousandths.
     pub const THEME_ACCENT_CHROMA: &str = "gui.theme.accent_chroma";
+    /// The accent's values: `default`, one of the theme's colours by name, or `custom`, whose
+    /// hue and chroma are [`THEME_ACCENT_HUE`] and [`THEME_ACCENT_CHROMA`].
+    pub const ACCENT_CHOICES: [&str; 10] = [
+        "default", "neutral", "red", "orange", "yellow", "green", "cyan", "blue", "purple",
+        "custom",
+    ];
     /// Every theme key.
-    pub const THEME_KEYS: [&str; 4] = [
+    pub const THEME_KEYS: [&str; 5] = [
         THEME_PREFERENCE,
         THEME_CONTRAST,
+        THEME_ACCENT,
         THEME_ACCENT_HUE,
         THEME_ACCENT_CHROMA,
     ];

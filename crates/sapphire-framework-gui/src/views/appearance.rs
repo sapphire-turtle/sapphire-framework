@@ -1,7 +1,7 @@
 //! The Appearance page: the theme's settings (`gui.theme.*`, stored by the bridge) edited
 //! with corundum's widget, per scope, and converted to and from [`ThemeSettings`].
 
-use corundum_gui::theme::{self, Accent, Contrast, ThemeSettings};
+use corundum_gui::theme::{self, Contrast, Swatch, ThemeSettings, Tint};
 use egui::ThemePreference;
 use sapphire_bridge_api::settings::{Entry, EntryValue, Origin, Scope, gui};
 use sapphire_bridge_api::{ConfigEntry, Value};
@@ -202,9 +202,11 @@ pub(crate) fn write_for(
     let shown = gui_entries(&tab_theme(state, tab));
     let set: Vec<ConfigEntry> = gui_entries(working)
         .into_iter()
-        .zip(shown)
-        .filter(|(new, old)| new.value != old.value)
-        .map(|(new, _)| new)
+        .filter(|new| {
+            !shown
+                .iter()
+                .any(|old| old.key == new.key && old.value == new.value)
+        })
         .collect();
     (!set.is_empty()).then_some(Command::ConfigWrite {
         scope: tab,
@@ -289,6 +291,9 @@ pub(crate) fn use_the_workgroups() -> Command {
 const MAX_HUE: i64 = 360;
 /// The largest chroma the settings hold, in thousandths.
 const MAX_CHROMA: i64 = 250;
+/// A custom accent's hue and chroma when the settings hold none: the bridge's defaults.
+const DEFAULT_HUE: i64 = 255;
+const DEFAULT_CHROMA: i64 = 150;
 
 /// The theme `values` describe. A key that is missing, of the wrong kind or out of range
 /// leaves that field at its default: a synced file may have been edited by hand.
@@ -308,24 +313,32 @@ pub(crate) fn theme_settings(values: &GuiValues) -> ThemeSettings {
     if let Some(c) = text(gui::THEME_CONTRAST).and_then(contrast) {
         theme.contrast = c;
     }
-    if let Some(hue) = int(gui::THEME_ACCENT_HUE, MAX_HUE) {
-        theme.accent.hue = hue as f32;
-    }
-    if let Some(chroma) = int(gui::THEME_ACCENT_CHROMA, MAX_CHROMA) {
-        theme.accent.chroma = chroma as f32 / 1000.0;
-    }
+    theme.accent = match text(gui::THEME_ACCENT) {
+        Some("custom") => Some(Tint::Custom {
+            chroma: int(gui::THEME_ACCENT_CHROMA, MAX_CHROMA).unwrap_or(DEFAULT_CHROMA) as f32
+                / 1000.0,
+            hue: int(gui::THEME_ACCENT_HUE, MAX_HUE).unwrap_or(DEFAULT_HUE) as f32,
+        }),
+        Some(name) => swatch(name).map(Tint::Swatch),
+        None => None,
+    };
     theme
 }
 
-/// `theme` as the four settings, in [`gui::THEME_KEYS`] order: the accent in whole degrees
-/// and thousandths of chroma.
+/// `theme` as settings, in [`gui::THEME_KEYS`] order. A custom accent adds its hue in whole
+/// degrees and its chroma in thousandths; any other leaves them out, so they keep what they
+/// hold.
 pub(crate) fn gui_entries(theme: &ThemeSettings) -> Vec<ConfigEntry> {
-    let Accent { hue, chroma } = theme.accent;
     let entry = |key: &str, value| ConfigEntry {
         key: key.to_owned(),
         value,
     };
-    vec![
+    let accent = match theme.accent {
+        Some(Tint::Custom { .. }) => "custom",
+        Some(Tint::Swatch(s)) => swatch_name(s),
+        None => "default",
+    };
+    let mut entries = vec![
         entry(
             gui::THEME_PREFERENCE,
             Value::String(preference_name(theme.preference).into()),
@@ -334,15 +347,42 @@ pub(crate) fn gui_entries(theme: &ThemeSettings) -> Vec<ConfigEntry> {
             gui::THEME_CONTRAST,
             Value::String(contrast_name(theme.contrast).into()),
         ),
-        entry(
+        entry(gui::THEME_ACCENT, Value::String(accent.into())),
+    ];
+    if let Some(Tint::Custom { chroma, hue }) = theme.accent {
+        entries.push(entry(
             gui::THEME_ACCENT_HUE,
             Value::Int((hue.round() as i64).clamp(0, MAX_HUE)),
-        ),
-        entry(
+        ));
+        entries.push(entry(
             gui::THEME_ACCENT_CHROMA,
             Value::Int(((chroma * 1000.0).round() as i64).clamp(0, MAX_CHROMA)),
-        ),
-    ]
+        ));
+    }
+    entries
+}
+
+/// The swatch an accent's value names; `None` for `default` and anything unknown.
+fn swatch(name: &str) -> Option<Swatch> {
+    Swatch::ALL
+        .into_iter()
+        .filter(|s| *s != Swatch::Accent)
+        .find(|s| swatch_name(*s) == name)
+}
+
+/// A swatch's name in the settings. The accent swatch would name itself: it is the default.
+fn swatch_name(swatch: Swatch) -> &'static str {
+    match swatch {
+        Swatch::Accent => "default",
+        Swatch::Neutral => "neutral",
+        Swatch::Red => "red",
+        Swatch::Orange => "orange",
+        Swatch::Yellow => "yellow",
+        Swatch::Green => "green",
+        Swatch::Cyan => "cyan",
+        Swatch::Blue => "blue",
+        Swatch::Purple => "purple",
+    }
 }
 
 fn preference(name: &str) -> Option<ThemePreference> {
@@ -408,19 +448,34 @@ mod tests {
         assert_eq!(t.preference, ThemePreference::Dark);
         let t = theme_settings(&one(gui::THEME_CONTRAST, s("low")));
         assert_eq!(t.contrast, Contrast::Low);
+        let t = theme_settings(&one(gui::THEME_ACCENT, s("red")));
+        assert_eq!(t.accent, Some(Tint::Swatch(Swatch::Red)));
+        let t = theme_settings(&GuiValues::from([
+            (gui::THEME_ACCENT.to_owned(), s("custom")),
+            (gui::THEME_ACCENT_HUE.to_owned(), Value::Int(30)),
+            (gui::THEME_ACCENT_CHROMA.to_owned(), Value::Int(200)),
+        ]));
+        assert_eq!(
+            t.accent,
+            Some(Tint::Custom {
+                chroma: 0.2,
+                hue: 30.0
+            })
+        );
+    }
+
+    #[test]
+    fn a_hue_without_a_custom_accent_is_not_used() {
         let t = theme_settings(&one(gui::THEME_ACCENT_HUE, Value::Int(30)));
-        assert_eq!(t.accent.hue, 30.0);
-        let t = theme_settings(&one(gui::THEME_ACCENT_CHROMA, Value::Int(200)));
-        assert!((t.accent.chroma - 0.2).abs() < 1e-6, "{}", t.accent.chroma);
+        assert_eq!(t.accent, None);
     }
 
     #[test]
     fn a_bad_value_takes_the_defaults_field() {
         let defaults = ThemeSettings::default();
         let mut bad = GuiValues::from([
-            (gui::THEME_ACCENT_HUE.to_owned(), Value::Int(999)),
+            (gui::THEME_ACCENT.to_owned(), s("mauve")),
             (gui::THEME_CONTRAST.to_owned(), s("loud")),
-            (gui::THEME_ACCENT_CHROMA.to_owned(), s("x")),
         ]);
         bad.insert(gui::THEME_PREFERENCE.to_owned(), s("light"));
         let t = theme_settings(&bad);
@@ -430,25 +485,59 @@ mod tests {
     }
 
     #[test]
+    fn a_custom_accent_with_bad_numbers_takes_the_default_numbers() {
+        let t = theme_settings(&GuiValues::from([
+            (gui::THEME_ACCENT.to_owned(), s("custom")),
+            (gui::THEME_ACCENT_HUE.to_owned(), Value::Int(999)),
+            (gui::THEME_ACCENT_CHROMA.to_owned(), s("x")),
+        ]));
+        assert_eq!(
+            t.accent,
+            Some(Tint::Custom {
+                chroma: 0.15,
+                hue: 255.0
+            })
+        );
+    }
+
+    #[test]
     fn the_accent_rounds() {
         let theme = ThemeSettings {
-            accent: Accent {
+            accent: Some(Tint::Custom {
                 hue: 30.6,
                 chroma: 0.1234,
-            },
+            }),
             ..Default::default()
         };
         let v = values(gui_entries(&theme));
+        assert_eq!(v[gui::THEME_ACCENT], s("custom"));
         assert_eq!(v[gui::THEME_ACCENT_HUE], Value::Int(31));
         assert_eq!(v[gui::THEME_ACCENT_CHROMA], Value::Int(123));
     }
 
     #[test]
+    fn a_swatch_accent_leaves_the_numbers_out() {
+        let theme = ThemeSettings {
+            accent: Some(Tint::Swatch(Swatch::Green)),
+            ..Default::default()
+        };
+        let v = values(gui_entries(&theme));
+        assert_eq!(v[gui::THEME_ACCENT], s("green"));
+        assert!(!v.contains_key(gui::THEME_ACCENT_HUE), "{v:?}");
+        assert!(!v.contains_key(gui::THEME_ACCENT_CHROMA), "{v:?}");
+        assert_eq!(theme_settings(&v), theme);
+    }
+
+    #[test]
     fn entries_follow_the_keys_order() {
-        let keys: Vec<String> = gui_entries(&ThemeSettings::default())
-            .into_iter()
-            .map(|e| e.key)
-            .collect();
+        let theme = ThemeSettings {
+            accent: Some(Tint::Custom {
+                hue: 10.0,
+                chroma: 0.1,
+            }),
+            ..Default::default()
+        };
+        let keys: Vec<String> = gui_entries(&theme).into_iter().map(|e| e.key).collect();
         assert_eq!(keys, gui::THEME_KEYS);
     }
 
@@ -537,6 +626,55 @@ mod tests {
         );
     }
 
+    fn custom(hue: f32, chroma: f32) -> ThemeSettings {
+        ThemeSettings {
+            accent: Some(Tint::Custom { chroma, hue }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_swatch_after_a_custom_accent_writes_only_the_accent() {
+        let st = state(
+            &[
+                (gui::THEME_ACCENT, s("custom")),
+                (gui::THEME_ACCENT_HUE, Value::Int(30)),
+                (gui::THEME_ACCENT_CHROMA, Value::Int(100)),
+            ],
+            &[],
+        );
+        assert_eq!(tab_theme(&st, Scope::Workgroup), custom(30.0, 0.1));
+        let red = ThemeSettings {
+            accent: Some(Tint::Swatch(Swatch::Red)),
+            ..Default::default()
+        };
+        assert_eq!(
+            write(write_for(&st, Scope::Workgroup, &red)),
+            Some((
+                Scope::Workgroup,
+                vec![(gui::THEME_ACCENT.to_owned(), s("red"))],
+                Vec::new()
+            ))
+        );
+    }
+
+    #[test]
+    fn a_custom_accent_writes_its_numbers() {
+        let st = state(&[], &[]);
+        assert_eq!(
+            write(write_for(&st, Scope::Workgroup, &custom(30.0, 0.1))),
+            Some((
+                Scope::Workgroup,
+                vec![
+                    (gui::THEME_ACCENT.to_owned(), s("custom")),
+                    (gui::THEME_ACCENT_HUE.to_owned(), Value::Int(30)),
+                    (gui::THEME_ACCENT_CHROMA.to_owned(), Value::Int(100)),
+                ],
+                Vec::new()
+            ))
+        );
+    }
+
     #[test]
     fn the_device_tab_starts_from_the_effective_values() {
         let st = state(&[(gui::THEME_CONTRAST, s("high"))], &[]);
@@ -546,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn use_the_workgroups_unsets_all_four_on_the_device() {
+    fn use_the_workgroups_unsets_every_key_on_the_device() {
         assert_eq!(
             write(Some(use_the_workgroups())),
             Some((

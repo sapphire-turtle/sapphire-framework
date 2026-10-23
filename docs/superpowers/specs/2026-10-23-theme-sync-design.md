@@ -45,12 +45,15 @@ all `Kind` as below, `scopes: [Workgroup]`, `overridable: true`, `Apply::Live`:
 |---|---|---|---|
 | `gui.theme.preference` | Enum `system`, `light`, `dark` | `system` | `preference` |
 | `gui.theme.contrast` | Enum `low`, `medium`, `high` | `medium` | `contrast` |
-| `gui.theme.accent_hue` | Int 0–360 | 255 | `accent.hue` (degrees) |
-| `gui.theme.accent_chroma` | Int 0–250 | 150 | `accent.chroma` × 1000 |
+| `gui.theme.accent` | Enum `default`, `neutral`, `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `custom` | `default` | `accent`: `None`, `Tint::Swatch`, or `Tint::Custom` |
+| `gui.theme.accent_hue` | Int 0–360 | 255 | a custom accent's `hue` (degrees) |
+| `gui.theme.accent_chroma` | Int 0–250 | 150 | a custom accent's `chroma` × 1000 |
 
-`Kind` has no float, so the accent is kept in whole degrees and thousandths of chroma
-(`Accent::MAX_CHROMA` is 0.25). The defaults are `ThemeSettings::default()`'s. Hue 360 is
-accepted because the theme widget keeps 360 itself.
+The accent is a corundum `Tint` (#334): one of the theme's swatches by name, or a hue and a
+chroma. `accent_hue` and `accent_chroma` are read only when `accent` is `custom`, and written
+only with a custom accent, so picking a swatch keeps the last custom colour in the file.
+`Kind` has no float, so a custom accent is kept in whole degrees and thousandths of chroma
+(`Tint::MAX_CHROMA` is 0.25). Hue 360 is accepted because the picker can give it.
 
 `gui` becomes a reserved top-level name of the bridge's registry (`("gui", 0)` beside `net`
 and `embed`) and of the app server's `BRIDGE_NAMES`, so no app can define a
@@ -81,8 +84,8 @@ The client stays egui-free: it holds the raw values. The conversion lives beside
 - `theme_settings(&GuiValues) -> ThemeSettings`: each key that is missing or out of range
   takes the default's field (the bridge checks kinds on write, but a synced file may have
   been written by hand);
-- `gui_entries(&ThemeSettings) -> Vec<ConfigEntry>`: the four keys, rounding the accent to
-  whole degrees and thousandths.
+- `gui_entries(&ThemeSettings) -> Vec<ConfigEntry>`: the keys, with `accent_hue` and
+  `accent_chroma` only for a custom accent, rounded to whole degrees and thousandths.
 
 ### Installing
 
@@ -116,7 +119,7 @@ by it (as `"Embedding"` is by the Embedding screen), so it is not also listed un
 - **Device tab**: `theme::settings_ui` over the effective values. Keys this device sets are
   marked as its own; the others show `from workgroup` (or `default`). A change writes only
   the keys it changed, to the device. A button, `Use the workgroup's`, shown while the device
-  sets any key, unsets all four on the device.
+  sets any key, unsets every key on the device.
 - **Writes**: when `settings_ui` returns `true` (a click, or the end of a drag), the page
   sends part 4's `Command::ConfigWrite` with the tab's scope and the keys whose value
   differs from the tab's loaded one, and installs the resulting effective theme at once. On
@@ -144,14 +147,14 @@ first (its `Page` gains `Appearance` back beside `Config`). This work then branc
 part 4, or from main once part 4 is merged, and touches:
 
 - `sapphire-framework-bridge-api`: the `settings::gui` key constants;
-- `sapphire-framework-bridge`: the four definitions and the reserved `gui`;
+- `sapphire-framework-bridge`: the five definitions and the reserved `gui`;
 - `sapphire-framework-server`: `gui` in `BRIDGE_NAMES`;
 - `sapphire-framework-gui`: `GuiValues` in the poll, the conversion, installing in `poll`,
   the Appearance page's tabs and writes, the deprecations.
 
 ## Tests
 
-- Bridge: the four keys are listed with their defaults; a workgroup value is the effective
+- Bridge: the five keys are listed with their defaults; a workgroup value is the effective
   one; a device value overrides it and `unset` on the device restores it; out-of-range values
   and unknown choices are rejected; an app owner defining `gui.x` fails as reserved.
 - Conversion (no rendering): defaults round-trip; each key maps to its field; a missing or

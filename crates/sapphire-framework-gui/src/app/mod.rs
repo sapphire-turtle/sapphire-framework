@@ -131,26 +131,9 @@ pub fn run(
     result
 }
 
-/// Run eframe with `native`, building the app with `create` once the window exists: a
-/// phone's start-up, which builds its own `native`.
-#[cfg_attr(not(all(feature = "mobile", target_os = "android")), allow(dead_code))]
-pub(crate) fn open_window(
-    title: &str,
-    native: eframe::NativeOptions,
-    handle: tokio::runtime::Handle,
-    config: ClientConfig,
-    data_dir: PathBuf,
-    fonts: Option<InstallFonts>,
-    create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
-) -> eframe::Result<()> {
-    window::open(title, native, fonts, move |cc| {
-        build_app(cc, handle, config, data_dir, create)
-    })
-}
-
 /// The app, built once its window exists: the framework client, started on `handle`, and
 /// the app's closure with everything [`AppSetup`] gives it.
-fn build_app(
+pub(crate) fn build_app(
     cc: &eframe::CreationContext<'_>,
     handle: tokio::runtime::Handle,
     config: ClientConfig,

@@ -498,17 +498,9 @@ sketch; where they differ, the two specs win.
 - Its own spec decides how app settings are reloaded live and what the app server's
   restart rebuilds.
 
-## Part 4 (outline): GUI
+## Part 4: GUI
 
-- One settings screen in `SyncPanel`, with Device / Workgroup / Workspace tabs, built from
-  `config.schema` with no knowledge of particular keys: a widget per kind, grouped by
-  `section`, a password field for secrets that never shows the stored value.
-- Edits are a draft per tab, written as one batch by **Apply**; errors are shown at the
-  field. Keys set in another scope show where their value comes from.
-- A banner for pending restarts ("Restart the bridge to apply these changes") with a
-  **Restart** button, per process (bridge, app server).
-- The Embedding screen keeps its status display and links to the settings screen for
-  editing.
+Designed in [2026-10-23-gui-settings-design.md](2026-10-23-gui-settings-design.md) (#314).
 
 ## Out of scope
 

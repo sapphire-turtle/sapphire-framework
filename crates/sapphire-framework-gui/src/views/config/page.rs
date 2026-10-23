@@ -2,15 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::Color32;
+use crate::theme::Swatch;
 use sapphire_bridge_api::settings::{Apply, Process};
-use sapphire_bridge_api::{EntryValue, Origin, Scope, SettingDef};
+use sapphire_bridge_api::{EntryValue, Kind, Origin, Scope, SettingDef};
 
 use crate::client::{Command, CommandError, CommandOutput, ConfigState, Conn};
 
 use super::super::{ViewCtx, error_line, unavailable};
 use super::model::{Drafts, Edit, PageSpec, origin_label, route_errors, tab_enabled};
-use super::widgets::value_widget;
+use super::widgets::{secret_id, value_widget};
 
 /// What the page last sent, so its outcome lands in the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +37,10 @@ pub(crate) struct ConfigPage {
     pub titled: bool,
     /// The page's keys, for routing a write's field errors.
     keys: Vec<String>,
+    /// The page's secret keys, with their schema sections, and the context their fields
+    /// are drawn in: a successful write clears what egui kept of the typing.
+    secrets: Vec<(String, String)>,
+    ctx: Option<egui::Context>,
     sent: Option<Sent>,
 }
 
@@ -50,6 +54,8 @@ impl ConfigPage {
             changed: BTreeSet::new(),
             titled: true,
             keys: Vec::new(),
+            secrets: Vec::new(),
+            ctx: None,
             sent: None,
         }
     }
@@ -66,6 +72,13 @@ impl ConfigPage {
     ) -> Option<Command> {
         let mut out = None;
         self.keys.clone_from(&spec.keys);
+        self.secrets = state
+            .schema
+            .iter()
+            .filter(|d| d.kind == Kind::Secret && spec.keys.contains(&d.key))
+            .map(|d| (d.section.clone(), d.key.clone()))
+            .collect();
+        self.ctx = Some(ui.ctx().clone());
         ui.horizontal(|ui| {
             if self.titled {
                 ui.heading(&spec.section);
@@ -131,7 +144,7 @@ impl ConfigPage {
             .filter(|d| d.allows(tab))
             .collect();
         if !bridge_up && defs.iter().any(|d| d.process == Process::Bridge) {
-            ui.colored_label(WARN, "sapphire-bridge is not running");
+            ui.colored_label(warn(ui), "sapphire-bridge is not running");
         }
         let draft = drafts.get_mut(&spec.section, tab);
         self.changed = draft.on_reload(state, tab);
@@ -153,6 +166,7 @@ impl ConfigPage {
             let edit = draft.edits.get(&def.key);
             let editable = editable(def, bridge_up) && !cx.busy;
             let mut new_edit = None;
+            let mut forget = false;
             ui.push_id((&spec.section, tab, &def.key), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.monospace(&def.key);
@@ -164,10 +178,16 @@ impl ConfigPage {
                             .on_hover_text("Takes effect after a restart");
                     }
                     if self.changed.contains(&def.key) {
-                        ui.colored_label(WARN, "changed elsewhere");
+                        ui.colored_label(warn(ui), "changed elsewhere");
                     }
                     if matches!(edit, Some(Edit::Unset)) {
-                        ui.small("removed here on Apply");
+                        forget = ui
+                            .add_enabled(
+                                !cx.busy,
+                                egui::Button::new("removed here on Apply ↺").small(),
+                            )
+                            .on_hover_text("Keep it")
+                            .clicked();
                     } else if here.is_some()
                         && ui
                             .add_enabled(editable, egui::Button::new("×").small())
@@ -177,7 +197,7 @@ impl ConfigPage {
                         new_edit = Some(Edit::Unset);
                     }
                 });
-                if let Some(e) = value_widget(ui, def, shown, edit, editable) {
+                if let Some(e) = value_widget(ui, def, tab, shown, edit, editable) {
                     new_edit = Some(e);
                 }
                 if !def.doc.is_empty() {
@@ -188,9 +208,13 @@ impl ConfigPage {
                     _ => self.errors.0.get(&def.key),
                 };
                 if let Some(error) = error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
+                    ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::DANGER), error);
                 }
             });
+            if forget {
+                draft.forget(&def.key);
+                continue;
+            }
             // Drafted and observed together, so a later reload can tell what changed.
             match new_edit {
                 Some(Edit::Set { text, .. }) => draft.set(&def.key, &def.kind, &text),
@@ -251,7 +275,8 @@ impl ConfigPage {
     }
 
     /// Take the outcome of the command this page sent: a written draft is dropped (its
-    /// typed secrets with it); a failed one stays, with its errors shown.
+    /// typed secrets with it, and egui's undo history of them); a failed one stays, with its
+    /// errors shown.
     pub(crate) fn on_outcome(
         &mut self,
         result: &Result<CommandOutput, CommandError>,
@@ -259,6 +284,15 @@ impl ConfigPage {
     ) {
         match (self.sent.take(), result) {
             (Some(Sent::Write(scope)), Ok(_)) => {
+                // egui keeps every edit, password fields too, for Ctrl+Z. The field may
+                // not be drawn again (another page is open, or the section has gone), so
+                // its typing goes now rather than then.
+                if let Some(ctx) = &self.ctx {
+                    for (section, key) in &self.secrets {
+                        let id = secret_id(section, scope, key);
+                        ctx.data_mut(|d| d.remove::<egui::text_edit::TextEditState>(id));
+                    }
+                }
                 drafts.get_mut(&self.section, scope).revert();
                 self.errors = Default::default();
                 self.changed.clear();
@@ -270,8 +304,10 @@ impl ConfigPage {
     }
 }
 
-/// The warning colour, as the Embedding screen uses.
-const WARN: Color32 = Color32::from_rgb(230, 160, 40);
+/// The theme's warning colour, as the Embedding screen uses.
+fn warn(ui: &egui::Ui) -> egui::Color32 {
+    crate::theme::current(ui.ctx()).text(Swatch::WARNING)
+}
 
 /// Whether a key can be edited: a bridge key needs the bridge.
 fn editable(def: &SettingDef, bridge_up: bool) -> bool {
@@ -293,7 +329,8 @@ mod tests {
     use sapphire_bridge_api::{ConfigFieldError, ConfigWriteResult, Entry, Kind, Value};
 
     use super::super::model::pages;
-    use super::super::widgets::tests::{def, drawn_text, every_kind};
+    use super::super::widgets::secret_id;
+    use super::super::widgets::tests::{def, drawn_text, every_kind, remembered};
     use super::*;
     use crate::client::{ServerState, Snapshot};
     use crate::test_support::render;
@@ -410,7 +447,7 @@ mod tests {
         assert!(editable(&bridge_key, true));
         assert!(editable(&def("app.x", Kind::Bool), false));
         render([600.0, 400.0], |ui| {
-            assert!(value_widget(ui, &bridge_key, None, None, false).is_none());
+            assert!(value_widget(ui, &bridge_key, Scope::Device, None, None, false).is_none());
         });
         let state = ConfigState {
             schema: vec![bridge_key],
@@ -578,6 +615,55 @@ mod tests {
         assert!(page.apply(&mut drafts).is_some());
         page.on_outcome(&Ok(CommandOutput::Written(Default::default())), &mut drafts);
         assert!(drafts.get("S", Scope::Device).unwrap().edits.is_empty());
+    }
+
+    #[test]
+    fn a_written_secret_leaves_no_undo_history_without_a_redraw() {
+        let (state, snapshot) = (state(), snapshot(true));
+        let spec = spec(&state);
+        let mut drafts = Drafts::default();
+        let mut page = ConfigPage::new("S");
+        let ctx = egui::Context::default();
+        let id = secret_id("S", Scope::Device, "k.secret");
+        let mut frame = |time: f64, events: Vec<egui::Event>, page: &mut ConfigPage| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                page.ui(ui, &cx(&snapshot), &spec, &state, &mut drafts);
+            });
+            output.textures_delta.clear();
+        };
+        frame(0.0, vec![], &mut page);
+        ctx.memory_mut(|m| m.request_focus(id));
+        frame(0.1, vec![], &mut page);
+        frame(0.2, vec![egui::Event::Text("hunter2".into())], &mut page);
+        // Long enough for egui to make "hunter2" an undo point.
+        frame(5.0, vec![], &mut page);
+        frame(10.0, vec![], &mut page);
+        assert!(remembered(&ctx, id).iter().any(|t| t == "hunter2"));
+
+        // Applied and written while the page is not drawn (another page is open, or the
+        // section is gone after the reload): the typing goes all the same.
+        assert!(page.apply(&mut drafts).is_some());
+        page.on_outcome(&Ok(CommandOutput::Written(Default::default())), &mut drafts);
+        let kept = remembered(&ctx, id);
+        assert!(!kept.iter().any(|t| t.contains("hunter2")), "{kept:?}");
+    }
+
+    #[test]
+    fn a_drafted_unset_offers_to_keep_the_key() {
+        let (state, snapshot) = (state(), snapshot(true));
+        let spec = spec(&state);
+        let mut drafts = Drafts::default();
+        drafts.get_mut("S", Scope::Device).unset("k.bool");
+        let mut page = ConfigPage::new("S");
+        let drawn = drawn_text(|ui| {
+            page.ui(ui, &cx(&snapshot), &spec, &state, &mut drafts);
+        });
+        assert!(drawn.contains("removed here on Apply ↺"), "{drawn}");
     }
 
     #[test]

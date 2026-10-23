@@ -237,16 +237,12 @@ impl Kind {
             Kind::Bool => match text {
                 "true" | "on" => Value::Bool(true),
                 "false" | "off" => Value::Bool(false),
-                other => {
-                    return Err(format!(
-                        "`{other}` is not a boolean (expected one of true, false, on, off)"
-                    ));
-                }
+                _ => return Err("not a boolean (expected one of true, false, on, off)".into()),
             },
             Kind::Int { .. } => Value::Int(
                 text.trim()
                     .parse::<i64>()
-                    .map_err(|_| format!("`{text}` is not an integer"))?,
+                    .map_err(|_| "not an integer".to_string())?,
             ),
             Kind::Enum { .. } | Kind::String { .. } | Kind::Url | Kind::Path | Kind::SocketAddr => {
                 Value::String(text.to_string())
@@ -275,17 +271,14 @@ impl Kind {
                 if (*min..=*max).contains(i) {
                     Ok(())
                 } else {
-                    Err(format!("{i} is out of range (expected {min}..={max})"))
+                    Err(format!("out of range (expected {min}..={max})"))
                 }
             }
             (Kind::Enum { choices }, Value::String(s)) => {
                 if choices.contains(s) {
                     Ok(())
                 } else {
-                    Err(format!(
-                        "`{s}` is not a valid choice (expected one of {})",
-                        choices.join(", ")
-                    ))
+                    Err(format!("not one of the choices ({})", choices.join(", ")))
                 }
             }
             (Kind::String { non_empty }, Value::String(s)) => {
@@ -301,7 +294,7 @@ impl Kind {
                     .or_else(|| s.strip_prefix("https://"));
                 match rest {
                     Some(rest) if !rest.is_empty() => Ok(()),
-                    _ => Err(format!("`{s}` is not an http or https URL")),
+                    _ => Err("not an http or https URL".into()),
                 }
             }
             (Kind::Path, Value::String(s)) => {
@@ -314,14 +307,30 @@ impl Kind {
             (Kind::SocketAddr, Value::String(s)) => s
                 .parse::<SocketAddr>()
                 .map(|_| ())
-                .map_err(|_| format!("`{s}` is not a host:port socket address")),
+                .map_err(|_| "not a host:port socket address".to_string()),
             (Kind::List { item }, Value::List(items)) => {
                 items.iter().try_for_each(|v| item.check(v))
             }
             (Kind::Secret, Value::String(_)) => Ok(()),
             // A secret's value is never shown, not even a wrong one.
             (Kind::Secret, _) => Err("a secret must be a string".into()),
-            (kind, value) => Err(format!("`{value}` has the wrong type for {kind:?}")),
+            // Error text never carries the value: it reaches logs, the GUI and CLI output.
+            (kind, _) => Err(format!("has the wrong type (expected {})", kind.name())),
+        }
+    }
+
+    /// A short name for this kind, for error text.
+    fn name(&self) -> &'static str {
+        match self {
+            Kind::Bool => "bool",
+            Kind::Int { .. } => "integer",
+            Kind::Enum { .. } => "choice",
+            Kind::String { .. } => "string",
+            Kind::Url => "URL",
+            Kind::Path => "path",
+            Kind::SocketAddr => "socket address",
+            Kind::List { .. } => "list",
+            Kind::Secret => "secret",
         }
     }
 }
@@ -377,6 +386,54 @@ mod tests {
         assert!(!err.contains("hunter2"), "{err}");
         let err = Kind::Secret.check(&Value::Int(424242)).unwrap_err();
         assert!(!err.contains("424242"), "{err}");
+    }
+
+    #[test]
+    fn a_rejected_value_is_not_echoed() {
+        let list = Kind::List {
+            item: Box::new(Kind::Url),
+        };
+        let parsed = [
+            (Kind::Bool, "MARKER-42"),
+            (Kind::Int { min: 1, max: 10 }, "MARKER-42"),
+            (Kind::Int { min: 1, max: 10 }, "4242424"),
+            (
+                Kind::Enum {
+                    choices: vec!["a".into()],
+                },
+                "MARKER-42",
+            ),
+            (Kind::Url, "MARKER-42"),
+            (Kind::SocketAddr, "MARKER-42"),
+            (list, "MARKER-42"),
+        ];
+        for (kind, text) in parsed {
+            let err = kind.parse(text).unwrap_err();
+            assert!(!err.contains(text), "{kind:?}: {err}");
+        }
+        let checked = [
+            (Kind::Int { min: 1, max: 10 }, Value::Int(4242424)),
+            (Kind::Bool, Value::String("MARKER-42".into())),
+            (
+                Kind::Int { min: 1, max: 10 },
+                Value::String("MARKER-42".into()),
+            ),
+            (
+                Kind::Enum {
+                    choices: vec!["a".into()],
+                },
+                Value::List(vec![Value::String("MARKER-42".into())]),
+            ),
+        ];
+        for (kind, value) in checked {
+            let err = kind.check(&value).unwrap_err();
+            assert!(!err.contains("MARKER-42"), "{kind:?}: {err}");
+            assert!(!err.contains("4242424"), "{kind:?}: {err}");
+            assert!(
+                !err.contains("choices"),
+                "names the kind, not its Debug: {err}"
+            );
+        }
     }
 
     fn def(key: &str, home: Scope) -> SettingDef {

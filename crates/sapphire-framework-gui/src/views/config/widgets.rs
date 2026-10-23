@@ -1,17 +1,24 @@
 //! One widget per setting kind.
 
 use sapphire_bridge_api::settings::SecretState;
-use sapphire_bridge_api::{EntryValue, Kind, SettingDef, Value};
+use sapphire_bridge_api::{EntryValue, Kind, Scope, SettingDef, Value};
 
 use super::model::{Edit, parse_text};
 
-/// Render `def`'s widget, showing the drafted text when there is a draft and `shown`
-/// otherwise. Returns the new edit when the user changed it; never while `enabled` is false.
-/// A secret's widget is empty until typed into, whatever `shown` holds, and keeps no undo
-/// history of what was typed once the draft is gone.
+/// The id of `key`'s secret field on `scope`'s tab of `section`, the same wherever it is
+/// drawn, so a successful write can clear what egui kept of the typing.
+pub(crate) fn secret_id(section: &str, scope: Scope, key: &str) -> egui::Id {
+    egui::Id::new(("sapphire-config-secret", section, scope, key))
+}
+
+/// Render `def`'s widget on `scope`'s tab, showing the drafted text when there is a draft
+/// and `shown` otherwise. Returns the new edit when the user changed it; never while
+/// `enabled` is false. A secret's widget is empty until typed into, whatever `shown` holds,
+/// and keeps no undo history of what was typed once the draft is gone.
 pub(crate) fn value_widget(
     ui: &mut egui::Ui,
     def: &SettingDef,
+    scope: Scope,
     shown: Option<&EntryValue>,
     draft: Option<&Edit>,
     enabled: bool,
@@ -31,8 +38,12 @@ pub(crate) fn value_widget(
         Some(Edit::Set { text, .. }) => text.clone(),
         _ => shown_text(&def.kind, shown),
     };
-    // One id for the text fields, so a secret's stored state can be found and cleared.
-    let id = ui.make_persistent_id(&def.key);
+    // One id for the text fields; a secret's is [`secret_id`], so its stored state can be
+    // found and cleared.
+    let id = match def.kind {
+        Kind::Secret => secret_id(&def.section, scope, &def.key),
+        _ => ui.make_persistent_id(&def.key),
+    };
     let changed = ui
         .add_enabled_ui(enabled, |ui| match &def.kind {
             Kind::Bool => {
@@ -138,7 +149,6 @@ pub(crate) fn shown_text(kind: &Kind, shown: Option<&EntryValue>) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use sapphire_bridge_api::Scope;
     use sapphire_bridge_api::settings::{Apply, Process};
 
     use super::*;
@@ -225,7 +235,10 @@ pub(crate) mod tests {
             for (def, shown) in every_kind().iter().zip(&shown) {
                 for enabled in [true, false] {
                     ui.push_id((&def.key, enabled), |ui| {
-                        assert!(value_widget(ui, def, shown.as_ref(), None, enabled).is_none());
+                        assert!(
+                            value_widget(ui, def, Scope::Device, shown.as_ref(), None, enabled)
+                                .is_none()
+                        );
                     });
                 }
             }
@@ -243,13 +256,21 @@ pub(crate) mod tests {
             parsed: Ok(Value::String("typed-secret".into())),
         };
         let drawn = drawn_text(|ui| {
-            value_widget(ui, &secret, Some(&leaked), Some(&typed), true);
+            value_widget(
+                ui,
+                &secret,
+                Scope::Device,
+                Some(&leaked),
+                Some(&typed),
+                true,
+            );
         });
         assert!(!drawn.contains("server-value") && !drawn.contains("typed-secret"));
         let drawn = drawn_text(|ui| {
             value_widget(
                 ui,
                 &secret,
+                Scope::Device,
                 Some(&EntryValue::Secret(SecretState::Set)),
                 None,
                 true,
@@ -259,7 +280,7 @@ pub(crate) mod tests {
     }
 
     /// Every text a field's undo history could bring back.
-    fn remembered(ctx: &egui::Context, id: egui::Id) -> Vec<String> {
+    pub(crate) fn remembered(ctx: &egui::Context, id: egui::Id) -> Vec<String> {
         let Some(state) = egui::TextEdit::load_state(ctx, id) else {
             return Vec::new();
         };
@@ -286,8 +307,10 @@ pub(crate) mod tests {
                 ..Default::default()
             };
             let mut output = ctx.run_ui(input, |ui| {
-                id.set(ui.make_persistent_id("k.secret"));
-                if let Some(edit) = value_widget(ui, &secret, None, draft.as_ref(), true) {
+                id.set(secret_id("S", Scope::Device, "k.secret"));
+                if let Some(edit) =
+                    value_widget(ui, &secret, Scope::Device, None, draft.as_ref(), true)
+                {
                     *draft = Some(edit);
                 }
             });
@@ -324,7 +347,9 @@ pub(crate) mod tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 id.set(ui.make_persistent_id("k.int"));
-                if let Some(edit) = value_widget(ui, &int, None, draft.as_ref(), true) {
+                if let Some(edit) =
+                    value_widget(ui, &int, Scope::Device, None, draft.as_ref(), true)
+                {
                     draft = Some(edit);
                 }
             });
@@ -354,7 +379,7 @@ pub(crate) mod tests {
     fn an_int_with_no_value_is_an_empty_field() {
         let int = def("k.int", Kind::Int { min: 3, max: 9 });
         let drawn = drawn_text(|ui| {
-            value_widget(ui, &int, None, None, true);
+            value_widget(ui, &int, Scope::Device, None, None, true);
         });
         assert!(drawn.contains("not set (3..=9)"), "{drawn}");
         assert!(
@@ -365,6 +390,7 @@ pub(crate) mod tests {
             value_widget(
                 ui,
                 &int,
+                Scope::Device,
                 Some(&EntryValue::Value(Value::Int(7))),
                 None,
                 true,

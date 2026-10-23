@@ -2,7 +2,8 @@
 //! CJK font behind egui's own.
 //!
 //! [`run`] is the whole of opening an app's desktop window; [`open`] is its lower half, for
-//! an entry that builds its own [`eframe::NativeOptions`] (a phone's). The sapphire apps
+//! an entry that builds its own [`eframe::NativeOptions`]. With the `android` feature,
+//! `run_android` opens the window on an Android phone. The sapphire apps
 //! and asteria open their windows through here, so a renderer fix reaches all of them.
 //!
 //! ```no_run
@@ -25,6 +26,15 @@
 //! ```
 
 use crate::gpu;
+
+#[cfg(all(target_os = "android", feature = "android"))]
+mod android;
+// Used by the Android window; kept platform-free so its tests run on a desktop.
+#[cfg_attr(not(all(target_os = "android", feature = "android")), allow(dead_code))]
+mod text_input;
+
+#[cfg(all(target_os = "android", feature = "android"))]
+pub use android::{AndroidApp, run_android};
 
 /// Sets the egui context's fonts, once, before the app is built.
 pub type InstallFonts = Box<dyn FnOnce(&egui::Context)>;

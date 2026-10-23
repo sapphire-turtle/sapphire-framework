@@ -190,6 +190,12 @@ impl Draft {
         self.edits.insert(key.to_owned(), Edit::Unset);
     }
 
+    /// Drop `key`'s edit, keeping the rest of the draft.
+    pub(crate) fn forget(&mut self, key: &str) {
+        self.edits.remove(key);
+        self.base.remove(key);
+    }
+
     /// Drop the whole draft.
     pub(crate) fn revert(&mut self) {
         self.edits.clear();
@@ -436,6 +442,20 @@ mod tests {
         // A bridge-owned section is not the app's even with the prefix.
         let other = pages(&schema(), "sync", &[]);
         assert_eq!(other[2].placement, Placement::Configuration);
+        // Nor is the app process's own section without it: the server's `http.*`.
+        let mut s = schema();
+        s.push(def(
+            "http.listen",
+            "Server",
+            Process::App,
+            &[Scope::Device],
+            string(),
+        ));
+        let server = pages(&s, "notes", &[]).pop().unwrap();
+        assert_eq!(
+            (server.section.as_str(), server.placement),
+            ("Server", Placement::Configuration)
+        );
     }
 
     #[test]
@@ -581,6 +601,19 @@ mod tests {
             "a later edit does not move the base"
         );
         assert_eq!(d.on_reload(&state, Scope::Device).len(), 1);
+    }
+
+    #[test]
+    fn forget_drops_one_key_and_its_base() {
+        let mut d = Draft::default();
+        d.unset("a");
+        d.set("b", &Kind::Bool, "on");
+        d.observe(&ConfigState::default(), Scope::Device);
+        d.forget("a");
+        assert_eq!(d.edits.keys().collect::<Vec<_>>(), ["b"]);
+        assert_eq!(d.base.keys().collect::<Vec<_>>(), ["b"]);
+        d.forget("b");
+        assert!(d.is_empty() && d.base.is_empty());
     }
 
     #[test]

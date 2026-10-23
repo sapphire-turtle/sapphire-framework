@@ -1147,7 +1147,8 @@ mod tests {
 
     fn is_drawn_with(ctx: &egui::Context, contrast: corundum_gui::theme::Contrast) -> bool {
         let dark = ctx.theme() == egui::Theme::Dark;
-        *theme::current(ctx) == corundum_gui::theme::Theme::new(dark, contrast, Default::default())
+        *theme::current(ctx)
+            == corundum_gui::theme::Theme::new(dark, contrast, ThemeSettings::default().accent())
     }
 
     #[test]

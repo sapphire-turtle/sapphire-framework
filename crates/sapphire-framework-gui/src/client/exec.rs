@@ -71,7 +71,6 @@ pub(crate) async fn execute(
         | Command::DeviceInvite { .. }
         | Command::DeviceRetire { .. }
         | Command::DevicePrioritySet { .. }
-        | Command::Embedding(_)
         | Command::ExternalDevice(_)
         | Command::ConfigLoad
         | Command::ConfigWrite { .. }
@@ -163,7 +162,6 @@ async fn bridge_command(
                     _ => CommandOutput::Done,
                 })
         }
-        Command::Embedding(request) => c.embed_request(request).await.map(|_| CommandOutput::Done),
         Command::ConfigLoad => config_load(&c, &server).await.map(CommandOutput::Config),
         Command::ConfigWrite { scope, set, unset } => config_write(&c, scope, set, unset)
             .await

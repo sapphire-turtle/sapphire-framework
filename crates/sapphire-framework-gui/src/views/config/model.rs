@@ -13,7 +13,6 @@ use crate::client::{CommandError, ConfigState};
 const SCOPES: [Scope; 3] = [Scope::Device, Scope::Workgroup, Scope::Workspace];
 
 /// Where a page is listed.
-#[allow(dead_code)] // The settings screen (task 5) lists the pages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Placement {
     /// Under the app's heading, before its own pages.
@@ -39,7 +38,6 @@ pub(crate) struct PageSpec {
 
 /// The pages the schema makes, one per distinct section, in schema order. `screens` are the
 /// labels of the existing screens a section may join.
-#[allow(dead_code)] // The settings screen (task 5) lists the pages.
 pub(crate) fn pages(schema: &[SettingDef], app_name: &str, screens: &[&str]) -> Vec<PageSpec> {
     let prefix = format!("{app_name}.");
     let mut sections: Vec<(&str, Vec<&SettingDef>)> = Vec::new();
@@ -278,7 +276,6 @@ impl Drafts {
     }
 
     /// The pages with an unsaved draft.
-    #[allow(dead_code)] // The settings screen (task 5) marks dirty pages.
     pub(crate) fn dirty_sections(&self) -> BTreeSet<String> {
         self.0
             .iter()
@@ -321,7 +318,6 @@ pub(crate) fn route_errors(
 }
 
 /// The keys awaiting a restart, by the process that owns them.
-#[allow(dead_code)] // The settings screen (task 5) feeds the restart banner.
 pub(crate) fn pending_restarts(state: &ConfigState) -> BTreeMap<Process, Vec<String>> {
     let mut out: BTreeMap<Process, Vec<String>> = BTreeMap::new();
     for Entry {

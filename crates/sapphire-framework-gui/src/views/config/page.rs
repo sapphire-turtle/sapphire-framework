@@ -32,6 +32,9 @@ pub(crate) struct ConfigPage {
     pub errors: (BTreeMap<String, String>, Vec<String>),
     /// The open tab's drafted keys whose value changed under the draft.
     pub changed: BTreeSet<String>,
+    /// Whether the page draws its section's name as a heading; off inside a screen that
+    /// titles itself.
+    pub titled: bool,
     /// The page's keys, for routing a write's field errors.
     keys: Vec<String>,
     sent: Option<Sent>,
@@ -45,6 +48,7 @@ impl ConfigPage {
             tab: Scope::Device,
             errors: Default::default(),
             changed: BTreeSet::new(),
+            titled: true,
             keys: Vec::new(),
             sent: None,
         }
@@ -63,7 +67,9 @@ impl ConfigPage {
         let mut out = None;
         self.keys.clone_from(&spec.keys);
         ui.horizontal(|ui| {
-            ui.heading(&spec.section);
+            if self.titled {
+                ui.heading(&spec.section);
+            }
             if cx.busy {
                 ui.spinner();
             } else if ui.small_button("↻").on_hover_text("Reload").clicked() {

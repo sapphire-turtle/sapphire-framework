@@ -8,7 +8,7 @@ use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
 use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{
-    ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedRequest, EmbedSettingsResult, Entry,
+    ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedSettingsResult, Entry,
     ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo, Scope, SettingDef, StatusResult,
     WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
@@ -210,8 +210,6 @@ pub enum Command {
         /// The device's name or id.
         selector: String,
     },
-    /// Change the embedding settings, or store or clear this device's API key.
-    Embedding(EmbedRequest),
     /// Manage the workgroup's external devices.
     ExternalDevice(ExternalDeviceRequest),
     /// Set a device's election priority.

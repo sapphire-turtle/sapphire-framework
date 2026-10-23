@@ -15,6 +15,8 @@ pub(crate) struct RestartBanner {
     pub busy: Option<Process>,
     /// Why the last restart failed.
     pub error: Option<String>,
+    /// The process whose restart failed, so its line shows the error.
+    failed: Option<Process>,
 }
 
 impl RestartBanner {
@@ -41,8 +43,14 @@ impl RestartBanner {
                     out = Some(self.restart_command(*process));
                 }
             });
+            if self.failed == Some(*process) {
+                error_line(ui, &mut self.error);
+            }
         }
-        error_line(ui, &mut self.error);
+        // A failed process whose line is gone (its keys applied meanwhile) still says why.
+        if !self.failed.is_some_and(|p| pending.contains_key(&p)) {
+            error_line(ui, &mut self.error);
+        }
         out
     }
 
@@ -50,12 +58,13 @@ impl RestartBanner {
     pub(crate) fn restart_command(&mut self, process: Process) -> Command {
         self.busy = Some(process);
         self.error = None;
+        self.failed = None;
         Command::Restart(process)
     }
 
     /// Take the outcome of the restart this banner sent.
     pub(crate) fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
-        self.busy = None;
+        self.failed = self.busy.take().filter(|_| result.is_err());
         self.error = result.as_ref().err().map(|e| e.message.clone());
     }
 }
@@ -124,7 +133,25 @@ mod tests {
         let drawn = drawn_text(|ui| {
             banner.ui(ui, &cx, &pending);
         });
-        assert!(drawn.contains("did not come back within 30 s"));
+        let app_line = drawn.find("the notes server needs").unwrap();
+        let error = drawn.find("did not come back within 30 s").unwrap();
+        let bridge_line = drawn.find("sapphire-bridge needs").unwrap();
+        assert!(
+            bridge_line < app_line && app_line < error,
+            "the error is under its own line: {drawn}"
+        );
+        assert_eq!(banner.failed, Some(Process::App));
+        // Under the bridge's line when the bridge failed.
+        banner.restart_command(Process::Bridge);
+        banner.on_outcome(&Err("bridge failed".into()));
+        let drawn = drawn_text(|ui| {
+            banner.ui(ui, &cx, &pending);
+        });
+        let error = drawn.find("bridge failed").unwrap();
+        assert!(
+            error < drawn.find("the notes server needs").unwrap(),
+            "{drawn}"
+        );
         banner.restart_command(Process::Bridge);
         banner.on_outcome(&Ok(CommandOutput::Done));
         assert_eq!((banner.busy, banner.error.as_deref()), (None, None));

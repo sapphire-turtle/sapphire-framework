@@ -78,6 +78,7 @@ impl ConfigPage {
         let workspace = server.current.is_some();
 
         // Tabs. An unusable open tab yields to the first usable one; its draft is kept.
+        let opened = self.tab;
         if (!spec.scopes.contains(&self.tab) || !tab_enabled(self.tab, workspace))
             && let Some(first) = spec
                 .scopes
@@ -107,6 +108,10 @@ impl ConfigPage {
                 ui.small("No workspace is selected");
             }
         });
+        if self.tab != opened {
+            // Field errors belong to the tab whose write failed.
+            self.errors.0.clear();
+        }
         if !tab_enabled(self.tab, workspace) {
             return out;
         }
@@ -427,6 +432,9 @@ mod tests {
         drafts.get_mut("S", Scope::Workspace).unset("k.bool");
         let mut page = ConfigPage::new("S");
         page.tab = Scope::Workspace;
+        page.errors
+            .0
+            .insert("k.bool".into(), "workspace-only error".into());
         let drawn = drawn_text(|ui| {
             assert!(
                 page.ui(ui, &cx(&snapshot), &spec, &state, &mut drafts)
@@ -434,6 +442,8 @@ mod tests {
             );
         });
         assert_eq!(page.tab, Scope::Device, "falls back to a usable tab");
+        assert!(page.errors.0.is_empty(), "the old tab's field errors go");
+        assert!(!drawn.contains("workspace-only error"));
         assert!(drawn.contains("No workspace is selected"), "{drawn}");
         assert!(
             !drafts.get("S", Scope::Workspace).unwrap().is_empty(),

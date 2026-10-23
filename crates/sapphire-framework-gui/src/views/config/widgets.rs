@@ -7,7 +7,8 @@ use super::model::{Edit, parse_text};
 
 /// Render `def`'s widget, showing the drafted text when there is a draft and `shown`
 /// otherwise. Returns the new edit when the user changed it; never while `enabled` is false.
-/// A secret's widget is empty until typed into, whatever `shown` holds.
+/// A secret's widget is empty until typed into, whatever `shown` holds, and keeps no undo
+/// history of what was typed once the draft is gone.
 pub(crate) fn value_widget(
     ui: &mut egui::Ui,
     def: &SettingDef,
@@ -26,6 +27,8 @@ pub(crate) fn value_widget(
         Some(Edit::Set { text, .. }) => text.clone(),
         _ => shown_text(&def.kind, shown),
     };
+    // One id for the text fields, so a secret's stored state can be found and cleared.
+    let id = ui.make_persistent_id(&def.key);
     let changed = ui
         .add_enabled_ui(enabled, |ui| match &def.kind {
             Kind::Bool => {
@@ -34,6 +37,14 @@ pub(crate) fn value_widget(
                 text = on.to_string();
                 changed
             }
+            // With nothing to show, an empty field rather than a made-up number.
+            Kind::Int { min, max } if current.is_none() => ui
+                .add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(id)
+                        .hint_text(format!("not set ({min}..={max})")),
+                )
+                .changed(),
             Kind::Int { min, max } => {
                 let mut n = match current {
                     Some(Value::Int(n)) => *n,
@@ -60,7 +71,7 @@ pub(crate) fn value_widget(
             Kind::List { .. } => ui
                 .add(
                     egui::TextEdit::multiline(&mut text)
-                        .id_salt(&def.key)
+                        .id(id)
                         .desired_rows(3)
                         .hint_text("one per line"),
                 )
@@ -70,16 +81,24 @@ pub(crate) fn value_widget(
                     Some(EntryValue::Secret(SecretState::Set)) => "set",
                     _ => "not set",
                 };
+                if draft.is_none() {
+                    // egui keeps every edit, password fields too, for Ctrl+Z: without a
+                    // draft (applied, reverted or emptied) nothing typed may stay there.
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                        state.clear_undoer();
+                        state.store(ui.ctx(), id);
+                    }
+                }
                 ui.add(
                     egui::TextEdit::singleline(&mut text)
-                        .id_salt(&def.key)
+                        .id(id)
                         .password(true)
                         .hint_text(hint),
                 )
                 .changed()
             }
             Kind::String { .. } | Kind::Url | Kind::Path | Kind::SocketAddr => ui
-                .add(egui::TextEdit::singleline(&mut text).id_salt(&def.key))
+                .add(egui::TextEdit::singleline(&mut text).id(id))
                 .changed(),
         })
         .inner;
@@ -233,6 +252,82 @@ pub(crate) mod tests {
             );
         });
         assert!(drawn.contains("set"), "the hint says it is set: {drawn}");
+    }
+
+    /// Every text a field's undo history could bring back.
+    fn remembered(ctx: &egui::Context, id: egui::Id) -> Vec<String> {
+        let Some(state) = egui::TextEdit::load_state(ctx, id) else {
+            return Vec::new();
+        };
+        let mut undoer = state.undoer();
+        let mut current = (egui::text::CCursorRange::default(), String::new());
+        let mut out = Vec::new();
+        while let Some(previous) = undoer.undo(&current) {
+            current = previous.clone();
+            out.push(current.1.clone());
+        }
+        out
+    }
+
+    #[test]
+    fn a_typed_secret_leaves_no_undo_history_once_its_draft_is_gone() {
+        let secret = def("k.secret", Kind::Secret);
+        let ctx = egui::Context::default();
+        let id = std::cell::Cell::new(egui::Id::NULL);
+        let mut draft: Option<Edit> = None;
+        let frame = |time: f64, events: Vec<egui::Event>, draft: &mut Option<Edit>| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                id.set(ui.make_persistent_id("k.secret"));
+                if let Some(edit) = value_widget(ui, &secret, None, draft.as_ref(), true) {
+                    *draft = Some(edit);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        frame(0.0, vec![], &mut draft);
+        ctx.memory_mut(|m| m.request_focus(id.get()));
+        frame(0.1, vec![], &mut draft);
+        frame(0.2, vec![egui::Event::Text("hunter2".into())], &mut draft);
+        assert!(matches!(&draft, Some(Edit::Set { text, .. }) if text == "hunter2"));
+        // Long enough for egui to make "hunter2" an undo point.
+        frame(5.0, vec![], &mut draft);
+        frame(10.0, vec![], &mut draft);
+        assert!(remembered(&ctx, id.get()).iter().any(|t| t == "hunter2"));
+
+        // Applied: the draft is reverted, and the next frame forgets the typing.
+        draft = None;
+        frame(11.0, vec![], &mut draft);
+        frame(20.0, vec![], &mut draft);
+        let kept = remembered(&ctx, id.get());
+        assert!(!kept.iter().any(|t| t.contains("hunter2")), "{kept:?}");
+    }
+
+    #[test]
+    fn an_int_with_no_value_is_an_empty_field() {
+        let int = def("k.int", Kind::Int { min: 3, max: 9 });
+        let drawn = drawn_text(|ui| {
+            value_widget(ui, &int, None, None, true);
+        });
+        assert!(drawn.contains("not set (3..=9)"), "{drawn}");
+        assert!(
+            !drawn.lines().any(|l| l == "3"),
+            "no made-up minimum: {drawn}"
+        );
+        let drawn = drawn_text(|ui| {
+            value_widget(
+                ui,
+                &int,
+                Some(&EntryValue::Value(Value::Int(7))),
+                None,
+                true,
+            );
+        });
+        assert!(drawn.lines().any(|l| l == "7"), "{drawn}");
     }
 
     #[test]

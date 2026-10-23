@@ -77,19 +77,21 @@ impl<'a> TintPicker<'a> {
         let mut dragging = false;
         let mut rects = PickerRects {
             chips: Vec::new(),
+            die: Rect::NOTHING,
             disk: Rect::NOTHING,
+            preview: Rect::NOTHING,
         };
         let id = ui.next_auto_id();
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = vec2(GAP, GAP);
             ui.horizontal_wrapped(|ui| {
-                self.palette_ui(ui, &theme, &mut rects.chips);
+                self.palette_ui(ui, &theme, &mut rects);
             });
             let (disk, held) = self.disk_ui(ui, &theme);
             rects.disk = disk;
             dragging = held;
             if self.preview {
-                preview_ui(ui, &theme, self.value.unwrap_or(self.default));
+                rects.preview = preview_ui(ui, &theme, self.value.unwrap_or(self.default));
             }
         });
         #[cfg(test)]
@@ -102,7 +104,8 @@ impl<'a> TintPicker<'a> {
         made
     }
 
-    fn palette_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, chips: &mut Vec<Rect>) {
+    fn palette_ui(&mut self, ui: &mut egui::Ui, theme: &Theme, rects: &mut PickerRects) {
+        let chips = &mut rects.chips;
         let shown = self.value.unwrap_or(self.default);
         let fill = theme.tint(self.tone, self.default);
         let r = chip(ui, theme, fill, self.value.is_none(), "Default");
@@ -142,19 +145,21 @@ impl<'a> TintPicker<'a> {
             );
             painter.line_segment([at(k as f32), at(k as f32 + 1.0)], Stroke::new(3.0, colour));
         }
-        paint_icon(
+        // Inside the ring, which runs at 0.4 of the chip from its centre.
+        rects.die = paint_icon(
             ui,
-            r.rect.shrink(6.0),
+            r.rect.shrink(2.0),
             crate::icons::dice_5(),
             theme.color(Tone::Text, Swatch::Neutral),
         );
         if r.clicked() {
             *self.value = Some(Tint::random());
         }
-        chips.push(r.rect);
+        rects.chips.push(r.rect);
     }
 
-    /// The disk; whether it is being dragged.
+    /// The disk; whether the pointer is held on it (from the press to the release, so a
+    /// drag is reported once, when it ends).
     fn disk_ui(&mut self, ui: &mut egui::Ui, theme: &Theme) -> (Rect, bool) {
         let side = DISK.min(ui.available_width()).max(CHIP);
         let (rect, response) = ui.allocate_exact_size(vec2(side, side), Sense::click_and_drag());
@@ -197,7 +202,7 @@ impl<'a> TintPicker<'a> {
             .circle_stroke(mark, 5.0, Stroke::new(3.0, Color32::BLACK));
         ui.painter()
             .circle_stroke(mark, 5.0, Stroke::new(1.5, Color32::WHITE));
-        (rect, response.dragged())
+        (rect, response.is_pointer_button_down_on())
     }
 }
 
@@ -219,10 +224,16 @@ fn chip(
     response.on_hover_text(name)
 }
 
-fn paint_icon(ui: &egui::Ui, rect: Rect, icon: egui::ImageSource<'static>, colour: Color32) {
-    egui::Image::new(icon)
-        .tint(colour)
-        .paint_at(ui, rect.shrink(4.0));
+/// `icon` in `colour`, 4 points inside `rect`; where it went.
+fn paint_icon(
+    ui: &egui::Ui,
+    rect: Rect,
+    icon: egui::ImageSource<'static>,
+    colour: Color32,
+) -> Rect {
+    let rect = rect.shrink(4.0);
+    egui::Image::new(icon).tint(colour).paint_at(ui, rect);
+    rect
 }
 
 /// A colour that stands out on a fill at `tone`: dark on the text side's light fills in a
@@ -233,22 +244,29 @@ fn on(theme: &Theme, tone: Tone) -> Color32 {
     theme.color(opposite, Swatch::Neutral)
 }
 
-/// The tint in use, small and not clickable: link text, a label, a selected row.
-fn preview_ui(ui: &mut egui::Ui, theme: &Theme, tint: Tint) {
+/// The tint in use, small and not clickable or selectable: link text, a label, a selected
+/// row. Where it went.
+fn preview_ui(ui: &mut egui::Ui, theme: &Theme, tint: Tint) -> Rect {
     use egui::RichText;
+    let text = |ui: &mut egui::Ui, words: RichText| {
+        ui.add(egui::Label::new(words).selectable(false));
+    };
     ui.horizontal(|ui| {
-        ui.label(
+        text(
+            ui,
             RichText::new("Link")
                 .small()
                 .underline()
                 .color(theme.tint(Tone::Text, tint)),
         );
-        let label = |ui: &mut egui::Ui, fill: Tone, text: Color32, words: &str| {
+        let label = |ui: &mut egui::Ui, fill: Tone, colour: Color32, words: &str| {
             egui::Frame::new()
                 .fill(theme.tint(fill, tint))
                 .corner_radius(6.0)
                 .inner_margin(vec2(6.0, 1.0))
-                .show(ui, |ui| ui.label(RichText::new(words).small().color(text)));
+                .show(ui, |ui| {
+                    text(ui, RichText::new(words).small().color(colour))
+                });
         };
         label(ui, Tone::Raised, theme.tint(Tone::Text, tint), "Label");
         label(
@@ -257,7 +275,9 @@ fn preview_ui(ui: &mut egui::Ui, theme: &Theme, tint: Tint) {
             theme.color(Tone::Text, Swatch::Neutral),
             "Selected",
         );
-    });
+    })
+    .response
+    .rect
 }
 
 /// The tint at `pos` on a disk at `centre` of `radius`: hue 0° at the right, counter-
@@ -285,7 +305,9 @@ pub(super) fn report(changed: bool, dragging: bool, held: &mut bool) -> bool {
 #[derive(Clone)]
 pub(super) struct PickerRects {
     pub(super) chips: Vec<Rect>,
+    pub(super) die: Rect,
     pub(super) disk: Rect,
+    pub(super) preview: Rect,
 }
 
 #[cfg(test)]
@@ -306,6 +328,7 @@ mod tests {
         ctx: egui::Context,
         value: Option<Tint>,
         made: Vec<bool>,
+        cursor: egui::CursorIcon,
     }
 
     impl Rig {
@@ -317,6 +340,7 @@ mod tests {
                 ctx,
                 value,
                 made: Vec::new(),
+                cursor: egui::CursorIcon::Default,
             }
         }
 
@@ -338,6 +362,7 @@ mod tests {
                 );
             });
             output.textures_delta.clear();
+            self.cursor = output.platform_output.cursor_icon;
         }
 
         fn rects(&self) -> PickerRects {
@@ -423,6 +448,59 @@ mod tests {
             rig.value
         );
         assert!(once(&made), "{made:?}");
+    }
+
+    #[test]
+    fn a_drag_on_the_disk_is_reported_once() {
+        let mut rig = Rig::new(None);
+        rig.frame(400.0, false, vec![]);
+        rig.frame(400.0, false, vec![]);
+        let start = rig.rects().disk.center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        rig.made.clear();
+        rig.frame(400.0, false, vec![egui::Event::PointerMoved(start)]);
+        rig.frame(400.0, false, vec![button(start, true)]);
+        let mut pos = start;
+        for _ in 0..4 {
+            pos += egui::vec2(10.0, 0.0);
+            rig.frame(400.0, false, vec![egui::Event::PointerMoved(pos)]);
+        }
+        rig.frame(400.0, false, vec![button(pos, false)]);
+        rig.frame(400.0, false, vec![]);
+        assert!(once(&rig.made), "{:?}", rig.made);
+        match rig.value {
+            Some(Tint::Custom { chroma, hue }) => {
+                assert!(chroma > 0.05, "{chroma}");
+                assert!(hue < 1.0 || hue > 359.0, "dragged right: {hue}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_die_is_legible() {
+        let mut rig = Rig::new(None);
+        rig.frame(400.0, false, vec![]);
+        rig.frame(400.0, false, vec![]);
+        let die = rig.rects().die;
+        assert!(die.width() >= 12.0, "{die:?}");
+    }
+
+    #[test]
+    fn preview_text_is_not_selectable() {
+        let mut rig = Rig::new(Some(Tint::Swatch(Swatch::Red)));
+        rig.frame(400.0, true, vec![]);
+        rig.frame(400.0, true, vec![]);
+        let preview = rig.rects().preview;
+        let over = preview.left_center() + egui::vec2(6.0, 0.0);
+        rig.frame(400.0, true, vec![egui::Event::PointerMoved(over)]);
+        rig.frame(400.0, true, vec![]);
+        assert_ne!(rig.cursor, egui::CursorIcon::Text, "over {preview:?}");
     }
 
     #[test]

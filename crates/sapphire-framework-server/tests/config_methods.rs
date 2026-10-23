@@ -466,6 +466,18 @@ async fn without_a_bridge_a_batch_with_a_bridge_key_fails() {
     );
 }
 
+static CTX_ALONE_GUI: AppContext = AppContext::new("cfgalonegui");
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_bridge_a_gui_key_needs_the_bridge() {
+    let f = Fixture::start(&CTX_ALONE_GUI, None).await;
+    let e = f
+        .set(&[("gui.theme.contrast", Value::String("high".into()))])
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::NotRunning(_)), "{e:?}");
+}
+
 static CTX_LIVE: AppContext = AppContext::new("cfglive");
 
 #[tokio::test(flavor = "multi_thread")]

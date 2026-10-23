@@ -347,6 +347,25 @@ fn split_list(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The keys of the GUI's settings: stored by the bridge, read by the apps' windows.
+pub mod gui {
+    /// Light, dark, or the system's.
+    pub const THEME_PREFERENCE: &str = "gui.theme.preference";
+    /// How far apart text and background are.
+    pub const THEME_CONTRAST: &str = "gui.theme.contrast";
+    /// The accent's hue, in whole degrees.
+    pub const THEME_ACCENT_HUE: &str = "gui.theme.accent_hue";
+    /// The accent's chroma, in thousandths.
+    pub const THEME_ACCENT_CHROMA: &str = "gui.theme.accent_chroma";
+    /// Every theme key.
+    pub const THEME_KEYS: [&str; 4] = [
+        THEME_PREFERENCE,
+        THEME_CONTRAST,
+        THEME_ACCENT_HUE,
+        THEME_ACCENT_CHROMA,
+    ];
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

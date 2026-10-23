@@ -112,9 +112,12 @@ pub fn valid_name(input: &str) -> Option<String> {
     (!t.is_empty()).then(|| t.to_owned())
 }
 
-/// Invite lifetimes offered, in seconds.
-pub const TTL_CHOICES: [(&str, u64); 3] =
-    [("1 hour", 3_600), ("24 hours", 86_400), ("7 days", 604_800)];
+/// Invite lifetimes offered: the id of the message naming each, and its seconds.
+pub const TTL_CHOICES: [(&str, u64); 3] = [
+    ("sapphire-ttl-hour", 3_600),
+    ("sapphire-ttl-day", 86_400),
+    ("sapphire-ttl-week", 604_800),
+];
 
 /// This host's name: the device-name default when founding a workgroup.
 ///

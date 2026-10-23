@@ -7,6 +7,7 @@ use crate::Health;
 use crate::client::{CommandId, FrameworkClient};
 use corundum_gui::COMPACT_WIDTH;
 use corundum_gui::theme::{self, ThemeSettings};
+use corundum_gui::tr;
 
 use crate::views::{
     DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
@@ -15,8 +16,9 @@ use crate::views::{
 
 /// A page the app adds to [`Settings`], under its own heading.
 pub trait SettingsSection {
-    /// The page's name in the list.
-    fn label(&self) -> String;
+    /// The page's name in the list, in the language installed in `ctx`. It is asked every
+    /// frame, so a language switch reaches the list at once.
+    fn label(&self, ctx: &egui::Context) -> String;
 
     /// Render the page.
     fn ui(&mut self, ui: &mut egui::Ui);
@@ -32,12 +34,16 @@ enum Screen {
     Embedding,
 }
 
+/// The sync pages and the ids of the messages naming them in the list.
 const SYNC_SCREENS: [(Screen, &str); 5] = [
-    (Screen::Workspaces, "Workspace"),
-    (Screen::Devices, "Devices"),
-    (Screen::Workgroup, "Workgroup"),
-    (Screen::ExternalDevices, "External devices"),
-    (Screen::Embedding, "Embedding"),
+    (Screen::Workspaces, "sapphire-settings-workspace"),
+    (Screen::Devices, "sapphire-settings-devices"),
+    (Screen::Workgroup, "sapphire-settings-workgroup"),
+    (
+        Screen::ExternalDevices,
+        "sapphire-settings-external-devices",
+    ),
+    (Screen::Embedding, "sapphire-settings-embedding"),
 ];
 
 /// Which page is open.
@@ -221,7 +227,10 @@ impl Settings {
                 Some(page) => {
                     let back = crate::icons::image(ui, crate::icons::arrow_left(), 14.0);
                     if ui
-                        .add(egui::Button::image_and_text(back, "Settings"))
+                        .add(egui::Button::image_and_text(
+                            back,
+                            tr!(ui, "sapphire-settings"),
+                        ))
                         .clicked()
                     {
                         self.page = None;
@@ -258,6 +267,7 @@ impl Settings {
     fn list_ui(&mut self, ui: &mut egui::Ui) {
         // Full-width rows, their labels at the left.
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
+            let ctx = ui.ctx().clone();
             let mut entry = |ui: &mut egui::Ui, page: Page, label: &str| {
                 let open = self.page == Some(page);
                 if ui.selectable_label(open, label).clicked() {
@@ -270,19 +280,23 @@ impl Settings {
             };
             if !self.app_sections.is_empty() {
                 heading(ui, &self.app_heading);
-                let labels: Vec<String> = self.app_sections.iter().map(|s| s.label()).collect();
+                let labels: Vec<String> = self.app_sections.iter().map(|s| s.label(&ctx)).collect();
                 for (i, label) in labels.iter().enumerate() {
                     entry(ui, Page::App(i), label);
                 }
             }
-            heading(ui, "General");
-            entry(ui, Page::Appearance, "Appearance");
-            heading(ui, "Sync");
-            for (screen, label) in SYNC_SCREENS {
-                entry(ui, Page::Sync(screen), label);
+            heading(ui, &tr!(&ctx, "sapphire-settings-general"));
+            entry(
+                ui,
+                Page::Appearance,
+                &tr!(&ctx, "sapphire-settings-appearance"),
+            );
+            heading(ui, &tr!(&ctx, "sapphire-settings-sync"));
+            for (screen, id) in SYNC_SCREENS {
+                entry(ui, Page::Sync(screen), &tr!(&ctx, id));
             }
             ui.add_space(12.0);
-            entry(ui, Page::About, "About");
+            entry(ui, Page::About, &tr!(&ctx, "sapphire-settings-about"));
         });
     }
 
@@ -325,9 +339,9 @@ impl Settings {
     fn about_ui(&mut self, ui: &mut egui::Ui) {
         let app = self.client.app();
         ui.heading(app.app_name);
-        ui.label(format!("Version {}", app.version));
+        ui.label(tr!(ui, "sapphire-settings-version", version = app.version));
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("Services").strong());
+        ui.label(egui::RichText::new(tr!(ui, "sapphire-settings-services")).strong());
         self.status_ui(ui);
     }
 
@@ -350,7 +364,7 @@ impl Settings {
 mod tests {
     use super::*;
     use crate::client::{BridgeState, Conn, ServerState, Snapshot};
-    use crate::test_support::{client, render};
+    use crate::test_support::{client, render, render_in};
     use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, SyncStatusResult};
     use sapphire_bridge_api::{
         EmbedInfoResult, EmbedNote, EmbedSettingsResult, ExternalDeviceInfo, GrainId, LocalModel,
@@ -486,7 +500,7 @@ mod tests {
     struct Named(&'static str, usize);
 
     impl SettingsSection for Named {
-        fn label(&self) -> String {
+        fn label(&self, _ctx: &egui::Context) -> String {
             self.0.to_owned()
         }
 
@@ -501,6 +515,27 @@ mod tests {
         let settings =
             Settings::new(client).with_app_sections("Example", vec![Box::new(Named("General", 0))]);
         (settings, runtime)
+    }
+
+    #[test]
+    fn settings_list_follows_the_language() {
+        let ctx = crate::test_support::english_ctx();
+        let (mut settings, _rt) = settings();
+        let set = |tag: &str| {
+            crate::i18n::install(
+                &ctx,
+                &crate::i18n::LanguageSettings {
+                    language: crate::i18n::Language::Explicit(tag.into()),
+                },
+            )
+        };
+        let texts = render_in(&ctx, [900.0, 600.0], |ui| settings.ui(ui));
+        assert!(texts.iter().any(|t| t == "Workspace"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "General"), "{texts:?}");
+        set("ja");
+        let texts = render_in(&ctx, [900.0, 600.0], |ui| settings.ui(ui));
+        assert!(texts.iter().any(|t| t == "ワークスペース"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "Workspace"), "{texts:?}");
     }
 
     #[test]

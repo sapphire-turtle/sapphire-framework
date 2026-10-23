@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use egui::{Align, Layout};
 
+use crate::i18n::Message;
 use crate::theme::Swatch;
+use corundum_gui::tr;
 use sapphire_backend::{WorkspaceEntry, WorkspaceRegistry};
 
 /// App-specific hooks the [`WorkspaceManager`] needs.
@@ -71,7 +73,7 @@ enum Dialog {
 #[derive(Default)]
 pub struct WorkspaceManager {
     dialog: Option<Dialog>,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 impl WorkspaceManager {
@@ -90,18 +92,21 @@ impl WorkspaceManager {
         registry: &mut WorkspaceRegistry,
         host: &dyn WorkspaceHost,
     ) -> Option<WorkspaceAction> {
+        crate::i18n::register(ui.ctx(), crate::RESOURCES);
         let mut action = None;
 
         ui.horizontal(|ui| {
-            ui.heading("Workspaces");
+            ui.heading(tr!(ui, "sapphire-manager-title"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("Open Existing…").clicked()
+                if ui
+                    .button(tr!(ui, "sapphire-manager-open-existing"))
+                    .clicked()
                     && self.dialog.is_none()
-                    && let Some(created) = self.open_existing(registry, host)
+                    && let Some(created) = self.open_existing(registry, host, ui.ctx())
                 {
                     action = Some(created);
                 }
-                if ui.button("New").clicked() && self.dialog.is_none() {
+                if ui.button(tr!(ui, "sapphire-manager-new")).clicked() && self.dialog.is_none() {
                     self.dialog = Some(Dialog::NewLocal {
                         name: String::new(),
                     });
@@ -109,7 +114,7 @@ impl WorkspaceManager {
             });
         });
 
-        if let Some(msg) = self.error.clone() {
+        if let Some(msg) = self.error.as_ref().map(|m| m.text(ui.ctx())) {
             ui.horizontal(|ui| {
                 ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::DANGER), msg);
                 if ui.small_button("×").clicked() {
@@ -125,8 +130,8 @@ impl WorkspaceManager {
         if ids.is_empty() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                ui.label("No workspaces yet.");
-                ui.label("Create a new one or open an existing folder.");
+                ui.label(tr!(ui, "sapphire-manager-none"));
+                ui.label(tr!(ui, "sapphire-manager-none-hint"));
             });
         } else {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -160,7 +165,7 @@ impl WorkspaceManager {
         let name = entry.name.clone().unwrap_or_else(|| id.to_owned());
         let subtitle = match &entry.path {
             Some(p) => p.display().to_string(),
-            None => "(invalid: no path)".to_owned(),
+            None => tr!(ui, "sapphire-manager-invalid"),
         };
         let reachable = host.is_reachable(entry);
 
@@ -172,21 +177,23 @@ impl WorkspaceManager {
                         if !reachable {
                             ui.colored_label(
                                 crate::theme::current(ui.ctx()).text(Swatch::WARNING),
-                                "unreachable",
+                                tr!(ui, "sapphire-manager-unreachable"),
                             );
                         }
                     });
                     ui.small(subtitle);
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Delete").clicked() && self.dialog.is_none() {
+                    if ui.button(tr!(ui, "sapphire-manager-delete")).clicked()
+                        && self.dialog.is_none()
+                    {
                         self.dialog = Some(Dialog::ConfirmDelete {
                             id: id.to_owned(),
                             name: name.clone(),
                             typed: String::new(),
                         });
                     }
-                    if ui.button("Open").clicked() {
+                    if ui.button(tr!(ui, "sapphire-manager-open")).clicked() {
                         action = Some(WorkspaceAction::Open(id.to_owned()));
                     }
                 });
@@ -208,24 +215,31 @@ impl WorkspaceManager {
         match self.dialog.as_mut() {
             Some(Dialog::NewLocal { name }) => {
                 let mut open = true;
-                egui::Window::new("New Workspace")
+                egui::Window::new(tr!(&ctx, "sapphire-manager-new-title"))
+                    .id(egui::Id::new("manager_new"))
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .open(&mut open)
                     .show(&ctx, |ui| {
                         ui.set_min_width(360.0);
-                        ui.label("Name");
+                        ui.label(tr!(ui, "sapphire-manager-name"));
                         ui.add(
                             egui::TextEdit::singleline(name)
-                                .hint_text("e.g. My Timer")
+                                .hint_text(tr!(ui, "sapphire-manager-name-hint"))
                                 .desired_width(f32::INFINITY),
                         );
                         ui.add_space(8.0);
                         let trimmed = name.trim().to_owned();
                         let can = !trimmed.is_empty();
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add_enabled(can, egui::Button::new("Create")).clicked() {
+                            if ui
+                                .add_enabled(
+                                    can,
+                                    egui::Button::new(tr!(ui, "sapphire-action-create")),
+                                )
+                                .clicked()
+                            {
                                 let id = unique_id(&trimmed, registry);
                                 let path = host.default_workspaces_dir().join(&id);
                                 match host.create_local(&path, &trimmed) {
@@ -236,10 +250,12 @@ impl WorkspaceManager {
                                         action = Some(WorkspaceAction::Created(id));
                                         close = true;
                                     }
-                                    Err(msg) => self.error = Some(msg),
+                                    Err(msg) => {
+                                        self.error = Some(crate::views::backend_error(&msg))
+                                    }
                                 }
                             }
-                            if ui.button("Cancel").clicked() {
+                            if ui.button(tr!(ui, "sapphire-action-cancel")).clicked() {
                                 close = true;
                             }
                         });
@@ -252,21 +268,18 @@ impl WorkspaceManager {
                 let id = id.clone();
                 let expected = name.clone();
                 let mut open = true;
-                egui::Window::new("Remove Workspace")
+                egui::Window::new(tr!(&ctx, "sapphire-manager-remove-title"))
+                    .id(egui::Id::new("manager_remove"))
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                     .open(&mut open)
                     .show(&ctx, |ui| {
                         ui.set_min_width(360.0);
-                        ui.label("This removes the workspace from the list.");
-                        ui.small("Files on disk are not deleted.");
+                        ui.label(tr!(ui, "sapphire-manager-remove-body"));
+                        ui.small(tr!(ui, "sapphire-manager-remove-hint"));
                         ui.add_space(8.0);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("Type");
-                            ui.strong(&expected);
-                            ui.label("to confirm:");
-                        });
+                        crate::views::type_to_confirm(ui, &expected);
                         ui.add(
                             egui::TextEdit::singleline(typed)
                                 .hint_text(&expected)
@@ -276,14 +289,17 @@ impl WorkspaceManager {
                         ui.add_space(8.0);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui
-                                .add_enabled(matches, egui::Button::new("Remove"))
+                                .add_enabled(
+                                    matches,
+                                    egui::Button::new(tr!(ui, "sapphire-action-remove")),
+                                )
                                 .clicked()
                             {
                                 registry.remove(&id);
                                 action = Some(WorkspaceAction::Deleted(id.clone()));
                                 close = true;
                             }
-                            if ui.button("Cancel").clicked() {
+                            if ui.button(tr!(ui, "sapphire-action-cancel")).clicked() {
                                 close = true;
                             }
                         });
@@ -306,14 +322,15 @@ impl WorkspaceManager {
         &mut self,
         registry: &mut WorkspaceRegistry,
         host: &dyn WorkspaceHost,
+        ctx: &egui::Context,
     ) -> Option<WorkspaceAction> {
-        let path = crate::platform::pick_folder("Open workspace folder")?;
+        let path = crate::platform::pick_folder(&tr!(ctx, "sapphire-manager-pick-title"))?;
         if !path.join(format!(".{}", host.app_name())).is_dir() {
-            self.error = Some(format!(
-                "'{}' is not a {} workspace",
-                path.display(),
-                host.app_name()
-            ));
+            self.error = Some(
+                Message::new("sapphire-manager-not-workspace")
+                    .arg("path", path.display().to_string())
+                    .arg("app", host.app_name()),
+            );
             return None;
         }
         let base = path

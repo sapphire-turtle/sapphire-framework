@@ -158,18 +158,18 @@ impl<D: Copy + PartialEq> Shell<D> {
 /// The services' state as a dot; clicking it opens About.
 fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
     let visuals = ui.visuals();
-    let (color, text) = match health {
-        Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
+    let (color, id) = match health {
+        Health::Connecting => (visuals.weak_text_color(), "sapphire-shell-connecting"),
         Health::Healthy => (
             crate::theme::current(ui.ctx()).text(crate::theme::Swatch::SUCCESS),
-            "Services running",
+            "sapphire-shell-healthy",
         ),
-        Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
-        Health::Problem => (visuals.error_fg_color, "A service needs attention"),
+        Health::UpdateAvailable => (visuals.hyperlink_color, "sapphire-shell-update"),
+        Health::Problem => (visuals.error_fg_color, "sapphire-shell-problem"),
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
     ui.painter().circle_filled(rect.center(), 4.0, color);
-    response.on_hover_text(text)
+    response.on_hover_text(corundum_gui::tr!(ui, id))
 }
 
 #[cfg(test)]

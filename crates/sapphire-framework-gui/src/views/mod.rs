@@ -4,6 +4,7 @@
 pub mod model;
 
 mod banner;
+pub(crate) mod config;
 mod devices;
 mod embedding;
 mod external;

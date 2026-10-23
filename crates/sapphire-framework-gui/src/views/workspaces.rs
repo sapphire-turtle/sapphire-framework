@@ -2,7 +2,7 @@ use egui::{Align, Layout};
 
 use crate::theme::{Swatch, Tone};
 
-use crate::client::{Command, CommandOutput};
+use crate::client::{Command, CommandError, CommandOutput};
 
 use super::model::{
     Badge, badge, bring_target, display_name, display_path, move_target, new_target_ok, others,
@@ -309,14 +309,14 @@ impl WorkspacePicker {
 
     /// Route the result: a remove's back to its dialog, which closes on success; any other
     /// failure to the error line.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match (result, self.confirm.as_mut()) {
             (Ok(_), Some(c)) if c.sent => self.confirm = None,
             (Err(e), Some(c)) if c.sent => {
                 c.sent = false;
-                c.error = Some(e.clone());
+                c.error = Some(e.message.clone());
             }
-            (Err(e), _) => self.error = Some(e.clone()),
+            (Err(e), _) => self.error = Some(e.message.clone()),
             (Ok(_), _) => {}
         }
     }

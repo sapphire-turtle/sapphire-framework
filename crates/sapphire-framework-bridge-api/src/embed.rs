@@ -184,35 +184,25 @@ impl ModelSettings {
         self.local.is_none() && self.remote.is_none()
     }
 
-    /// Check both slots; the message names the field at fault.
+    /// Check both slots; the message names the field at fault, never its value.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(local) = &self.local {
             if local.model != LOCAL_MODEL {
-                return Err(format!(
-                    "local: only `{LOCAL_MODEL}` is supported, not `{}`",
-                    local.model
-                ));
+                return Err(format!("local: only `{LOCAL_MODEL}` is supported"));
             }
             if !(64..=2048).contains(&local.dimension) {
-                return Err(format!(
-                    "local: `dimension` = {} is out of range (64..=2048)",
-                    local.dimension
-                ));
+                return Err("local: `dimension` is out of range (64..=2048)".to_owned());
             }
             if !(1..=MAX_TOKENS).contains(&local.max_tokens) {
                 return Err(format!(
-                    "local: `max_tokens` = {} is out of range (1..={MAX_TOKENS})",
-                    local.max_tokens
+                    "local: `max_tokens` is out of range (1..={MAX_TOKENS})"
                 ));
             }
         }
         if let Some(remote) = &self.remote {
             if !(remote.endpoint.starts_with("http://") || remote.endpoint.starts_with("https://"))
             {
-                return Err(format!(
-                    "remote: `endpoint` = `{}` is not an http(s) URL",
-                    remote.endpoint
-                ));
+                return Err("remote: `endpoint` is not an http(s) URL".to_owned());
             }
             if remote.model.trim().is_empty() {
                 return Err("remote: `model` must not be empty".to_owned());
@@ -540,6 +530,47 @@ mod tests {
         assert!(check(&local).is_ok());
         local.model = "other".into();
         assert!(check(&local).is_err());
+    }
+
+    #[test]
+    fn validation_does_not_quote_the_value() {
+        let check = |local: Option<LocalModel>, remote: Option<RemoteModel>| {
+            ModelSettings { local, remote }.validate().unwrap_err()
+        };
+        let errs = [
+            check(
+                Some(LocalModel {
+                    model: "MARKER-42".into(),
+                    ..LocalModel::default()
+                }),
+                None,
+            ),
+            check(
+                Some(LocalModel {
+                    dimension: 4242424,
+                    ..LocalModel::default()
+                }),
+                None,
+            ),
+            check(
+                Some(LocalModel {
+                    max_tokens: 4242424,
+                    ..LocalModel::default()
+                }),
+                None,
+            ),
+            check(
+                None,
+                Some(RemoteModel {
+                    endpoint: "MARKER-42".into(),
+                    ..remote()
+                }),
+            ),
+        ];
+        for err in errs {
+            assert!(!err.contains("MARKER-42"), "{err}");
+            assert!(!err.contains("4242424"), "{err}");
+        }
     }
 
     #[test]

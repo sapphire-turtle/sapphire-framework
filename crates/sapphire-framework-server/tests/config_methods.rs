@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use sapphire_bridge_api::settings::{Entry, EntryValue, Origin};
 use sapphire_bridge_api::{
-    CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET, CONFIG_UNSET, ConfigEntry, ConfigListResult,
-    ConfigSchemaResult, ConfigWriteResult,
+    CONFIG_LIST, CONFIG_SCHEMA, CONFIG_SET, CONFIG_UNSET, ConfigEntry, ConfigFieldError,
+    ConfigFieldErrors, ConfigListResult, ConfigSchemaResult, ConfigWriteResult,
 };
-use sapphire_bridge_client::BridgeClient;
+use sapphire_bridge_client::{BridgeClient, ConfigFieldErrorsExt};
 use sapphire_framework_server::sync::testing::StubBridge;
 use sapphire_framework_server::{
     AppServer, AppSettings, Apply, BridgeConnector, Kind, Process, Scope, Selection, SelectionFile,
@@ -556,4 +556,54 @@ async fn a_mixed_unset_is_split_by_owner() {
         );
     }
     assert!(!f.device_file().contains("note"), "{}", f.device_file());
+}
+
+static CTX_FIELDS: AppContext = AppContext::new("cfgfields");
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_app_key_error_carries_its_field_errors() {
+    let f = Fixture::start(&CTX_FIELDS, None).await;
+
+    for dry_run in [false, true] {
+        let result = if dry_run {
+            f.config
+                .config_check_set(
+                    None,
+                    vec![ConfigEntry {
+                        key: f.key("level"),
+                        value: Value::Int(99),
+                    }],
+                )
+                .await
+        } else {
+            f.set(&[(&f.key("level"), Value::Int(99))]).await
+        };
+        let fields = ConfigFieldErrors::from_rpc(&rpc(result)).expect("field errors");
+        assert_eq!(fields.fields.len(), 1, "{fields:?}");
+        assert_eq!(fields.fields[0].key, f.key("level"));
+    }
+}
+
+static CTX_FIELDS_PASS: AppContext = AppContext::new("cfgfieldspass");
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bridge_key_error_passes_its_field_errors_through() {
+    let (stub, bridge) = stub().await;
+    let data = ConfigFieldErrors {
+        fields: vec![ConfigFieldError {
+            key: "net.discovery".into(),
+            message: "expected a bool".into(),
+        }],
+    };
+    let sent = data.to_data();
+    stub.respond(CONFIG_SET, move |_| {
+        Err(RpcError {
+            data: Some(sent.clone()),
+            ..RpcError::internal("invalid value for `net.discovery`")
+        })
+    });
+    let f = Fixture::start(&CTX_FIELDS_PASS, Some(bridge)).await;
+
+    let e = rpc(f.set(&[("net.discovery", Value::Bool(false))]).await);
+    assert_eq!(ConfigFieldErrors::from_rpc(&e), Some(data));
 }

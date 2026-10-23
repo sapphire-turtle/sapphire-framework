@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, Topology};
 use sapphire_bridge_api::{
-    EmbedSettingsResult, LOCAL_MODEL, LocalModel, ModelSettings, PeerInfo, RemoteModel, Slot,
-    WorkgroupWorkspaceInfo, WorkspaceRoles,
+    EmbedSettingsResult, PeerInfo, Slot, WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
 
 /// The workspace's state, as one badge.
@@ -295,82 +294,6 @@ pub fn auto_resolution(s: &EmbedSettingsResult, slot: Slot) -> &'static str {
         Slot::Local => "Auto: on",
         Slot::Remote => "Auto: on",
     }
-}
-
-/// The local slot's form, as typed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct LocalForm {
-    pub dimension: String,
-    pub max_tokens: String,
-}
-
-/// The remote slot's form, as typed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RemoteForm {
-    pub endpoint: String,
-    pub model: String,
-    pub dimension: String,
-}
-
-impl LocalForm {
-    /// The form for `model`, or the defaults when the slot is empty.
-    pub fn from(model: Option<&LocalModel>) -> LocalForm {
-        let m = model.cloned().unwrap_or_default();
-        LocalForm {
-            dimension: m.dimension.to_string(),
-            max_tokens: m.max_tokens.to_string(),
-        }
-    }
-
-    /// The model this form describes, checked as the bridge would.
-    pub fn parse(&self) -> Result<LocalModel, String> {
-        let model = LocalModel {
-            model: LOCAL_MODEL.to_owned(),
-            dimension: number(&self.dimension, "dimension")?,
-            max_tokens: number(&self.max_tokens, "max tokens")?,
-        };
-        ModelSettings {
-            local: Some(model.clone()),
-            remote: None,
-        }
-        .validate()?;
-        Ok(model)
-    }
-}
-
-impl RemoteForm {
-    /// The form for `model`, empty when the slot is.
-    pub fn from(model: Option<&RemoteModel>) -> RemoteForm {
-        match model {
-            Some(m) => RemoteForm {
-                endpoint: m.endpoint.clone(),
-                model: m.model.clone(),
-                dimension: m.dimension.to_string(),
-            },
-            None => RemoteForm::default(),
-        }
-    }
-
-    /// The model this form describes, checked as the bridge would.
-    pub fn parse(&self) -> Result<RemoteModel, String> {
-        let model = RemoteModel {
-            endpoint: self.endpoint.trim().to_owned(),
-            model: self.model.trim().to_owned(),
-            dimension: number(&self.dimension, "dimension")?,
-        };
-        ModelSettings {
-            local: None,
-            remote: Some(model.clone()),
-        }
-        .validate()?;
-        Ok(model)
-    }
-}
-
-fn number<T: std::str::FromStr>(text: &str, what: &str) -> Result<T, String> {
-    text.trim()
-        .parse()
-        .map_err(|_| format!("{what}: `{}` is not a number", text.trim()))
 }
 
 #[cfg(test)]
@@ -743,31 +666,5 @@ mod tests {
             "Auto: off — this CPU has no AVX2"
         );
         assert_eq!(auto_resolution(&s, Slot::Remote), "Auto: on");
-    }
-
-    #[test]
-    fn the_forms_parse_and_validate_like_the_bridge() {
-        let local = LocalForm::from(None);
-        assert_eq!(local.parse().unwrap(), LocalModel::default());
-        let too_big = LocalForm {
-            dimension: "4096".into(),
-            ..local.clone()
-        };
-        assert!(too_big.parse().unwrap_err().contains("dimension"));
-        let nan = LocalForm {
-            max_tokens: "lots".into(),
-            ..local
-        };
-        assert!(nan.parse().unwrap_err().contains("not a number"));
-
-        let remote = RemoteForm {
-            endpoint: " https://e ".into(),
-            model: "m".into(),
-            dimension: "8".into(),
-        };
-        let parsed = remote.parse().unwrap();
-        assert_eq!(parsed.endpoint, "https://e");
-        assert_eq!(RemoteForm::from(Some(&parsed)).dimension, "8");
-        assert!(RemoteForm::default().parse().is_err());
     }
 }

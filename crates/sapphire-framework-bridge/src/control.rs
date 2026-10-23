@@ -1035,7 +1035,17 @@ fn encode<T: serde::Serialize>(value: T) -> std::result::Result<Value, RpcError>
 /// on it. It travels as an internal error: the request was well-formed, and the bridge failed
 /// to do what was asked.
 fn failed(err: Error) -> RpcError {
-    RpcError::internal(err.to_string())
+    let mut rpc = RpcError::internal(err.to_string());
+    if let Error::Settings(err) = &err {
+        rpc.data = field_errors_data(err);
+    }
+    rpc
+}
+
+/// The keys a settings error names, as an error's `data`: none when it names none.
+fn field_errors_data(err: &sapphire_framework_settings::Error) -> Option<Value> {
+    let fields = err.field_errors();
+    (!fields.is_empty()).then(|| sapphire_bridge_api::ConfigFieldErrors { fields }.to_data())
 }
 
 #[cfg(test)]

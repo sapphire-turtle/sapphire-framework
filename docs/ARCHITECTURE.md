@@ -155,6 +155,10 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
   コマンド（workgroup 作成・invite・参加・デバイス退避・ワークスペースの有効化/無効化/忘却）も
   同じクライアントが発行する。更新は 5 秒、コマンドは 30 秒（参加のみ 90 秒）で打ち切る
   （`ClientConfig::{fetch_timeout, command_timeout}` で変更可）— 相手が応答しなくても UI は固まらない。
+  設定（#314）は bridge が公開する `config.schema` / `config.list` / `config.set`（app server が中継）を
+  `Command::{ConfigLoad, ConfigWrite, Restart}` で呼び、`ConfigState` に読み込む。キーを知らずに
+  スキーマから組み立てるので、キーを足してもコードは要らない。書き込みの拒否は
+  `RpcError.data` の `ConfigFieldErrors` を `CommandError.fields` として保つ。
   `views::*` はスナップショットから表示用の行・文言を作る**純関数**で、egui なしでテストできる。
 - **表示層**: `Settings` が上記を egui で描く（アプリが追加するセクション、Sync — ワークスペース /
   デバイス / workgroup / 外部デバイス / 埋め込み — 、About）。幅が広いときは一覧＋ページ、狭いときは
@@ -162,6 +166,11 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
   レール（狭いときは下のバー）に並べ、その下端に Settings とサービス状態のドットを置く。状態は
   `Health` で、問題があるときだけ全画面共通のバナーを出す。同期していないワークスペースでは bridge が
   無くても問題としない（`bridge_needed`）。アイコンは Lucide（`icons`、各アプリと同じ）。
+  設定ページ（`views/config/`）は section ごとに 1 ページ、スコープ（device / workgroup / workspace）ごとに
+  タブを持ち、kind ごとのウィジェット（secret は保存値を出さないパスワード欄）で描く。編集はタブごとの
+  下書きで、Apply が 1 バッチとして書き込み、拒否は該当フィールドの下に出る。再起動待ちの設定は
+  バナーに並び、bridge と app server それぞれに Restart ボタンがある。埋め込み画面は状態表示のみで、
+  編集は同じ section 経由。
   旧名 `SyncPanel` は `Settings` の deprecated な別名。
   invite チケットは画面にのみ出し、`tracing` には渡さない。`pub use egui` で利用側は egui の版を
   合わせられる。

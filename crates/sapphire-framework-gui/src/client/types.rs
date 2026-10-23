@@ -1,13 +1,16 @@
 //! What the client layer hands the views, and what they hand back.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
+use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{
-    EmbedRequest, EmbedSettingsResult, ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo,
-    StatusResult, WorkgroupWorkspaceInfo, WorkspaceRoles,
+    ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedSettingsResult, Entry,
+    ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo, Scope, SettingDef, StatusResult,
+    WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
 use sapphire_ipc::Endpoint;
 
@@ -207,8 +210,6 @@ pub enum Command {
         /// The device's name or id.
         selector: String,
     },
-    /// Change the embedding settings, or store or clear this device's API key.
-    Embedding(EmbedRequest),
     /// Manage the workgroup's external devices.
     ExternalDevice(ExternalDeviceRequest),
     /// Set a device's election priority.
@@ -255,10 +256,37 @@ pub enum Command {
     },
     /// Run the target's `service install`.
     ServiceInstall(ServiceTarget),
+    /// Read the settings: the schema, the effective values and each scope's file.
+    ConfigLoad,
+    /// Write settings to one scope: `set` and `unset` are checked first, then written, in
+    /// that order; the first failure stops it.
+    ConfigWrite {
+        /// The scope to write.
+        scope: Scope,
+        /// The keys to set, with their values.
+        set: Vec<ConfigEntry>,
+        /// The keys (or prefixes) to remove.
+        unset: Vec<String>,
+    },
+    /// Restart a process so its restart-only settings take effect, and wait until it is back.
+    Restart(Process),
+}
+
+/// The settings, as one [`Command::ConfigLoad`] read them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigState {
+    /// Every setting the app server and the bridge know; the bridge's are missing when it
+    /// does not answer.
+    pub schema: Vec<SettingDef>,
+    /// Every setting's effective value.
+    pub effective: Vec<Entry>,
+    /// What each scope's file holds: `Device`, `Workgroup`, and `Workspace` only when a
+    /// workspace is selected.
+    pub by_scope: BTreeMap<Scope, Vec<Entry>>,
 }
 
 /// What a finished command produced.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CommandOutput {
     /// Nothing to show beyond success.
     Done,
@@ -266,6 +294,34 @@ pub enum CommandOutput {
     Ticket(String),
     /// An external device's token, to show once.
     Token(String),
+    /// The settings [`Command::ConfigLoad`] read.
+    Config(ConfigState),
+    /// What a [`Command::ConfigWrite`] changed, and every key awaiting a restart.
+    Written(ConfigWriteResult),
+}
+
+/// Why a command failed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CommandError {
+    /// The message to show.
+    pub message: String,
+    /// The keys a rejected settings write names, each with what is wrong with it.
+    pub fields: Vec<ConfigFieldError>,
+}
+
+impl From<String> for CommandError {
+    fn from(message: String) -> CommandError {
+        CommandError {
+            message,
+            fields: Vec::new(),
+        }
+    }
+}
+
+impl From<&str> for CommandError {
+    fn from(message: &str) -> CommandError {
+        message.to_owned().into()
+    }
 }
 
 /// Names one sent command.
@@ -277,6 +333,6 @@ pub struct CommandId(pub u64);
 pub struct Outcome {
     /// Which command.
     pub id: CommandId,
-    /// Its result; the error is the message to show.
-    pub result: Result<CommandOutput, String>,
+    /// Its result; the error carries the message to show.
+    pub result: Result<CommandOutput, CommandError>,
 }

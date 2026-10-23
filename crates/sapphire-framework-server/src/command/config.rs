@@ -135,6 +135,22 @@ pub(super) async fn config<A: AppSettings + Clone>(
 
 // ── online ──────────────────────────────────────────────────────────────────
 
+/// A write's result, or — when the batch was rejected and its keys named — `None` after
+/// printing the error and one `{key}: {message}` line per key.
+fn rejected_batch<T>(result: sapphire_ipc::Result<T>) -> Option<sapphire_ipc::Result<T>> {
+    use sapphire_bridge_client::ConfigFieldErrorsExt;
+    if let Err(err @ sapphire_ipc::Error::Rpc(rpc)) = &result
+        && let Some(fields) = sapphire_bridge_api::ConfigFieldErrors::from_rpc(rpc)
+    {
+        eprintln!("{err}");
+        for line in fields.lines() {
+            eprintln!("{line}");
+        }
+        return None;
+    }
+    Some(result)
+}
+
 /// `config …` over `client`, the app server's connection.
 async fn online(
     client: Arc<sapphire_ipc::Client>,
@@ -200,7 +216,13 @@ async fn online(
             let entries = sapphire_bridge_api::parse_entries(&schema, &entries, stdin)
                 .map_err(Error::Config)?;
             (
-                bridge.config_set(scope.scope(), entries).await?,
+                {
+                    let result = bridge.config_set(scope.scope(), entries).await;
+                    let Some(result) = rejected_batch(result) else {
+                        return Ok(1);
+                    };
+                    result?
+                },
                 restart,
                 Some(schema),
             )
@@ -210,7 +232,13 @@ async fn online(
             scope,
             restart,
         } => (
-            bridge.config_unset(scope.scope(), keys).await?,
+            {
+                let result = bridge.config_unset(scope.scope(), keys).await;
+                let Some(result) = rejected_batch(result) else {
+                    return Ok(1);
+                };
+                result?
+            },
             restart,
             None,
         ),

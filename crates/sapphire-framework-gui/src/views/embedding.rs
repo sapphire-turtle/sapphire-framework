@@ -1,31 +1,18 @@
 use crate::theme::Swatch;
-use sapphire_bridge_api::{
-    ApiKey, EmbedDeviceSetParams, EmbedModelSetParams, EmbedRequest, EmbedSettingsResult,
-    LOCAL_MODEL, ModelSettings, ModelSource, Slot, SlotModel,
-};
+use sapphire_bridge_api::{EmbedSettingsResult, LOCAL_MODEL, ModelSource, Slot};
 
-use crate::client::{Command, CommandOutput};
+use super::model::{SWITCH_CHOICES, auto_resolution, embedding_status};
+use super::{ViewCtx, unavailable};
 
-use super::model::{LocalForm, RemoteForm, SWITCH_CHOICES, auto_resolution, embedding_status};
-use super::{ViewCtx, error_line, unavailable};
-
-/// The embedding models — the workgroup's local and remote one — this device's switch for
-/// each, and its API key.
+/// The embedding status: the workgroup's local and remote model, this device's switch for
+/// each, and whether its API key is set. Read-only; the Embedding section's settings page,
+/// shown below it, edits them.
 #[derive(Default)]
-pub struct EmbeddingView {
-    local: LocalForm,
-    remote: RemoteForm,
-    key: String,
-    /// The settings the forms were filled from: refilled when the bridge's change.
-    filled_from: Option<ModelSettings>,
-    /// A key was sent: clear the field once it is stored.
-    key_sent: bool,
-    error: Option<String>,
-}
+pub struct EmbeddingView {}
 
 impl EmbeddingView {
-    /// Render. Returns the settings change the user asked for.
-    pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+    /// Render.
+    pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) {
         ui.horizontal(|ui| {
             ui.heading("Embedding");
             if cx.busy {
@@ -35,17 +22,12 @@ impl EmbeddingView {
         ui.separator();
         let Some(bridge) = cx.snapshot.bridge.up() else {
             unavailable(ui, "The bridge");
-            return None;
+            return;
         };
         let Some(s) = &bridge.embedding else {
-            ui.label("This bridge is too old to configure embedding; update sapphire-bridge.");
-            return None;
+            ui.label("This bridge is too old to report embedding; update sapphire-bridge.");
+            return;
         };
-        if self.filled_from.as_ref() != Some(&s.models) {
-            self.local = LocalForm::from(s.models.local.as_ref());
-            self.remote = RemoteForm::from(s.models.remote.as_ref());
-            self.filled_from = Some(s.models.clone());
-        }
 
         let (line, warn) = embedding_status(s);
         if warn {
@@ -61,184 +43,125 @@ impl EmbeddingView {
         if s.shadowed_device_models {
             ui.small("This device's own model settings are ignored: the workgroup's apply.");
         }
-        error_line(ui, &mut self.error);
         ui.add_space(8.0);
 
-        let mut out = None;
-        egui::CollapsingHeader::new(format!("Remote model ({whose})"))
-            .default_open(true)
+        ui.label(egui::RichText::new(format!("Remote model ({whose})")).strong());
+        egui::Grid::new("embed_remote")
+            .num_columns(2)
             .show(ui, |ui| {
-                ui.small("An OpenAI-compatible endpoint. Used first whenever it is on.");
-                egui::Grid::new("embed_remote")
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label("Endpoint");
-                        ui.text_edit_singleline(&mut self.remote.endpoint);
-                        ui.end_row();
-                        ui.label("Model");
-                        ui.text_edit_singleline(&mut self.remote.model);
-                        ui.end_row();
-                        ui.label("Dimension");
-                        ui.text_edit_singleline(&mut self.remote.dimension);
-                        ui.end_row();
-                    });
-                if let Some(c) = self.slot_buttons(ui, cx, s, Slot::Remote) {
-                    out = Some(c);
-                }
-                if let Some(c) = self.switch(ui, cx, s, Slot::Remote) {
-                    out = Some(c);
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("API key");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.key)
-                            .password(true)
-                            .hint_text(if s.key_set { "set" } else { "not set" }),
-                    );
-                    if ui
-                        .add_enabled(
-                            !cx.busy && !self.key.trim().is_empty(),
-                            egui::Button::new("Set"),
-                        )
-                        .clicked()
-                    {
-                        self.key_sent = true;
-                        out = Some(Command::Embedding(EmbedRequest::KeySet(ApiKey::new(
-                            self.key.clone(),
-                        ))));
+                match &s.models.remote {
+                    Some(m) => {
+                        row(ui, "Endpoint", &m.endpoint);
+                        row(ui, "Model", &m.model);
+                        row(ui, "Dimension", &m.dimension.to_string());
                     }
-                    if s.key_set
-                        && ui
-                            .add_enabled(!cx.busy, egui::Button::new("Clear"))
-                            .clicked()
-                    {
-                        out = Some(Command::Embedding(EmbedRequest::KeyClear));
-                    }
-                });
-                ui.small("The key stays on this device; it is never synced.");
+                    None => row(ui, "Model", "not configured"),
+                }
+                switch_row(ui, s, Slot::Remote);
+                row(ui, "API key", if s.key_set { "set" } else { "not set" });
             });
+        ui.small("The key stays on this device; it is never synced.");
+        ui.add_space(8.0);
 
-        egui::CollapsingHeader::new(format!("Local model ({whose})"))
-            .default_open(true)
+        ui.label(egui::RichText::new(format!("Local model ({whose})")).strong());
+        egui::Grid::new("embed_local")
+            .num_columns(2)
             .show(ui, |ui| {
-                ui.small("Computed on each device's CPU; needs AVX2 to be usable.");
-                egui::Grid::new("embed_local")
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label("Model");
-                        ui.monospace(LOCAL_MODEL);
-                        ui.end_row();
-                        ui.label("Dimension");
-                        ui.text_edit_singleline(&mut self.local.dimension);
-                        ui.end_row();
-                        ui.label("Max tokens");
-                        ui.text_edit_singleline(&mut self.local.max_tokens);
-                        ui.end_row();
-                    });
-                if let Some(c) = self.slot_buttons(ui, cx, s, Slot::Local) {
-                    out = Some(c);
+                match &s.models.local {
+                    Some(m) => {
+                        row(ui, "Model", LOCAL_MODEL);
+                        row(ui, "Dimension", &m.dimension.to_string());
+                        row(ui, "Max tokens", &m.max_tokens.to_string());
+                    }
+                    None => row(ui, "Model", "not configured"),
                 }
-                if let Some(c) = self.switch(ui, cx, s, Slot::Local) {
-                    out = Some(c);
-                }
+                switch_row(ui, s, Slot::Local);
             });
-        out
+        ui.small("Computed on each device's CPU; needs AVX2 to be usable.");
     }
+}
 
-    /// Save and Clear for one slot's model.
-    fn slot_buttons(
-        &mut self,
-        ui: &mut egui::Ui,
-        cx: &ViewCtx,
-        s: &EmbedSettingsResult,
-        slot: Slot,
-    ) -> Option<Command> {
-        let configured = match slot {
-            Slot::Local => s.models.local.is_some(),
-            Slot::Remote => s.models.remote.is_some(),
+/// One label and value of the status grid.
+fn row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(label);
+    ui.monospace(value);
+    ui.end_row();
+}
+
+/// This device's Auto / On / Off for one slot, and what Auto resolves to.
+fn switch_row(ui: &mut egui::Ui, s: &EmbedSettingsResult, slot: Slot) {
+    let current = s.device.enabled(slot);
+    let label = SWITCH_CHOICES
+        .iter()
+        .find(|(_, value)| *value == current)
+        .map_or("Auto", |(label, _)| label);
+    ui.label("On this device");
+    if current.is_none() {
+        ui.monospace(auto_resolution(s, slot));
+    } else {
+        ui.monospace(label);
+    }
+    ui.end_row();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{BridgeState, Conn, Snapshot};
+    use crate::views::config::widgets::tests::drawn_text;
+    use sapphire_bridge_api::{LocalModel, ModelSettings, RemoteModel, StatusResult};
+
+    #[test]
+    fn it_shows_the_models_switches_and_key_read_only() {
+        let snapshot = Snapshot {
+            fetched: true,
+            bridge: Conn::Up(BridgeState {
+                status: StatusResult {
+                    version: "1".into(),
+                    node_id: "aaaa".into(),
+                    workgroup: None,
+                    routes: vec![],
+                    embedding: None,
+                },
+                peers: vec![],
+                peer_roles: vec![],
+                ledger: vec![],
+                external_devices: None,
+                embedding: Some(EmbedSettingsResult {
+                    models: ModelSettings {
+                        local: Some(LocalModel::default()),
+                        remote: Some(RemoteModel {
+                            endpoint: "https://api.example.com".into(),
+                            model: "remote-m".into(),
+                            dimension: 8,
+                        }),
+                    },
+                    key_set: true,
+                    avx2: true,
+                    ..EmbedSettingsResult::default()
+                }),
+            }),
+            server: Conn::Absent,
         };
-        let mut out = None;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!cx.busy, egui::Button::new("Save"))
-                .clicked()
-            {
-                let parsed = match slot {
-                    Slot::Local => self.local.parse().map(SlotModel::Local),
-                    Slot::Remote => self.remote.parse().map(SlotModel::Remote),
-                };
-                match parsed {
-                    Ok(model) => {
-                        out = Some(Command::Embedding(EmbedRequest::ModelSet(
-                            EmbedModelSetParams {
-                                slot,
-                                model: Some(model),
-                            },
-                        )));
-                    }
-                    Err(e) => self.error = Some(e),
-                }
-            }
-            if configured
-                && ui
-                    .add_enabled(!cx.busy, egui::Button::new("Clear"))
-                    .clicked()
-            {
-                out = Some(Command::Embedding(EmbedRequest::ModelSet(
-                    EmbedModelSetParams { slot, model: None },
-                )));
-            }
-        });
-        out
-    }
-
-    /// This device's Auto / On / Off for one slot.
-    fn switch(
-        &mut self,
-        ui: &mut egui::Ui,
-        cx: &ViewCtx,
-        s: &EmbedSettingsResult,
-        slot: Slot,
-    ) -> Option<Command> {
-        let current = s.device.enabled(slot);
-        let mut out = None;
-        ui.horizontal(|ui| {
-            ui.label("On this device");
-            for (label, value) in SWITCH_CHOICES {
-                if ui
-                    .add_enabled(!cx.busy, egui::Button::selectable(current == value, label))
-                    .clicked()
-                    && current != value
-                {
-                    out = Some(Command::Embedding(EmbedRequest::DeviceSet(
-                        EmbedDeviceSetParams {
-                            slot,
-                            enabled: value,
-                        },
-                    )));
-                }
-            }
-            if current.is_none() {
-                ui.small(auto_resolution(s, slot));
-            }
-        });
-        out
-    }
-
-    /// Show the failure, or clear a key that was stored.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
-        match result {
-            Ok(_) => {
-                if std::mem::take(&mut self.key_sent) {
-                    self.key.clear();
-                }
-                self.error = None;
-            }
-            Err(e) => {
-                self.key_sent = false;
-                self.error = Some(e.clone());
-            }
+        let cx = ViewCtx {
+            snapshot: &snapshot,
+            app_name: "app",
+            busy: false,
+        };
+        let mut view = EmbeddingView::default();
+        let drawn = drawn_text(|ui| view.ui(ui, &cx));
+        for text in [
+            "Remote model (this device)",
+            "https://api.example.com",
+            "remote-m",
+            LOCAL_MODEL,
+            "API key\nset\n",
+            "Auto: on",
+        ] {
+            assert!(drawn.contains(text), "{text} missing from {drawn}");
+        }
+        for gone in ["Save", "Clear"] {
+            assert!(!drawn.contains(gone), "{gone} is still drawn: {drawn}");
         }
     }
 }

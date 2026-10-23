@@ -175,3 +175,31 @@ async fn a_dry_run_reports_the_error_a_write_would() {
         .unwrap_err();
     assert!(unset.to_string().contains("no.such.key"), "{unset}");
 }
+
+#[tokio::test]
+async fn a_rejected_set_carries_its_field_errors() {
+    use sapphire_bridge_client::ConfigFieldErrorsExt;
+
+    let net = LoopbackNetwork::new();
+    let host = common::start(&net, common::NODE_A, "host-a").await;
+    let client = common::connect(&host).await;
+
+    let bad = vec![entry("net.discovery", s("not a bool"))];
+    let written = client.config_set(None, bad.clone()).await.unwrap_err();
+    let checked = client.config_check_set(None, bad).await.unwrap_err();
+    for err in [written, checked] {
+        let sapphire_ipc::Error::Rpc(rpc) = err else {
+            panic!("expected an RPC error, got {err:?}");
+        };
+        let fields = sapphire_bridge_api::ConfigFieldErrors::from_rpc(&rpc).expect("field errors");
+        assert_eq!(fields.fields.len(), 1, "{fields:?}");
+        assert_eq!(fields.fields[0].key, "net.discovery");
+        // Error text never carries the value: the GUI shows it and the CLIs print it.
+        assert!(!rpc.message.contains("not a bool"), "{}", rpc.message);
+        assert!(
+            !fields.fields[0].message.contains("not a bool"),
+            "{}",
+            fields.fields[0].message
+        );
+    }
+}

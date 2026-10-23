@@ -1,6 +1,6 @@
 use sapphire_backend::protocol::ReleaseInfo;
 
-use crate::client::{Command, CommandOutput, Conn, ServerState, ServiceTarget};
+use crate::client::{Command, CommandError, CommandOutput, Conn, ServerState, ServiceTarget};
 
 use super::{ViewCtx, error_line};
 
@@ -86,8 +86,8 @@ impl ServiceStatusBanner {
     }
 
     /// Show an install failure (it carries the command to run by hand).
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
-        self.error = result.as_ref().err().cloned();
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
+        self.error = result.as_ref().err().map(|e| e.message.clone());
     }
 }
 

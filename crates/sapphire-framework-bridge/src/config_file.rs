@@ -27,6 +27,9 @@ pub struct DeviceConfig {
     /// `[embed]`.
     #[serde(default)]
     pub embed: EmbedTable,
+    /// `[gui]`: the apps' windows' settings, which the bridge stores and never reads.
+    #[serde(default)]
+    pub gui: toml::Table,
 }
 
 /// A workgroup's `root/config.toml`.
@@ -39,6 +42,9 @@ pub struct WorkgroupConfig {
     /// `[embed]`, the models.
     #[serde(default)]
     pub embed: EmbedTable,
+    /// `[gui]`: the apps' windows' settings, which the bridge stores and never reads.
+    #[serde(default)]
+    pub gui: toml::Table,
 }
 
 /// `[embed]`: the device's switches and cache, and the models of whichever scope holds them.

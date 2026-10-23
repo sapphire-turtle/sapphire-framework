@@ -1,6 +1,6 @@
 //! The bridge as a settings owner: its keys, its files and its final check (#314).
 //!
-//! The keys are `[net]` and `[embed]` of two `config.toml` files — the device's, in the
+//! The keys are `[net]`, `[embed]` and `[gui]` of two `config.toml` files — the device's, in the
 //! bridge directory, and the workgroup's, in its synced root. A host without a workgroup
 //! keeps the workgroup's keys in the device file, under the same paths, so joining one later
 //! moves nothing the user typed.
@@ -11,9 +11,10 @@ use std::sync::Arc;
 use sapphire_bridge_api::{DEFAULT_DIMENSION, DEFAULT_MAX_TOKENS, LOCAL_MODEL, MAX_TOKENS, QType};
 use sapphire_framework_settings::{
     Apply, FieldError, Kind, Process, Registry, Scope, SettingDef, SettingsOwner, Staged, Value,
+    gui,
 };
 
-use crate::config_file::{DeviceConfig, WorkgroupConfig, parse};
+use crate::config_file::{DeviceConfig, WorkgroupConfig};
 use crate::dir::BridgeDir;
 use crate::net::NetConfig;
 use crate::relay::relays;
@@ -188,6 +189,60 @@ pub fn bridge_defs() -> Vec<SettingDef> {
             "The remote endpoint's API key",
         ),
     ]
+    .into_iter()
+    .chain(gui_defs())
+    .collect()
+}
+
+/// The theme of every sapphire app's window: the workgroup's, which a device may override.
+/// The bridge stores them and never reads them.
+fn gui_defs() -> Vec<SettingDef> {
+    let def = |key: &str, kind: Kind, default: Value, doc: &str| SettingDef {
+        key: key.into(),
+        kind,
+        scopes: vec![Scope::Workgroup],
+        overridable: true,
+        apply: Apply::Live,
+        default: Some(default),
+        section: "Appearance".into(),
+        doc: doc.into(),
+        process: Process::Bridge,
+    };
+    let choices = |c: &[&str]| Kind::Enum {
+        choices: c.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    vec![
+        def(
+            gui::THEME_PREFERENCE,
+            choices(&["system", "light", "dark"]),
+            Value::String("system".into()),
+            "Light, dark, or the system's",
+        ),
+        def(
+            gui::THEME_CONTRAST,
+            choices(&["low", "medium", "high"]),
+            Value::String("medium".into()),
+            "How far apart text and background are",
+        ),
+        def(
+            gui::THEME_ACCENT,
+            choices(&gui::ACCENT_CHOICES),
+            Value::String("default".into()),
+            "The accent: the default, one of the theme's colours, or custom (its hue and chroma)",
+        ),
+        def(
+            gui::THEME_ACCENT_HUE,
+            Kind::Int { min: 0, max: 360 },
+            Value::Int(255),
+            "A custom accent's hue, in degrees",
+        ),
+        def(
+            gui::THEME_ACCENT_CHROMA,
+            Kind::Int { min: 0, max: 250 },
+            Value::Int(150),
+            "A custom accent's chroma, in thousandths",
+        ),
+    ]
 }
 
 /// The bridge's settings owner.
@@ -206,7 +261,7 @@ impl BridgeOwner {
 pub fn registry(dir: &BridgeDir) -> sapphire_framework_settings::Result<Registry> {
     Registry::new(
         vec![Arc::new(BridgeOwner::new(dir.clone()))],
-        &[("net", 0), ("embed", 0)],
+        &[("net", 0), ("embed", 0), ("gui", 0)],
     )
 }
 
@@ -216,6 +271,15 @@ fn failure(file: &std::path::Path, message: impl ToString) -> FieldError {
         file: Some(file.to_path_buf()),
         message: message.to_string(),
     }
+}
+
+/// Parse `text` as a whole config file, naming only the line and column on failure.
+///
+/// TOML's own error text quotes the offending line, which may hold any setting's value.
+fn parse_quiet<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    toml::from_str(text).map_err(|e: toml::de::Error| {
+        sapphire_framework_settings::describe_toml_error(text, e.span(), e.message())
+    })
 }
 
 impl SettingsOwner for BridgeOwner {
@@ -260,12 +324,12 @@ impl SettingsOwner for BridgeOwner {
                 Err(e) => return errors.push(failure(path, e)),
             };
             let (net, embed) = if device_file {
-                match parse::<DeviceConfig>(path, &text) {
+                match parse_quiet::<DeviceConfig>(&text) {
                     Ok(c) => (c.net, c.embed),
                     Err(e) => return errors.push(failure(path, e)),
                 }
             } else {
-                match parse::<WorkgroupConfig>(path, &text) {
+                match parse_quiet::<WorkgroupConfig>(&text) {
                     Ok(c) => (c.net, c.embed),
                     Err(e) => return errors.push(failure(path, e)),
                 }
@@ -273,11 +337,12 @@ impl SettingsOwner for BridgeOwner {
             if let Err(e) = embed.models() {
                 errors.push(failure(path, e));
             }
-            if let Err(e) = relays(&net, None) {
+            // The error quotes the URL, a setting's value: say only what is wrong.
+            if relays(&net, None).is_err() {
                 errors.push(FieldError {
                     key: Some("net.relays".into()),
                     file: Some(path.to_path_buf()),
-                    message: e.to_string(),
+                    message: "holds an entry that is not a relay URL".into(),
                 });
             }
         };
@@ -391,6 +456,11 @@ mod tests {
             ("embed.local.model", s(LOCAL_MODEL)),
             ("embed.local.dimension", Value::Int(512)),
             ("embed.local.max_tokens", Value::Int(256)),
+            ("gui.theme.preference", s("dark")),
+            ("gui.theme.contrast", s("high")),
+            ("gui.theme.accent", s("custom")),
+            ("gui.theme.accent_hue", Value::Int(30)),
+            ("gui.theme.accent_chroma", Value::Int(200)),
         ];
         // Every non-secret key is covered, so a new def without a row here fails.
         let remote: Vec<(&str, Value)> = vec![
@@ -471,10 +541,22 @@ mod tests {
     fn a_bad_relay_url_is_rejected() {
         let (_tmp, dir, reg) = setup();
         // The registry's own URL check would catch a typo first, so write the file by hand.
-        std::fs::write(dir.config_toml(), "[net]\nrelays = [\"not a url\"]\n").unwrap();
+        std::fs::write(dir.config_toml(), "[net]\nrelays = [\"MARKER-42\"]\n").unwrap();
         let err = apply(&reg, None, vec![set("net.discovery", Value::Bool(false))]).unwrap_err();
         assert!(matches!(&err, Error::Rejected(_)), "{err}");
         assert!(err.to_string().contains("not a relay URL"), "{err}");
+        assert!(!err.to_string().contains("MARKER-42"), "{err}");
+    }
+
+    #[test]
+    fn a_broken_file_is_rejected_without_quoting_it() {
+        let (_tmp, dir, reg) = setup();
+        // Valid TOML, but not a `DeviceConfig`: the parse error must not quote the line.
+        std::fs::write(dir.config_toml(), "[net]\nrelays = \"MARKER-42\"\n").unwrap();
+        let err = apply(&reg, None, vec![set("net.discovery", Value::Bool(false))]).unwrap_err();
+        assert!(matches!(&err, Error::Rejected(_)), "{err}");
+        assert!(err.to_string().contains("line 2"), "{err}");
+        assert!(!err.to_string().contains("MARKER-42"), "{err}");
     }
 
     #[test]
@@ -510,5 +592,66 @@ mod tests {
         for gone in ["endpoint", "model", "dimension"] {
             assert!(!text.contains(gone), "{gone} survived: {text}");
         }
+    }
+
+    #[test]
+    fn gui_theme_keys_list_their_defaults() {
+        let (_tmp, _dir, reg) = setup();
+        let entries = sapphire_framework_settings::list(&reg, None, None).unwrap();
+        for (key, value) in [
+            (gui::THEME_PREFERENCE, s("system")),
+            (gui::THEME_CONTRAST, s("medium")),
+            (gui::THEME_ACCENT, s("default")),
+            (gui::THEME_ACCENT_HUE, Value::Int(255)),
+            (gui::THEME_ACCENT_CHROMA, Value::Int(150)),
+        ] {
+            let entry = entries.iter().find(|e| e.key == key).unwrap();
+            assert_eq!(entry.value, EntryValue::Value(value), "{key}");
+            assert_eq!(entry.origin, Origin::Default, "{key}");
+        }
+    }
+
+    #[test]
+    fn a_device_gui_value_overrides_the_workgroups() {
+        let (_tmp, dir, reg) = setup();
+        Workgroup::create(&dir, "wg", "dev", "node").unwrap();
+        let contrast = |v| vec![set(gui::THEME_CONTRAST, s(v))];
+        apply(&reg, Some(Scope::Workgroup), contrast("high")).unwrap();
+        apply(&reg, Some(Scope::Device), contrast("low")).unwrap();
+        let entry = get(&reg, gui::THEME_CONTRAST).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("low")));
+        assert_eq!(entry.origin, Origin::Scope(Scope::Device));
+        let unset = vec![Op::Unset {
+            key: gui::THEME_CONTRAST.into(),
+        }];
+        apply(&reg, Some(Scope::Device), unset).unwrap();
+        let entry = get(&reg, gui::THEME_CONTRAST).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("high")));
+        assert_eq!(entry.origin, Origin::Scope(Scope::Workgroup));
+    }
+
+    #[test]
+    fn gui_values_out_of_range_are_rejected() {
+        let (_tmp, _dir, reg) = setup();
+        for (key, value) in [
+            (gui::THEME_ACCENT_HUE, Value::Int(361)),
+            (gui::THEME_ACCENT_CHROMA, Value::Int(251)),
+            (gui::THEME_CONTRAST, s("loud")),
+            (gui::THEME_ACCENT, s("accent")),
+            (gui::THEME_ACCENT, s("mauve")),
+        ] {
+            assert!(apply(&reg, None, vec![set(key, value)]).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_gui_table_in_both_files_validates() {
+        let (_tmp, dir, reg) = setup();
+        let wg = Workgroup::create(&dir, "wg", "dev", "node").unwrap();
+        let table = "[gui.theme]\ncontrast = \"high\"\n";
+        std::fs::write(dir.config_toml(), table).unwrap();
+        std::fs::write(wg.config_toml(), table).unwrap();
+        apply(&reg, None, vec![set("net.discovery", Value::Bool(false))]).unwrap();
+        apply(&reg, None, vec![set("embed.local.model", s(LOCAL_MODEL))]).unwrap();
     }
 }

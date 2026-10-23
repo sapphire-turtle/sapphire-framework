@@ -6,7 +6,7 @@ use sapphire_bridge_api::{
     ExternalDeviceAddParams, ExternalDeviceInfo, ExternalDeviceRequest, ExternalDeviceSetAppsParams,
 };
 
-use crate::client::{Command, CommandOutput};
+use crate::client::{Command, CommandError, CommandOutput};
 
 use super::{ViewCtx, backend_error, bridge_unavailable, error_line, register};
 use crate::i18n::Message;
@@ -214,7 +214,7 @@ impl ExternalDeviceList {
     }
 
     /// Show the token once, or the error.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match result {
             Ok(CommandOutput::Token(token)) => {
                 let name = self.pending_name.take().unwrap_or_default();
@@ -232,7 +232,7 @@ impl ExternalDeviceList {
             }
             Err(e) => {
                 self.pending_name = None;
-                self.error = Some(backend_error(e));
+                self.error = Some(backend_error(&e.message));
             }
         }
     }

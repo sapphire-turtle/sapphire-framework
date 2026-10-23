@@ -105,10 +105,10 @@ impl<D: Copy + PartialEq> Shell<D> {
         &mut self.settings
     }
 
-    /// The theme settings, once, after the user changed them in Settings: the app saves
-    /// these. See [`Settings::take_theme_changed`].
+    /// Always `None`: the framework saves the theme itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<corundum_gui::theme::ThemeSettings> {
-        self.settings.take_theme_changed()
+        None
     }
 
     /// The language settings, once, after the user changed them in Settings: the app saves
@@ -123,6 +123,7 @@ impl<D: Copy + PartialEq> Shell<D> {
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
         crate::i18n::register(ui.ctx(), crate::RESOURCES);
         self.settings.poll();
+        self.settings.follow_theme(ui.ctx());
         let health = self.settings.health();
         // Set by the dot, read by Settings in the same frame: the two closures cannot both
         // hold `settings`.

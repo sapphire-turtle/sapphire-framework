@@ -15,8 +15,5 @@ corundum-theme-contrast = Contrast
 corundum-theme-low = Low
 corundum-theme-medium = Medium
 corundum-theme-high = High
-corundum-theme-accent-hue = Accent hue
-corundum-theme-accent-strength = Accent strength
-corundum-theme-preview = Preview
-# The preview's sample text, drawn in the accent colour.
+# The accent row's label.
 corundum-theme-accent = Accent

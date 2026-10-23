@@ -1,33 +1,19 @@
 use crate::theme::Swatch;
-use sapphire_bridge_api::{
-    ApiKey, EmbedDeviceSetParams, EmbedModelSetParams, EmbedRequest, EmbedSettingsResult,
-    LOCAL_MODEL, ModelSettings, ModelSource, Slot, SlotModel,
-};
+use sapphire_bridge_api::{EmbedSettingsResult, LOCAL_MODEL, ModelSource, Slot};
 
-use crate::client::{Command, CommandOutput};
-
-use super::model::{LocalForm, RemoteForm, SWITCH_CHOICES, auto_resolution, embedding_status};
-use super::{ViewCtx, backend_error, bridge_unavailable, error_line, register};
-use crate::i18n::Message;
+use super::model::{SWITCH_CHOICES, auto_resolution, embedding_status};
+use super::{ViewCtx, bridge_unavailable, register};
 use corundum_gui::tr;
 
-/// The embedding models — the workgroup's local and remote one — this device's switch for
-/// each, and its API key.
+/// The embedding status: the workgroup's local and remote model, this device's switch for
+/// each, and whether its API key is set. Read-only; the Embedding section's settings page,
+/// shown below it, edits them.
 #[derive(Default)]
-pub struct EmbeddingView {
-    local: LocalForm,
-    remote: RemoteForm,
-    key: String,
-    /// The settings the forms were filled from: refilled when the bridge's change.
-    filled_from: Option<ModelSettings>,
-    /// A key was sent: clear the field once it is stored.
-    key_sent: bool,
-    error: Option<Message>,
-}
+pub struct EmbeddingView {}
 
 impl EmbeddingView {
-    /// Render. Returns the settings change the user asked for.
-    pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+    /// Render.
+    pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) {
         register(ui);
         ui.horizontal(|ui| {
             ui.heading(tr!(ui, "sapphire-embedding-title"));
@@ -38,24 +24,19 @@ impl EmbeddingView {
         ui.separator();
         let Some(bridge) = cx.snapshot.bridge.up() else {
             bridge_unavailable(ui);
-            return None;
+            return;
         };
         let Some(s) = &bridge.embedding else {
             ui.label(tr!(ui, "sapphire-embedding-too-old"));
-            return None;
+            return;
         };
-        if self.filled_from.as_ref() != Some(&s.models) {
-            self.local = LocalForm::from(s.models.local.as_ref());
-            self.remote = RemoteForm::from(s.models.remote.as_ref());
-            self.filled_from = Some(s.models.clone());
-        }
 
         let (line, warn) = embedding_status(s);
+        let line = line.text(ui.ctx());
         if warn {
-            let line = line.text(ui.ctx());
             ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::WARNING), line);
         } else {
-            ui.label(line.text(ui.ctx()));
+            ui.label(line);
         }
         let whose = match s.source {
             Some(ModelSource::Device) => "device",
@@ -65,202 +46,141 @@ impl EmbeddingView {
         if s.shadowed_device_models {
             ui.small(tr!(ui, "sapphire-embedding-shadowed"));
         }
-        error_line(ui, &mut self.error);
         ui.add_space(8.0);
 
-        let mut out = None;
-        egui::CollapsingHeader::new(tr!(ui, "sapphire-embedding-remote-heading", whose = whose))
-            .id_salt("embed_remote_header")
-            .default_open(true)
+        ui.label(
+            egui::RichText::new(tr!(ui, "sapphire-embedding-remote-heading", whose = whose))
+                .strong(),
+        );
+        egui::Grid::new("embed_remote")
+            .num_columns(2)
             .show(ui, |ui| {
-                ui.small(tr!(ui, "sapphire-embedding-remote-hint"));
-                egui::Grid::new("embed_remote")
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label(tr!(ui, "sapphire-embedding-endpoint"));
-                        ui.text_edit_singleline(&mut self.remote.endpoint);
-                        ui.end_row();
-                        ui.label(tr!(ui, "sapphire-embedding-model"));
-                        ui.text_edit_singleline(&mut self.remote.model);
-                        ui.end_row();
-                        ui.label(tr!(ui, "sapphire-embedding-dimension"));
-                        ui.text_edit_singleline(&mut self.remote.dimension);
-                        ui.end_row();
-                    });
-                if let Some(c) = self.slot_buttons(ui, cx, s, Slot::Remote) {
-                    out = Some(c);
-                }
-                if let Some(c) = self.switch(ui, cx, s, Slot::Remote) {
-                    out = Some(c);
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label(tr!(ui, "sapphire-embedding-api-key"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.key)
-                            .password(true)
-                            .hint_text(if s.key_set {
-                                tr!(ui, "sapphire-embedding-key-is-set")
-                            } else {
-                                tr!(ui, "sapphire-embedding-key-not-set")
-                            }),
-                    );
-                    if ui
-                        .add_enabled(
-                            !cx.busy && !self.key.trim().is_empty(),
-                            egui::Button::new(tr!(ui, "sapphire-action-set")),
-                        )
-                        .clicked()
-                    {
-                        self.key_sent = true;
-                        out = Some(Command::Embedding(EmbedRequest::KeySet(ApiKey::new(
-                            self.key.clone(),
-                        ))));
+                match &s.models.remote {
+                    Some(m) => {
+                        row(ui, "sapphire-embedding-endpoint", &m.endpoint);
+                        row(ui, "sapphire-embedding-model", &m.model);
+                        row(ui, "sapphire-embedding-dimension", &m.dimension.to_string());
                     }
-                    if s.key_set
-                        && ui
-                            .add_enabled(
-                                !cx.busy,
-                                egui::Button::new(tr!(ui, "sapphire-action-clear")),
-                            )
-                            .clicked()
-                    {
-                        out = Some(Command::Embedding(EmbedRequest::KeyClear));
-                    }
-                });
-                ui.small(tr!(ui, "sapphire-embedding-key-note"));
-            });
-
-        egui::CollapsingHeader::new(tr!(ui, "sapphire-embedding-local-heading", whose = whose))
-            .id_salt("embed_local_header")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.small(tr!(ui, "sapphire-embedding-local-hint"));
-                egui::Grid::new("embed_local")
-                    .num_columns(2)
-                    .show(ui, |ui| {
-                        ui.label(tr!(ui, "sapphire-embedding-model"));
-                        ui.monospace(LOCAL_MODEL);
-                        ui.end_row();
-                        ui.label(tr!(ui, "sapphire-embedding-dimension"));
-                        ui.text_edit_singleline(&mut self.local.dimension);
-                        ui.end_row();
-                        ui.label(tr!(ui, "sapphire-embedding-max-tokens"));
-                        ui.text_edit_singleline(&mut self.local.max_tokens);
-                        ui.end_row();
-                    });
-                if let Some(c) = self.slot_buttons(ui, cx, s, Slot::Local) {
-                    out = Some(c);
+                    None => row(ui, "sapphire-embedding-model", "not configured"),
                 }
-                if let Some(c) = self.switch(ui, cx, s, Slot::Local) {
-                    out = Some(c);
-                }
-            });
-        out
-    }
-
-    /// Save and Clear for one slot's model.
-    fn slot_buttons(
-        &mut self,
-        ui: &mut egui::Ui,
-        cx: &ViewCtx,
-        s: &EmbedSettingsResult,
-        slot: Slot,
-    ) -> Option<Command> {
-        let configured = match slot {
-            Slot::Local => s.models.local.is_some(),
-            Slot::Remote => s.models.remote.is_some(),
-        };
-        let mut out = None;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!cx.busy, egui::Button::new(tr!(ui, "sapphire-action-save")))
-                .clicked()
-            {
-                let parsed = match slot {
-                    Slot::Local => self.local.parse().map(SlotModel::Local),
-                    Slot::Remote => self.remote.parse().map(SlotModel::Remote),
+                switch_row(ui, s, Slot::Remote);
+                let key = if s.key_set {
+                    tr!(ui, "sapphire-embedding-key-is-set")
+                } else {
+                    tr!(ui, "sapphire-embedding-key-not-set")
                 };
-                match parsed {
-                    Ok(model) => {
-                        out = Some(Command::Embedding(EmbedRequest::ModelSet(
-                            EmbedModelSetParams {
-                                slot,
-                                model: Some(model),
-                            },
-                        )));
+                row(ui, "sapphire-embedding-api-key", &key);
+            });
+        ui.small(tr!(ui, "sapphire-embedding-key-note"));
+        ui.add_space(8.0);
+
+        ui.label(
+            egui::RichText::new(tr!(ui, "sapphire-embedding-local-heading", whose = whose))
+                .strong(),
+        );
+        egui::Grid::new("embed_local")
+            .num_columns(2)
+            .show(ui, |ui| {
+                match &s.models.local {
+                    Some(m) => {
+                        row(ui, "sapphire-embedding-model", LOCAL_MODEL);
+                        row(ui, "sapphire-embedding-dimension", &m.dimension.to_string());
+                        row(
+                            ui,
+                            "sapphire-embedding-max-tokens",
+                            &m.max_tokens.to_string(),
+                        );
                     }
-                    Err(e) => self.error = Some(e),
+                    None => row(ui, "sapphire-embedding-model", "not configured"),
                 }
-            }
-            if configured
-                && ui
-                    .add_enabled(
-                        !cx.busy,
-                        egui::Button::new(tr!(ui, "sapphire-action-clear")),
-                    )
-                    .clicked()
-            {
-                out = Some(Command::Embedding(EmbedRequest::ModelSet(
-                    EmbedModelSetParams { slot, model: None },
-                )));
-            }
-        });
-        out
+                switch_row(ui, s, Slot::Local);
+            });
+        ui.small(tr!(ui, "sapphire-embedding-local-hint"));
     }
+}
 
-    /// This device's Auto / On / Off for one slot.
-    fn switch(
-        &mut self,
-        ui: &mut egui::Ui,
-        cx: &ViewCtx,
-        s: &EmbedSettingsResult,
-        slot: Slot,
-    ) -> Option<Command> {
-        let current = s.device.enabled(slot);
-        let mut out = None;
-        ui.horizontal(|ui| {
-            ui.label(tr!(ui, "sapphire-embedding-on-this-device"));
-            for (label, value) in SWITCH_CHOICES {
-                if ui
-                    .add_enabled(
-                        !cx.busy,
-                        egui::Button::selectable(
-                            current == value,
-                            crate::i18n::tr(ui.ctx(), label),
-                        ),
-                    )
-                    .clicked()
-                    && current != value
-                {
-                    out = Some(Command::Embedding(EmbedRequest::DeviceSet(
-                        EmbedDeviceSetParams {
-                            slot,
-                            enabled: value,
-                        },
-                    )));
-                }
-            }
-            if current.is_none() {
-                ui.small(crate::i18n::tr(ui.ctx(), auto_resolution(s, slot)));
-            }
-        });
-        out
+/// One label (the id of its message) and value of the status grid.
+fn row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(crate::i18n::tr(ui.ctx(), label));
+    ui.monospace(value);
+    ui.end_row();
+}
+
+/// This device's Auto / On / Off for one slot, and what Auto resolves to.
+fn switch_row(ui: &mut egui::Ui, s: &EmbedSettingsResult, slot: Slot) {
+    let current = s.device.enabled(slot);
+    let label = SWITCH_CHOICES
+        .iter()
+        .find(|(_, value)| *value == current)
+        .map_or("sapphire-switch-auto", |(label, _)| label);
+    ui.label(tr!(ui, "sapphire-embedding-on-this-device"));
+    if current.is_none() {
+        ui.monospace(crate::i18n::tr(ui.ctx(), auto_resolution(s, slot)));
+    } else {
+        ui.monospace(crate::i18n::tr(ui.ctx(), label));
     }
+    ui.end_row();
+}
 
-    /// Show the failure, or clear a key that was stored.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
-        match result {
-            Ok(_) => {
-                if std::mem::take(&mut self.key_sent) {
-                    self.key.clear();
-                }
-                self.error = None;
-            }
-            Err(e) => {
-                self.key_sent = false;
-                self.error = Some(backend_error(e));
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{BridgeState, Conn, Snapshot};
+    use crate::views::config::widgets::tests::drawn_text;
+    use sapphire_bridge_api::{LocalModel, ModelSettings, RemoteModel, StatusResult};
+
+    #[test]
+    fn it_shows_the_models_switches_and_key_read_only() {
+        let snapshot = Snapshot {
+            fetched: true,
+            bridge: Conn::Up(BridgeState {
+                gui: None,
+                status: StatusResult {
+                    version: "1".into(),
+                    node_id: "aaaa".into(),
+                    workgroup: None,
+                    routes: vec![],
+                    embedding: None,
+                },
+                peers: vec![],
+                peer_roles: vec![],
+                ledger: vec![],
+                external_devices: None,
+                embedding: Some(EmbedSettingsResult {
+                    models: ModelSettings {
+                        local: Some(LocalModel::default()),
+                        remote: Some(RemoteModel {
+                            endpoint: "https://api.example.com".into(),
+                            model: "remote-m".into(),
+                            dimension: 8,
+                        }),
+                    },
+                    key_set: true,
+                    avx2: true,
+                    ..EmbedSettingsResult::default()
+                }),
+            }),
+            server: Conn::Absent,
+        };
+        let cx = ViewCtx {
+            snapshot: &snapshot,
+            app_name: "app",
+            busy: false,
+        };
+        let mut view = EmbeddingView::default();
+        let drawn = drawn_text(|ui| view.ui(ui, &cx));
+        for text in [
+            "Remote model (this device)",
+            "https://api.example.com",
+            "remote-m",
+            LOCAL_MODEL,
+            "API key\nset\n",
+            "Auto: on",
+        ] {
+            assert!(drawn.contains(text), "{text} missing from {drawn}");
+        }
+        for gone in ["Save", "Clear"] {
+            assert!(!drawn.contains(gone), "{gone} is still drawn: {drawn}");
         }
     }
 }

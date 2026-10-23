@@ -1,6 +1,6 @@
 use sapphire_backend::protocol::ReleaseInfo;
 
-use crate::client::{Command, CommandOutput, Conn, ServerState, ServiceTarget};
+use crate::client::{Command, CommandError, CommandOutput, Conn, ServerState, ServiceTarget};
 
 use super::{ViewCtx, backend_error, error_line, register};
 use crate::i18n::Message;
@@ -100,12 +100,12 @@ impl ServiceStatusBanner {
     }
 
     /// Show an install failure (it carries the command to run by hand).
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
-        self.error = result.as_ref().err().map(|e| backend_error(e));
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
+        self.error = result.as_ref().err().map(|e| backend_error(&e.message));
         self.manual = result
             .as_ref()
             .err()
-            .and_then(|e| manual_command(e))
+            .and_then(|e| manual_command(&e.message))
             .map(str::to_owned);
     }
 }

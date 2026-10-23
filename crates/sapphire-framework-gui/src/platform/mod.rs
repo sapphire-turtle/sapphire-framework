@@ -8,9 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-#[cfg(target_os = "android")]
-mod android;
-
 /// Where this app keeps its workspaces, when the platform gives it no folder dialog. Set
 /// once by the mobile host; `None` on a desktop.
 static APP_STORAGE: OnceLock<PathBuf> = OnceLock::new();
@@ -81,38 +78,18 @@ pub fn valid_workspace_name(name: &str) -> bool {
 /// takes a long pasted value (an invite ticket) offers a Paste button reading this.
 /// `None` where nothing is there, or where egui's own clipboard is the one to use.
 pub fn clipboard_text() -> Option<String> {
-    #[cfg(target_os = "android")]
-    {
-        android::clipboard_text()
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        None
-    }
+    corundum_gui::platform::clipboard_text()
 }
 
 /// The margins the window must leave for the system's bars and the keyboard, in physical
 /// pixels (left, top, right, bottom), where the window is drawn edge to edge under them.
 pub fn window_insets() -> Option<[i32; 4]> {
-    #[cfg(target_os = "android")]
-    {
-        android::window_insets()
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        None
-    }
-}
-
-/// Tell the platform layer which activity the window belongs to (Android).
-#[cfg(target_os = "android")]
-pub(crate) fn set_android_activity(activity: *mut std::ffi::c_void) {
-    android::set_activity(activity);
+    corundum_gui::platform::window_insets()
 }
 
 /// Does this platform need [`clipboard_text`] (a Paste button) rather than egui's paste?
 pub fn needs_paste_button() -> bool {
-    cfg!(target_os = "android")
+    corundum_gui::platform::needs_paste_button()
 }
 
 #[cfg(test)]

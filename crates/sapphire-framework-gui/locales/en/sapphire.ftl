@@ -48,14 +48,6 @@ sapphire-switch-off = Off
 sapphire-auto-on = Auto: on
 sapphire-auto-off-no-avx2 = Auto: off — this CPU has no AVX2
 
-# A model form that does not check out. `$what` is `dimension` or `max-tokens`;
-# `$error` is the bridge's own text.
-sapphire-form-not-a-number = { $what ->
-        [dimension] dimension
-       *[max-tokens] max tokens
-    }: `{ $value }` is not a number
-sapphire-form-invalid = { $error }
-
 # The file browser's errors. `$error` is the system's own text.
 sapphire-files-symlink = { $path } is a symbolic link
 sapphire-files-outside = { $path } is not a path inside the workspace
@@ -195,13 +187,12 @@ sapphire-external-new-token = New token
 
 # The Embedding screen. `$whose` is `device` or `workgroup`.
 sapphire-embedding-title = Embedding
-sapphire-embedding-too-old = This bridge is too old to configure embedding; update sapphire-bridge.
+sapphire-embedding-too-old = This bridge is too old to report embedding; update sapphire-bridge.
 sapphire-embedding-shadowed = This device's own model settings are ignored: the workgroup's apply.
 sapphire-embedding-remote-heading = Remote model ({ $whose ->
         [workgroup] the workgroup
        *[device] this device
     })
-sapphire-embedding-remote-hint = An OpenAI-compatible endpoint. Used first whenever it is on.
 sapphire-embedding-endpoint = Endpoint
 sapphire-embedding-model = Model
 sapphire-embedding-dimension = Dimension

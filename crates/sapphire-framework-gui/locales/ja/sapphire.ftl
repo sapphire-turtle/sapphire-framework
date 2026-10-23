@@ -52,13 +52,6 @@ sapphire-switch-off = オフ
 sapphire-auto-on = 自動: オン
 sapphire-auto-off-no-avx2 = 自動: オフ — この CPU は AVX2 に対応していません
 
-# モデルの入力が正しくないとき。`$what` は `dimension` か `max-tokens`、`$error` はブリッジ自身の文言です。
-sapphire-form-not-a-number = { $what ->
-        [dimension] 次元数
-       *[max-tokens] 最大トークン数
-    }: `{ $value }` は数値ではありません
-sapphire-form-invalid = { $error }
-
 # ファイルブラウザーのエラー。`$error` はシステム自身の文言です。
 sapphire-files-symlink = { $path } はシンボリックリンクです
 sapphire-files-outside = { $path } はワークスペース内のパスではありません
@@ -198,13 +191,12 @@ sapphire-external-new-token = 新しいトークン
 
 # 埋め込み画面。`$whose` は `device` か `workgroup` です。
 sapphire-embedding-title = 埋め込み
-sapphire-embedding-too-old = このブリッジは古く、埋め込みを設定できません。sapphire-bridge を更新してください。
+sapphire-embedding-too-old = このブリッジは古く、埋め込みの状態を取得できません。sapphire-bridge を更新してください。
 sapphire-embedding-shadowed = このデバイス自身のモデル設定は無視されます。ワークグループの設定が適用されます。
 sapphire-embedding-remote-heading = リモートモデル（{ $whose ->
         [workgroup] ワークグループ
        *[device] このデバイス
     }）
-sapphire-embedding-remote-hint = OpenAI 互換のエンドポイントです。オンのときは最初に使われます。
 sapphire-embedding-endpoint = エンドポイント
 sapphire-embedding-model = モデル
 sapphire-embedding-dimension = 次元数

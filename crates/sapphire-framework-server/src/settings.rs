@@ -50,7 +50,7 @@ const FRAMEWORK_NAMES: [&str; 5] = ["http", "update", "sync", "retrieve", "works
 const CHECKED_NAMES: [&str; 2] = ["http", "update"];
 
 /// The bridge's top-level names: owned by no one here, so no key of this server takes them.
-pub(crate) const BRIDGE_NAMES: [&str; 2] = ["net", "embed"];
+pub(crate) const BRIDGE_NAMES: [&str; 3] = ["net", "embed", "gui"];
 
 /// An application's own settings: what they are, and a check of the edited files as a
 /// whole.

@@ -26,6 +26,8 @@ pub mod fonts;
 pub mod gpu;
 pub mod i18n;
 pub mod icons;
+pub mod logcat;
+pub mod platform;
 mod shell;
 pub mod theme;
 #[cfg(feature = "eframe")]

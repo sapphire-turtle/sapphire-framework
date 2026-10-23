@@ -15,8 +15,5 @@ corundum-theme-contrast = コントラスト
 corundum-theme-low = 低
 corundum-theme-medium = 中
 corundum-theme-high = 高
-corundum-theme-accent-hue = アクセントの色相
-corundum-theme-accent-strength = アクセントの強さ
-corundum-theme-preview = プレビュー
-# The preview's sample text, drawn in the accent colour.
+# The accent row's label.
 corundum-theme-accent = アクセント

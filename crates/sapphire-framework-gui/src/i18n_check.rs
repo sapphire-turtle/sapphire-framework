@@ -10,6 +10,7 @@ use crate::RESOURCES;
 /// String literals that start with `sapphire-` and are not message ids.
 const NOT_IDS: &[&str] = &[
     "sapphire-bridge",
+    "sapphire-config-secret",
     "sapphire-ed-x",
     "sapphire-example",
     "sapphire-framework-gui",

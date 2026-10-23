@@ -3,7 +3,9 @@
 
 pub mod model;
 
+pub(crate) mod appearance;
 mod banner;
+pub(crate) mod config;
 mod devices;
 mod embedding;
 mod external;
@@ -41,6 +43,15 @@ pub(crate) fn register(ui: &egui::Ui) {
 /// An error from the backend or the bridge, shown as it came: not translated.
 pub(crate) fn backend_error(text: &str) -> Message {
     Message::new("sapphire-error-text").arg("text", text)
+}
+
+/// [`error_line`] for an error held as text, shown as it came: not translated.
+pub(crate) fn error_text_line(ui: &mut egui::Ui, error: &mut Option<String>) {
+    let mut message = error.as_deref().map(backend_error);
+    error_line(ui, &mut message);
+    if message.is_none() {
+        *error = None;
+    }
 }
 
 /// The dismissible red error line every view uses. The message is resolved here, each

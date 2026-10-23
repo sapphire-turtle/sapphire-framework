@@ -15,9 +15,20 @@ categories = ["gui"]
 #
 # `eframe` (default) adds the window: `window::run` opens a desktop window on wgpu, set up
 # by `gpu`. Turn default features off for an app that renders egui without eframe.
+#
+# `android` is the window on an Android phone (`window::run_android`, GameActivity), with
+# the platform calls and logcat behind it. eframe's default does not build on Android
+# (winit needs an activity chosen), so an Android app turns this on.
 [features]
 default = ["eframe"]
 eframe = ["dep:eframe"]
+android = [
+    "eframe",
+    "eframe/android-game-activity",
+    "dep:android-activity",
+    "dep:android_log-sys",
+    "dep:tracing-subscriber",
+]
 # Serialize / Deserialize on the theme and language settings, for the app to save them.
 serde = ["dep:serde", "egui/serde"]
 
@@ -41,13 +52,18 @@ unic-langid = "0.9"
 [dev-dependencies]
 serde_json.workspace = true
 
-# Android's language list is read from the JVM (i18n::system); sys-locale gives only one.
-[target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
-ndk-context = "0.1"
-
 # iOS's sandbox refuses to list the system font directories, so the font files are found
 # through CoreText instead (fonts::apple).
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFSet", "CFString", "CFURL"] }
 objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFontDescriptor", "CTFontCollection"] }
+
+# The `android` feature's: the activity and logcat. JNI is always there: the language list
+# is read from the JVM (i18n::system; sys-locale gives only one), and the `android` feature
+# uses it for the clipboard and the insets.
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", optional = true }
+android_log-sys = { version = "0.3", optional = true }
+jni = "0.21"
+ndk-context = "0.1"
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"], optional = true }

@@ -99,13 +99,23 @@ pub fn file_text() -> egui::ImageSource<'static> {
     icon!("file-text")
 }
 
+/// An arrow turning back: reset to the default.
+pub fn rotate_ccw() -> egui::ImageSource<'static> {
+    icon!("rotate-ccw")
+}
+
+/// A die: pick at random.
+pub fn dice_5() -> egui::ImageSource<'static> {
+    icon!("dice-5")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     type Icon = fn() -> egui::ImageSource<'static>;
 
-    const ALL: [(&str, Icon); 15] = [
+    const ALL: [(&str, Icon); 17] = [
         ("settings", settings),
         ("arrow_left", arrow_left),
         ("x", x),
@@ -121,6 +131,8 @@ mod tests {
         ("circle_x", circle_x),
         ("folder", folder),
         ("file_text", file_text),
+        ("rotate_ccw", rotate_ccw),
+        ("dice_5", dice_5),
     ];
 
     #[test]

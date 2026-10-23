@@ -1442,6 +1442,8 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 name = "corundum-gui"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
+ "android_log-sys",
  "eframe",
  "egui",
  "egui_extras",
@@ -1457,6 +1459,7 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "tracing",
+ "tracing-subscriber",
  "ttf-parser",
  "unic-langid",
 ]
@@ -1565,9 +1568,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.3"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
@@ -7254,14 +7257,10 @@ dependencies = [
 name = "sapphire-framework-gui"
 version = "0.21.0"
 dependencies = [
- "android-activity",
- "android_log-sys",
  "corundum-gui",
  "eframe",
  "egui",
  "grain-id",
- "jni 0.21.1",
- "ndk-context",
  "rfd",
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
@@ -7274,7 +7273,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

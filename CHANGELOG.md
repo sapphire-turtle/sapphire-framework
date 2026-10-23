@@ -56,6 +56,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- On Windows, a named-pipe listener whose `accept` was cancelled dropped its waiting pipe instance, so until the next `accept` the endpoint did not exist and a connecting client was told nothing was running (#314). `accept` is now cancel-safe: the waiting instance is kept until a client connects to it, so a server between the rounds of an in-place restart stays reachable.
 - `WorkspaceState::on_file_updated` (and so `write_file` / `append_file`) failed with `InvalidData` on a file whose content is not UTF-8 (#293). Such a file is now not indexed, and a document it left from earlier text content is removed; `on_file_updated_with_hook` does the same without invoking the hook.
 - Bringing a workspace to a new host lost the application's settings (#253): `workspace init` wrote a `config.toml` holding only the `[workspace]` registry, and when the workspace's own `config.toml` arrived it was saved as a conflict copy, leaving the registry-only one in place (sapphire-ledger: "is not a ledger yet"). Mapping no longer writes one, and the first `sync.map` of a directory deletes a `config.toml` that holds nothing but `[workspace]` before syncing starts.
 - Writing the workspace registry (`workspace init`, `workspace move`) dropped every other key of the marker's `config.toml`, such as `schema_version` (#253), and overwrote a file that did not parse. It now replaces only the `workspace` table, and a file that does not parse is an error and left as it is.

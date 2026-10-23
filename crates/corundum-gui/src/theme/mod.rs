@@ -34,33 +34,6 @@ pub enum Contrast {
     High,
 }
 
-/// The user's accent: a chroma and a hue. Its lightness comes from where it is used.
-#[derive(Clone, Copy, PartialEq, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "serde", serde(default))]
-pub struct Accent {
-    /// OKLCH chroma, 0 (grey) to [`MAX_CHROMA`](Self::MAX_CHROMA).
-    pub chroma: f32,
-    /// OKLCH hue in degrees; taken modulo 360.
-    pub hue: f32,
-}
-
-impl Accent {
-    /// The most chroma an accent may have: as much as every hue can carry at every tone
-    /// and still meet the contrast targets.
-    pub const MAX_CHROMA: f32 = 0.25;
-}
-
-impl Default for Accent {
-    /// A blue.
-    fn default() -> Accent {
-        Accent {
-            chroma: 0.15,
-            hue: 255.0,
-        }
-    }
-}
-
 /// What the user chose: what the app saves, and hands to [`install`] at start.
 #[derive(Clone, PartialEq, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -69,8 +42,19 @@ pub struct ThemeSettings {
     /// Light, dark, or whichever the system uses.
     pub preference: egui::ThemePreference,
     pub contrast: Contrast,
-    pub accent: Accent,
+    /// The accent; `None` is the default, a blue.
+    pub accent: Option<Tint>,
 }
+
+impl ThemeSettings {
+    /// The accent, the default in place of `None`.
+    pub fn accent(&self) -> Tint {
+        self.accent.unwrap_or(DEFAULT_ACCENT)
+    }
+}
+
+/// The accent when the user has not picked one.
+pub(crate) const DEFAULT_ACCENT: Tint = Tint::Swatch(Swatch::Blue);
 
 /// The light and the dark theme, as [`install`] left them.
 #[derive(Clone)]
@@ -86,7 +70,7 @@ fn key() -> egui::Id {
 /// Use `settings` in `ctx`: build the light and the dark theme, give egui both looks, and
 /// follow `settings.preference`. Call it at start and whenever the settings change.
 pub fn install(ctx: &egui::Context, settings: &ThemeSettings) {
-    let build = |dark| Arc::new(Theme::new(dark, settings.contrast, settings.accent));
+    let build = |dark| Arc::new(Theme::new(dark, settings.contrast, settings.accent()));
     let installed = Installed {
         light: build(false),
         dark: build(true),
@@ -109,7 +93,7 @@ pub fn current(ctx: &egui::Context) -> Arc<Theme> {
     match ctx.data(|d| d.get_temp::<Installed>(key())) {
         Some(installed) if dark => installed.dark,
         Some(installed) => installed.light,
-        None => Arc::new(Theme::new(dark, Contrast::default(), Accent::default())),
+        None => Arc::new(Theme::new(dark, Contrast::default(), DEFAULT_ACCENT)),
     }
 }
 
@@ -153,7 +137,7 @@ mod tests {
     fn reinstall_replaces_both() {
         let ctx = egui::Context::default();
         install(&ctx, &ThemeSettings::default());
-        let accent = Accent {
+        let accent = Tint::Custom {
             chroma: 0.1,
             hue: 30.0,
         };
@@ -161,7 +145,7 @@ mod tests {
             &ctx,
             &ThemeSettings {
                 contrast: Contrast::High,
-                accent,
+                accent: Some(accent),
                 ..Default::default()
             },
         );
@@ -182,9 +166,32 @@ mod tests {
         let dark = ctx.theme() == egui::Theme::Dark;
         assert!(same(
             &current(&ctx),
-            &Theme::new(dark, Contrast::Medium, Accent::default())
+            &Theme::new(dark, Contrast::Medium, Tint::Swatch(Swatch::Blue))
         ));
         assert_eq!(ctx.global_style().visuals, visuals);
+    }
+
+    #[test]
+    fn none_accent_is_blue() {
+        let settings = ThemeSettings::default();
+        assert_eq!(settings.accent, None);
+        assert_eq!(settings.accent(), Tint::Swatch(Swatch::Blue));
+        let ctx = egui::Context::default();
+        install(&ctx, &settings);
+        let t = current(&ctx);
+        for tone in Tone::ALL {
+            assert_eq!(t.color(tone, Swatch::Accent), t.color(tone, Swatch::Blue));
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn settings_with_no_accent_round_trip() {
+        let settings = ThemeSettings::default();
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: ThemeSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, settings);
+        assert_eq!(back.accent(), Tint::Swatch(Swatch::Blue));
     }
 
     #[cfg(feature = "serde")]
@@ -193,10 +200,10 @@ mod tests {
         let settings = ThemeSettings {
             preference: egui::ThemePreference::Light,
             contrast: Contrast::Low,
-            accent: Accent {
+            accent: Some(Tint::Custom {
                 chroma: 0.2,
                 hue: 140.0,
-            },
+            }),
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert_eq!(

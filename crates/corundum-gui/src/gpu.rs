@@ -159,7 +159,14 @@ mod tests {
         assert_eq!(backends(), wgpu::Backends::VULKAN);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    #[test]
+    fn defaults_to_vulkan_and_gl_on_android_without_an_env_override() {
+        // `backends()` reads WGPU_BACKEND, which is not set in the test harness.
+        assert_eq!(backends(), wgpu::Backends::VULKAN | wgpu::Backends::GL);
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     #[test]
     fn defaults_to_the_primary_backends_elsewhere_without_an_env_override() {
         // `backends()` reads WGPU_BACKEND, which is not set in the test harness.
@@ -167,11 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_vulkan_only_on_windows() {
+    fn the_default_is_vulkan_on_windows_and_adds_gl_on_android() {
         assert_eq!(
             default_backends(),
             if cfg!(windows) {
                 wgpu::Backends::VULKAN
+            } else if cfg!(target_os = "android") {
+                wgpu::Backends::VULKAN | wgpu::Backends::GL
             } else {
                 wgpu::Backends::PRIMARY
             }

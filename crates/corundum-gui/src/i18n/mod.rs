@@ -23,8 +23,10 @@ pub use unic_langid::LanguageIdentifier;
 
 pub mod check;
 mod message;
+mod system;
 
 pub use message::{Arg, Message};
+pub use system::system_languages;
 
 /// What the user chose: what the app saves, and hands to [`install`] at start.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -251,11 +253,6 @@ macro_rules! tr {
             )),+],
         )
     }};
-}
-
-/// The system's preferred languages, as BCP 47 tags, most preferred first.
-pub(crate) fn system_languages() -> Vec<String> {
-    vec![]
 }
 
 /// The best of `available` for `requested`, English when none matches. A tag that does not

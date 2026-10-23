@@ -105,6 +105,12 @@ impl<D: Copy + PartialEq> Shell<D> {
         &mut self.settings
     }
 
+    /// The theme settings, once, after the user changed them in Settings: the app saves
+    /// these. See [`Settings::take_theme_changed`].
+    pub fn take_theme_changed(&mut self) -> Option<corundum_gui::theme::ThemeSettings> {
+        self.settings.take_theme_changed()
+    }
+
     /// Render into the window's root `ui`. `content` draws the open screen of the app's
     /// into what the frame leaves of `ui`, as it would at the root: its own panels, then a
     /// `CentralPanel`.

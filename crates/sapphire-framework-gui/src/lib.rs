@@ -43,7 +43,7 @@ mod test_support;
 
 pub use corundum_gui::{Action, COMPACT_WIDTH, Destination};
 /// The system CJK fallback font and the Lucide icons, from corundum-gui (shared with asteria).
-pub use corundum_gui::{fonts, icons};
+pub use corundum_gui::{fonts, icons, theme};
 pub use health::{Health, bridge_needed};
 pub use settings::{Settings, SettingsSection};
 pub use shell::Shell;

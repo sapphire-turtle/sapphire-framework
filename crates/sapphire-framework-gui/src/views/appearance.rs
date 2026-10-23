@@ -8,17 +8,25 @@ use sapphire_bridge_api::{ConfigEntry, Value};
 
 use super::{error_text_line, register};
 use crate::client::{Command, CommandError, CommandOutput, ConfigState, GuiValues};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
-/// What the bridge says when it does not know the theme's settings.
-pub(crate) const OLD_BRIDGE: &str =
-    "this sapphire-bridge does not know the appearance settings; update it";
+/// What the page says when the bridge does not know the theme's settings.
+pub(crate) fn old_bridge() -> Message {
+    Message::new("sapphire-appearance-old-bridge")
+}
+
+/// What the page says when there is no bridge to ask.
+pub(crate) fn bridge_down() -> Message {
+    Message::new("sapphire-bridge-not-running")
+}
 
 /// What the Appearance page reads.
 pub(crate) struct AppearanceCtx<'a> {
     /// The settings as last loaded.
     pub state: Option<&'a ConfigState>,
     /// Why the settings cannot be edited now; the widget is shown disabled.
-    pub unavailable: Option<&'a str>,
+    pub unavailable: Option<Message>,
     /// A write this page sent is still running.
     pub busy: bool,
     /// The bridge is in a workgroup: without one there is nothing to override, and no tabs.
@@ -57,17 +65,17 @@ impl AppearancePage {
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui, cx: &AppearanceCtx) -> Option<Command> {
         register(ui);
         ui.horizontal(|ui| {
-            ui.heading("Appearance");
+            ui.heading(tr!(ui, "sapphire-settings-appearance"));
             if cx.busy {
                 ui.spinner();
             }
         });
         ui.separator();
-        let state = match (cx.state, cx.unavailable) {
+        let state = match (cx.state, cx.unavailable.as_ref()) {
             (Some(state), None) => state,
             (_, why) => {
                 if let Some(why) = why {
-                    ui.weak(why);
+                    ui.weak(why.text(ui.ctx()));
                 }
                 // Shown as it is, not editable.
                 let mut shown = self.working.clone();
@@ -79,7 +87,8 @@ impl AppearancePage {
             self.tab = Scope::Workgroup;
         } else {
             ui.horizontal(|ui| {
-                for (scope, label) in [(Scope::Workgroup, "Workgroup"), (Scope::Device, "Device")] {
+                for scope in [Scope::Workgroup, Scope::Device] {
+                    let label = tr!(ui, scope_id(scope));
                     if ui
                         .add(egui::Button::selectable(self.tab == scope, label))
                         .clicked()
@@ -95,12 +104,21 @@ impl AppearancePage {
         if cx.workgroup {
             match self.tab {
                 Scope::Device => {
-                    for (label, names) in inherited(state) {
-                        ui.weak(format!("{}: {label}", names.join(", ")));
+                    for (origin, names) in inherited(state) {
+                        let names = joined(ui, &names);
+                        ui.weak(tr!(
+                            ui,
+                            "sapphire-appearance-inherited",
+                            names = names,
+                            origin = tr!(ui, origin)
+                        ));
                     }
                     if !overridden(state).is_empty()
                         && ui
-                            .add_enabled(!cx.busy, egui::Button::new("Use the workgroup's"))
+                            .add_enabled(
+                                !cx.busy,
+                                egui::Button::new(tr!(ui, "sapphire-appearance-use-workgroup")),
+                            )
                             .clicked()
                     {
                         out = Some(use_the_workgroups());
@@ -109,7 +127,8 @@ impl AppearancePage {
                 _ => {
                     let own = overridden(state);
                     if !own.is_empty() {
-                        ui.weak(format!("This device uses its own {}", own.join(", ")));
+                        let names = joined(ui, &own);
+                        ui.weak(tr!(ui, "sapphire-appearance-own", names = names));
                     }
                 }
             }
@@ -234,7 +253,25 @@ pub(crate) fn expected_theme(
     theme_settings(&values)
 }
 
-/// The settings this device sets itself, by their names on the page.
+/// The message naming `scope`.
+pub(crate) fn scope_id(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Device => "sapphire-scope-device",
+        Scope::Workgroup => "sapphire-scope-workgroup",
+        Scope::Workspace => "sapphire-scope-workspace",
+    }
+}
+
+/// The page's names (message ids) resolved and joined as a list.
+fn joined(ui: &egui::Ui, ids: &[&str]) -> String {
+    let separator = tr!(ui, "sapphire-list-separator");
+    ids.iter()
+        .map(|id| tr!(ui, id))
+        .collect::<Vec<_>>()
+        .join(&separator)
+}
+
+/// The settings this device sets itself, by their names on the page (message ids).
 pub(crate) fn overridden(state: &ConfigState) -> Vec<&'static str> {
     names(
         scope_values(state, Scope::Device)
@@ -243,11 +280,12 @@ pub(crate) fn overridden(state: &ConfigState) -> Vec<&'static str> {
     )
 }
 
-/// The settings this device takes from elsewhere, by where: `from workgroup`, `default`.
+/// The settings this device takes from elsewhere, by where (the origin's message id) and
+/// their names on the page (message ids).
 fn inherited(state: &ConfigState) -> Vec<(&'static str, Vec<&'static str>)> {
     [
-        (Origin::Scope(Scope::Workgroup), "from workgroup"),
-        (Origin::Default, "default"),
+        (Origin::Scope(Scope::Workgroup), "sapphire-origin-workgroup"),
+        (Origin::Default, "sapphire-origin-default"),
     ]
     .into_iter()
     .filter_map(|(origin, label)| {
@@ -262,15 +300,15 @@ fn inherited(state: &ConfigState) -> Vec<(&'static str, Vec<&'static str>)> {
     .collect()
 }
 
-/// The page's names for `keys`, each once, in the page's order.
+/// The page's names (message ids) for `keys`, each once, in the page's order.
 fn names<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<&'static str> {
     let keys: Vec<&str> = keys.collect();
     let mut out = Vec::new();
     for key in gui::THEME_KEYS {
         let name = match key {
-            gui::THEME_PREFERENCE => "light/dark",
-            gui::THEME_CONTRAST => "contrast",
-            _ => "accent",
+            gui::THEME_PREFERENCE => "sapphire-appearance-name-theme",
+            gui::THEME_CONTRAST => "sapphire-appearance-name-contrast",
+            _ => "sapphire-appearance-name-accent",
         };
         if keys.contains(&key) && !out.contains(&name) {
             out.push(name);
@@ -716,7 +754,13 @@ mod tests {
                 (gui::THEME_CONTRAST, s("low")),
             ],
         );
-        assert_eq!(overridden(&st), ["contrast", "accent"]);
+        assert_eq!(
+            overridden(&st),
+            [
+                "sapphire-appearance-name-contrast",
+                "sapphire-appearance-name-accent"
+            ]
+        );
     }
 
     fn drawn(page: &mut AppearancePage, cx: &AppearanceCtx) -> String {
@@ -763,10 +807,44 @@ mod tests {
     }
 
     #[test]
+    fn the_tabs_and_lines_follow_the_language() {
+        use crate::views::config::widgets::tests::drawn_text_in;
+        let st = state(
+            &[(gui::THEME_PREFERENCE, s("dark"))],
+            &[(gui::THEME_CONTRAST, s("low"))],
+        );
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+        };
+        let ctx = crate::test_support::japanese_ctx();
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn_text_in(&ctx, |ui| {
+            page.ui(ui, &cx);
+        });
+        for ja in [
+            "外観",
+            "ワークグループ",
+            "デバイス",
+            "ライト/ダーク: ワークグループから",
+            "アクセント: デフォルト",
+            "ワークグループの設定を使う",
+        ] {
+            assert!(text.contains(ja), "{ja} missing from {text}");
+        }
+        assert!(!text.contains("Use the workgroup's"), "{text}");
+    }
+
+    #[test]
     fn unavailable_draws_the_reason() {
         let cx = AppearanceCtx {
             state: None,
-            unavailable: Some("sapphire-bridge is not running"),
+            unavailable: Some(bridge_down()),
             busy: false,
             workgroup: true,
         };

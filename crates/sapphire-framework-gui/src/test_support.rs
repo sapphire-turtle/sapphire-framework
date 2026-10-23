@@ -78,6 +78,19 @@ fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
     }
 }
 
+/// As [`english_ctx`], with Japanese.
+pub(crate) fn japanese_ctx() -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::i18n::register(&ctx, crate::RESOURCES);
+    crate::i18n::install(
+        &ctx,
+        &crate::i18n::LanguageSettings {
+            language: crate::i18n::Language::Explicit("ja".into()),
+        },
+    );
+    ctx
+}
+
 /// A context with English installed and this crate's strings registered, so a test that
 /// looks for English text is not at the mercy of the machine's language.
 pub(crate) fn english_ctx() -> egui::Context {

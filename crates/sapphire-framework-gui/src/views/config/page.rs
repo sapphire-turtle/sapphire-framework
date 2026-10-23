@@ -12,6 +12,7 @@ use super::super::{ViewCtx, error_text_line, register, unavailable};
 use super::model::{Drafts, Edit, PageSpec, origin_label, route_errors, tab_enabled};
 use super::widgets::{secret_id, value_widget};
 use crate::i18n::Message;
+use corundum_gui::tr;
 
 /// What the page last sent, so its outcome lands in the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +88,11 @@ impl ConfigPage {
             }
             if cx.busy {
                 ui.spinner();
-            } else if ui.small_button("↻").on_hover_text("Reload").clicked() {
+            } else if ui
+                .small_button("↻")
+                .on_hover_text(tr!(ui, "sapphire-config-reload"))
+                .clicked()
+            {
                 out = Some(self.reload());
             }
         });
@@ -117,7 +122,11 @@ impl ConfigPage {
                 let dirty = drafts
                     .get(&spec.section, *scope)
                     .is_some_and(|d| !d.is_empty());
-                let label = format!("{}{}", tab_label(*scope), if dirty { " •" } else { "" });
+                let label = format!(
+                    "{}{}",
+                    tr!(ui, tab_label(*scope)),
+                    if dirty { " •" } else { "" }
+                );
                 if ui
                     .add_enabled(
                         tab_enabled(*scope, workspace),
@@ -129,7 +138,7 @@ impl ConfigPage {
                 }
             }
             if spec.scopes.contains(&Scope::Workspace) && !workspace {
-                ui.small("No workspace is selected");
+                ui.small(tr!(ui, "sapphire-config-no-workspace"));
             }
         });
         if self.tab != opened {
@@ -149,7 +158,7 @@ impl ConfigPage {
             .filter(|d| d.allows(tab))
             .collect();
         if !bridge_up && defs.iter().any(|d| d.process == Process::Bridge) {
-            ui.colored_label(warn(ui), "sapphire-bridge is not running");
+            ui.colored_label(warn(ui), tr!(ui, "sapphire-bridge-not-running"));
         }
         let draft = drafts.get_mut(&spec.section, tab);
         self.changed = draft.on_reload(state, tab);
@@ -176,27 +185,31 @@ impl ConfigPage {
                 ui.horizontal_wrapped(|ui| {
                     ui.monospace(&def.key);
                     if let Some(origin) = origin {
-                        ui.small(origin);
+                        ui.small(tr!(ui, origin));
                     }
                     if def.apply == Apply::Restart {
-                        ui.small("restart")
-                            .on_hover_text("Takes effect after a restart");
+                        ui.small(tr!(ui, "sapphire-config-restart"))
+                            .on_hover_text(tr!(ui, "sapphire-config-restart-hover"));
                     }
                     if self.changed.contains(&def.key) {
-                        ui.colored_label(warn(ui), "changed elsewhere");
+                        ui.colored_label(warn(ui), tr!(ui, "sapphire-config-changed-elsewhere"));
                     }
                     if matches!(edit, Some(Edit::Unset)) {
                         forget = ui
                             .add_enabled(
                                 !cx.busy,
-                                egui::Button::new("removed here on Apply ↺").small(),
+                                egui::Button::new(tr!(ui, "sapphire-config-removed-here")).small(),
                             )
-                            .on_hover_text("Keep it")
+                            .on_hover_text(tr!(ui, "sapphire-config-keep"))
                             .clicked();
                     } else if here.is_some()
                         && ui
                             .add_enabled(editable, egui::Button::new("×").small())
-                            .on_hover_text(format!("Remove from {}", tab_label(tab)))
+                            .on_hover_text(tr!(
+                                ui,
+                                "sapphire-config-remove-from",
+                                tab = tr!(ui, tab_label(tab))
+                            ))
                             .clicked()
                     {
                         new_edit = Some(Edit::Unset);
@@ -209,8 +222,8 @@ impl ConfigPage {
                     ui.weak(&def.doc);
                 }
                 let error = match edit {
-                    Some(Edit::Set { parsed: Err(e), .. }) => Some(e),
-                    _ => self.errors.0.get(&def.key),
+                    Some(Edit::Set { parsed: Err(e), .. }) => Some(e.text(ui.ctx())),
+                    _ => self.errors.0.get(&def.key).cloned(),
                 };
                 if let Some(error) = error {
                     ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::DANGER), error);
@@ -241,14 +254,20 @@ impl ConfigPage {
         let valid = draft.is_some_and(|d| d.valid());
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(has_draft && !cx.busy, egui::Button::new("Revert"))
+                .add_enabled(
+                    has_draft && !cx.busy,
+                    egui::Button::new(tr!(ui, "sapphire-config-revert")),
+                )
                 .clicked()
             {
                 drafts.get_mut(&spec.section, tab).revert();
                 self.errors.0.clear();
             }
             if ui
-                .add_enabled(has_draft && valid && !cx.busy, egui::Button::new("Apply"))
+                .add_enabled(
+                    has_draft && valid && !cx.busy,
+                    egui::Button::new(tr!(ui, "sapphire-config-apply")),
+                )
                 .clicked()
             {
                 out = self.apply(drafts).or(out.take());
@@ -319,12 +338,9 @@ fn editable(def: &SettingDef, bridge_up: bool) -> bool {
     bridge_up || def.process != Process::Bridge
 }
 
+/// The message naming a tab.
 fn tab_label(scope: Scope) -> &'static str {
-    match scope {
-        Scope::Device => "Device",
-        Scope::Workgroup => "Workgroup",
-        Scope::Workspace => "Workspace",
-    }
+    super::super::appearance::scope_id(scope)
 }
 
 #[cfg(test)]
@@ -526,6 +542,30 @@ mod tests {
             );
         });
         assert!(drawn.contains("The app server is not available"), "{drawn}");
+    }
+
+    #[test]
+    fn the_page_follows_the_language() {
+        use super::super::widgets::tests::drawn_text_in;
+        let (state, snapshot) = (state(), snapshot(false));
+        let spec = spec(&state);
+        let mut drafts = Drafts::default();
+        drafts.get_mut("S", Scope::Device).unset("k.bool");
+        let ctx = crate::test_support::japanese_ctx();
+        let mut page = ConfigPage::new("S");
+        let drawn = drawn_text_in(&ctx, |ui| {
+            page.ui(ui, &cx(&snapshot), &spec, &state, &mut drafts);
+        });
+        for ja in [
+            "デバイス •",
+            "ワークスペースが選択されていません",
+            "適用時にここから削除 ↺",
+            "元に戻す",
+            "適用",
+        ] {
+            assert!(drawn.contains(ja), "{ja} missing from {drawn}");
+        }
+        assert!(!drawn.contains("Revert"), "{drawn}");
     }
 
     #[test]

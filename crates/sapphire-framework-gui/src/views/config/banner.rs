@@ -7,6 +7,7 @@ use sapphire_bridge_api::settings::Process;
 use crate::client::{Command, CommandError, CommandOutput};
 
 use super::super::{ViewCtx, error_text_line, register};
+use crate::i18n::Message;
 
 /// One line per process with keys awaiting a restart, each with its restart button.
 #[derive(Debug, Default)]
@@ -34,11 +35,14 @@ impl RestartBanner {
         for (process, keys) in pending {
             let (line, button) = texts(*process, cx.app_name, keys);
             ui.horizontal_wrapped(|ui| {
-                ui.label(line);
+                ui.label(line.text(ui.ctx()));
                 if self.busy == Some(*process) {
                     ui.spinner();
                 } else if ui
-                    .add_enabled(!cx.busy && self.busy.is_none(), egui::Button::new(button))
+                    .add_enabled(
+                        !cx.busy && self.busy.is_none(),
+                        egui::Button::new(button.text(ui.ctx())),
+                    )
                     .clicked()
                 {
                     out = Some(self.restart_command(*process));
@@ -71,16 +75,18 @@ impl RestartBanner {
 }
 
 /// A process's line and its button's label.
-fn texts(process: Process, app: &str, keys: &[String]) -> (String, String) {
+fn texts(process: Process, app: &str, keys: &[String]) -> (Message, Message) {
     let keys = keys.join(", ");
     match process {
         Process::Bridge => (
-            format!("sapphire-bridge needs a restart to apply: {keys}"),
-            "Restart bridge".to_owned(),
+            Message::new("sapphire-restart-bridge-line").arg("keys", keys),
+            Message::new("sapphire-restart-bridge-button"),
         ),
         Process::App => (
-            format!("the {app} server needs a restart to apply: {keys}"),
-            format!("Restart {app} server"),
+            Message::new("sapphire-restart-app-line")
+                .arg("app", app)
+                .arg("keys", keys),
+            Message::new("sapphire-restart-app-button").arg("app", app),
         ),
     }
 }

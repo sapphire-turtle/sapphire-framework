@@ -241,3 +241,50 @@ sapphire-manager-remove-body = ワークスペースを一覧から削除しま�
 sapphire-manager-remove-hint = ディスク上のファイルは削除されません。
 sapphire-manager-pick-title = ワークスペースのフォルダーを開く
 sapphire-manager-not-workspace = '{ $path }' は { $app } のワークスペースではありません
+
+# 複数の設定ページで共通の言葉。スコープ（タブ）、値の出どころ、名前を並べるときの区切りです。
+sapphire-scope-device = デバイス
+sapphire-scope-workgroup = ワークグループ
+sapphire-scope-workspace = ワークスペース
+sapphire-origin-device = デバイスから
+sapphire-origin-workgroup = ワークグループから
+sapphire-origin-workspace = ワークスペースから
+sapphire-origin-default = デフォルト
+sapphire-list-separator = 、
+sapphire-bridge-not-running = sapphire-bridge が起動していません
+
+# 外観ページ。`$names` は設定の名前の一覧、`$origin` は値の出どころです。
+sapphire-appearance-old-bridge = この sapphire-bridge は外観の設定に対応していません。アップデートしてください
+sapphire-appearance-name-theme = ライト/ダーク
+sapphire-appearance-name-contrast = コントラスト
+sapphire-appearance-name-accent = アクセント
+sapphire-appearance-inherited = { $names }: { $origin }
+sapphire-appearance-use-workgroup = ワークグループの設定を使う
+sapphire-appearance-own = このデバイスでは { $names } を個別に設定しています
+
+# スキーマから作られる設定ページ。セクション名とキーの名前はスキーマのもので、翻訳しません。
+sapphire-settings-configuration = 構成
+sapphire-settings-load = 設定を読み込む
+sapphire-config-reload = 再読み込み
+sapphire-config-no-workspace = ワークスペースが選択されていません
+sapphire-config-restart = 要再起動
+sapphire-config-restart-hover = 再起動後に反映されます
+sapphire-config-changed-elsewhere = 他の場所で変更されました
+sapphire-config-removed-here = 適用時にここから削除 ↺
+sapphire-config-keep = 残す
+sapphire-config-remove-from = { $tab }から削除
+sapphire-config-revert = 元に戻す
+sapphire-config-apply = 適用
+sapphire-config-empty = 空にはできません
+sapphire-config-not-set-range = 未設定（{ $min }..={ $max }）
+sapphire-config-one-per-line = 1 行に 1 件
+sapphire-config-secret-set = 設定済み
+sapphire-config-secret-not-set = 未設定
+
+# 再起動バナー。プロセスごとに 1 行です。`$keys` は設定のキーです。
+sapphire-restart-bridge-line = 反映するには sapphire-bridge の再起動が必要です: { $keys }
+sapphire-restart-bridge-button = ブリッジを再起動
+sapphire-restart-app-line = 反映するには { $app } サーバーの再起動が必要です: { $keys }
+sapphire-restart-app-button = { $app } サーバーを再起動
+
+sapphire-embedding-not-configured = 設定されていません

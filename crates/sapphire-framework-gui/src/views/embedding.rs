@@ -61,7 +61,11 @@ impl EmbeddingView {
                         row(ui, "sapphire-embedding-model", &m.model);
                         row(ui, "sapphire-embedding-dimension", &m.dimension.to_string());
                     }
-                    None => row(ui, "sapphire-embedding-model", "not configured"),
+                    None => row(
+                        ui,
+                        "sapphire-embedding-model",
+                        &tr!(ui, "sapphire-embedding-not-configured"),
+                    ),
                 }
                 switch_row(ui, s, Slot::Remote);
                 let key = if s.key_set {
@@ -91,7 +95,11 @@ impl EmbeddingView {
                             &m.max_tokens.to_string(),
                         );
                     }
-                    None => row(ui, "sapphire-embedding-model", "not configured"),
+                    None => row(
+                        ui,
+                        "sapphire-embedding-model",
+                        &tr!(ui, "sapphire-embedding-not-configured"),
+                    ),
                 }
                 switch_row(ui, s, Slot::Local);
             });

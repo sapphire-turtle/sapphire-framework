@@ -237,3 +237,53 @@ sapphire-manager-remove-body = This removes the workspace from the list.
 sapphire-manager-remove-hint = Files on disk are not deleted.
 sapphire-manager-pick-title = Open workspace folder
 sapphire-manager-not-workspace = '{ $path }' is not a { $app } workspace
+
+# Words several settings pages share: the scopes (tabs), where a value comes from, and the
+# separator of a list of names.
+sapphire-scope-device = Device
+sapphire-scope-workgroup = Workgroup
+sapphire-scope-workspace = Workspace
+sapphire-origin-device = from device
+sapphire-origin-workgroup = from workgroup
+sapphire-origin-workspace = from workspace
+sapphire-origin-default = default
+sapphire-list-separator = { ", " }
+sapphire-bridge-not-running = sapphire-bridge is not running
+
+# The Appearance page. `$names` is a list of the sections' names, `$origin` where the values
+# come from.
+sapphire-appearance-old-bridge = this sapphire-bridge does not know the appearance settings; update it
+sapphire-appearance-name-theme = light/dark
+sapphire-appearance-name-contrast = contrast
+sapphire-appearance-name-accent = accent
+sapphire-appearance-inherited = { $names }: { $origin }
+sapphire-appearance-use-workgroup = Use the workgroup's
+sapphire-appearance-own = This device uses its own { $names }
+
+# The settings pages made from the schema. The sections' and keys' own names come from the
+# schema and are not translated.
+sapphire-settings-configuration = Configuration
+sapphire-settings-load = Load settings
+sapphire-config-reload = Reload
+sapphire-config-no-workspace = No workspace is selected
+sapphire-config-restart = restart
+sapphire-config-restart-hover = Takes effect after a restart
+sapphire-config-changed-elsewhere = changed elsewhere
+sapphire-config-removed-here = removed here on Apply ↺
+sapphire-config-keep = Keep it
+sapphire-config-remove-from = Remove from { $tab }
+sapphire-config-revert = Revert
+sapphire-config-apply = Apply
+sapphire-config-empty = must not be empty
+sapphire-config-not-set-range = not set ({ $min }..={ $max })
+sapphire-config-one-per-line = one per line
+sapphire-config-secret-set = set
+sapphire-config-secret-not-set = not set
+
+# The restart banner, one line per process. `$keys` is the settings' keys.
+sapphire-restart-bridge-line = sapphire-bridge needs a restart to apply: { $keys }
+sapphire-restart-bridge-button = Restart bridge
+sapphire-restart-app-line = the { $app } server needs a restart to apply: { $keys }
+sapphire-restart-app-button = Restart { $app } server
+
+sapphire-embedding-not-configured = not configured

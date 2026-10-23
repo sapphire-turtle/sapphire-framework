@@ -14,7 +14,9 @@ use corundum_gui::i18n::{self, LanguageSettings, Message};
 use corundum_gui::theme::{self, ThemeSettings};
 use corundum_gui::tr;
 
-use crate::views::appearance::{AppearanceCtx, AppearancePage, OLD_BRIDGE, theme_settings};
+use crate::views::appearance::{
+    AppearanceCtx, AppearancePage, bridge_down, old_bridge, theme_settings,
+};
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
@@ -422,7 +424,10 @@ impl Settings {
         }
         let rest = config(Placement::Configuration);
         if !rest.is_empty() {
-            out.push(ListItem::Heading("Configuration".into()));
+            out.push(ListItem::Heading(tr!(
+                ctx,
+                "sapphire-settings-configuration"
+            )));
             out.extend(rest);
         }
         out.push(ListItem::Gap);
@@ -508,8 +513,8 @@ impl Settings {
         self.ensure_loaded(&snapshot);
         let bridge = snapshot.bridge.up();
         let why = match bridge {
-            None => Some("sapphire-bridge is not running"),
-            Some(b) if b.gui.is_none() => Some(OLD_BRIDGE),
+            None => Some(bridge_down()),
+            Some(b) if b.gui.is_none() => Some(old_bridge()),
             Some(_) => None,
         };
         egui::ScrollArea::vertical()
@@ -611,7 +616,7 @@ impl Settings {
             return;
         }
         error_text_line(ui, &mut self.load_error);
-        if ui.button("Load settings").clicked() {
+        if ui.button(tr!(ui, "sapphire-settings-load")).clicked() {
             self.load();
         }
     }

@@ -132,7 +132,10 @@ impl FileBrowser {
                 ui.spinner();
             }
             Some(Err(err)) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, err);
+                ui.colored_label(
+                    crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
+                    err,
+                );
             }
             Some(Ok(entries)) if entries.is_empty() => {
                 ui.weak("This folder is empty.");
@@ -190,7 +193,10 @@ impl FileBrowser {
                 ui.spinner();
             }
             Some(Err(err)) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, err);
+                ui.colored_label(
+                    crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
+                    err,
+                );
             }
             Some(Ok(Preview::Binary { size })) => {
                 ui.weak(format!("Binary file, {} — no preview.", human_size(size)));

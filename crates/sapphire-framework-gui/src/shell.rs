@@ -105,6 +105,12 @@ impl<D: Copy + PartialEq> Shell<D> {
         &mut self.settings
     }
 
+    /// The theme settings, once, after the user changed them in Settings: the app saves
+    /// these. See [`Settings::take_theme_changed`].
+    pub fn take_theme_changed(&mut self) -> Option<corundum_gui::theme::ThemeSettings> {
+        self.settings.take_theme_changed()
+    }
+
     /// Render into the window's root `ui`. `content` draws the open screen of the app's
     /// into what the frame leaves of `ui`, as it would at the root: its own panels, then a
     /// `CentralPanel`.
@@ -153,7 +159,10 @@ fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
     let visuals = ui.visuals();
     let (color, text) = match health {
         Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
-        Health::Healthy => (egui::Color32::from_rgb(80, 180, 100), "Services running"),
+        Health::Healthy => (
+            crate::theme::current(ui.ctx()).text(crate::theme::Swatch::SUCCESS),
+            "Services running",
+        ),
         Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
         Health::Problem => (visuals.error_fg_color, "A service needs attention"),
     };

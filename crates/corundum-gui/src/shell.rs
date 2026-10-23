@@ -274,8 +274,8 @@ impl<D: Copy + PartialEq> Shell<D> {
     fn footer_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let d = &self.footer[i];
         let open = self.open == Some(d.id);
-        let response = icon_button(ui, open, d.icon.clone())
-            .on_hover_text(crate::i18n::tr(ui.ctx(), d.label));
+        let response =
+            icon_button(ui, open, d.icon.clone()).on_hover_text(crate::i18n::tr(ui.ctx(), d.label));
         #[cfg(test)]
         {
             self.footer_rects
@@ -289,7 +289,8 @@ impl<D: Copy + PartialEq> Shell<D> {
 
     fn action_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let a = &self.actions[i];
-        let response = icon_button(ui, false, a.icon.clone()).on_hover_text(crate::i18n::tr(ui.ctx(), a.label));
+        let response = icon_button(ui, false, a.icon.clone())
+            .on_hover_text(crate::i18n::tr(ui.ctx(), a.label));
         #[cfg(test)]
         {
             self.action_rects

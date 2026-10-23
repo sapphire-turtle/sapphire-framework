@@ -1,6 +1,8 @@
 //! [`settings_ui`]: the language picker, for an app's settings screen.
 
-use super::{Language, LanguageSettings, available, choose, install, name_of, system_languages};
+use super::{
+    Language, LanguageSettings, available, choose, install, installed_system_languages, name_of,
+};
 use crate::tr;
 
 /// A drop-down of the languages: the system's first, with the language it resolves to
@@ -39,7 +41,7 @@ pub fn settings_ui(ui: &mut egui::Ui, settings: &mut LanguageSettings) -> bool {
 
 /// The System entry: "System (日本語)", naming the language the system's resolves to.
 fn system_entry(ui: &egui::Ui, langs: &[super::LanguageIdentifier]) -> String {
-    let resolved = choose(&system_languages(), langs);
+    let resolved = choose(&installed_system_languages(ui.ctx()), langs);
     tr!(
         ui,
         "corundum-language-system",

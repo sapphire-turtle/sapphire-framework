@@ -80,6 +80,8 @@ struct Installed {
     /// `None` before [`install`].
     settings: Option<LanguageSettings>,
     chosen: LanguageIdentifier,
+    /// The system's languages as [`system_languages`] gave them when this was built.
+    system: Vec<String>,
     bundle: Arc<Bundle>,
     english: Arc<Bundle>,
     /// The ids already logged as missing or failing to format.
@@ -130,12 +132,14 @@ pub fn register(ctx: &egui::Context, resources: Resources) {
 /// Use `settings` in `ctx`: choose the language, build its messages and English's, and
 /// store both. Call it at start and whenever the settings change.
 pub fn install(ctx: &egui::Context, settings: &LanguageSettings) {
+    // Read once here, and kept for the language picker, so it need not ask each frame.
+    let system = system_languages();
     let requested = match &settings.language {
-        Language::System => system_languages(),
+        Language::System => system.clone(),
         Language::Explicit(tag) => vec![tag.clone()],
     };
     let chosen = choose(&requested, &available(ctx));
-    let installed = build(ctx, Some(settings.clone()), chosen);
+    let installed = build(ctx, Some(settings.clone()), chosen, system);
     ctx.data_mut(|d| d.insert_temp(installed_key(), installed));
 }
 
@@ -149,6 +153,12 @@ pub fn is_installed(ctx: &egui::Context) -> bool {
 pub fn current(ctx: &egui::Context) -> LanguageIdentifier {
     ctx.data(|d| d.get_temp::<Installed>(installed_key()))
         .map_or_else(english, |i| i.chosen)
+}
+
+/// The system's languages as read by the last [`install`], so a caller drawing every frame
+/// does not ask the platform each time.
+pub(crate) fn installed_system_languages(ctx: &egui::Context) -> Vec<String> {
+    state(ctx).system
 }
 
 /// The languages the registered resources have: English first, then the rest by tag.
@@ -288,7 +298,7 @@ fn state(ctx: &egui::Context) -> Installed {
     if let Some(installed) = ctx.data(|d| d.get_temp::<Installed>(installed_key())) {
         return installed;
     }
-    let installed = build(ctx, None, english());
+    let installed = build(ctx, None, english(), system_languages());
     ctx.data_mut(|d| d.insert_temp(installed_key(), installed.clone()));
     installed
 }
@@ -297,6 +307,7 @@ fn build(
     ctx: &egui::Context,
     settings: Option<LanguageSettings>,
     chosen: LanguageIdentifier,
+    system: Vec<String>,
 ) -> Installed {
     let resources = registered(ctx);
     let english = Arc::new(bundle_for(&resources, &english()));
@@ -308,6 +319,7 @@ fn build(
     Installed {
         settings,
         chosen,
+        system,
         bundle,
         english,
         reported: Arc::default(),

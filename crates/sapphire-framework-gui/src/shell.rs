@@ -29,8 +29,8 @@ enum Open<D> {
 /// let mut shell = Shell::new(
 ///     vec![
 ///         // The app's own Lucide SVGs: `egui::include_image!("../assets/icons/notebook.svg")`.
-///         Destination::new(Screen::Entries, icons::settings(), "Entries"),
-///         Destination::new(Screen::Summary, icons::settings(), "Summary"),
+///         Destination::new(Screen::Entries, icons::settings(), "entries"),
+///         Destination::new(Screen::Summary, icons::settings(), "summary"),
 ///     ],
 ///     settings,
 /// );
@@ -60,7 +60,7 @@ impl<D: Copy + PartialEq> Shell<D> {
         let frame = corundum_gui::Shell::new(destinations).with_footer(vec![Destination::new(
             Open::Settings,
             crate::icons::settings(),
-            "Settings",
+            "sapphire-settings",
         )]);
         Shell {
             frame,
@@ -186,8 +186,8 @@ mod tests {
         let (client, runtime) = client();
         let shell = Shell::new(
             vec![
-                Destination::new(Screen::Entries, crate::icons::settings(), "Entries"),
-                Destination::new(Screen::Summary, crate::icons::arrow_left(), "Summary"),
+                Destination::new(Screen::Entries, crate::icons::settings(), "entries"),
+                Destination::new(Screen::Summary, crate::icons::arrow_left(), "summary"),
             ],
             Settings::new(client),
         );

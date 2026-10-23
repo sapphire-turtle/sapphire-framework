@@ -2,7 +2,8 @@ name: Mobile CI
 
 # corundum-gui is shared with asteria, which ships on phones from the start (#318), so it
 # is built for iOS and Android on every pull request that touches it. The rest of the
-# workspace is not: `-p corundum-gui` builds the crate (egui only) without it.
+# workspace is not: `-p corundum-gui` builds the crate (egui, and eframe for its window)
+# without it.
 #
 # Clippy for the phones, then the crate's tests on an iOS simulator and an Android emulator:
 # the system font lookup differs on each (#321), and only there can it be seen to work.
@@ -72,17 +73,21 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      # The runner has an NDK preinstalled; ANDROID_NDK_LATEST_HOME points at it.
+      # The runner has an NDK preinstalled; ANDROID_NDK_LATEST_HOME points at it. On Android
+      # eframe's winit needs an activity chosen, so the default features do not build:
+      # without eframe (the components alone), and with eframe on GameActivity, as the
+      # sapphire apps' phones use it.
       - name: Clippy (arm64 phones and x86_64 emulators)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked -- -D warnings
+          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked --no-default-features -- -D warnings
+          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked --features eframe/android-game-activity -- -D warnings
 
       # Built before the emulator starts, so the emulator step only runs it.
       - name: Build the tests
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          cargo ndk -t x86_64 test -p corundum-gui --lib --no-run --locked
+          cargo ndk -t x86_64 test -p corundum-gui --lib --no-run --locked --features eframe/android-game-activity
 
       # The emulator needs hardware acceleration, which the runner allows once /dev/kvm is
       # opened up to its user.
@@ -103,4 +108,4 @@ jobs:
           target: default
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
           disable-animations: true
-          script: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME cargo ndk -t x86_64 test -p corundum-gui --lib --locked
+          script: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME cargo ndk -t x86_64 test -p corundum-gui --lib --locked --features eframe/android-game-activity

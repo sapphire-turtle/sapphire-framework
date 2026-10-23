@@ -9,7 +9,9 @@ use android_activity::input::{TextInputState, TextSpan};
 
 use super::text_input::{Buffer, TextInputBridge};
 use super::{BuildServer, EntryGuard, MobileOptions, prepare_dirs, start_services};
-use crate::app::{AppSetup, gpu, open_window};
+use corundum_gui::gpu;
+
+use crate::app::{AppSetup, open_window};
 use crate::client::ClientConfig;
 
 static ENTRY: EntryGuard = EntryGuard::new();

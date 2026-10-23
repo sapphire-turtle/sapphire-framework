@@ -11,7 +11,7 @@
 use eframe::{egui_wgpu, wgpu};
 
 /// Renderer configuration for [`eframe::NativeOptions`].
-pub(crate) fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
+pub fn wgpu_options() -> egui_wgpu::WgpuConfiguration {
     let mut options = egui_wgpu::WgpuConfiguration::default();
     if let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut options.wgpu_setup {
         setup.instance_descriptor.backends = backends();
@@ -42,7 +42,7 @@ fn default_backends() -> wgpu::Backends {
 /// Report which adapter was chosen and arm the device-loss callback.
 ///
 /// The startup line is how you confirm which backend actually took effect.
-pub(crate) fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
+pub fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
     let Some(render_state) = render_state else {
         tracing::warn!("no wgpu render state; skipping GPU diagnostics");
         return;
@@ -70,7 +70,7 @@ pub(crate) fn on_render_state(render_state: Option<&egui_wgpu::RenderState>) {
 ///
 /// The hook only adds an explanation; the previous hook still runs, so the
 /// original message and any backtrace are preserved.
-pub(crate) fn install_panic_hook() {
+pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Some(explanation) = panic_message(info).and_then(device_lost_explanation) {
@@ -159,7 +159,14 @@ mod tests {
         assert_eq!(backends(), wgpu::Backends::VULKAN);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "android")]
+    #[test]
+    fn defaults_to_vulkan_and_gl_on_android_without_an_env_override() {
+        // `backends()` reads WGPU_BACKEND, which is not set in the test harness.
+        assert_eq!(backends(), wgpu::Backends::VULKAN | wgpu::Backends::GL);
+    }
+
+    #[cfg(not(any(windows, target_os = "android")))]
     #[test]
     fn defaults_to_the_primary_backends_elsewhere_without_an_env_override() {
         // `backends()` reads WGPU_BACKEND, which is not set in the test harness.
@@ -167,11 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn the_default_is_vulkan_only_on_windows() {
+    fn the_default_is_vulkan_on_windows_and_adds_gl_on_android() {
         assert_eq!(
             default_backends(),
             if cfg!(windows) {
                 wgpu::Backends::VULKAN
+            } else if cfg!(target_os = "android") {
+                wgpu::Backends::VULKAN | wgpu::Backends::GL
             } else {
                 wgpu::Backends::PRIMARY
             }

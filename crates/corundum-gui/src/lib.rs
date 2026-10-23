@@ -6,16 +6,26 @@
 //! CJK fallback font on the system; [`icons`] is a set of Lucide icons and the SVG loader
 //! that draws them.
 //!
-//! The crate depends on egui alone (no eframe), so it renders inside any host's egui
-//! context, on the desktops and on phones.
+//! The components depend on egui alone, so they render inside any host's egui context, on
+//! the desktops and on phones. With the `eframe` feature (on by default), [`window::run`]
+//! opens a desktop window on wgpu the same way for every app, set up by [`gpu`]; an app that
+//! renders egui without eframe turns default features off.
 
 /// The egui this crate renders with. Apps should use this re-export so their egui is
 /// always the one the components were built against.
 pub use egui;
 
+/// The eframe [`window::run`] opens windows with, for the same reason as [`egui`].
+#[cfg(feature = "eframe")]
+pub use eframe;
+
 pub mod fonts;
+#[cfg(feature = "eframe")]
+pub mod gpu;
 pub mod icons;
 mod shell;
+#[cfg(feature = "eframe")]
+pub mod window;
 
 #[cfg(test)]
 mod test_support;

@@ -177,22 +177,33 @@ async fn bridge_command(
 
 /// The settings: the schema, the effective values, and each scope's file — the workspace's
 /// only when the server has one selected.
+///
+/// The relayed calls go out together: with no bridge running, each may wait a while for
+/// one, and those waits overlap rather than add up.
 async fn config_load(c: &BridgeClient, server: &Client) -> sapphire_ipc::Result<ConfigState> {
-    let schema = c.config_schema().await?.settings;
-    let effective = c.config_list(None).await?.entries;
     let current: proto::WorkspaceCurrentResult = server
         .call(proto::WORKSPACE_CURRENT, serde_json::json!({}))
         .await?;
-    let mut scopes = vec![Scope::Device, Scope::Workgroup];
-    if current.workspace.is_some() {
-        scopes.push(Scope::Workspace);
-    }
-    let mut by_scope = BTreeMap::new();
-    for scope in scopes {
-        by_scope.insert(scope, c.config_list(Some(scope)).await?.entries);
+    let list = |scope| async move { c.config_list(scope).await.map(|r| r.entries) };
+    let workspace = async {
+        match current.workspace {
+            Some(_) => list(Some(Scope::Workspace)).await.map(Some),
+            None => Ok(None),
+        }
+    };
+    let (schema, effective, device, workgroup, workspace) = tokio::try_join!(
+        c.config_schema(),
+        list(None),
+        list(Some(Scope::Device)),
+        list(Some(Scope::Workgroup)),
+        workspace,
+    )?;
+    let mut by_scope = BTreeMap::from([(Scope::Device, device), (Scope::Workgroup, workgroup)]);
+    if let Some(workspace) = workspace {
+        by_scope.insert(Scope::Workspace, workspace);
     }
     Ok(ConfigState {
-        schema,
+        schema: schema.settings,
         effective,
         by_scope,
     })
@@ -219,7 +230,11 @@ async fn config_write(
     }
     if !unset.is_empty() {
         let removed = c.config_unset(scope, unset).await?;
-        written.changed.extend(removed.changed);
+        for key in removed.changed {
+            if !written.changed.contains(&key) {
+                written.changed.push(key);
+            }
+        }
         // Every key awaiting a restart, as of the later write.
         written.pending_restart = removed.pending_restart;
     }

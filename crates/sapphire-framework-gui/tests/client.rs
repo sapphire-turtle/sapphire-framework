@@ -36,6 +36,14 @@ fn fixture() -> Fixture {
         unsafe { std::env::set_var(format!("SAPPHIRE_GUITEST_{var}_DIR"), tmp.path().join(cat)) };
     }
     CTX.init(AppKind::Server);
+    // `CTX`'s directories are the first test's for the whole binary: a workspace an earlier
+    // test selected would still be selected.
+    let selection = CTX
+        .config_dir()
+        .join(sapphire_framework_server::SELECTION_FILE);
+    if let Err(e) = std::fs::remove_file(&selection) {
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+    }
     let run = tmp.path().join("run");
     std::fs::create_dir_all(&run).unwrap();
     // The bridge listens in a runtime directory of its own: the GUI reaches it only
@@ -695,6 +703,54 @@ async fn a_rejected_write_keeps_its_field_errors() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_unset_writes_nothing() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: vec![set(
+            "http.allowed_hosts",
+            Value::List(vec![Value::String("notes.example".into())]),
+        )],
+        unset: vec!["no.such.key".into()],
+    });
+    let err = outcome(&client, id).await.unwrap_err();
+    assert!(err.message.contains("no.such.key"), "{err:?}");
+    // The unset was checked before the set was written.
+    let device = &load(&client).await.by_scope[&Scope::Device];
+    assert!(
+        !matches!(
+            value_of(device, "http.allowed_hosts"),
+            Some(EntryValue::Value(_))
+        ),
+        "{device:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_load_without_a_bridge_waits_for_one_only_once() {
+    let f = fixture();
+    // With sync: each relayed call waits up to a second for a bridge to appear.
+    let _server = start_server(&f).await;
+    // No refresh but the first, which also waits for the bridge: the load is timed alone.
+    let mut cfg = config(&f);
+    cfg.refresh = Duration::from_secs(3600);
+    let client = FrameworkClient::spawn(&tokio::runtime::Handle::current(), cfg, Arc::new(|| {}));
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+
+    let started = Instant::now();
+    let state = load(&client).await;
+    let took = started.elapsed();
+    assert!(state.schema.iter().any(|d| d.key == "http.listen"));
+    // Four relayed calls one after another took four seconds and more.
+    assert!(took < Duration::from_millis(3500), "{took:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_write_of_app_keys_works_without_a_bridge() {
     let f = fixture();
     // Without sync, so a relayed call finds no bridge at once rather than after the sync
@@ -720,6 +776,16 @@ async fn a_write_of_app_keys_works_without_a_bridge() {
     assert_eq!(
         value_of(&state.by_scope[&Scope::Device], "update.check"),
         Some(&EntryValue::Value(Value::Bool(false)))
+    );
+    // Put back: the settings files are shared.
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: Vec::new(),
+        unset: vec!["update.check".into()],
+    });
+    assert!(
+        matches!(outcome(&client, id).await, Ok(CommandOutput::Written(_))),
+        "the unset"
     );
 }
 

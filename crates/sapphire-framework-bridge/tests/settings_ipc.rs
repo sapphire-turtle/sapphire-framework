@@ -194,5 +194,12 @@ async fn a_rejected_set_carries_its_field_errors() {
         let fields = sapphire_bridge_api::ConfigFieldErrors::from_rpc(&rpc).expect("field errors");
         assert_eq!(fields.fields.len(), 1, "{fields:?}");
         assert_eq!(fields.fields[0].key, "net.discovery");
+        // Error text never carries the value: the GUI shows it and the CLIs print it.
+        assert!(!rpc.message.contains("not a bool"), "{}", rpc.message);
+        assert!(
+            !fields.fields[0].message.contains("not a bool"),
+            "{}",
+            fields.fields[0].message
+        );
     }
 }

@@ -142,7 +142,8 @@ pub fn describe_toml_error(
     span: Option<std::ops::Range<usize>>,
     message: &str,
 ) -> String {
-    let message = message.trim();
+    let message = without_found_value(message.trim());
+    let message = message.as_str();
     let Some(span) = span else {
         return message.to_owned();
     };
@@ -150,6 +151,25 @@ pub fn describe_toml_error(
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
     format!("line {line}, column {column}: {message}")
+}
+
+/// `message` without what serde found when it was not what it expected: a typed parse's
+/// `invalid type: string "…", expected …` quotes the value, so keep only the expectation.
+fn without_found_value(message: &str) -> String {
+    for (prefix, kept) in [
+        ("invalid type: ", "invalid type"),
+        ("invalid value: ", "invalid value"),
+        ("unknown variant ", "unknown variant"),
+    ] {
+        // The last one: the found value may itself hold ", expected ".
+        if let Some(at) = message
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.rfind(", expected "))
+        {
+            return format!("{kept}{}", &message[prefix.len() + at..]);
+        }
+    }
+    message.to_owned()
 }
 
 #[cfg(test)]
@@ -214,5 +234,31 @@ mod tests {
         let described = describe_toml_error(text, err.span(), err.message());
         assert!(described.starts_with("line 2, column "), "{described}");
         assert!(!described.contains("hunter2"), "{described}");
+    }
+
+    #[test]
+    fn a_type_error_does_not_quote_the_value_it_found() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Typed {
+            list: Option<Vec<String>>,
+            flag: Option<bool>,
+            choice: Option<Choice>,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        enum Choice {
+            A,
+        }
+        for text in [
+            "list = \"hunter2\"\n",
+            "flag = \"hunter2, expected x\"\n",
+            "choice = \"hunter2\"\n",
+        ] {
+            let err = toml::from_str::<Typed>(text).unwrap_err();
+            let described = describe_toml_error(text, err.span(), err.message());
+            assert!(described.starts_with("line 1, column "), "{described}");
+            assert!(described.contains("expected"), "{described}");
+            assert!(!described.contains("hunter2"), "{described}");
+        }
     }
 }

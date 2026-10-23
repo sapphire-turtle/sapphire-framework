@@ -13,7 +13,7 @@ use sapphire_framework_settings::{
     Apply, FieldError, Kind, Process, Registry, Scope, SettingDef, SettingsOwner, Staged, Value,
 };
 
-use crate::config_file::{DeviceConfig, WorkgroupConfig, parse};
+use crate::config_file::{DeviceConfig, WorkgroupConfig};
 use crate::dir::BridgeDir;
 use crate::net::NetConfig;
 use crate::relay::relays;
@@ -218,6 +218,15 @@ fn failure(file: &std::path::Path, message: impl ToString) -> FieldError {
     }
 }
 
+/// Parse `text` as a whole config file, naming only the line and column on failure.
+///
+/// TOML's own error text quotes the offending line, which may hold any setting's value.
+fn parse_quiet<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    toml::from_str(text).map_err(|e: toml::de::Error| {
+        sapphire_framework_settings::describe_toml_error(text, e.span(), e.message())
+    })
+}
+
 impl SettingsOwner for BridgeOwner {
     fn defs(&self) -> Vec<SettingDef> {
         bridge_defs()
@@ -260,12 +269,12 @@ impl SettingsOwner for BridgeOwner {
                 Err(e) => return errors.push(failure(path, e)),
             };
             let (net, embed) = if device_file {
-                match parse::<DeviceConfig>(path, &text) {
+                match parse_quiet::<DeviceConfig>(&text) {
                     Ok(c) => (c.net, c.embed),
                     Err(e) => return errors.push(failure(path, e)),
                 }
             } else {
-                match parse::<WorkgroupConfig>(path, &text) {
+                match parse_quiet::<WorkgroupConfig>(&text) {
                     Ok(c) => (c.net, c.embed),
                     Err(e) => return errors.push(failure(path, e)),
                 }
@@ -273,11 +282,12 @@ impl SettingsOwner for BridgeOwner {
             if let Err(e) = embed.models() {
                 errors.push(failure(path, e));
             }
-            if let Err(e) = relays(&net, None) {
+            // The error quotes the URL, a setting's value: say only what is wrong.
+            if relays(&net, None).is_err() {
                 errors.push(FieldError {
                     key: Some("net.relays".into()),
                     file: Some(path.to_path_buf()),
-                    message: e.to_string(),
+                    message: "holds an entry that is not a relay URL".into(),
                 });
             }
         };
@@ -471,10 +481,22 @@ mod tests {
     fn a_bad_relay_url_is_rejected() {
         let (_tmp, dir, reg) = setup();
         // The registry's own URL check would catch a typo first, so write the file by hand.
-        std::fs::write(dir.config_toml(), "[net]\nrelays = [\"not a url\"]\n").unwrap();
+        std::fs::write(dir.config_toml(), "[net]\nrelays = [\"MARKER-42\"]\n").unwrap();
         let err = apply(&reg, None, vec![set("net.discovery", Value::Bool(false))]).unwrap_err();
         assert!(matches!(&err, Error::Rejected(_)), "{err}");
         assert!(err.to_string().contains("not a relay URL"), "{err}");
+        assert!(!err.to_string().contains("MARKER-42"), "{err}");
+    }
+
+    #[test]
+    fn a_broken_file_is_rejected_without_quoting_it() {
+        let (_tmp, dir, reg) = setup();
+        // Valid TOML, but not a `DeviceConfig`: the parse error must not quote the line.
+        std::fs::write(dir.config_toml(), "[net]\nrelays = \"MARKER-42\"\n").unwrap();
+        let err = apply(&reg, None, vec![set("net.discovery", Value::Bool(false))]).unwrap_err();
+        assert!(matches!(&err, Error::Rejected(_)), "{err}");
+        assert!(err.to_string().contains("line 2"), "{err}");
+        assert!(!err.to_string().contains("MARKER-42"), "{err}");
     }
 
     #[test]

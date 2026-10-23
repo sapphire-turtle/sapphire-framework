@@ -608,7 +608,10 @@ impl Settings {
             Origin::Load => match result {
                 Ok(CommandOutput::Config(state)) => self.loaded(state.clone()),
                 Ok(_) => {}
-                Err(e) => self.load_error = Some(e.message.clone()),
+                Err(e) => {
+                    self.load_error = Some(e.message.clone());
+                    self.appearance.reloaded();
+                }
             },
             Origin::Restart => {
                 self.restart.on_outcome(result);
@@ -639,6 +642,7 @@ impl Settings {
         }
         self.config = Some(state);
         self.load_error = None;
+        self.appearance.reloaded();
     }
 
     /// Reload once the app server's workspace changes, the settings having been loaded.

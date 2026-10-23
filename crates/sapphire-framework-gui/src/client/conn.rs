@@ -43,15 +43,47 @@ pub(crate) fn drops_app(err: &sapphire_ipc::Error) -> bool {
     )
 }
 
-/// The effective value of each of the theme's settings.
-async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<GuiValues> {
+/// What a failed read of one of the theme's settings means.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GuiFailure {
+    /// The bridge does not know the key: it is older than the theme's settings.
+    OldBridge,
+    /// The bridge cannot read this key's value (a hand-edited file, say): that setting
+    /// takes its default, the others stand.
+    SkipKey,
+    /// The connection failed: the whole fetch did.
+    Connection,
+}
+
+pub(crate) fn gui_failure(err: &sapphire_ipc::Error) -> GuiFailure {
+    match err {
+        sapphire_ipc::Error::Rpc(rpc) if rpc.message.starts_with("unknown setting") => {
+            GuiFailure::OldBridge
+        }
+        sapphire_ipc::Error::Rpc(_) => GuiFailure::SkipKey,
+        _ => GuiFailure::Connection,
+    }
+}
+
+/// The effective value of each of the theme's settings; `None` from a bridge that does not
+/// know them.
+async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<Option<GuiValues>> {
     let mut values = GuiValues::new();
     for key in sapphire_bridge_api::settings::gui::THEME_KEYS {
-        if let EntryValue::Value(value) = c.config_get(key).await?.value {
-            values.insert(key.to_owned(), value);
+        match c.config_get(key).await {
+            Ok(entry) => {
+                if let EntryValue::Value(value) = entry.value {
+                    values.insert(key.to_owned(), value);
+                }
+            }
+            Err(err) => match gui_failure(&err) {
+                GuiFailure::OldBridge => return Ok(None),
+                GuiFailure::SkipKey => {}
+                GuiFailure::Connection => return Err(err),
+            },
         }
     }
-    Ok(values)
+    Ok(Some(values))
 }
 
 /// The one cached connection, to the app server, which relays the bridge's methods too. A
@@ -130,7 +162,7 @@ impl Connections {
                 Some(Vec::new())
             };
             // A bridge older than the theme's settings does not know them: the theme stays.
-            let gui = gui_values(&c).await.ok();
+            let gui = gui_values(&c).await?;
             Ok::<_, sapphire_ipc::Error>(Some(BridgeState {
                 status,
                 peers,
@@ -305,5 +337,38 @@ pub(crate) mod tests {
             classify::<()>(&sapphire_ipc::Error::Closed),
             Conn::Error(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod gui_tests {
+    use super::*;
+
+    fn rpc(message: &str) -> sapphire_ipc::Error {
+        sapphire_ipc::Error::Rpc(sapphire_ipc::RpcError::internal(message))
+    }
+
+    #[test]
+    fn an_unknown_key_is_an_older_bridge() {
+        assert_eq!(
+            gui_failure(&rpc("unknown setting `gui.theme.contrast`")),
+            GuiFailure::OldBridge
+        );
+    }
+
+    #[test]
+    fn a_value_the_bridge_cannot_read_skips_only_that_key() {
+        assert_eq!(
+            gui_failure(&rpc("cannot read /x/config.toml: invalid type")),
+            GuiFailure::SkipKey
+        );
+    }
+
+    #[test]
+    fn a_broken_connection_is_the_connections_failure() {
+        assert_eq!(
+            gui_failure(&sapphire_ipc::Error::NotRunning("gone".into())),
+            GuiFailure::Connection
+        );
     }
 }

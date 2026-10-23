@@ -125,7 +125,8 @@ impl AppearancePage {
         if done {
             self.editing = false;
             if let Some(write) = write_for(state, self.tab, &self.working) {
-                theme::install(ui.ctx(), &expected_theme(state, self.tab, &self.working));
+                let look = expected_theme(state, self.tab, &self.working, cx.workgroup);
+                theme::install(ui.ctx(), &look);
                 self.held = true;
                 out = Some(write);
             }
@@ -138,8 +139,9 @@ impl AppearancePage {
     }
 
     /// Take a write's outcome; `true` when it failed, so the stored theme is shown again.
+    /// A written value stays on the widget until [`reloaded`](Self::reloaded): until then
+    /// the loaded settings are the ones from before the write.
     pub(crate) fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) -> bool {
-        self.held = false;
         self.editing = false;
         match result {
             Ok(_) => {
@@ -147,10 +149,16 @@ impl AppearancePage {
                 false
             }
             Err(e) => {
+                self.held = false;
                 self.error = Some(e.message.clone());
                 true
             }
         }
+    }
+
+    /// The settings were loaded again (or the load failed): show what they hold.
+    pub(crate) fn reloaded(&mut self) {
+        self.held = false;
     }
 }
 
@@ -206,17 +214,18 @@ pub(crate) fn write_for(
 }
 
 /// The look once `working` is written to `tab`: on the workgroup's tab, the device's own
-/// values still win.
+/// values still win — if there is a workgroup; without one, both scopes are one file.
 pub(crate) fn expected_theme(
     state: &ConfigState,
     tab: Scope,
     working: &ThemeSettings,
+    workgroup: bool,
 ) -> ThemeSettings {
     let mut values: GuiValues = gui_entries(working)
         .into_iter()
         .map(|e| (e.key, e.value))
         .collect();
-    if tab == Scope::Workgroup {
+    if tab == Scope::Workgroup && workgroup {
         values.extend(scope_values(state, Scope::Device));
     }
     theme_settings(&values)
@@ -551,10 +560,10 @@ mod tests {
     #[test]
     fn an_overridden_key_keeps_the_devices_look() {
         let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
-        let shown = expected_theme(&st, Scope::Workgroup, &high());
+        let shown = expected_theme(&st, Scope::Workgroup, &high(), true);
         assert_eq!(shown.contrast, Contrast::Low);
         // On the device tab the edit is what shows.
-        let shown = expected_theme(&st, Scope::Device, &high());
+        let shown = expected_theme(&st, Scope::Device, &high(), true);
         assert_eq!(shown.contrast, Contrast::High);
     }
 
@@ -653,5 +662,60 @@ mod tests {
         assert!(!text.contains("Workgroup"), "{text}");
         assert!(!text.contains("uses its own"), "{text}");
         assert_eq!(page.tab, Scope::Workgroup);
+    }
+
+    #[test]
+    fn without_a_workgroup_the_device_file_is_not_an_overlay() {
+        // The same file answers for both scopes: its old values must not mask the edit.
+        let st = state(
+            &[(gui::THEME_CONTRAST, s("low"))],
+            &[(gui::THEME_CONTRAST, s("low"))],
+        );
+        let shown = expected_theme(&st, Scope::Workgroup, &high(), false);
+        assert_eq!(shown.contrast, Contrast::High);
+        let shown = expected_theme(&st, Scope::Workgroup, &high(), true);
+        assert_eq!(shown.contrast, Contrast::Low);
+    }
+
+    #[test]
+    fn a_written_value_is_kept_until_the_reload() {
+        let st = state(&[], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+        };
+        let mut page = AppearancePage {
+            working: high(),
+            held: true,
+            ..Default::default()
+        };
+        page.on_outcome(&Ok(crate::client::CommandOutput::Done));
+        // The answer is in, the reload is not: `st` is still the state before the write.
+        drawn(&mut page, &cx);
+        assert_eq!(page.working, high());
+        page.reloaded();
+        drawn(&mut page, &cx);
+        assert_eq!(page.working, ThemeSettings::default());
+    }
+
+    #[test]
+    fn a_failed_write_shows_the_stored_values_again() {
+        let st = state(&[], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+        };
+        let mut page = AppearancePage {
+            working: high(),
+            held: true,
+            ..Default::default()
+        };
+        page.on_outcome(&Err("rejected".into()));
+        drawn(&mut page, &cx);
+        assert_eq!(page.working, ThemeSettings::default());
     }
 }

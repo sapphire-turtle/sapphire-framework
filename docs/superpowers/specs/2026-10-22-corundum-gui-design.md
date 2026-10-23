@@ -48,7 +48,7 @@ is released.
 3. **egui only.** Dependencies: `egui`, `egui_extras` (`svg`), `fontdb`, `ttf-parser`.
    `pub use egui;` as sapphire-framework-gui does, so apps and components agree on egui.
    No `eframe` feature yet: nothing moved here needs it. It is added when something
-   window-level moves (YAGNI).
+   window-level moves (YAGNI) — done in `2026-10-23-corundum-gui-eframe-design.md`.
 4. **Versioned on its own, starting at 0.1.0**, outside `version_group = "framework"`:
    asteria should not see a new corundum version with every sapphire release.
 5. **sapphire-framework-gui keeps its public API.** Its `Shell` becomes a thin wrapper over

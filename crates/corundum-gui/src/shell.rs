@@ -98,7 +98,7 @@ pub struct Shell<D> {
     #[cfg(test)]
     footer_rects: Vec<egui::Rect>,
     open: Option<D>,
-    /// Whether the SVG loader has been put in place.
+    /// Whether the SVG loader and the theme have been put in place.
     loaders: bool,
 }
 
@@ -154,7 +154,8 @@ impl<D: Copy + PartialEq> Shell<D> {
 
     /// Render into the window's root `ui`. `content` draws the open destination into what
     /// the frame leaves of `ui`, as it would at the root: its own panels, then a
-    /// `CentralPanel`.
+    /// `CentralPanel`. The first frame installs the default [`theme`](crate::theme) if the
+    /// app has not installed one.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
         self.ui_with_foot(ui, |_| None, content);
     }
@@ -169,6 +170,10 @@ impl<D: Copy + PartialEq> Shell<D> {
     ) {
         if !std::mem::replace(&mut self.loaders, true) {
             crate::icons::install_loaders(ui.ctx());
+            // The app may have installed its saved theme already; only fill the gap.
+            if !crate::theme::is_installed(ui.ctx()) {
+                crate::theme::install(ui.ctx(), &crate::theme::ThemeSettings::default());
+            }
         }
         let opened = if ui.available_width() < COMPACT_WIDTH {
             egui::Panel::bottom("shell_bar")
@@ -464,6 +469,30 @@ mod tests {
         });
         assert_eq!(shell.current(), Some(Screen::Summary));
         assert_eq!(drawn, [Screen::Summary, Screen::Summary]);
+    }
+
+    #[test]
+    fn the_shell_installs_the_default_theme() {
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        crate::test_support::render_in(&ctx, [900.0, 600.0], |ui| shell.ui(ui, |ui, _| screen(ui)));
+        assert!(crate::theme::is_installed(&ctx));
+    }
+
+    #[test]
+    fn the_shell_keeps_an_installed_theme() {
+        use crate::theme::{Contrast, ThemeSettings};
+        let ctx = egui::Context::default();
+        let settings = ThemeSettings {
+            preference: egui::ThemePreference::Dark,
+            contrast: Contrast::High,
+            ..Default::default()
+        };
+        crate::theme::install(&ctx, &settings);
+        let mut shell = shell();
+        crate::test_support::render_in(&ctx, [900.0, 600.0], |ui| shell.ui(ui, |ui, _| screen(ui)));
+        let high = crate::theme::Theme::new(true, Contrast::High, Default::default());
+        assert_eq!(*crate::theme::current(&ctx), high);
     }
 
     #[test]

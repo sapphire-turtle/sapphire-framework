@@ -1,4 +1,6 @@
-use egui::{Align, Color32, Layout};
+use egui::{Align, Layout};
+
+use crate::theme::{Swatch, Tone};
 
 use crate::client::{Command, CommandError, CommandOutput};
 
@@ -62,10 +64,13 @@ impl WorkspacePicker {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.strong(display_name(current));
+                                    let theme = crate::theme::current(ui.ctx());
                                     let colour = match b {
-                                        Badge::Syncing { .. } => Color32::GREEN,
-                                        Badge::NotSynced => Color32::GRAY,
-                                        _ => Color32::YELLOW,
+                                        Badge::Syncing { .. } => theme.text(Swatch::SUCCESS),
+                                        Badge::NotSynced => {
+                                            theme.color(Tone::Muted, Swatch::Neutral)
+                                        }
+                                        _ => theme.text(Swatch::WARNING),
                                     };
                                     ui.colored_label(colour, b.label());
                                 });

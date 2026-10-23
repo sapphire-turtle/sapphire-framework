@@ -7151,14 +7151,10 @@ dependencies = [
 name = "sapphire-framework-gui"
 version = "0.21.0"
 dependencies = [
- "android-activity",
- "android_log-sys",
  "corundum-gui",
  "eframe",
  "egui",
  "grain-id",
- "jni 0.21.1",
- "ndk-context",
  "rfd",
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
@@ -7171,7 +7167,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

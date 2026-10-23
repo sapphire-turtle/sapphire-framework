@@ -20,7 +20,7 @@ eframe = ["dep:eframe", "corundum-gui/eframe", "dep:sapphire-workspace", "tokio/
 # hosted in this process over the in-process IPC carrier.
 mobile = [
     "eframe",
-    "eframe/android-game-activity",
+    "corundum-gui/android",
     "dep:sapphire-framework-server",
     "dep:sapphire-framework-bridge",
     "sapphire-framework-bridge/node",
@@ -46,13 +46,6 @@ tracing.workspace = true
 # A folder dialog exists only on the desktops.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 rfd = "0.17"
-
-[target.'cfg(target_os = "android")'.dependencies]
-android-activity = "0.6"
-android_log-sys = "0.3"
-jni = "0.21"
-ndk-context = "0.1"
-tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 sapphire-framework-bridge = { path = "../sapphire-framework-bridge", features = ["test-util"] }

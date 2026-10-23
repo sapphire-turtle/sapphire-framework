@@ -127,4 +127,5 @@ eframe on Android needs one of winit's activity features, or winit fails to comp
 ## Known gaps
 
 - The Android window (`PhoneWindow`, text input, logcat, clipboard, insets) stays in
-  sapphire-framework-gui until the next PR.
+  sapphire-framework-gui until the next PR — done in
+  `2026-10-23-corundum-gui-android-design.md` (#326).

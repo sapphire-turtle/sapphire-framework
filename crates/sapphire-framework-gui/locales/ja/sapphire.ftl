@@ -76,7 +76,7 @@ sapphire-action-create = 作成
 sapphire-action-remove = 削除
 sapphire-action-retire = 廃止
 sapphire-action-save = 保存
-sapphire-action-set = 設定
+sapphire-action-set = 適用
 
 # 「<name> を入力して確認してください:」。`$name` は太字で表示します。「sapphire-devices-join-as」の `$name` も同じです。
 sapphire-confirm-type = { $name } を入力して確認してください:
@@ -84,9 +84,9 @@ sapphire-confirm-type = { $name } を入力して確認してください:
 # 画面に表示できるものがないとき。
 sapphire-unavailable-server = { $app } サーバーは利用できません。
 sapphire-unavailable-bridge = ブリッジは利用できません。
-sapphire-unavailable-hint = 「設定」→「About」を確認してください。
+sapphire-unavailable-hint = 「設定」→「このアプリについて」を確認してください。
 
-# 設定の一覧と About ページ。
+# 設定の一覧とこのアプリについてのページ。
 sapphire-settings-general = 一般
 sapphire-settings-appearance = 外観
 sapphire-settings-sync = 同期
@@ -95,7 +95,7 @@ sapphire-settings-devices = デバイス
 sapphire-settings-workgroup = ワークグループ
 sapphire-settings-external-devices = 外部デバイス
 sapphire-settings-embedding = 埋め込み
-sapphire-settings-about = About
+sapphire-settings-about = このアプリについて
 sapphire-settings-version = バージョン { $version }
 sapphire-settings-services = サービス
 
@@ -123,7 +123,7 @@ sapphire-workspaces-none = ワークスペースがまだありません。既�
 sapphire-workspaces-remove = 削除…
 sapphire-workspaces-move = 移動…
 sapphire-workspaces-move-title = { $name } の移動先を選んでください（フォルダー名は変わりません）
-sapphire-workspaces-show-folder = フォルダーを開く
+sapphire-workspaces-show-folder = フォルダーを表示
 sapphire-workspaces-stop-sync = 同期を停止
 sapphire-workspaces-start-sync = 同期を開始
 sapphire-workspaces-switch = 別のワークスペースに切り替える

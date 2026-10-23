@@ -4,7 +4,7 @@
 corundum-language-name = 日本語
 corundum-language = 言語
 # The picker's System entry, with the language it resolves to now.
-corundum-language-system = システム ({ $language })
+corundum-language-system = システム（{ $language }）
 
 # The theme settings (`theme::settings_ui`).
 corundum-theme-appearance = 外観

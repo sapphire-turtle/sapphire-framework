@@ -56,6 +56,7 @@ pub enum Language {
 pub struct Resources {
     /// Names the set: [`register`] adds a name once.
     pub name: &'static str,
+    /// `(language tag, .ftl source)` pairs, one per language.
     pub files: &'static [(&'static str, &'static str)],
 }
 
@@ -222,6 +223,7 @@ pub fn name_of(ctx: &egui::Context, lang: &LanguageIdentifier) -> String {
 /// Anything [`tr!`](crate::tr!) can look strings up through: an [`egui::Ui`] or an
 /// [`egui::Context`].
 pub trait AsContext {
+    /// The egui context to look strings up in.
     fn as_context(&self) -> &egui::Context;
 }
 
@@ -554,7 +556,7 @@ mod tests {
         crate::test_support::render_in(&ctx, [200.0, 100.0], |ui| {
             text = crate::tr!(ui, "corundum-language-system", language = "日本語");
         });
-        assert_eq!(text, "システム (日本語)");
+        assert_eq!(text, "システム（日本語）");
     }
 
     #[cfg(feature = "serde")]

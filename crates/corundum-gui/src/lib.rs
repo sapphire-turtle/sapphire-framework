@@ -23,6 +23,8 @@ pub mod fonts;
 #[cfg(feature = "eframe")]
 pub mod gpu;
 pub mod icons;
+pub mod logcat;
+pub mod platform;
 mod shell;
 #[cfg(feature = "eframe")]
 pub mod window;

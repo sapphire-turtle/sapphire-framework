@@ -15,9 +15,22 @@ categories = ["gui"]
 #
 # `eframe` (default) adds the window: `window::run` opens a desktop window on wgpu, set up
 # by `gpu`. Turn default features off for an app that renders egui without eframe.
+#
+# `android` is the window on an Android phone (`window::run_android`, GameActivity), with
+# the platform calls and logcat behind it. eframe's default does not build on Android
+# (winit needs an activity chosen), so an Android app turns this on.
 [features]
 default = ["eframe"]
 eframe = ["dep:eframe"]
+android = [
+    "eframe",
+    "eframe/android-game-activity",
+    "dep:android-activity",
+    "dep:android_log-sys",
+    "dep:jni",
+    "dep:ndk-context",
+    "dep:tracing-subscriber",
+]
 
 [dependencies]
 eframe = { version = "0.36", optional = true }
@@ -33,3 +46,11 @@ tracing.workspace = true
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFSet", "CFString", "CFURL"] }
 objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFontDescriptor", "CTFontCollection"] }
+
+# The `android` feature's: the activity, logcat, and JNI for the clipboard and the insets.
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", optional = true }
+android_log-sys = { version = "0.3", optional = true }
+jni = { version = "0.21", optional = true }
+ndk-context = { version = "0.1", optional = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"], optional = true }

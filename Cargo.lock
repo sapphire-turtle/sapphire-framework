@@ -1440,13 +1440,18 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 name = "corundum-gui"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
+ "android_log-sys",
  "eframe",
  "egui",
  "egui_extras",
  "fontdb",
+ "jni 0.21.1",
+ "ndk-context",
  "objc2-core-foundation",
  "objc2-core-text",
  "tracing",
+ "tracing-subscriber",
  "ttf-parser",
 ]
 

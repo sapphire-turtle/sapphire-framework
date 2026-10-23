@@ -1,12 +1,280 @@
-//! The theme's settings (`gui.theme.*`, stored by the bridge) as corundum's
-//! [`ThemeSettings`], and back.
+//! The Appearance page: the theme's settings (`gui.theme.*`, stored by the bridge) edited
+//! with corundum's widget, per scope, and converted to and from [`ThemeSettings`].
 
-use corundum_gui::theme::{Accent, Contrast, ThemeSettings};
+use corundum_gui::theme::{self, Accent, Contrast, ThemeSettings};
 use egui::ThemePreference;
-use sapphire_bridge_api::settings::gui;
+use sapphire_bridge_api::settings::{Entry, EntryValue, Origin, Scope, gui};
 use sapphire_bridge_api::{ConfigEntry, Value};
 
-use crate::client::GuiValues;
+use super::error_line;
+use crate::client::{Command, CommandError, CommandOutput, ConfigState, GuiValues};
+
+/// What the bridge says when it does not know the theme's settings.
+pub(crate) const OLD_BRIDGE: &str =
+    "this sapphire-bridge does not know the appearance settings; update it";
+
+/// What the Appearance page reads.
+pub(crate) struct AppearanceCtx<'a> {
+    /// The settings as last loaded.
+    pub state: Option<&'a ConfigState>,
+    /// Why the settings cannot be edited now; the widget is shown disabled.
+    pub unavailable: Option<&'a str>,
+    /// A write this page sent is still running.
+    pub busy: bool,
+    /// The bridge is in a workgroup: without one there is nothing to override, and no tabs.
+    pub workgroup: bool,
+}
+
+/// The Appearance page: a tab per scope, and the theme widget over the tab's values. A
+/// change is written as it is made — a click, or the end of a drag.
+pub(crate) struct AppearancePage {
+    /// The open tab.
+    pub tab: Scope,
+    /// What the widget edits.
+    working: ThemeSettings,
+    /// A drag is under way, or a write is out: keep `working` rather than the loaded values.
+    editing: bool,
+    /// A write was sent and has not answered.
+    held: bool,
+    /// Why the last write failed.
+    pub error: Option<String>,
+}
+
+impl Default for AppearancePage {
+    fn default() -> AppearancePage {
+        AppearancePage {
+            tab: Scope::Workgroup,
+            working: ThemeSettings::default(),
+            editing: false,
+            held: false,
+            error: None,
+        }
+    }
+}
+
+impl AppearancePage {
+    /// Render; the write the user asked for, if any.
+    pub(crate) fn ui(&mut self, ui: &mut egui::Ui, cx: &AppearanceCtx) -> Option<Command> {
+        ui.horizontal(|ui| {
+            ui.heading("Appearance");
+            if cx.busy {
+                ui.spinner();
+            }
+        });
+        ui.separator();
+        let state = match (cx.state, cx.unavailable) {
+            (Some(state), None) => state,
+            (_, why) => {
+                if let Some(why) = why {
+                    ui.weak(why);
+                }
+                // Shown as it is, not editable.
+                let mut shown = self.working.clone();
+                ui.add_enabled_ui(false, |ui| theme::settings_ui(ui, &mut shown));
+                return None;
+            }
+        };
+        if !cx.workgroup {
+            self.tab = Scope::Workgroup;
+        } else {
+            ui.horizontal(|ui| {
+                for (scope, label) in [(Scope::Workgroup, "Workgroup"), (Scope::Device, "Device")] {
+                    if ui
+                        .add(egui::Button::selectable(self.tab == scope, label))
+                        .clicked()
+                        && self.tab != scope
+                    {
+                        self.tab = scope;
+                        self.editing = false;
+                    }
+                }
+            });
+        }
+        let mut out = None;
+        if cx.workgroup {
+            match self.tab {
+                Scope::Device => {
+                    for (label, names) in inherited(state) {
+                        ui.weak(format!("{}: {label}", names.join(", ")));
+                    }
+                    if !overridden(state).is_empty()
+                        && ui
+                            .add_enabled(!cx.busy, egui::Button::new("Use the workgroup's"))
+                            .clicked()
+                    {
+                        out = Some(use_the_workgroups());
+                    }
+                }
+                _ => {
+                    let own = overridden(state);
+                    if !own.is_empty() {
+                        ui.weak(format!("This device uses its own {}", own.join(", ")));
+                    }
+                }
+            }
+        }
+        error_line(ui, &mut self.error);
+
+        if !self.editing && !self.held {
+            self.working = tab_theme(state, self.tab);
+        }
+        let before = self.working.clone();
+        let done = ui
+            .add_enabled_ui(!cx.busy, |ui| theme::settings_ui(ui, &mut self.working))
+            .inner;
+        if done {
+            self.editing = false;
+            if let Some(write) = write_for(state, self.tab, &self.working) {
+                theme::install(ui.ctx(), &expected_theme(state, self.tab, &self.working));
+                self.held = true;
+                out = Some(write);
+            }
+        } else if self.working != before {
+            self.editing = true;
+        } else if !ui.input(|i| i.pointer.any_down()) {
+            self.editing = false;
+        }
+        out
+    }
+
+    /// Take a write's outcome; `true` when it failed, so the stored theme is shown again.
+    pub(crate) fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) -> bool {
+        self.held = false;
+        self.editing = false;
+        match result {
+            Ok(_) => {
+                self.error = None;
+                false
+            }
+            Err(e) => {
+                self.error = Some(e.message.clone());
+                true
+            }
+        }
+    }
+}
+
+/// The theme keys `entries` give a value.
+fn values_of(entries: &[Entry]) -> GuiValues {
+    entries
+        .iter()
+        .filter(|e| gui::THEME_KEYS.contains(&e.key.as_str()))
+        .filter_map(|e| match &e.value {
+            EntryValue::Value(v) => Some((e.key.clone(), v.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The theme keys `scope`'s file sets.
+fn scope_values(state: &ConfigState, scope: Scope) -> GuiValues {
+    state
+        .by_scope
+        .get(&scope)
+        .map(|entries| values_of(entries))
+        .unwrap_or_default()
+}
+
+/// What the `tab` shows: the workgroup's values over the defaults, or on the device the
+/// effective ones.
+pub(crate) fn tab_theme(state: &ConfigState, tab: Scope) -> ThemeSettings {
+    match tab {
+        Scope::Device => theme_settings(&values_of(&state.effective)),
+        _ => theme_settings(&scope_values(state, tab)),
+    }
+}
+
+/// The write that stores `working` in `tab`: only the keys that differ from what the tab
+/// shows. `None` when nothing does.
+pub(crate) fn write_for(
+    state: &ConfigState,
+    tab: Scope,
+    working: &ThemeSettings,
+) -> Option<Command> {
+    let shown = gui_entries(&tab_theme(state, tab));
+    let set: Vec<ConfigEntry> = gui_entries(working)
+        .into_iter()
+        .zip(shown)
+        .filter(|(new, old)| new.value != old.value)
+        .map(|(new, _)| new)
+        .collect();
+    (!set.is_empty()).then_some(Command::ConfigWrite {
+        scope: tab,
+        set,
+        unset: Vec::new(),
+    })
+}
+
+/// The look once `working` is written to `tab`: on the workgroup's tab, the device's own
+/// values still win.
+pub(crate) fn expected_theme(
+    state: &ConfigState,
+    tab: Scope,
+    working: &ThemeSettings,
+) -> ThemeSettings {
+    let mut values: GuiValues = gui_entries(working)
+        .into_iter()
+        .map(|e| (e.key, e.value))
+        .collect();
+    if tab == Scope::Workgroup {
+        values.extend(scope_values(state, Scope::Device));
+    }
+    theme_settings(&values)
+}
+
+/// The settings this device sets itself, by their names on the page.
+pub(crate) fn overridden(state: &ConfigState) -> Vec<&'static str> {
+    names(
+        scope_values(state, Scope::Device)
+            .keys()
+            .map(String::as_str),
+    )
+}
+
+/// The settings this device takes from elsewhere, by where: `from workgroup`, `default`.
+fn inherited(state: &ConfigState) -> Vec<(&'static str, Vec<&'static str>)> {
+    [
+        (Origin::Scope(Scope::Workgroup), "from workgroup"),
+        (Origin::Default, "default"),
+    ]
+    .into_iter()
+    .filter_map(|(origin, label)| {
+        let keys = state
+            .effective
+            .iter()
+            .filter(|e| e.origin == origin && gui::THEME_KEYS.contains(&e.key.as_str()))
+            .map(|e| e.key.as_str());
+        let names = names(keys);
+        (!names.is_empty()).then_some((label, names))
+    })
+    .collect()
+}
+
+/// The page's names for `keys`, each once, in the page's order.
+fn names<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<&'static str> {
+    let keys: Vec<&str> = keys.collect();
+    let mut out = Vec::new();
+    for key in gui::THEME_KEYS {
+        let name = match key {
+            gui::THEME_PREFERENCE => "light/dark",
+            gui::THEME_CONTRAST => "contrast",
+            _ => "accent",
+        };
+        if keys.contains(&key) && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Drop every theme setting this device sets, so the workgroup's apply.
+pub(crate) fn use_the_workgroups() -> Command {
+    Command::ConfigWrite {
+        scope: Scope::Device,
+        set: Vec::new(),
+        unset: gui::THEME_KEYS.iter().map(|k| (*k).to_owned()).collect(),
+    }
+}
 
 /// The largest hue the settings hold: the theme widget keeps 360 itself.
 const MAX_HUE: i64 = 360;
@@ -173,5 +441,217 @@ mod tests {
             .map(|e| e.key)
             .collect();
         assert_eq!(keys, gui::THEME_KEYS);
+    }
+
+    // ── the page ────────────────────────────────────────────────────────────
+
+    use crate::views::config::widgets::tests::drawn_text;
+
+    fn entry(key: &str, value: Value, origin: Origin) -> Entry {
+        Entry {
+            key: key.into(),
+            value: EntryValue::Value(value),
+            origin,
+            pending_restart: false,
+            note: None,
+        }
+    }
+
+    /// The workgroup sets `workgroup`, the device `device`; the effective values follow.
+    fn state(workgroup: &[(&str, Value)], device: &[(&str, Value)]) -> ConfigState {
+        let at = |scope, items: &[(&str, Value)]| -> Vec<Entry> {
+            items
+                .iter()
+                .map(|(k, v)| entry(k, v.clone(), Origin::Scope(scope)))
+                .collect()
+        };
+        let mut effective = Vec::new();
+        for e in gui_entries(&ThemeSettings::default()) {
+            let from = |items: &[(&str, Value)]| {
+                items
+                    .iter()
+                    .find(|(k, _)| *k == e.key)
+                    .map(|(_, v)| v.clone())
+            };
+            effective.push(match (from(device), from(workgroup)) {
+                (Some(v), _) => entry(&e.key, v, Origin::Scope(Scope::Device)),
+                (None, Some(v)) => entry(&e.key, v, Origin::Scope(Scope::Workgroup)),
+                (None, None) => entry(&e.key, e.value, Origin::Default),
+            });
+        }
+        ConfigState {
+            schema: Vec::new(),
+            effective,
+            by_scope: [
+                (Scope::Workgroup, at(Scope::Workgroup, workgroup)),
+                (Scope::Device, at(Scope::Device, device)),
+            ]
+            .into(),
+        }
+    }
+
+    fn high() -> ThemeSettings {
+        ThemeSettings {
+            contrast: Contrast::High,
+            ..Default::default()
+        }
+    }
+
+    /// A write's scope, the keys and values it sets, and the keys it unsets.
+    type Write = (Scope, Vec<(String, Value)>, Vec<String>);
+
+    fn write(command: Option<Command>) -> Option<Write> {
+        match command? {
+            Command::ConfigWrite { scope, set, unset } => Some((
+                scope,
+                set.into_iter().map(|e| (e.key, e.value)).collect(),
+                unset,
+            )),
+            other => panic!("not a write: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_change_writes_only_the_changed_keys() {
+        let st = state(&[], &[]);
+        assert_eq!(
+            write(write_for(&st, Scope::Workgroup, &high())),
+            Some((
+                Scope::Workgroup,
+                vec![(gui::THEME_CONTRAST.to_owned(), s("high"))],
+                Vec::new()
+            ))
+        );
+        assert_eq!(
+            write(write_for(&st, Scope::Workgroup, &ThemeSettings::default())),
+            None
+        );
+    }
+
+    #[test]
+    fn the_device_tab_starts_from_the_effective_values() {
+        let st = state(&[(gui::THEME_CONTRAST, s("high"))], &[]);
+        assert_eq!(tab_theme(&st, Scope::Device), high());
+        // Unchanged on the device tab: nothing to write, so no override appears.
+        assert_eq!(write(write_for(&st, Scope::Device, &high())), None);
+    }
+
+    #[test]
+    fn use_the_workgroups_unsets_all_four_on_the_device() {
+        assert_eq!(
+            write(Some(use_the_workgroups())),
+            Some((
+                Scope::Device,
+                Vec::new(),
+                gui::THEME_KEYS.iter().map(|k| (*k).to_owned()).collect()
+            ))
+        );
+    }
+
+    #[test]
+    fn an_overridden_key_keeps_the_devices_look() {
+        let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
+        let shown = expected_theme(&st, Scope::Workgroup, &high());
+        assert_eq!(shown.contrast, Contrast::Low);
+        // On the device tab the edit is what shows.
+        let shown = expected_theme(&st, Scope::Device, &high());
+        assert_eq!(shown.contrast, Contrast::High);
+    }
+
+    #[test]
+    fn overridden_names_each_setting_once() {
+        let st = state(
+            &[],
+            &[
+                (gui::THEME_ACCENT_HUE, Value::Int(10)),
+                (gui::THEME_ACCENT_CHROMA, Value::Int(10)),
+                (gui::THEME_CONTRAST, s("low")),
+            ],
+        );
+        assert_eq!(overridden(&st), ["contrast", "accent"]);
+    }
+
+    fn drawn(page: &mut AppearancePage, cx: &AppearanceCtx) -> String {
+        drawn_text(|ui| {
+            page.ui(ui, cx);
+        })
+    }
+
+    #[test]
+    fn the_override_line_names_the_overridden() {
+        let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+        };
+        let text = drawn(&mut AppearancePage::default(), &cx);
+        assert!(text.contains("Workgroup"), "{text}");
+        assert!(text.contains("Device"), "{text}");
+        assert!(text.contains("This device uses its own contrast"), "{text}");
+    }
+
+    #[test]
+    fn the_device_tab_says_what_it_takes_from_the_workgroup() {
+        let st = state(
+            &[(gui::THEME_PREFERENCE, s("dark"))],
+            &[(gui::THEME_CONTRAST, s("low"))],
+        );
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+        };
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn(&mut page, &cx);
+        assert!(text.contains("light/dark: from workgroup"), "{text}");
+        assert!(text.contains("accent: default"), "{text}");
+        assert!(text.contains("Use the workgroup's"), "{text}");
+    }
+
+    #[test]
+    fn unavailable_draws_the_reason() {
+        let cx = AppearanceCtx {
+            state: None,
+            unavailable: Some("sapphire-bridge is not running"),
+            busy: false,
+            workgroup: true,
+        };
+        let text = drawn(&mut AppearancePage::default(), &cx);
+        assert!(text.contains("sapphire-bridge is not running"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_write_says_so() {
+        let mut page = AppearancePage::default();
+        assert!(page.on_outcome(&Err("nope".into())));
+        assert_eq!(page.error.as_deref(), Some("nope"));
+        assert!(!page.on_outcome(&Ok(crate::client::CommandOutput::Done)));
+    }
+
+    #[test]
+    fn without_a_workgroup_there_are_no_tabs() {
+        // No workgroup: the bridge keeps the workgroup's keys in the device file, so the
+        // device "sets" them all; the page must not call that an override.
+        let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: false,
+        };
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn(&mut page, &cx);
+        assert!(!text.contains("Workgroup"), "{text}");
+        assert!(!text.contains("uses its own"), "{text}");
+        assert_eq!(page.tab, Scope::Workgroup);
     }
 }

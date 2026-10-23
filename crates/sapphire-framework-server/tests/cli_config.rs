@@ -172,6 +172,13 @@ fn assert_ok(run: &Run) {
     assert_eq!(run.code, 0, "{run:?}");
 }
 
+/// Whether `text` names `file`. On Windows the framework's paths come out in the verbatim
+/// form (`\\?\C:\…`), so that form counts too.
+fn names(text: &str, file: &std::path::Path) -> bool {
+    let path = file.display().to_string();
+    text.contains(&path) || text.contains(&format!(r"\\?\{path}"))
+}
+
 /// The device file's text, or "" when there is none.
 fn device_file(host: &Host) -> String {
     std::fs::read_to_string(host.config_dir().join("config.toml")).unwrap_or_default()
@@ -414,7 +421,7 @@ async fn offline_config_reports_an_unparsable_file() {
         let run = host.cli(args, None).await;
         assert_ne!(run.code, 0, "{args:?}: {run:?}");
         assert!(
-            run.err.contains(&file.display().to_string()),
+            names(&run.err, &file),
             "the error names the file: {args:?}: {run:?}"
         );
     }
@@ -428,7 +435,7 @@ async fn offline_config_reports_an_unparsable_file() {
     std::fs::write(&file, "[http]\nnope = 1\n").unwrap();
     let run = host.cli(&["config", "list"], None).await;
     assert_ok(&run);
-    assert!(run.err.contains(&file.display().to_string()), "{run:?}");
+    assert!(names(&run.err, &file), "{run:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -463,7 +470,7 @@ async fn offline_config_repairs_a_file_the_server_refuses() {
     assert_ok(&list);
     assert!(list.out.contains("update.check"), "{list:?}");
     assert!(
-        list.err.contains("warning") && list.err.contains(&file.display().to_string()),
+        list.err.contains("warning") && names(&list.err, &file),
         "{list:?}"
     );
     let get = host.cli(&["config", "get", "http.listen"], None).await;
@@ -599,8 +606,7 @@ async fn update_goes_on_past_a_broken_config_file() {
     // `--no-bridge`, and no releases named: nothing reaches the network.
     let run = host.cli(&["update", "--check", "--no-bridge"], None).await;
     assert!(
-        run.err.contains("warning: could not read")
-            && run.err.contains(&file.display().to_string()),
+        run.err.contains("warning: could not read") && names(&run.err, &file),
         "one warning naming the file: {run:?}"
     );
     assert_eq!(run.err.matches("warning").count(), 1, "{run:?}");

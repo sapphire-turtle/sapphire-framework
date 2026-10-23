@@ -52,6 +52,8 @@ app runs; the apps' own strings (a PR per app repository, after the release).
 
 - `fluent-bundle = "0.16"`, `fluent-langneg = "0.14"`, `unic-langid = "0.9"`,
   `sys-locale = "0.3"`.
+- `fluent-syntax = "0.12"`, for `i18n::check` (the entries of the parsed files; already a
+  dependency of `fluent-bundle`).
 - Android only: `jni = "0.21"`, `ndk-context = "0.1"` (the versions sapphire-framework-gui
   already uses).
 
@@ -95,7 +97,8 @@ pub(crate) const CORUNDUM: Resources = Resources {
 };
 
 /// Add `resources` after those registered before; a key in them replaces the same key
-/// from earlier ones. If a language is installed, it is rebuilt with them.
+/// from earlier ones. A name already registered is ignored, so it is cheap to call every
+/// frame. If a language is installed, it is rebuilt with them.
 pub fn register(ctx: &egui::Context, resources: Resources);
 ```
 
@@ -113,6 +116,8 @@ pub fn is_installed(ctx: &egui::Context) -> bool;
 pub fn current(ctx: &egui::Context) -> unic_langid::LanguageIdentifier;
 /// The languages the registered resources have, English first.
 pub fn available(ctx: &egui::Context) -> Vec<LanguageIdentifier>;
+/// `lang`'s name in itself (`corundum-language-name`): "English", "日本語".
+pub fn name_of(ctx: &egui::Context, lang: &LanguageIdentifier) -> String;
 
 pub fn tr(ctx: &egui::Context, id: &str) -> String;
 pub fn tr_args(ctx: &egui::Context, id: &str, args: &[(&str, Arg)]) -> String;
@@ -126,6 +131,8 @@ macro_rules! tr { … }
 - **Choosing.** `Language::System` takes `system_languages()`; `Explicit(tag)` takes
   `[tag]`. `fluent_langneg::negotiate_languages` (Filtering) matches them against
   `available`, with `en` as the default. An unparsable tag counts as no match.
+  fluent-langneg 0.14 uses `icu_locid`, not `unic-langid`, so `choose` converts between
+  the two as tag strings.
 - **Bundles.** `fluent_bundle::concurrent::FluentBundle` (it is `Send + Sync`, which
   `ctx.data` needs), one for the chosen language and one for English, each with every
   registered resource for that language added in order with `add_resource_overriding`.
@@ -166,7 +173,7 @@ impl Message {
 
 ### The system language (`i18n/system.rs`)
 
-`system_languages() -> Vec<String>`:
+`system_languages() -> Vec<String>` (public):
 
 - Android: `LocaleList.getDefault().toLanguageTags()` (comma-separated) through the JVM
   from `ndk_context::android_context()`. On any JNI failure, `sys-locale`.
@@ -208,8 +215,10 @@ Its row labels and choices ("Appearance", "Light", "Dark", "System", "Contrast",
   `views/*` becomes a `tr!` call with a `sapphire-` key. Constant tables of labels
   (`SYNC_SCREENS`, `SWITCH_CHOICES`) hold message ids.
 - `views/model.rs`: `Badge::label`, `move_target` and `new_target_ok`'s errors,
-  `embedding_status`, `role_badges` and the other text-returning functions return
-  `Message` (or `Result<_, Message>`). Plurals made by hand (`peer{s}`) become Fluent
+  `embedding_status` and the other text-returning functions return `Message` (or
+  `Result<_, Message>`). `role_badges` and `auto_resolution` return message ids
+  (`&'static str`), since they take no arguments. `views/files/model.rs` returns
+  `Result<_, Message>` (`sapphire-files-symlink`, `-outside`, `-io-error`). Plurals made by hand (`peer{s}`) become Fluent
   selectors.
 - `SettingsSection::label(&self)` becomes `label(&self, ctx: &egui::Context) -> String`,
   so an app can translate its section names. `with_app_sections`' heading stays a
@@ -217,11 +226,13 @@ Its row labels and choices ("Appearance", "Light", "Dark", "System", "Contrast",
 - The Appearance page gets a Language row above the theme. `Settings::with_language` and
   `take_language_changed` mirror `with_theme` and `take_theme_changed`; the app saves
   what it takes (#327).
-- sapphire-framework-gui's `Shell`, and `Settings` when drawn on its own, register
-  sapphire-framework-gui's `Resources` on their first frame, before the corundum `Shell`
-  installs a language; a context records that they are registered, so they are added
-  once. `sapphire_framework_gui::RESOURCES` is public for an app that looks strings up
+- Each public sapphire view registers sapphire-framework-gui's `Resources` when it draws,
+  as do `Shell`, `Settings` and the manager, before the corundum `Shell` installs a
+  language. `register` is idempotent by `Resources::name`, so this costs nothing after the
+  first frame. `sapphire_framework_gui::RESOURCES` is public for an app that looks strings up
   before the first frame.
+- The views keep their errors as `Option<Message>`, resolved when drawn. Backend text is
+  wrapped in `sapphire-error-text = { $text }`, so the text is shown as it came.
 - Files: `crates/sapphire-framework-gui/locales/{en,ja}/sapphire.ftl`.
 
 ### Not translated
@@ -239,8 +250,8 @@ In corundum-gui, with helpers sapphire-framework-gui's tests use as well:
 - Every embedded `.ftl` parses without errors.
 - `en` and `ja` have the same keys, both ways; the failure lists the difference.
 - Every id given to `tr!`, `Message::new`, `Destination::new`, `Action::new` and the label
-  tables in a crate's `src` exists in its `en` file: a test scans the sources with a
-  regex for string literals beginning with the crate's prefix.
+  tables in a crate's `src` exists in its `en` file: a test scans the sources (no regex
+  crate) for string literals beginning with the crate's prefix.
 - Lookup falls back ja → en → id; a missing argument still yields text.
 - `install` with another language changes `tr` on the next call.
 - `Language::System` with a given system list (`["ja-JP", "en-US"]` → ja, `["fr"]` → en);
@@ -265,4 +276,5 @@ One PR, a commit per step:
    message ids.
 3. sapphire-framework-gui: `sapphire.ftl` (en, ja), the views and `model.rs` moved over.
 4. sapphire-framework-gui: the Language row on the Appearance page.
-5. CHANGELOGs (corundum-gui's API change: labels are message ids).
+5. Breaking changes marked with `!` in the commit messages (corundum-gui's API change:
+   labels are message ids); release-plz writes the CHANGELOGs.

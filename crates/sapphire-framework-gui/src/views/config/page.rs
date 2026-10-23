@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::Color32;
+use crate::theme::Swatch;
 use sapphire_bridge_api::settings::{Apply, Process};
 use sapphire_bridge_api::{EntryValue, Origin, Scope, SettingDef};
 
@@ -131,7 +131,7 @@ impl ConfigPage {
             .filter(|d| d.allows(tab))
             .collect();
         if !bridge_up && defs.iter().any(|d| d.process == Process::Bridge) {
-            ui.colored_label(WARN, "sapphire-bridge is not running");
+            ui.colored_label(warn(ui), "sapphire-bridge is not running");
         }
         let draft = drafts.get_mut(&spec.section, tab);
         self.changed = draft.on_reload(state, tab);
@@ -164,7 +164,7 @@ impl ConfigPage {
                             .on_hover_text("Takes effect after a restart");
                     }
                     if self.changed.contains(&def.key) {
-                        ui.colored_label(WARN, "changed elsewhere");
+                        ui.colored_label(warn(ui), "changed elsewhere");
                     }
                     if matches!(edit, Some(Edit::Unset)) {
                         ui.small("removed here on Apply");
@@ -188,7 +188,7 @@ impl ConfigPage {
                     _ => self.errors.0.get(&def.key),
                 };
                 if let Some(error) = error {
-                    ui.colored_label(Color32::LIGHT_RED, error);
+                    ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::DANGER), error);
                 }
             });
             // Drafted and observed together, so a later reload can tell what changed.
@@ -270,8 +270,10 @@ impl ConfigPage {
     }
 }
 
-/// The warning colour, as the Embedding screen uses.
-const WARN: Color32 = Color32::from_rgb(230, 160, 40);
+/// The theme's warning colour, as the Embedding screen uses.
+fn warn(ui: &egui::Ui) -> egui::Color32 {
+    crate::theme::current(ui.ctx()).text(Swatch::WARNING)
+}
 
 /// Whether a key can be edited: a bridge key needs the bridge.
 fn editable(def: &SettingDef, bridge_up: bool) -> bool {

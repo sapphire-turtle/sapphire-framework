@@ -9,6 +9,7 @@ use crate::client::{
     Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, Snapshot,
 };
 use corundum_gui::COMPACT_WIDTH;
+use corundum_gui::theme::{self, ThemeSettings};
 
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
@@ -51,6 +52,7 @@ const JOINED_SCREEN: (Screen, &str) = (Screen::Embedding, "Embedding");
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum Page {
     App(usize),
+    Appearance,
     Sync(Screen),
     /// The settings page of this schema section.
     Config(String),
@@ -78,9 +80,10 @@ enum ListItem {
     Gap,
 }
 
-/// The settings: the app's sections, then Sync (workspace, devices, workgroup, external
-/// devices, embedding), then the settings pages under "Configuration", then About (the
-/// services and the version). Hold one; call [`ui`](Self::ui) every frame it is shown.
+/// The settings: the app's sections, then General (Appearance), then Sync (workspace,
+/// devices, workgroup, external devices, embedding), then the settings pages under
+/// "Configuration", then About (the services and the version). Hold one; call
+/// [`ui`](Self::ui) every frame it is shown.
 ///
 /// The settings pages come from the settings schema: a section that is all the app's is
 /// listed under the app's heading, one named like the Embedding screen is shown inside it,
@@ -121,6 +124,10 @@ pub struct Settings {
     /// The app server's workspace as last seen (`Some(None)`: it has none).
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
+    /// What the Appearance page edits.
+    theme: ThemeSettings,
+    /// Whether the user changed `theme` since the app last took it.
+    theme_changed: bool,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -156,6 +163,8 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
+            theme: ThemeSettings::default(),
+            theme_changed: false,
             #[cfg(test)]
             drawn: None,
             #[cfg(test)]
@@ -174,6 +183,20 @@ impl Settings {
         self.app_heading = heading.into();
         self.app_sections = sections;
         self
+    }
+
+    /// Start the Appearance page from the theme settings the app saved. This only records
+    /// them: the app installs them ([`theme::install`]), or the shell installs the
+    /// defaults.
+    pub fn with_theme(mut self, theme: ThemeSettings) -> Settings {
+        self.theme = theme;
+        self
+    }
+
+    /// The theme settings, once, after the user changed them on the Appearance page (which
+    /// has installed them already): the app saves these.
+    pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
+        std::mem::take(&mut self.theme_changed).then(|| self.theme.clone())
     }
 
     /// The client the framework's pages use.
@@ -319,6 +342,8 @@ impl Settings {
                 out.push(ListItem::Entry(Page::App(i), section.label()));
             }
         }
+        out.push(ListItem::Heading("General".into()));
+        out.push(ListItem::Entry(Page::Appearance, "Appearance".into()));
         out.push(ListItem::Heading("Sync".into()));
         for (screen, label) in SYNC_SCREENS {
             let joined = self.pages.iter().any(|p| {
@@ -366,6 +391,11 @@ impl Settings {
                 Some(section) => section.ui(ui),
                 None => self.page = None,
             },
+            Page::Appearance => {
+                if theme::settings_ui(ui, &mut self.theme) {
+                    self.theme_edited();
+                }
+            }
             Page::Sync(screen) => self.screen_ui(ui, screen),
             Page::Config(section) => {
                 let snapshot = self.snapshot();
@@ -529,6 +559,11 @@ impl Settings {
                 }
             }
         }
+    }
+
+    /// The user changed the theme on the Appearance page.
+    fn theme_edited(&mut self) {
+        self.theme_changed = true;
     }
 
     /// Keep a load's settings, and the pages their schema makes. Drafts are untouched.
@@ -866,6 +901,8 @@ mod tests {
                 "# Example",
                 "Look",
                 "General",
+                "# General",
+                "Appearance",
                 "# Sync",
                 "Workspace",
                 "Devices",
@@ -1001,5 +1038,37 @@ mod tests {
         let row = drawn.rfind("embed.cache_dir").unwrap();
         assert!(banner < status && status < row, "{drawn}");
         assert_eq!(loads(&settings), 0, "already loaded");
+    }
+
+    #[test]
+    fn appearance_is_listed_and_drawn() {
+        for size in [[900.0, 600.0], [400.0, 700.0]] {
+            let (mut settings, _rt) = settings();
+            settings.page = Some(Page::Appearance);
+            render(size, |ui| settings.ui(ui));
+            assert_eq!(settings.drawn, Some(Page::Appearance), "{size:?}");
+        }
+    }
+
+    #[test]
+    fn a_theme_change_is_taken_once() {
+        let (mut settings, _rt) = settings();
+        settings.theme.contrast = corundum_gui::theme::Contrast::High;
+        settings.theme_edited();
+        let taken = settings.take_theme_changed().expect("a change");
+        assert_eq!(taken.contrast, corundum_gui::theme::Contrast::High);
+        assert_eq!(settings.take_theme_changed(), None);
+    }
+
+    #[test]
+    fn with_theme_is_what_the_page_edits() {
+        let (settings, _rt) = settings();
+        let saved = ThemeSettings {
+            contrast: corundum_gui::theme::Contrast::Low,
+            ..Default::default()
+        };
+        let mut settings = settings.with_theme(saved.clone());
+        assert_eq!(settings.theme, saved);
+        assert_eq!(settings.take_theme_changed(), None);
     }
 }

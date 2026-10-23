@@ -1,4 +1,4 @@
-use egui::Color32;
+use crate::theme::Swatch;
 use sapphire_bridge_api::{EmbedSettingsResult, LOCAL_MODEL, ModelSource, Slot};
 
 use super::model::{SWITCH_CHOICES, auto_resolution, embedding_status};
@@ -31,7 +31,7 @@ impl EmbeddingView {
 
         let (line, warn) = embedding_status(s);
         if warn {
-            ui.colored_label(Color32::from_rgb(230, 160, 40), line);
+            ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::WARNING), line);
         } else {
             ui.label(line);
         }

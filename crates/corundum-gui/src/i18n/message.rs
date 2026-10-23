@@ -6,7 +6,9 @@ use fluent_bundle::FluentValue;
 /// installed language. Plain functions tested without egui return this rather than text.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Message {
+    /// The message id, as in the `.ftl` files.
     pub id: &'static str,
+    /// The arguments, by name.
     pub args: Vec<(&'static str, Arg)>,
 }
 
@@ -34,7 +36,9 @@ impl Message {
 /// A message argument: text, or a number (which selects plural forms).
 #[derive(Clone, PartialEq, Debug)]
 pub enum Arg {
+    /// Text, as is.
     Str(String),
+    /// A number; Fluent picks plural forms by it.
     Num(f64),
 }
 

@@ -75,19 +75,19 @@ jobs:
 
       # The runner has an NDK preinstalled; ANDROID_NDK_LATEST_HOME points at it. On Android
       # eframe's winit needs an activity chosen, so the default features do not build:
-      # without eframe (the components alone), and with eframe on GameActivity, as the
-      # sapphire apps' phones use it.
+      # without eframe (the components alone), and with `android` (the phone's window on
+      # GameActivity, as the sapphire apps' phones use it).
       - name: Clippy (arm64 phones and x86_64 emulators)
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
           cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked --no-default-features -- -D warnings
-          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked --features eframe/android-game-activity -- -D warnings
+          cargo ndk -t arm64-v8a -t x86_64 clippy -p corundum-gui --all-targets --locked --features android -- -D warnings
 
       # Built before the emulator starts, so the emulator step only runs it.
       - name: Build the tests
         run: |
           export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
-          cargo ndk -t x86_64 test -p corundum-gui --lib --no-run --locked --features eframe/android-game-activity
+          cargo ndk -t x86_64 test -p corundum-gui --lib --no-run --locked --features android
 
       # The emulator needs hardware acceleration, which the runner allows once /dev/kvm is
       # opened up to its user.
@@ -108,4 +108,4 @@ jobs:
           target: default
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
           disable-animations: true
-          script: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME cargo ndk -t x86_64 test -p corundum-gui --lib --locked --features eframe/android-game-activity
+          script: ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME cargo ndk -t x86_64 test -p corundum-gui --lib --locked --features android

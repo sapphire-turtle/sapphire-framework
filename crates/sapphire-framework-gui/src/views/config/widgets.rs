@@ -23,6 +23,10 @@ pub(crate) fn value_widget(
         _ => shown,
     };
     let current = current_value(draft, shown).or(def.default.as_ref());
+    // Chosen without the draft, so typing into it keeps the same widget (and focus).
+    let nothing_shown = current_value(None, shown)
+        .or(def.default.as_ref())
+        .is_none();
     let mut text = match draft {
         Some(Edit::Set { text, .. }) => text.clone(),
         _ => shown_text(&def.kind, shown),
@@ -38,7 +42,7 @@ pub(crate) fn value_widget(
                 changed
             }
             // With nothing to show, an empty field rather than a made-up number.
-            Kind::Int { min, max } if current.is_none() => ui
+            Kind::Int { min, max } if nothing_shown => ui
                 .add(
                     egui::TextEdit::singleline(&mut text)
                         .id(id)
@@ -305,6 +309,45 @@ pub(crate) mod tests {
         frame(20.0, vec![], &mut draft);
         let kept = remembered(&ctx, id.get());
         assert!(!kept.iter().any(|t| t.contains("hunter2")), "{kept:?}");
+    }
+
+    #[test]
+    fn an_unset_int_takes_several_typed_digits() {
+        let int = def("k.int", Kind::Int { min: 0, max: 99 });
+        let ctx = egui::Context::default();
+        let id = std::cell::Cell::new(egui::Id::NULL);
+        let mut draft: Option<Edit> = None;
+        let mut frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                id.set(ui.make_persistent_id("k.int"));
+                if let Some(edit) = value_widget(ui, &int, None, draft.as_ref(), true) {
+                    draft = Some(edit);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        frame(vec![]);
+        ctx.memory_mut(|m| m.request_focus(id.get()));
+        frame(vec![]);
+        frame(vec![egui::Event::Text("4".into())]);
+        frame(vec![]);
+        frame(vec![egui::Event::Text("2".into())]);
+        frame(vec![]);
+        assert!(
+            ctx.memory(|m| m.has_focus(id.get())),
+            "the field kept focus"
+        );
+        assert_eq!(
+            draft,
+            Some(Edit::Set {
+                text: "42".into(),
+                parsed: Ok(Value::Int(42)),
+            })
+        );
     }
 
     #[test]

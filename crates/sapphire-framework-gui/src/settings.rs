@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use crate::Health;
 use crate::client::{CommandId, FrameworkClient};
 use corundum_gui::COMPACT_WIDTH;
+use corundum_gui::i18n::{self, LanguageSettings};
 use corundum_gui::theme::{self, ThemeSettings};
 use corundum_gui::tr;
 
@@ -88,6 +89,10 @@ pub struct Settings {
     theme: ThemeSettings,
     /// Whether the user changed `theme` since the app last took it.
     theme_changed: bool,
+    /// What the Appearance page edits for the language.
+    language: LanguageSettings,
+    /// Whether the user changed `language` since the app last took it.
+    language_changed: bool,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -111,6 +116,8 @@ impl Settings {
             pending: HashMap::new(),
             theme: ThemeSettings::default(),
             theme_changed: false,
+            language: LanguageSettings::default(),
+            language_changed: false,
             #[cfg(test)]
             drawn: None,
         }
@@ -139,6 +146,19 @@ impl Settings {
     /// has installed them already): the app saves these.
     pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
         std::mem::take(&mut self.theme_changed).then(|| self.theme.clone())
+    }
+
+    /// Start the Appearance page from the language settings the app saved. This only
+    /// records them: the app installs them ([`i18n::install`]).
+    pub fn with_language(mut self, language: LanguageSettings) -> Settings {
+        self.language = language;
+        self
+    }
+
+    /// The language settings, once, after the user changed them on the Appearance page
+    /// (which has installed them already): the app saves these.
+    pub fn take_language_changed(&mut self) -> Option<LanguageSettings> {
+        std::mem::take(&mut self.language_changed).then(|| self.language.clone())
     }
 
     /// The client the framework's pages use.
@@ -307,6 +327,17 @@ impl Settings {
                 None => self.page = None,
             },
             Page::Appearance => {
+                egui::Grid::new("sapphire_language_row")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(tr!(ui, "corundum-language"));
+                        if i18n::settings_ui(ui, &mut self.language) {
+                            self.language_edited();
+                        }
+                        ui.end_row();
+                    });
+                ui.add_space(8.0);
                 if theme::settings_ui(ui, &mut self.theme) {
                     self.theme_edited();
                 }
@@ -348,6 +379,11 @@ impl Settings {
     /// The user changed the theme on the Appearance page.
     fn theme_edited(&mut self) {
         self.theme_changed = true;
+    }
+
+    /// The user changed the language on the Appearance page.
+    fn language_edited(&mut self) {
+        self.language_changed = true;
     }
 
     fn busy(&self, origin: Origin) -> bool {
@@ -593,5 +629,44 @@ mod tests {
         let mut settings = settings.with_theme(saved.clone());
         assert_eq!(settings.theme, saved);
         assert_eq!(settings.take_theme_changed(), None);
+    }
+
+    #[test]
+    fn a_language_change_is_taken_once() {
+        let (mut settings, _rt) = settings();
+        settings.language.language = corundum_gui::i18n::Language::Explicit("ja".into());
+        settings.language_edited();
+        let taken = settings.take_language_changed().expect("a change");
+        assert_eq!(
+            taken.language,
+            corundum_gui::i18n::Language::Explicit("ja".into())
+        );
+        assert_eq!(settings.take_language_changed(), None);
+    }
+
+    #[test]
+    fn with_language_is_what_the_page_edits() {
+        let (settings, _rt) = settings();
+        let saved = LanguageSettings {
+            language: corundum_gui::i18n::Language::Explicit("ja".into()),
+        };
+        let mut settings = settings.with_language(saved.clone());
+        assert_eq!(settings.language, saved);
+        assert_eq!(settings.take_language_changed(), None);
+    }
+
+    #[test]
+    fn appearance_draws_the_language_row() {
+        for size in [[900.0, 600.0], [400.0, 700.0]] {
+            let (mut settings, _rt) = settings();
+            settings.page = Some(Page::Appearance);
+            render(size, |ui| settings.ui(ui));
+            assert_eq!(settings.drawn, Some(Page::Appearance), "{size:?}");
+            assert_eq!(
+                settings.take_language_changed(),
+                None,
+                "drawing is no change"
+            );
+        }
     }
 }

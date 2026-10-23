@@ -57,6 +57,12 @@ impl Connections {
         Some(BridgeClient::relayed(client, cfg.endpoints.app.dir.clone()))
     }
 
+    /// The cached app-server connection itself; `None` until [`app`](Self::app) has
+    /// connected.
+    pub(crate) fn app_client(&self) -> Option<Arc<Client>> {
+        self.app.clone()
+    }
+
     pub(crate) async fn app(
         &mut self,
         cfg: &ClientConfig,

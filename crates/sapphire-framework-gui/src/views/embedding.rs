@@ -4,7 +4,7 @@ use sapphire_bridge_api::{
     LOCAL_MODEL, ModelSettings, ModelSource, Slot, SlotModel,
 };
 
-use crate::client::{Command, CommandOutput};
+use crate::client::{Command, CommandError, CommandOutput};
 
 use super::model::{LocalForm, RemoteForm, SWITCH_CHOICES, auto_resolution, embedding_status};
 use super::{ViewCtx, error_line, unavailable};
@@ -227,7 +227,7 @@ impl EmbeddingView {
     }
 
     /// Show the failure, or clear a key that was stored.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match result {
             Ok(_) => {
                 if std::mem::take(&mut self.key_sent) {
@@ -237,7 +237,7 @@ impl EmbeddingView {
             }
             Err(e) => {
                 self.key_sent = false;
-                self.error = Some(e.clone());
+                self.error = Some(e.message.clone());
             }
         }
     }

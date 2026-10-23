@@ -11,8 +11,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Where a setting is stored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Where a setting is stored. Ordered as declared: device, workgroup, workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// This machine only.

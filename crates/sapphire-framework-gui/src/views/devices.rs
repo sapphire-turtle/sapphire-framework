@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use egui::{Align, Color32, Layout};
 use grain_id::GrainId;
 
-use crate::client::{Command, CommandOutput};
+use crate::client::{Command, CommandError, CommandOutput};
 
 use super::model::{
     TTL_CHOICES, is_this_device, prune_edits, record_edit, role_badges, short_id, valid_name,
@@ -102,14 +102,14 @@ impl InviteDialog {
 
     /// Show the ticket, or the error. A ticket reopens the dialog if it was closed while
     /// the invite was running: it is shown only once, so it must not arrive unseen.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match result {
             Ok(CommandOutput::Ticket(t)) => {
                 self.ticket = Some(t.clone());
                 self.open = true;
             }
-            Ok(CommandOutput::Done | CommandOutput::Token(_)) => {}
-            Err(e) => self.error = Some(e.clone()),
+            Ok(_) => {}
+            Err(e) => self.error = Some(e.message.clone()),
         }
     }
 }
@@ -300,21 +300,21 @@ impl DeviceList {
     }
 
     /// Route the result: to the invite dialog or the retire confirmation, whichever sent it.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match self.last.take() {
             // A failed invite whose dialog was closed meanwhile shows on the screen's line.
             Some(Last::Invite) => match result {
-                Err(e) if !self.invite.open => self.error = Some(e.clone()),
+                Err(e) if !self.invite.open => self.error = Some(e.message.clone()),
                 _ => self.invite.on_outcome(result),
             },
             Some(Last::Retire) => match (result, self.confirm.as_mut()) {
                 (Ok(_), _) => self.confirm = None,
-                (Err(e), Some(c)) => c.error = Some(e.clone()),
-                (Err(e), None) => self.error = Some(e.clone()),
+                (Err(e), Some(c)) => c.error = Some(e.message.clone()),
+                (Err(e), None) => self.error = Some(e.message.clone()),
             },
             None => {
                 if let Err(e) = result {
-                    self.error = Some(e.clone());
+                    self.error = Some(e.message.clone());
                 }
             }
         }

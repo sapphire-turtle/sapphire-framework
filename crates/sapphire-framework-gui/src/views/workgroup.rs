@@ -1,6 +1,6 @@
 use egui::{Align, Layout};
 
-use crate::client::{Command, CommandOutput};
+use crate::client::{Command, CommandError, CommandOutput};
 
 use super::model::{default_device_name, is_this_device, valid_name};
 use super::{ViewCtx, error_line, unavailable};
@@ -67,10 +67,10 @@ impl JoinDialog {
     }
 
     /// Clear on success, show the error otherwise.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match result {
             Ok(_) => *self = JoinDialog::default(),
-            Err(e) => self.error = Some(e.clone()),
+            Err(e) => self.error = Some(e.message.clone()),
         }
     }
 }
@@ -168,12 +168,12 @@ impl WorkgroupView {
     }
 
     /// Route the result to the form that sent it.
-    pub fn on_outcome(&mut self, result: &Result<CommandOutput, String>) {
+    pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match self.last.take() {
             Some(Last::Join) => self.join.on_outcome(result),
             _ => {
                 if let Err(e) = result {
-                    self.error = Some(e.clone());
+                    self.error = Some(e.message.clone());
                 } else {
                     self.name.clear();
                 }

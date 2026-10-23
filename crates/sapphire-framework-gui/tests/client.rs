@@ -2,9 +2,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use sapphire_bridge_api::settings::{EntryValue, Process};
+use sapphire_bridge_api::{ConfigEntry, Entry, Scope, Value};
 use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig};
 use sapphire_framework_gui::client::*;
-use sapphire_framework_server::{AppServer, BridgeConnector, SyncRuntime};
+use sapphire_framework_server::{AppServer, BridgeConnector, Settings, SyncRuntime};
 use sapphire_ipc::{Endpoint, ManagedBy};
 use sapphire_workspace::{AppContext, AppKind};
 
@@ -167,7 +169,7 @@ where
     }
 }
 
-async fn outcome(client: &FrameworkClient, id: CommandId) -> Result<CommandOutput, String> {
+async fn outcome(client: &FrameworkClient, id: CommandId) -> Result<CommandOutput, CommandError> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Some(o) = client.drain_outcomes().into_iter().find(|o| o.id == id) {
@@ -201,13 +203,13 @@ async fn nothing_running_reads_absent_twice() {
     assert!(matches!(s.server, Conn::Absent));
     let id = client.send(Command::SyncEnable);
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("not running"), "{err}");
+    assert!(err.message.contains("not running"), "{err:?}");
     let id = client.send(Command::DeviceInvite {
         name: "laptop".into(),
         ttl_secs: None,
     });
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("server is not running"), "{err}");
+    assert!(err.message.contains("server is not running"), "{err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -226,7 +228,7 @@ async fn a_server_without_a_bridge_reads_the_bridge_absent() {
         ttl_secs: None,
     });
     let err = outcome(&client, id).await.unwrap_err();
-    assert_eq!(err, "sapphire-bridge is not running");
+    assert_eq!(err.message, "sapphire-bridge is not running");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -280,7 +282,7 @@ async fn create_invite_and_retire_round_trip() {
         selector: "desk".into(),
     });
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("own device"), "{err}");
+    assert!(err.message.contains("own device"), "{err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -408,9 +410,12 @@ async fn service_install_with_a_missing_binary_says_what_to_run() {
     let client = FrameworkClient::spawn(&tokio::runtime::Handle::current(), cfg, Arc::new(|| {}));
     let id = client.send(Command::ServiceInstall(ServiceTarget::Bridge));
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("run: "), "{err}");
-    assert!(err.contains(&missing.display().to_string()), "{err}");
-    assert!(err.contains("service install"), "{err}");
+    assert!(err.message.contains("run: "), "{err:?}");
+    assert!(
+        err.message.contains(&missing.display().to_string()),
+        "{err:?}"
+    );
+    assert!(err.message.contains("service install"), "{err:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -499,5 +504,296 @@ async fn a_process_that_never_answers_reads_error_and_does_not_stall_the_loop() 
         ttl_secs: None,
     });
     let err = outcome(&client, id).await.unwrap_err();
-    assert!(err.contains("did not answer"), "{err}");
+    assert!(err.message.contains("did not answer"), "{err:?}");
+}
+
+// ── settings (#314) ─────────────────────────────────────────────────────────
+//
+// `CTX`'s directories are the first test's for the whole binary, so the app server's
+// settings files are shared: each test writes keys of its own, or puts them back.
+
+/// A bridge that `bridge.restart` rebuilds in place, as the real one does.
+async fn start_restarting_bridge(f: &Fixture) -> BridgeProcess {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let net = LoopbackNetwork::new();
+    let dir = BridgeDir::at(f.tmp.path().join("bridge")).unwrap();
+    let control = f.bridge.clone();
+    let data = Endpoint::in_dir("bridge-data", control.dir.clone());
+    let build = move || {
+        std::future::ready(
+            Bridge::new(dir.clone(), Arc::new(net.transport(NODE)), "0.0.0").map(|bridge| {
+                bridge
+                    .control_endpoint(control.clone())
+                    .data_endpoint(data.clone())
+            }),
+        )
+    };
+    rt.spawn(async move {
+        let _ = sapphire_framework_bridge::serve_restarting(build).await;
+    });
+    wait(|| async { sapphire_ipc::probe(&f.bridge).await.unwrap() }).await;
+    BridgeProcess(Some(rt))
+}
+
+/// An app server run by `serve_restarting`, so `server.restart` rebuilds it in place.
+async fn start_restarting_server(f: &Fixture) -> tokio::task::JoinHandle<()> {
+    let endpoint = f.endpoints.app.clone();
+    let bridge = f.bridge.clone();
+    let task = tokio::spawn(async move {
+        let _ = sapphire_framework_server::serve_restarting(&CTX, (), move |_: &Settings| {
+            AppServer::new(&CTX, "0.0.0")
+                .endpoint(endpoint.clone())
+                .signals(false)
+                .bridge_connector(BridgeConnector::at(bridge.clone(), "test", "0.0.0"))
+        })
+        .await;
+    });
+    wait(|| async { sapphire_ipc::probe(&f.endpoints.app).await.unwrap() }).await;
+    task
+}
+
+/// What `ConfigLoad` returns; panics on anything else.
+async fn load(client: &FrameworkClient) -> ConfigState {
+    let id = client.send(Command::ConfigLoad);
+    match outcome(client, id).await {
+        Ok(CommandOutput::Config(state)) => state,
+        other => panic!("expected the settings, got {other:?}"),
+    }
+}
+
+/// `key`'s value in `entries`, when it is listed.
+fn value_of<'a>(entries: &'a [Entry], key: &str) -> Option<&'a EntryValue> {
+    entries.iter().find(|e| e.key == key).map(|e| &e.value)
+}
+
+fn set(key: &str, value: Value) -> ConfigEntry {
+    ConfigEntry {
+        key: key.to_owned(),
+        value,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn config_load_returns_schema_and_scopes() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let state = load(&client).await;
+    let keys: Vec<&str> = state.schema.iter().map(|d| d.key.as_str()).collect();
+    assert!(keys.contains(&"net.discovery"), "{keys:?}");
+    assert!(keys.contains(&"http.listen"), "{keys:?}");
+    assert!(
+        value_of(&state.effective, "net.discovery").is_some(),
+        "the effective values"
+    );
+    assert!(state.by_scope.contains_key(&Scope::Device));
+    assert!(state.by_scope.contains_key(&Scope::Workgroup));
+    assert!(
+        !state.by_scope.contains_key(&Scope::Workspace),
+        "no workspace is selected"
+    );
+
+    let notes = f.tmp.path().join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    let id = client.send(Command::WorkspaceInit {
+        dir: notes,
+        sync: false,
+    });
+    outcome(&client, id).await.unwrap();
+    let state = load(&client).await;
+    assert!(state.by_scope.contains_key(&Scope::Workspace));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mixed_write_lands_in_both_processes() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: vec![
+            set("http.metrics.enabled", Value::Bool(true)),
+            set("net.discovery", Value::Bool(false)),
+        ],
+        unset: Vec::new(),
+    });
+    let Ok(CommandOutput::Written(written)) = outcome(&client, id).await else {
+        panic!("expected a write");
+    };
+    assert!(
+        written.changed.contains(&"net.discovery".to_owned())
+            && written.changed.contains(&"http.metrics.enabled".to_owned()),
+        "{written:?}"
+    );
+    let device = &load(&client).await.by_scope[&Scope::Device];
+    assert_eq!(
+        value_of(device, "net.discovery"),
+        Some(&EntryValue::Value(Value::Bool(false)))
+    );
+    assert_eq!(
+        value_of(device, "http.metrics.enabled"),
+        Some(&EntryValue::Value(Value::Bool(true)))
+    );
+
+    // And an unset takes them back out.
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: Vec::new(),
+        unset: vec!["http.metrics.enabled".into(), "net.discovery".into()],
+    });
+    assert!(
+        matches!(outcome(&client, id).await, Ok(CommandOutput::Written(_))),
+        "the unset"
+    );
+    let device = &load(&client).await.by_scope[&Scope::Device];
+    for key in ["net.discovery", "http.metrics.enabled"] {
+        assert!(
+            !matches!(value_of(device, key), Some(EntryValue::Value(_))),
+            "{key} is unset: {device:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_write_keeps_its_field_errors() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: vec![
+            set("http.mcp.enabled", Value::Bool(true)),
+            set("net.discovery", Value::String("not a bool".into())),
+        ],
+        unset: Vec::new(),
+    });
+    let err = outcome(&client, id).await.unwrap_err();
+    assert!(!err.fields.is_empty(), "{err:?}");
+    assert_eq!(err.fields[0].key, "net.discovery");
+    // Checked first: nothing was written.
+    let device = &load(&client).await.by_scope[&Scope::Device];
+    assert!(
+        !matches!(
+            value_of(device, "http.mcp.enabled"),
+            Some(EntryValue::Value(_))
+        ),
+        "{device:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_of_app_keys_works_without_a_bridge() {
+    let f = fixture();
+    // Without sync, so a relayed call finds no bridge at once rather than after the sync
+    // runtime's wait for one.
+    let _server = start_relay(&f.endpoints.app, &f.bridge).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: vec![set("update.check", Value::Bool(false))],
+        unset: Vec::new(),
+    });
+    assert!(
+        matches!(outcome(&client, id).await, Ok(CommandOutput::Written(_))),
+        "the write"
+    );
+    let state = load(&client).await;
+    assert!(
+        !state.schema.iter().any(|d| d.key == "net.discovery"),
+        "the bridge's keys are missing"
+    );
+    assert_eq!(
+        value_of(&state.by_scope[&Scope::Device], "update.check"),
+        Some(&EntryValue::Value(Value::Bool(false)))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_with_a_bridge_key_fails_without_a_bridge() {
+    let f = fixture();
+    // Without sync, so a relayed call finds no bridge at once rather than after the sync
+    // runtime's wait for one.
+    let _server = start_relay(&f.endpoints.app, &f.bridge).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Device,
+        set: vec![
+            set("http.listen", Value::String("127.0.0.1:1".into())),
+            set("net.discovery", Value::Bool(false)),
+        ],
+        unset: Vec::new(),
+    });
+    let err = outcome(&client, id).await.unwrap_err();
+    assert_eq!(err.message, "sapphire-bridge is not running");
+    let device = &load(&client).await.by_scope[&Scope::Device];
+    assert!(
+        !matches!(value_of(device, "http.listen"), Some(EntryValue::Value(_))),
+        "{device:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_bridge_comes_back() {
+    let f = fixture();
+    let _bridge = start_restarting_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+
+    let id = client.send(Command::Restart(Process::Bridge));
+    assert_eq!(outcome(&client, id).await, Ok(CommandOutput::Done));
+    // The relay answered once the new bridge was connected: it answers at once.
+    let state = load(&client).await;
+    assert!(state.schema.iter().any(|d| d.key == "net.discovery"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_app_comes_back_and_the_client_reconnects() {
+    let f = fixture();
+    let _server = start_restarting_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+    let pid = client.snapshot().server.up().unwrap().info.pid;
+
+    let id = client.send(Command::Restart(Process::App));
+    assert_eq!(outcome(&client, id).await, Ok(CommandOutput::Done));
+    let state = load(&client).await;
+    assert!(state.schema.iter().any(|d| d.key == "http.listen"));
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+    assert_eq!(
+        client.snapshot().server.up().unwrap().info.pid,
+        pid,
+        "restarted in place"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_app_of_a_server_that_cannot_says_so() {
+    let f = fixture();
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().server.up().is_some() }).await;
+
+    let id = client.send(Command::Restart(Process::App));
+    let err = outcome(&client, id).await.unwrap_err();
+    assert!(!err.message.is_empty(), "{err:?}");
+    // The refusal was an answer: the server stays up.
+    let _ = load(&client).await;
 }

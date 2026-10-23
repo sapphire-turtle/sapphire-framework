@@ -45,16 +45,8 @@ async fn a_starting_server_moves_server_toml_to_config_toml() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(
-        std::fs::read_to_string(config.join("config.toml")).unwrap(),
-        text
-    );
-    assert_eq!(
-        std::fs::read_to_string(config.join("server.toml.v1")).unwrap(),
-        text
-    );
-    assert!(!config.join("server.toml").exists());
-
+    // The socket is bound before the settings are read, so wait for the handshake —
+    // answered only once the server serves — before looking at the files.
     let info = ClientInfo {
         kind: "test".into(),
         version: "0.0.0".into(),
@@ -66,6 +58,16 @@ async fn a_starting_server_moves_server_toml_to_config_toml() {
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(config.join("config.toml")).unwrap(),
+        text
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.join("server.toml.v1")).unwrap(),
+        text
+    );
+    assert!(!config.join("server.toml").exists());
+
     let _: serde_json::Value = client
         .call(sapphire_ipc::SHUTDOWN_METHOD, serde_json::json!({}))
         .await

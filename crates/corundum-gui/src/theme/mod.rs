@@ -13,9 +13,11 @@ use std::sync::Arc;
 
 mod color;
 mod palette;
+mod ui;
 mod visuals;
 
 pub use palette::{Swatch, Theme, Tone};
+pub use ui::settings_ui;
 
 /// How far apart the text and the background are.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

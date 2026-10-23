@@ -13,11 +13,13 @@ use std::sync::Arc;
 
 mod color;
 mod palette;
+mod picker;
 mod tint;
 mod ui;
 mod visuals;
 
 pub use palette::{Swatch, Theme, Tone};
+pub use picker::TintPicker;
 pub use tint::Tint;
 pub use ui::settings_ui;
 

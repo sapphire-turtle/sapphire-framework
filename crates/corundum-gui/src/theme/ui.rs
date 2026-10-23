@@ -1,5 +1,6 @@
 //! [`settings_ui`]: the theme's settings, for an app's settings screen.
 
+use super::picker::report;
 use super::{Contrast, Swatch, ThemeSettings, Tint};
 
 /// Light / dark / system, the contrast, and the accent's hue and strength, with a preview.
@@ -65,17 +66,6 @@ pub fn settings_ui(ui: &mut egui::Ui, settings: &mut ThemeSettings) -> bool {
     let made = report(changed, dragging, &mut held);
     ui.data_mut(|d| d.insert_temp(id, held));
     made
-}
-
-/// Whether a change is made this frame. A change during a drag is `held` until the drag
-/// ends, so an app saving on each change saves once per drag, not once per frame.
-fn report(changed: bool, dragging: bool, held: &mut bool) -> bool {
-    if dragging {
-        *held |= changed;
-        false
-    } else {
-        changed | std::mem::take(held)
-    }
 }
 
 /// What a change does: install the new settings.
@@ -170,20 +160,5 @@ mod tests {
                 hue: 360.0
             })
         );
-    }
-
-    #[test]
-    fn a_drag_is_reported_once_it_ends() {
-        let mut held = false;
-        assert!(!report(true, true, &mut held), "mid-drag");
-        assert!(!report(true, true, &mut held), "mid-drag");
-        assert!(report(false, false, &mut held), "the drag ended");
-        assert!(!report(false, false, &mut held), "only once");
-        assert!(report(true, false, &mut held), "a click");
-        assert!(
-            !report(false, true, &mut held),
-            "a drag that changed nothing"
-        );
-        assert!(!report(false, false, &mut held));
     }
 }

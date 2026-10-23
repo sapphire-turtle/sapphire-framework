@@ -178,6 +178,12 @@ impl Theme {
         }
     }
 
+    /// `tint`'s OKLCH (chroma, hue) as this theme reads it: the accent's for the accent
+    /// swatch, a custom tint brought into range.
+    pub(crate) fn chroma_hue(&self, tint: Tint) -> (f32, f32) {
+        resolve(tint, self.accent)
+    }
+
     /// `tint` at `tone`: a swatch's cell, or a custom tint worked out the way the cells are.
     pub fn tint(&self, tone: Tone, tint: Tint) -> Color32 {
         match tint {

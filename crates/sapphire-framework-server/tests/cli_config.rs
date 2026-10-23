@@ -244,6 +244,34 @@ async fn config_set_and_get_through_the_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn config_set_prints_each_field_error() {
+    let host = Host::new();
+    let _server = host.serve().await;
+
+    let set = host
+        .cli(
+            &["config", "set", "sapphire-servertest.greeting=hello"],
+            None,
+        )
+        .await;
+    assert_ok(&set);
+    let unset = host
+        .cli(
+            &[
+                "config",
+                "unset",
+                "sapphire-servertest.greeting",
+                "sapphire-servertest.nope",
+            ],
+            None,
+        )
+        .await;
+    assert_eq!(unset.code, 1, "{unset:?}");
+    let last = unset.err.lines().last().unwrap_or_default();
+    assert!(last.starts_with("sapphire-servertest.nope: "), "{unset:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn config_list_shows_both_sides() {
     let host = Host::new();
     let _server = host.serve().await;

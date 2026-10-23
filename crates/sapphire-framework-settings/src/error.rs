@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use sapphire_bridge_api::ConfigFieldError;
 use sapphire_bridge_api::settings::Scope;
 
 use crate::owner::FieldError;
@@ -75,6 +76,48 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+impl Error {
+    /// The keys this error names, for a client to show under each field; empty when it
+    /// names none. The messages never hold a value.
+    pub fn field_errors(&self) -> Vec<ConfigFieldError> {
+        let one = |key: &String, message: String| {
+            vec![ConfigFieldError {
+                key: key.clone(),
+                message,
+            }]
+        };
+        match self {
+            Self::UnknownKey(key) => one(key, "unknown setting".to_owned()),
+            Self::ScopeNotAllowed {
+                key,
+                scope,
+                allowed,
+            } => one(
+                key,
+                format!(
+                    "cannot be set in the {scope} scope (allowed: {})",
+                    scope_list(allowed)
+                ),
+            ),
+            Self::InvalidValue { key, message } => one(key, message.clone()),
+            Self::SecretOnCommandLine(key) => one(
+                key,
+                "is a secret; give it with --stdin or a prompt, not on the command line".to_owned(),
+            ),
+            Self::Rejected(errors) => errors
+                .iter()
+                .filter_map(|e| {
+                    Some(ConfigFieldError {
+                        key: e.key.clone()?,
+                        message: e.message.clone(),
+                    })
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 fn scope_list(scopes: &[Scope]) -> String {
     scopes
         .iter()
@@ -112,6 +155,53 @@ pub fn describe_toml_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_errors_name_the_keys() {
+        let key = || "net.discovery".to_owned();
+        let keyed = |e: Error| {
+            e.field_errors()
+                .into_iter()
+                .map(|f| f.key)
+                .collect::<Vec<_>>()
+        };
+        let expect = vec![key()];
+        assert_eq!(keyed(Error::UnknownKey(key())), expect);
+        assert_eq!(
+            keyed(Error::ScopeNotAllowed {
+                key: key(),
+                scope: Scope::Workspace,
+                allowed: vec![Scope::Device],
+            }),
+            expect
+        );
+        assert_eq!(
+            keyed(Error::InvalidValue {
+                key: key(),
+                message: "expected a bool".into()
+            }),
+            expect
+        );
+        assert_eq!(keyed(Error::SecretOnCommandLine(key())), expect);
+        let rejected = Error::Rejected(vec![
+            FieldError {
+                key: Some(key()),
+                file: None,
+                message: "no".into(),
+            },
+            FieldError {
+                key: None,
+                file: None,
+                message: "unkeyed".into(),
+            },
+        ]);
+        assert_eq!(keyed(rejected), expect);
+        assert!(
+            Error::Io(std::io::Error::other("x"))
+                .field_errors()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn a_toml_error_names_the_place_not_the_text() {

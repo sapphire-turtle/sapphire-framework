@@ -10,6 +10,18 @@
 mod client;
 pub use client::BridgeClient;
 
+/// Reading a rejected batch's field errors off an error from the bridge or an app server.
+pub trait ConfigFieldErrorsExt: Sized {
+    /// The keys `err` names, when it is a rejected `config.set` or `config.unset`.
+    fn from_rpc(err: &sapphire_ipc::RpcError) -> Option<Self>;
+}
+
+impl ConfigFieldErrorsExt for sapphire_bridge_api::ConfigFieldErrors {
+    fn from_rpc(err: &sapphire_ipc::RpcError) -> Option<Self> {
+        Self::from_data(err.data.as_ref())
+    }
+}
+
 /// Send `header`, read the acknowledgement, and hand back the stream ready for raw bytes.
 pub async fn handshake_data<S>(
     mut stream: S,

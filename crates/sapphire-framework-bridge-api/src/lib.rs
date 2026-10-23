@@ -29,8 +29,8 @@ pub enum ManagedBy {
 
 mod config;
 pub use config::{
-    ConfigEntry, ConfigGetParams, ConfigListParams, ConfigListResult, ConfigSchemaResult,
-    ConfigSetParams, ConfigUnsetParams, ConfigWriteResult,
+    ConfigEntry, ConfigFieldError, ConfigFieldErrors, ConfigGetParams, ConfigListParams,
+    ConfigListResult, ConfigSchemaResult, ConfigSetParams, ConfigUnsetParams, ConfigWriteResult,
 };
 pub mod settings;
 pub use settings::{Apply, Entry, EntryValue, Kind, Origin, Scope, SecretState, SettingDef, Value};

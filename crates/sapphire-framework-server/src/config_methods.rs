@@ -348,9 +348,22 @@ fn no_bridge_for(theirs: &Batch) -> RpcError {
         !settings::BRIDGE_NAMES.contains(&top)
     });
     match unknown {
-        Some(key) => RpcError::internal(format!(
-            "unknown setting {key} (or sapphire-bridge, which may know it, is not running)"
-        )),
+        Some(key) => {
+            let mut rpc = RpcError::internal(format!(
+                "unknown setting {key} (or sapphire-bridge, which may know it, is not running)"
+            ));
+            rpc.data = Some(
+                sapphire_bridge_api::ConfigFieldErrors {
+                    fields: vec![sapphire_bridge_api::ConfigFieldError {
+                        key: key.to_owned(),
+                        message: "unknown setting (or sapphire-bridge, which may know it, is not running)"
+                            .to_owned(),
+                    }],
+                }
+                .to_data(),
+            );
+            rpc
+        }
         None => relay::not_running(),
     }
 }
@@ -367,8 +380,14 @@ fn from_bridge(err: sapphire_ipc::Error) -> RpcError {
 
 /// A settings failure, as the error that carries it back. The message is the client's to
 /// read; it is never logged.
+/// The keys it names travel as the error's `data`.
 fn failed(err: sapphire_framework_settings::Error) -> RpcError {
-    RpcError::internal(err.to_string())
+    let mut rpc = RpcError::internal(err.to_string());
+    let fields = err.field_errors();
+    if !fields.is_empty() {
+        rpc.data = Some(sapphire_bridge_api::ConfigFieldErrors { fields }.to_data());
+    }
+    rpc
 }
 
 /// A method's parameters, or the error that says they are malformed.

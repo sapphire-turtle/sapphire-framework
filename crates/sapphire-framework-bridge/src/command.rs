@@ -303,6 +303,22 @@ const OFFLINE_NOTE: &str = "the bridge is not running; it applies these settings
 /// What `config set --restart` and `config unset --restart` say when no bridge runs.
 const NOTHING_TO_RESTART: &str = "the bridge is not running; nothing to restart";
 
+/// A write's result, or — when the bridge rejected the batch and named its keys — `None`
+/// after printing the error and one `{key}: {message}` line per key.
+fn rejected_batch<T>(result: sapphire_ipc::Result<T>) -> Option<sapphire_ipc::Result<T>> {
+    use sapphire_bridge_client::ConfigFieldErrorsExt;
+    if let Err(err @ sapphire_ipc::Error::Rpc(rpc)) = &result
+        && let Some(fields) = sapphire_bridge_api::ConfigFieldErrors::from_rpc(rpc)
+    {
+        eprintln!("sapphire-bridge: {err}");
+        for line in fields.lines() {
+            eprintln!("{line}");
+        }
+        return None;
+    }
+    Some(result)
+}
+
 /// `config …`: through the running bridge, or — when none runs — on the files, so a
 /// device can be set up before its bridge starts.
 async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
@@ -351,7 +367,11 @@ async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
             let schema = client.config_schema().await?.settings;
             let entries = sapphire_bridge_api::parse_entries(&schema, &entries, stdin)
                 .map_err(Error::Config)?;
-            write(client.config_set(scope.scope(), entries).await?, restart);
+            let result = client.config_set(scope.scope(), entries).await;
+            let Some(result) = rejected_batch(result) else {
+                return Ok(1);
+            };
+            write(result?, restart);
             if restart {
                 return restart_and_wait(&client).await;
             }
@@ -361,7 +381,11 @@ async fn config(version: &str, command: ConfigCommand) -> Result<i32> {
             scope,
             restart,
         } => {
-            write(client.config_unset(scope.scope(), keys).await?, restart);
+            let result = client.config_unset(scope.scope(), keys).await;
+            let Some(result) = rejected_batch(result) else {
+                return Ok(1);
+            };
+            write(result?, restart);
             if restart {
                 return restart_and_wait(&client).await;
             }

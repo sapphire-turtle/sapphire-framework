@@ -66,6 +66,45 @@ impl fmt::Debug for ConfigSetParams {
     }
 }
 
+/// One key a rejected batch names, and what is wrong with it. The message never holds a
+/// value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigFieldError {
+    /// The key.
+    pub key: String,
+    /// What is wrong.
+    pub message: String,
+}
+
+/// The keys a rejected `config.set` or `config.unset` (dry run or not) names: the `data` of
+/// its error, beside the message that stays what it always was.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigFieldErrors {
+    /// One entry per key at fault.
+    pub fields: Vec<ConfigFieldError>,
+}
+
+impl ConfigFieldErrors {
+    /// The field errors in an error's `data`; `None` when it holds none. Read an RPC
+    /// error's with `sapphire_bridge_client::ConfigFieldErrorsExt::from_rpc`.
+    pub fn from_data(data: Option<&serde_json::Value>) -> Option<Self> {
+        let errors: Self = serde_json::from_value(data?.clone()).ok()?;
+        (!errors.fields.is_empty()).then_some(errors)
+    }
+
+    /// The `data` that carries these.
+    pub fn to_data(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("field errors are plain strings")
+    }
+
+    /// One `{key}: {message}` line per field.
+    pub fn lines(&self) -> impl Iterator<Item = String> + '_ {
+        self.fields
+            .iter()
+            .map(|f| format!("{}: {}", f.key, f.message))
+    }
+}
+
 /// Parameters of `config.unset`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigUnsetParams {

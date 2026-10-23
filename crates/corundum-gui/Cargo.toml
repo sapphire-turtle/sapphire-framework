@@ -4,10 +4,10 @@ name = "corundum-gui"
 # new version with every sapphire release.
 version = "0.1.0"
 edition.workspace = true
-description = "The look shared by sapphire and asteria apps: egui shell, system fonts, Lucide icons"
+description = "The look shared by sapphire and asteria apps: egui shell, system fonts, Lucide icons, translations"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["gui", "egui", "icons", "fonts"]
+keywords = ["gui", "egui", "icons", "fonts", "i18n"]
 categories = ["gui"]
 
 # The components render inside a host app's egui context, on the desktops and on phones
@@ -18,7 +18,7 @@ categories = ["gui"]
 [features]
 default = ["eframe"]
 eframe = ["dep:eframe"]
-# Serialize / Deserialize on the theme settings, for the app to save them.
+# Serialize / Deserialize on the theme and language settings, for the app to save them.
 serde = ["dep:serde", "egui/serde"]
 
 [dependencies]
@@ -26,13 +26,25 @@ eframe = { version = "0.36", optional = true }
 egui = "0.36"
 # The SVG loader for the bundled Lucide icons (assets/icons), and for the apps' own.
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+# The translations (i18n): Fluent messages, and matching the user's languages to them.
+fluent-bundle = "0.16"
+fluent-langneg = "0.14"
+# The parsed files' entries, for i18n::check (already a dependency of fluent-bundle).
+fluent-syntax = "0.12"
 fontdb = "0.24"
+sys-locale = "0.3"
 ttf-parser = "0.25"
 tracing.workspace = true
 serde = { workspace = true, optional = true }
+unic-langid = "0.9"
 
 [dev-dependencies]
 serde_json.workspace = true
+
+# Android's language list is read from the JVM (i18n::system); sys-locale gives only one.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 # iOS's sandbox refuses to list the system font directories, so the font files are found
 # through CoreText instead (fonts::apple).

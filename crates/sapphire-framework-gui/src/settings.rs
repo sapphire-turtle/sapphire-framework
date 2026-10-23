@@ -131,10 +131,6 @@ pub struct Settings {
     /// The app server's workspace as last seen (`Some(None)`: it has none).
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
-    /// What the Appearance page edits.
-    theme: ThemeSettings,
-    /// Whether the user changed `theme` since the app last took it.
-    theme_changed: bool,
     /// The theme's settings as last installed from the snapshot.
     seen_gui: Option<GuiValues>,
     appearance: AppearancePage,
@@ -173,8 +169,6 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
-            theme: ThemeSettings::default(),
-            theme_changed: false,
             seen_gui: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
@@ -197,18 +191,17 @@ impl Settings {
         self
     }
 
-    /// Start the Appearance page from the theme settings the app saved. This only records
-    /// them: the app installs them ([`theme::install`]), or the shell installs the
-    /// defaults.
-    pub fn with_theme(mut self, theme: ThemeSettings) -> Settings {
-        self.theme = theme;
+    /// Does nothing: the framework keeps the theme in the settings registry, synced
+    /// across the workgroup, and installs it itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
+    pub fn with_theme(self, _theme: ThemeSettings) -> Settings {
         self
     }
 
-    /// The theme settings, once, after the user changed them on the Appearance page (which
-    /// has installed them already): the app saves these.
+    /// Always `None`: the framework saves the theme itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
-        std::mem::take(&mut self.theme_changed).then(|| self.theme.clone())
+        None
     }
 
     /// The client the framework's pages use.
@@ -630,11 +623,6 @@ impl Settings {
                 self.load();
             }
         }
-    }
-
-    /// The user changed the theme on the Appearance page.
-    fn theme_edited(&mut self) {
-        self.theme_changed = true;
     }
 
     /// Keep a load's settings, and the pages their schema makes. Drafts are untouched.
@@ -1123,24 +1111,15 @@ mod tests {
     }
 
     #[test]
-    fn a_theme_change_is_taken_once() {
-        let (mut settings, _rt) = settings();
-        settings.theme.contrast = corundum_gui::theme::Contrast::High;
-        settings.theme_edited();
-        let taken = settings.take_theme_changed().expect("a change");
-        assert_eq!(taken.contrast, corundum_gui::theme::Contrast::High);
-        assert_eq!(settings.take_theme_changed(), None);
-    }
-
-    #[test]
-    fn with_theme_is_what_the_page_edits() {
+    #[allow(deprecated)]
+    fn take_theme_changed_answers_none_after_a_change() {
         let (settings, _rt) = settings();
-        let saved = ThemeSettings {
+        let mut settings = settings.with_theme(ThemeSettings {
             contrast: corundum_gui::theme::Contrast::Low,
             ..Default::default()
-        };
-        let mut settings = settings.with_theme(saved.clone());
-        assert_eq!(settings.theme, saved);
+        });
+        settings.on_outcome(Origin::Appearance, &Ok(CommandOutput::Done));
+        // The framework stores the theme now: nothing for the app to take.
         assert_eq!(settings.take_theme_changed(), None);
     }
 

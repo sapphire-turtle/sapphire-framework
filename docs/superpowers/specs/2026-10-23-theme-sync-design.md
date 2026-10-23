@@ -68,12 +68,13 @@ the bridge's definitions and the GUI.
 
 ## Reading the theme: the poll
 
-`ServerState` (the snapshot's app-server part) gains `gui: Option<GuiValues>`, where
+`BridgeState` (the snapshot's bridge part) gains `gui: Option<GuiValues>`, where
 `GuiValues` is the effective value of each `gui.theme.*` key (`BTreeMap<String, Value>`).
-`fetch_server` reads it with one `config.get` per key, relayed by the app server to the
-bridge, after the calls it makes today. `None` when the bridge is not running or does not
-know the keys (an older bridge answers `unknown setting`); the rest of `ServerState` is
-unaffected by that failure.
+`fetch_bridge` reads it with one `config.get` per key, relayed by the app server to the
+bridge, after the calls it makes today. With no bridge there is no `BridgeState`; a bridge
+that does not know the keys (it answers `unknown setting`) gives `None`, and the rest of
+`BridgeState` is unaffected. (Not in `ServerState`: a relayed call with no bridge may wait
+for one, which would hold up the app server's own status.)
 
 The client stays egui-free: it holds the raw values. The conversion lives beside the views:
 
@@ -102,9 +103,12 @@ The page joins the settings pages of part 4: the schema's `"Appearance"` section
 by it (as `"Embedding"` is by the Embedding screen), so it is not also listed under
 "Configuration", and its keys are drawn by the theme widget, not by the generic form.
 
-- **Tabs**: Workgroup, then Device (the scopes the keys allow, in the order part 4 uses).
-  Their contents come from the `ConfigState` that part 4's `ConfigLoad` reads, loaded when
-  the page opens and after each write.
+- **Tabs**: Workgroup, then Device; the page opens on Workgroup, the keys' home, so an edit
+  does not make a device override by accident. Their contents come from the `ConfigState`
+  that part 4's `ConfigLoad` reads, loaded when the page opens and after each write.
+- **No workgroup**: no tabs. The bridge keeps workgroup keys in the device file then, so
+  the device would seem to override every key; the page writes the Workgroup scope, which
+  lands in that file.
 - **Workgroup tab**: `theme::settings_ui` over the workgroup's values (the defaults for keys
   it does not set). Where the device overrides a key, a weak line above the widget names the
   overridden settings — `This device uses its own contrast` — and the look follows the

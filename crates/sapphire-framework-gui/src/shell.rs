@@ -105,10 +105,10 @@ impl<D: Copy + PartialEq> Shell<D> {
         &mut self.settings
     }
 
-    /// The theme settings, once, after the user changed them in Settings: the app saves
-    /// these. See [`Settings::take_theme_changed`].
+    /// Always `None`: the framework saves the theme itself (#327).
+    #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<corundum_gui::theme::ThemeSettings> {
-        self.settings.take_theme_changed()
+        None
     }
 
     /// Render into the window's root `ui`. `content` draws the open screen of the app's

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use corundum_gui::i18n::Message;
+use corundum_framework_gui::i18n::Message;
 use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, Topology};
 use sapphire_bridge_api::{
@@ -647,11 +647,11 @@ mod tests {
     #[test]
     fn badge_text_in_english() {
         let ctx = egui::Context::default();
-        corundum_gui::i18n::register(&ctx, crate::RESOURCES);
-        corundum_gui::i18n::install(
+        corundum_framework_gui::i18n::register(&ctx, crate::RESOURCES);
+        corundum_framework_gui::i18n::install(
             &ctx,
-            &corundum_gui::i18n::LanguageSettings {
-                language: corundum_gui::i18n::Language::Explicit("en".into()),
+            &corundum_framework_gui::i18n::LanguageSettings {
+                language: corundum_framework_gui::i18n::Language::Explicit("en".into()),
             },
         );
         let one = Badge::Syncing {

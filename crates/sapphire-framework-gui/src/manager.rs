@@ -10,7 +10,7 @@ use egui::{Align, Layout};
 
 use crate::i18n::Message;
 use crate::theme::Swatch;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 use sapphire_backend::{WorkspaceEntry, WorkspaceRegistry};
 
 /// App-specific hooks the [`WorkspaceManager`] needs.

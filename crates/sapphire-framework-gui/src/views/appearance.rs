@@ -2,8 +2,8 @@
 //! (`gui.locale`), stored by the bridge, edited with corundum's widgets, per scope, and
 //! converted to and from [`ThemeSettings`] and [`LanguageSettings`].
 
-use corundum_gui::i18n::{self, Language, LanguageIdentifier, LanguageSettings};
-use corundum_gui::theme::{self, Contrast, Swatch, ThemeSettings, Tint};
+use corundum_framework_gui::i18n::{self, Language, LanguageIdentifier, LanguageSettings};
+use corundum_framework_gui::theme::{self, Contrast, Swatch, ThemeSettings, Tint};
 use egui::ThemePreference;
 use sapphire_bridge_api::settings::{Entry, EntryValue, Origin, Scope, gui};
 use sapphire_bridge_api::{ConfigEntry, Value};
@@ -11,7 +11,7 @@ use sapphire_bridge_api::{ConfigEntry, Value};
 use super::{error_text_line, register};
 use crate::client::{Command, CommandError, CommandOutput, ConfigState, GuiValues};
 use crate::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// What the page says when the bridge does not know the theme's settings.
 pub(crate) fn old_bridge() -> Message {

@@ -1,7 +1,7 @@
 //! The Android entry: GameActivity's `android_main` hands its `AndroidApp` here.
 
-pub use corundum_gui::window::AndroidApp;
-use corundum_gui::window::{self, WindowOptions};
+pub use corundum_framework_gui::window::AndroidApp;
+use corundum_framework_gui::window::{self, WindowOptions};
 use sapphire_workspace::{AppContext, AppKind};
 
 use super::{BuildServer, EntryGuard, MobileOptions, app_log_filter, prepare_dirs, start_services};
@@ -24,7 +24,7 @@ pub fn run_android(
     create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
 ) -> ! {
     let app_name = options.app.app_name;
-    corundum_gui::logcat::install(app_name, &app_log_filter(app_name));
+    corundum_framework_gui::logcat::install(app_name, &app_log_filter(app_name));
     if !ENTRY.first() {
         tracing::warn!("{app_name} was started again in the same process; restarting it");
         std::process::exit(0);
@@ -59,7 +59,7 @@ fn run_once(
     runtime.block_on(start_services(app.version, server));
     let config = ClientConfig::new(app).map_err(|e| creation(Box::new(e)))?;
 
-    // corundum-gui installs the panic hook, gives its platform calls the activity, and
+    // corundum-framework-gui installs the panic hook, gives its platform calls the activity, and
     // wraps the app in the phone's frame (the insets and the keyboard).
     let mut window_options = WindowOptions::new(title);
     if let Some(install) = fonts {

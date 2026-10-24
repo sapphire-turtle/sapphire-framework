@@ -5,7 +5,7 @@ use crate::client::{Command, CommandError, CommandOutput};
 use super::model::{default_device_name, is_this_device, valid_name};
 use super::{ViewCtx, backend_error, bridge_unavailable, error_line, register};
 use crate::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// Join with a ticket: the ticket and the name this device was invited as.
 ///

@@ -78,18 +78,18 @@ pub fn valid_workspace_name(name: &str) -> bool {
 /// takes a long pasted value (an invite ticket) offers a Paste button reading this.
 /// `None` where nothing is there, or where egui's own clipboard is the one to use.
 pub fn clipboard_text() -> Option<String> {
-    corundum_gui::platform::clipboard_text()
+    corundum_framework_gui::platform::clipboard_text()
 }
 
 /// The margins the window must leave for the system's bars and the keyboard, in physical
 /// pixels (left, top, right, bottom), where the window is drawn edge to edge under them.
 pub fn window_insets() -> Option<[i32; 4]> {
-    corundum_gui::platform::window_insets()
+    corundum_framework_gui::platform::window_insets()
 }
 
 /// Does this platform need [`clipboard_text`] (a Paste button) rather than egui's paste?
 pub fn needs_paste_button() -> bool {
-    corundum_gui::platform::needs_paste_button()
+    corundum_framework_gui::platform::needs_paste_button()
 }
 
 #[cfg(test)]

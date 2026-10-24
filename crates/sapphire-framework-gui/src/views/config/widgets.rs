@@ -3,7 +3,7 @@
 use sapphire_bridge_api::settings::SecretState;
 use sapphire_bridge_api::{EntryValue, Kind, Scope, SettingDef, Value};
 
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 use super::model::{Edit, parse_text};
 

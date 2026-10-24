@@ -58,12 +58,12 @@ pub const RESOURCES: i18n::Resources = i18n::Resources {
     ],
 };
 
-/// corundum-gui's translation support, for apps to register their own strings with.
-pub use corundum_gui::i18n;
-pub use corundum_gui::tr;
-pub use corundum_gui::{Action, COMPACT_WIDTH, Destination};
-/// The system CJK fallback font and the Lucide icons, from corundum-gui (shared with asteria).
-pub use corundum_gui::{fonts, icons, theme};
+/// corundum-framework-gui's translation support, for apps to register their own strings with.
+pub use corundum_framework_gui::i18n;
+pub use corundum_framework_gui::tr;
+pub use corundum_framework_gui::{Action, COMPACT_WIDTH, Destination};
+/// The system CJK fallback font and the Lucide icons, from corundum-framework-gui (shared with asteria).
+pub use corundum_framework_gui::{fonts, icons, theme};
 pub use health::{Health, bridge_needed};
 pub use settings::{Settings, SettingsSection};
 pub use shell::Shell;

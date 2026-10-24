@@ -1,13 +1,13 @@
-//! [`Shell`]: every app's window frame — [`corundum_gui::Shell`] with sapphire's
+//! [`Shell`]: every app's window frame — [`corundum_framework_gui::Shell`] with sapphire's
 //! [`Settings`] at the rail's foot and the services' state beside it.
 //!
-//! The frame itself (the rail, the bottom bar when narrow, the actions) is corundum-gui's,
+//! The frame itself (the rail, the bottom bar when narrow, the actions) is corundum-framework-gui's,
 //! shared with asteria; this adds what is sapphire's: Settings as the footer, the health
 //! dot in the foot slot, and the status panel when a service needs attention.
 
 use std::cell::Cell;
 
-use corundum_gui::{Action, Destination};
+use corundum_framework_gui::{Action, Destination};
 
 use crate::{Health, Settings};
 
@@ -41,7 +41,7 @@ enum Open<D> {
 /// # }
 /// ```
 pub struct Shell<D> {
-    frame: corundum_gui::Shell<Open<D>>,
+    frame: corundum_framework_gui::Shell<Open<D>>,
     settings: Settings,
     /// Where the health dot was last drawn, for the tests to click.
     #[cfg(test)]
@@ -57,11 +57,12 @@ impl<D: Copy + PartialEq> Shell<D> {
             .into_iter()
             .map(|d| Destination::new(Open::Screen(d.id), d.icon, d.label))
             .collect();
-        let frame = corundum_gui::Shell::new(destinations).with_footer(vec![Destination::new(
-            Open::Settings,
-            crate::icons::settings(),
-            "sapphire-settings",
-        )]);
+        let frame =
+            corundum_framework_gui::Shell::new(destinations).with_footer(vec![Destination::new(
+                Open::Settings,
+                crate::icons::settings(),
+                "sapphire-settings",
+            )]);
         Shell {
             frame,
             settings,
@@ -107,7 +108,7 @@ impl<D: Copy + PartialEq> Shell<D> {
 
     /// Always `None`: the framework saves the theme itself (#327).
     #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
-    pub fn take_theme_changed(&mut self) -> Option<corundum_gui::theme::ThemeSettings> {
+    pub fn take_theme_changed(&mut self) -> Option<corundum_framework_gui::theme::ThemeSettings> {
         None
     }
 
@@ -170,7 +171,7 @@ fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
     ui.painter().circle_filled(rect.center(), 4.0, color);
-    response.on_hover_text(corundum_gui::tr!(ui, id))
+    response.on_hover_text(corundum_framework_gui::tr!(ui, id))
 }
 
 #[cfg(test)]

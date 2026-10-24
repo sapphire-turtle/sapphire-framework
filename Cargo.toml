@@ -22,7 +22,6 @@ members = [
     "crates/sapphire-framework-keys",
     "crates/sapphire-framework-registry",
     "crates/sapphire-framework-backend",
-    "crates/corundum-gui",
     "crates/sapphire-framework-gui",
     "crates/sapphire-framework",
 ]

@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::model::{self, Entry, Preview};
-use corundum_gui::COMPACT_WIDTH;
-use corundum_gui::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::COMPACT_WIDTH;
+use corundum_framework_gui::i18n::Message;
+use corundum_framework_gui::tr;
 
 /// A read in flight or done, tagged with what it was for so a stale answer is dropped.
 struct Slot<T> {

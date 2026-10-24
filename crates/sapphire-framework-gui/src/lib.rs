@@ -4,9 +4,10 @@
 //! narrow, as on a phone), and [`Settings`] at its foot — the app's own sections, the
 //! framework's sync screens and About — with the services' [`Health`] beside it.
 //!
-//! The theme is a setting like any other: the bridge keeps it for the whole workgroup,
-//! a device may override it, the Appearance page edits it, and [`Settings::follow_theme`]
-//! (which the shell calls) installs it whenever it changes. Apps save nothing.
+//! The theme and the language are settings like any other: the bridge keeps them for the
+//! whole workgroup, a device may override them, the Appearance page edits them, and
+//! [`Settings::follow_theme`] (which the shell calls) installs them whenever they change.
+//! Apps save nothing.
 //!
 //! [`views::WorkspacePicker`] shows the workspace the app server serves and switches it
 //! through the server. [`WorkspaceManager`], a list + management screen over the shared

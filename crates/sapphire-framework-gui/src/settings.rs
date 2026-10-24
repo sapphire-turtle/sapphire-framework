@@ -10,12 +10,13 @@ use crate::client::{
     Snapshot,
 };
 use corundum_gui::COMPACT_WIDTH;
-use corundum_gui::i18n::{self, LanguageSettings, Message};
+use corundum_gui::i18n::{self, Message};
 use corundum_gui::theme::{self, ThemeSettings};
 use corundum_gui::tr;
+use sapphire_bridge_api::Value;
 
 use crate::views::appearance::{
-    AppearanceCtx, AppearancePage, bridge_down, old_bridge, theme_settings,
+    AppearanceCtx, AppearancePage, bridge_down, language_settings, old_bridge, theme_settings,
 };
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
@@ -141,12 +142,10 @@ pub struct Settings {
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
     /// The theme's settings as last installed from the snapshot.
-    seen_gui: Option<GuiValues>,
+    seen_theme: Option<GuiValues>,
+    /// The language (`gui.locale`) as last installed from the snapshot.
+    seen_locale: Option<Value>,
     appearance: AppearancePage,
-    /// What the Appearance page edits for the language.
-    language: LanguageSettings,
-    /// Whether the user changed `language` since the app last took it.
-    language_changed: bool,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -182,10 +181,9 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
-            seen_gui: None,
+            seen_theme: None,
+            seen_locale: None,
             appearance: AppearancePage::default(),
-            language: LanguageSettings::default(),
-            language_changed: false,
             #[cfg(test)]
             drawn: None,
             #[cfg(test)]
@@ -217,19 +215,6 @@ impl Settings {
     #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
         None
-    }
-
-    /// Start the Appearance page from the language settings the app saved. This only
-    /// records them: the app installs them ([`i18n::install`]).
-    pub fn with_language(mut self, language: LanguageSettings) -> Settings {
-        self.language = language;
-        self
-    }
-
-    /// The language settings, once, after the user changed them on the Appearance page
-    /// (which has installed them already): the app saves these.
-    pub fn take_language_changed(&mut self) -> Option<LanguageSettings> {
-        std::mem::take(&mut self.language_changed).then(|| self.language.clone())
     }
 
     /// The client the framework's pages use.
@@ -273,26 +258,42 @@ impl Settings {
         }
     }
 
-    /// Install the theme the settings hold, whenever the bridge reports other values than
-    /// last time: at start, after a write, after a sync from another device. Only a change
-    /// of the values installs, so a slider being dragged on the Appearance page keeps its
-    /// preview. Without the values (no bridge, or an older one) the theme stays. A
-    /// [`Shell`](crate::Shell) calls this every frame; on its own, [`ui`](Self::ui) does.
+    /// Install the theme and the language the settings hold, whenever the bridge reports
+    /// other values than last time: at start, after a write, after a sync from another
+    /// device. Only a change of the values installs, so a slider being dragged on the
+    /// Appearance page keeps its preview; the theme and the language are compared each on
+    /// its own. Without the values (no bridge, or an older one) the theme stays; without
+    /// `gui.locale` (a bridge that knows the theme but not the language) the language
+    /// stays. A [`Shell`](crate::Shell) calls this every frame; on its own,
+    /// [`ui`](Self::ui) does.
     pub fn follow_theme(&mut self, ctx: &egui::Context) {
         let snapshot = self.snapshot();
         let Some(gui) = snapshot.bridge.up().and_then(|b| b.gui.as_ref()) else {
             return;
         };
-        if self.seen_gui.as_ref() != Some(gui) {
-            theme::install(ctx, &theme_settings(gui));
-            self.seen_gui = Some(gui.clone());
+        let theme: GuiValues = gui
+            .iter()
+            .filter(|(k, _)| sapphire_bridge_api::settings::gui::THEME_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if self.seen_theme.as_ref() != Some(&theme) {
+            theme::install(ctx, &theme_settings(&theme));
+            self.seen_theme = Some(theme);
+        }
+        if let Some(locale) = gui.get(sapphire_bridge_api::settings::gui::LOCALE)
+            && self.seen_locale.as_ref() != Some(locale)
+        {
+            i18n::install(ctx, &language_settings(gui));
+            self.seen_locale = Some(locale.clone());
         }
     }
 
-    /// Install the stored theme again on the next [`follow_theme`](Self::follow_theme),
-    /// even if its values have not changed: the look has moved off them.
+    /// Install the stored theme and language again on the next
+    /// [`follow_theme`](Self::follow_theme), even if their values have not changed: the
+    /// look has moved off them.
     pub(crate) fn forget_seen_theme(&mut self) {
-        self.seen_gui = None;
+        self.seen_theme = None;
+        self.seen_locale = None;
     }
 
     /// Render the status banner: the services and their install buttons, a newer release,
@@ -490,18 +491,6 @@ impl Settings {
     }
 
     fn appearance_ui(&mut self, ui: &mut egui::Ui) {
-        // The language is the app's to save for now, so it shows whatever the services do.
-        egui::Grid::new("sapphire_language_row")
-            .num_columns(2)
-            .spacing([16.0, 8.0])
-            .show(ui, |ui| {
-                ui.label(tr!(ui, "corundum-language"));
-                if i18n::settings_ui(ui, &mut self.language) {
-                    self.language_edited();
-                }
-                ui.end_row();
-            });
-        ui.add_space(8.0);
         let snapshot = self.snapshot();
         if snapshot.server.up().is_none() {
             unavailable(
@@ -529,6 +518,9 @@ impl Settings {
                     unavailable: why,
                     busy: self.busy(&Origin::Appearance),
                     workgroup: bridge.is_some_and(|b| b.status.workgroup.is_some()),
+                    language: bridge.and_then(|b| b.gui.as_ref()).is_some_and(|g| {
+                        g.contains_key(sapphire_bridge_api::settings::gui::LOCALE)
+                    }),
                 };
                 if let Some(command) = self.appearance.ui(ui, &cx) {
                     self.send(command, Origin::Appearance);
@@ -738,11 +730,6 @@ impl Settings {
     fn load(&mut self) {
         self.load_tried = true;
         self.send(Command::ConfigLoad, Origin::Load);
-    }
-
-    /// The user changed the language on the Appearance page.
-    fn language_edited(&mut self) {
-        self.language_changed = true;
     }
 
     /// Whether a load is running, the settings' own or a page's "↻".
@@ -1323,45 +1310,76 @@ mod tests {
         assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
     }
 
-    #[test]
-    fn a_language_change_is_taken_once() {
-        let (mut settings, _rt) = settings();
-        settings.language.language = corundum_gui::i18n::Language::Explicit("ja".into());
-        settings.language_edited();
-        let taken = settings.take_language_changed().expect("a change");
-        assert_eq!(
-            taken.language,
-            corundum_gui::i18n::Language::Explicit("ja".into())
+    fn with_locale(gui: Option<crate::client::GuiValues>, locale: &str) -> Snapshot {
+        let mut gui = gui.unwrap_or_default();
+        gui.insert(
+            sapphire_bridge_api::settings::gui::LOCALE.to_owned(),
+            sapphire_bridge_api::Value::String(locale.into()),
         );
-        assert_eq!(settings.take_language_changed(), None);
+        with_gui(Some(gui))
+    }
+
+    fn registered_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        i18n::register(&ctx, crate::RESOURCES);
+        ctx
     }
 
     #[test]
-    fn with_language_is_what_the_page_edits() {
-        let (settings, _rt) = settings();
-        let saved = LanguageSettings {
-            language: corundum_gui::i18n::Language::Explicit("ja".into()),
-        };
-        let mut settings = settings.with_language(saved.clone());
-        assert_eq!(settings.language, saved);
-        assert_eq!(settings.take_language_changed(), None);
+    fn a_new_locale_in_the_snapshot_is_installed() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        settings.test_snapshot = Some(with_locale(contrast("high"), "en"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
     }
 
     #[test]
-    fn appearance_draws_the_language_row() {
-        for size in [[900.0, 600.0], [400.0, 700.0]] {
-            let (mut settings, _rt) = settings();
-            settings.page = Some(Page::Appearance);
-            let ctx = crate::test_support::english_ctx();
-            let texts = render_in(&ctx, size, |ui| settings.ui(ui));
-            assert_eq!(settings.drawn, Some(Page::Appearance), "{size:?}");
-            // Drawn whether or not the services are up (here they are not).
-            assert!(texts.iter().any(|t| t == "Language"), "{size:?}: {texts:?}");
-            assert_eq!(
-                settings.take_language_changed(),
-                None,
-                "drawing is no change"
-            );
-        }
+    fn an_unchanged_locale_installs_nothing() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
+        settings.follow_theme(&ctx);
+        // The language installed some other way since.
+        i18n::install(
+            &ctx,
+            &i18n::LanguageSettings {
+                language: i18n::Language::Explicit("en".into()),
+            },
+        );
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        // A change of the theme alone does not install the language either.
+        settings.test_snapshot = Some(with_locale(contrast("low"), "ja"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn a_snapshot_without_the_locale_leaves_the_language() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        assert!(!i18n::is_installed(&ctx));
+        // The theme is still followed.
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+    }
+
+    #[test]
+    fn a_failed_appearance_write_forgets_the_seen_language() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(None, "ja"));
+        settings.follow_theme(&ctx);
+        i18n::install(&ctx, &i18n::LanguageSettings::default());
+        settings.on_outcome(Origin::Appearance, &Err("rejected".into()));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
     }
 }

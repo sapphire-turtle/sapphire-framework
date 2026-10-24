@@ -898,6 +898,33 @@ async fn the_theme_reaches_the_snapshot() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_language_reaches_the_snapshot() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let client = spawn(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+    wait(|| async { gui_value(&client, "gui.locale") == Some(Value::String("system".into())) })
+        .await;
+
+    let id = client.send(Command::ConfigWrite {
+        scope: Scope::Workgroup,
+        set: vec![set("gui.locale", Value::String("ja".into()))],
+        unset: Vec::new(),
+    });
+    assert!(matches!(
+        outcome(&client, id).await,
+        Ok(CommandOutput::Written(_))
+    ));
+    wait(|| async { gui_value(&client, "gui.locale") == Some(Value::String("ja".into())) }).await;
+    // The theme's values are still read beside it.
+    assert_eq!(
+        gui_value(&client, "gui.theme.contrast"),
+        Some(Value::String("medium".into()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_device_override_is_what_the_snapshot_shows() {
     let f = fixture();
     let _bridge = start_bridge(&f).await;

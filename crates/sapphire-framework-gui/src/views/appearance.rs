@@ -149,7 +149,7 @@ impl AppearancePage {
                             )
                             .clicked()
                     {
-                        out = Some(use_the_workgroups());
+                        out = Some(use_the_workgroups(state));
                     }
                 }
                 _ => {
@@ -176,7 +176,7 @@ impl AppearancePage {
                 let look = expected_theme(state, self.tab, &self.working, cx.workgroup);
                 theme::install(ui.ctx(), &look);
                 self.held = true;
-                out = Some(write);
+                out = merged(out, Some(write));
             }
         } else if self.working != before {
             self.editing = true;
@@ -184,7 +184,8 @@ impl AppearancePage {
             self.editing = false;
         }
         ui.add_space(8.0);
-        out.or(self.language_ui(ui, state, cx))
+        let language = self.language_ui(ui, state, cx);
+        merged(out, language)
     }
 
     /// The language picker over the tab's value; the write a choice asks for.
@@ -445,11 +446,45 @@ fn names<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<&'static str> {
 }
 
 /// Drop every theme setting and the language this device sets, so the workgroup's apply.
-pub(crate) fn use_the_workgroups() -> Command {
+/// Only the keys the device sets: a bridge that does not know `gui.locale` would refuse the
+/// whole write over it.
+pub(crate) fn use_the_workgroups(state: &ConfigState) -> Command {
+    let own = scope_values(state, Scope::Device);
     Command::ConfigWrite {
         scope: Scope::Device,
         set: Vec::new(),
-        unset: KEYS.iter().map(|k| (*k).to_owned()).collect(),
+        unset: KEYS
+            .iter()
+            .filter(|k| own.contains_key(**k))
+            .map(|k| (*k).to_owned())
+            .collect(),
+    }
+}
+
+/// Two writes the page asked for in one frame, as one: a choice of the language and the end
+/// of a theme drag, say. Both are to the open tab's scope; a key set by either is not also
+/// unset. Writes to different scopes cannot happen; the first would be kept.
+fn merged(a: Option<Command>, b: Option<Command>) -> Option<Command> {
+    match (a, b) {
+        (
+            Some(Command::ConfigWrite {
+                scope,
+                mut set,
+                mut unset,
+            }),
+            Some(Command::ConfigWrite {
+                scope: other,
+                set: more_set,
+                unset: more_unset,
+            }),
+        ) if scope == other => {
+            set.extend(more_set);
+            unset.extend(more_unset);
+            unset.retain(|k| !set.iter().any(|e| e.key == *k));
+            unset.dedup();
+            Some(Command::ConfigWrite { scope, set, unset })
+        }
+        (a, b) => a.or(b),
     }
 }
 
@@ -461,9 +496,13 @@ const SYSTEM_LOCALE: &str = "system";
 /// edited by hand.
 pub(crate) fn language_settings(values: &GuiValues) -> LanguageSettings {
     let language = match values.get(gui::LOCALE) {
-        Some(Value::String(tag)) if tag != SYSTEM_LOCALE && !tag.trim().is_empty() => tag
-            .parse::<LanguageIdentifier>()
-            .map_or(Language::System, |id| Language::Explicit(id.to_string())),
+        Some(Value::String(tag))
+            if !tag.trim().eq_ignore_ascii_case(SYSTEM_LOCALE) && !tag.trim().is_empty() =>
+        {
+            tag.trim()
+                .parse::<LanguageIdentifier>()
+                .map_or(Language::System, |id| Language::Explicit(id.to_string()))
+        }
         _ => Language::System,
     };
     LanguageSettings { language }
@@ -882,8 +921,16 @@ mod tests {
 
     #[test]
     fn use_the_workgroups_unsets_every_key_on_the_device() {
+        let all = [
+            (gui::THEME_PREFERENCE, s("dark")),
+            (gui::THEME_CONTRAST, s("low")),
+            (gui::THEME_ACCENT, s("custom")),
+            (gui::THEME_ACCENT_HUE, Value::Int(10)),
+            (gui::THEME_ACCENT_CHROMA, Value::Int(10)),
+            (gui::LOCALE, s("ja")),
+        ];
         assert_eq!(
-            write(Some(use_the_workgroups())),
+            write(Some(use_the_workgroups(&state(&[], &all)))),
             Some((
                 Scope::Device,
                 Vec::new(),
@@ -900,6 +947,59 @@ mod tests {
                 .collect()
             ))
         );
+    }
+
+    #[test]
+    fn use_the_workgroups_unsets_only_what_the_device_sets() {
+        // A bridge without `gui.locale` (or a device without its own) never sees it unset:
+        // the bridge would refuse the whole write over an unknown key.
+        let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
+        assert_eq!(
+            write(Some(use_the_workgroups(&st))),
+            Some((
+                Scope::Device,
+                Vec::new(),
+                vec![gui::THEME_CONTRAST.to_owned()]
+            ))
+        );
+    }
+
+    #[test]
+    fn writes_in_one_frame_are_merged() {
+        let theme = Some(Command::ConfigWrite {
+            scope: Scope::Device,
+            set: vec![ConfigEntry {
+                key: gui::THEME_CONTRAST.into(),
+                value: s("high"),
+            }],
+            unset: Vec::new(),
+        });
+        let language = locale_write(&state(&[], &[]), Scope::Device, &ja());
+        assert_eq!(
+            write(merged(theme, language)),
+            Some((
+                Scope::Device,
+                vec![
+                    (gui::THEME_CONTRAST.to_owned(), s("high")),
+                    (gui::LOCALE.to_owned(), s("ja")),
+                ],
+                Vec::new()
+            ))
+        );
+        let unset = Some(use_the_workgroups(&state(
+            &[],
+            &[(gui::THEME_CONTRAST, s("low")), (gui::LOCALE, s("en"))],
+        )));
+        let language = locale_write(&state(&[], &[]), Scope::Device, &ja());
+        assert_eq!(
+            write(merged(unset, language)),
+            Some((
+                Scope::Device,
+                vec![(gui::LOCALE.to_owned(), s("ja"))],
+                vec![gui::THEME_CONTRAST.to_owned()]
+            ))
+        );
+        assert_eq!(write(merged(None, None)), None);
     }
 
     #[test]
@@ -1132,6 +1232,14 @@ mod tests {
             lang(Language::System)
         );
         assert_eq!(language_settings(&one(gui::LOCALE, s("ja"))), ja());
+        assert_eq!(language_settings(&one(gui::LOCALE, s(" ja "))), ja());
+        for system in ["System", "SYSTEM", " system "] {
+            assert_eq!(
+                language_settings(&one(gui::LOCALE, s(system))),
+                lang(Language::System),
+                "{system}"
+            );
+        }
         assert_eq!(
             language_settings(&one(gui::LOCALE, s("en-US"))),
             lang(Language::Explicit("en-US".into()))

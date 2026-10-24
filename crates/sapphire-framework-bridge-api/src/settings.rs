@@ -374,6 +374,9 @@ pub mod gui {
         "default", "neutral", "red", "orange", "yellow", "green", "cyan", "blue", "purple",
         "custom",
     ];
+    /// The language of the apps' windows: `system`, or a language tag such as `ja` or
+    /// `en-US`.
+    pub const LOCALE: &str = "gui.locale";
     /// Every theme key.
     pub const THEME_KEYS: [&str; 5] = [
         THEME_PREFERENCE,

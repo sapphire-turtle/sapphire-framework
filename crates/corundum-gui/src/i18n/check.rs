@@ -148,6 +148,8 @@ mod tests {
         assert_eq!(key_difference(&CORUNDUM, "en", "ja"), Vec::<String>::new());
     }
 
+    // Reads the crate's sources, which are not on the phone the Android tests run on.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn corundum_ids_exist() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -166,6 +168,8 @@ mod tests {
         assert_eq!(ids_in("no literals here", "probe-"), Vec::<&str>::new());
     }
 
+    // Reads the crate's sources, which are not on the phone the Android tests run on.
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn unknown_ids_reports_unknown_ids_and_bad_paths() {
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

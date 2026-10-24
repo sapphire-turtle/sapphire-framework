@@ -267,10 +267,15 @@ poll. The apps save nothing.
    `gui.locale` on the device with the theme's keys; on the Workgroup tab the override
    line names the language when the device sets it. A choice writes `gui.locale` alone to
    the tab's scope at once (`Command::ConfigWrite`) and installs the language that will
-   show — the device's own still wins on the Workgroup tab. Disabled as the theme is with
-   no app server or bridge; with a bridge that does not know `gui.locale`, the picker
-   alone is disabled, with `this sapphire-bridge does not know the language setting;
-   update it`.
+   show — the device's own still wins on the Workgroup tab. With no app server the page
+   shows only part 4's `unavailable` line, without the theme widget or the picker; with no
+   bridge, or one that does not know the theme's keys, both are drawn disabled under the
+   reason; with a bridge that knows the theme but not `gui.locale`, the picker alone is
+   disabled, with `this sapphire-bridge does not know the language setting; update it`.
+   `Use the workgroup's` unsets only the keys the device sets, so it never names
+   `gui.locale` to a bridge that does not know it (which would refuse the whole write).
+   Writes asked for in the same frame (a theme drag ending with a language choice) go as
+   one.
 6. `Settings::with_language`, `Settings::take_language_changed` and
    `Shell::take_language_changed`, never released, are removed.
 
@@ -281,6 +286,10 @@ poll. The apps save nothing.
 - Names and values: workspace, file and device names, paths, versions, ids, size units
   (B, KB, MB).
 - `tracing` log messages.
+- The client's own errors, which reach the views as backend text does:
+  `client/exec.rs` (a command's failures), `client/conn.rs` (`the {app} server is not
+  running`, `… did not answer within …`) and `mobile/android.rs` (`Android gave no
+  internal data path`, which ends the app before any window).
 
 ## Testing
 

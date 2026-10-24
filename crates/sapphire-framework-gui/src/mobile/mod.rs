@@ -146,15 +146,15 @@ pub async fn start_services(version: &'static str, build: BuildServer) {
 }
 
 /// What a phone app logs when `RUST_LOG` says nothing: the framework's default, the GUI's
-/// start-up lines (corundum-gui's renderer line among them), and every other target's warnings — except winit's Android backend,
+/// start-up lines (corundum-framework-gui's renderer line among them), and every other target's warnings — except winit's Android backend,
 /// whose warning for the keyboard events it drops carries the whole text typed (an invite
 /// ticket, say) into a log any debugging tool can read.
 pub fn phone_log_filter(app_name: &str) -> String {
-    corundum_gui::logcat::phone_log_filter(&app_log_filter(app_name))
+    corundum_framework_gui::logcat::phone_log_filter(&app_log_filter(app_name))
 }
 
 /// The app's part of [`phone_log_filter`]: the framework's default and this crate's
-/// start-up lines; corundum-gui adds its own and the rest.
+/// start-up lines; corundum-framework-gui adds its own and the rest.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn app_log_filter(app_name: &str) -> String {
     format!(
@@ -182,7 +182,7 @@ mod tests {
         assert!(filter.contains("sapphire_mobiletest=info"));
         assert!(filter.contains("sapphire_framework_gui=info"));
         // The renderer's start-up line, which says whether the phone got Vulkan or GL.
-        assert!(filter.contains("corundum_gui=info"));
+        assert!(filter.contains("corundum_framework_gui=info"));
         assert!(filter.ends_with(",winit::platform_impl::android=error"));
     }
 

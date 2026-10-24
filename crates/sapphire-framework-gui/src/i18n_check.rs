@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use corundum_gui::i18n::check::{key_difference, parse_errors, unknown_ids};
+use corundum_framework_gui::i18n::check::{key_difference, parse_errors, unknown_ids};
 
 use crate::RESOURCES;
 

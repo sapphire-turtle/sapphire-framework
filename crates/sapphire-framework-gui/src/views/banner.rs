@@ -4,7 +4,7 @@ use crate::client::{Command, CommandError, CommandOutput, Conn, ServerState, Ser
 
 use super::{ViewCtx, backend_error, error_line, register};
 use crate::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// The status line: is the bridge up, is the app server up. The shell shows it when
 /// something is wrong ([`Health::Problem`](crate::Health::Problem)), and Settings shows it

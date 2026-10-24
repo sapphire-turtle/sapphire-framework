@@ -12,7 +12,7 @@ use super::super::{ViewCtx, error_text_line, register, unavailable};
 use super::model::{Drafts, Edit, PageSpec, origin_label, route_errors, tab_enabled};
 use super::widgets::{secret_id, value_widget};
 use crate::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// What the page last sent, so its outcome lands in the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

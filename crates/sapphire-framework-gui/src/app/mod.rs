@@ -2,7 +2,7 @@
 //!
 //! Every desktop app is a pure client of its app server, which relays the bridge, so they
 //! all start alike: the framework's logging, a panic hook that explains a lost GPU device,
-//! a tokio runtime, the app's directories, a [`FrameworkClient`], and corundum-gui's
+//! a tokio runtime, the app's directories, a [`FrameworkClient`], and corundum-framework-gui's
 //! window (eframe on wgpu, with a backend that works on the host). What differs — the app's name,
 //! its window and its own [`eframe::App`] — goes in [`AppOptions`] and the closure.
 //!
@@ -38,7 +38,7 @@ use std::sync::Arc;
 use sapphire_workspace::AppKind;
 use sapphire_workspace::logging::{default_log_filter, install_console_with_filter};
 
-use corundum_gui::window::{self, WindowOptions};
+use corundum_framework_gui::window::{self, WindowOptions};
 
 use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient};
 
@@ -121,7 +121,7 @@ pub fn run(
         .map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let config = ClientConfig::new(app).map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
 
-    // corundum-gui installs the panic hook that explains a lost GPU device.
+    // corundum-framework-gui installs the panic hook that explains a lost GPU device.
     let handle = runtime.handle().clone();
     let result = window::run(window, move |cc| {
         build_app(cc, handle, config, data_dir, create)
@@ -156,13 +156,16 @@ pub(crate) fn build_app(
 
 /// The console filter a desktop app prints with when `RUST_LOG` asks for nothing.
 ///
-/// The framework's default (its targets and the app's, at info) with corundum-gui's — the
+/// The framework's default (its targets and the app's, at info) with corundum-framework-gui's — the
 /// renderer's startup line, which its window logs — and every other target's warnings and
 /// errors: the console
 /// is all the log a window has, and a wgpu warning is how a graphics problem shows up.
 /// `RUST_LOG=wgpu_core=debug,wgpu_hal=debug` is the useful setting when one does.
 fn desktop_log_filter(app_name: &str) -> String {
-    format!("warn,{},corundum_gui=info", default_log_filter(app_name))
+    format!(
+        "warn,{},corundum_framework_gui=info",
+        default_log_filter(app_name)
+    )
 }
 
 #[cfg(test)]
@@ -174,10 +177,10 @@ mod tests {
         let filter = desktop_log_filter("sapphire-example");
         assert!(filter.starts_with("warn,"));
         assert!(filter.contains("sapphire_example=info"));
-        assert!(filter.ends_with(",corundum_gui=info"));
+        assert!(filter.ends_with(",corundum_framework_gui=info"));
     }
 
-    /// The window's size and fonts are corundum-gui's `WindowOptions` (tested there);
+    /// The window's size and fonts are corundum-framework-gui's `WindowOptions` (tested there);
     /// `AppOptions` adds the app, which the builder keeps.
     #[test]
     fn options_keep_the_app_through_the_window_builder() {

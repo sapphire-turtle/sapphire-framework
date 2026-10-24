@@ -9,10 +9,10 @@ use crate::client::{
     Command, CommandError, CommandId, CommandOutput, ConfigState, FrameworkClient, GuiValues,
     Snapshot,
 };
-use corundum_gui::COMPACT_WIDTH;
-use corundum_gui::i18n::{self, Message};
-use corundum_gui::theme::{self, ThemeSettings};
-use corundum_gui::tr;
+use corundum_framework_gui::COMPACT_WIDTH;
+use corundum_framework_gui::i18n::{self, Message};
+use corundum_framework_gui::theme::{self, ThemeSettings};
+use corundum_framework_gui::tr;
 use sapphire_bridge_api::Value;
 
 use crate::views::appearance::{
@@ -1194,7 +1194,7 @@ mod tests {
     fn take_theme_changed_answers_none_after_a_change() {
         let (settings, _rt) = settings();
         let mut settings = settings.with_theme(ThemeSettings {
-            contrast: corundum_gui::theme::Contrast::Low,
+            contrast: corundum_framework_gui::theme::Contrast::Low,
             ..Default::default()
         });
         settings.on_outcome(Origin::Appearance, &Ok(CommandOutput::Done));
@@ -1220,10 +1220,17 @@ mod tests {
         )]))
     }
 
-    fn is_drawn_with(ctx: &egui::Context, contrast: corundum_gui::theme::Contrast) -> bool {
+    fn is_drawn_with(
+        ctx: &egui::Context,
+        contrast: corundum_framework_gui::theme::Contrast,
+    ) -> bool {
         let dark = ctx.theme() == egui::Theme::Dark;
         *theme::current(ctx)
-            == corundum_gui::theme::Theme::new(dark, contrast, ThemeSettings::default().accent())
+            == corundum_framework_gui::theme::Theme::new(
+                dark,
+                contrast,
+                ThemeSettings::default().accent(),
+            )
     }
 
     #[test]
@@ -1232,10 +1239,16 @@ mod tests {
         let ctx = egui::Context::default();
         settings.test_snapshot = Some(with_gui(contrast("high")));
         settings.follow_theme(&ctx);
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
         settings.test_snapshot = Some(with_gui(contrast("low")));
         settings.follow_theme(&ctx);
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::Low
+        ));
     }
 
     #[test]
@@ -1246,12 +1259,15 @@ mod tests {
         settings.follow_theme(&ctx);
         // A drag's preview, say.
         let preview = ThemeSettings {
-            contrast: corundum_gui::theme::Contrast::Low,
+            contrast: corundum_framework_gui::theme::Contrast::Low,
             ..Default::default()
         };
         theme::install(&ctx, &preview);
         settings.follow_theme(&ctx);
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::Low
+        ));
     }
 
     #[test]
@@ -1272,7 +1288,10 @@ mod tests {
         theme::install(&ctx, &ThemeSettings::default());
         settings.forget_seen_theme();
         settings.follow_theme(&ctx);
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
     }
 
     #[test]
@@ -1307,7 +1326,10 @@ mod tests {
         theme::install(&ctx, &ThemeSettings::default());
         settings.on_outcome(Origin::Appearance, &Err("rejected".into()));
         settings.follow_theme(&ctx);
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
     }
 
     fn with_locale(gui: Option<crate::client::GuiValues>, locale: &str) -> Snapshot {
@@ -1332,7 +1354,10 @@ mod tests {
         settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
         settings.follow_theme(&ctx);
         assert_eq!(i18n::current(&ctx).to_string(), "ja");
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
         settings.test_snapshot = Some(with_locale(contrast("high"), "en"));
         settings.follow_theme(&ctx);
         assert_eq!(i18n::current(&ctx).to_string(), "en");
@@ -1357,7 +1382,10 @@ mod tests {
         settings.test_snapshot = Some(with_locale(contrast("low"), "ja"));
         settings.follow_theme(&ctx);
         assert_eq!(i18n::current(&ctx).to_string(), "en");
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::Low
+        ));
     }
 
     #[test]
@@ -1368,7 +1396,10 @@ mod tests {
         settings.follow_theme(&ctx);
         assert!(!i18n::is_installed(&ctx));
         // The theme is still followed.
-        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
     }
 
     #[test]

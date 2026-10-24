@@ -69,11 +69,6 @@ name = "sapphire-framework-bridge-api"
 [[package]]
 name = "sapphire-framework-server-api"
 
-# The look shared with asteria (#318), which should not see a new version with every
-# sapphire release: versioned on its own, outside version_group "framework".
-[[package]]
-name = "corundum-gui"
-
 [[package]]
 name = "sapphire-framework-bridge-client"
 version_group = "framework"

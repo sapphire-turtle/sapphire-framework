@@ -81,7 +81,7 @@ pub(crate) fn unavailable(ui: &mut egui::Ui, what: Message) {
     ui.add_space(12.0);
     ui.vertical_centered(|ui| {
         ui.label(what.text(ui.ctx()));
-        ui.small(corundum_gui::tr!(ui, "sapphire-unavailable-hint"));
+        ui.small(corundum_framework_gui::tr!(ui, "sapphire-unavailable-hint"));
     });
 }
 
@@ -114,6 +114,6 @@ pub(crate) fn with_strong_name(ui: &mut egui::Ui, text: &str, name: &str) {
 
 /// "Type `name` to confirm:", the name in bold.
 pub(crate) fn type_to_confirm(ui: &mut egui::Ui, name: &str) {
-    let text = corundum_gui::tr!(ui, "sapphire-confirm-type", name = name);
+    let text = corundum_framework_gui::tr!(ui, "sapphire-confirm-type", name = name);
     with_strong_name(ui, &text, name);
 }

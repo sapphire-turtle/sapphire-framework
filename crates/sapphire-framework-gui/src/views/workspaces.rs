@@ -10,7 +10,7 @@ use super::model::{
 use super::{ViewCtx, backend_error, error_line, register, type_to_confirm, unavailable};
 use crate::i18n::Message;
 use crate::platform;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// The remove confirmation: whether to delete the folder too, the name to type when it
 /// does, and the last failure.

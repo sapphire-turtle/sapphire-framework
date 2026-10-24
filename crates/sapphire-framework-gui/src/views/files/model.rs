@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-use corundum_gui::i18n::Message;
+use corundum_framework_gui::i18n::Message;
 
 /// The most of a file the preview reads.
 pub const PREVIEW_LIMIT: usize = 1024 * 1024;

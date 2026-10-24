@@ -15,7 +15,7 @@ use super::{
     with_strong_name,
 };
 use crate::i18n::Message;
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// Issue an invite: a name and a lifetime in, a ticket out.
 #[derive(Default)]

@@ -3,7 +3,7 @@ use sapphire_bridge_api::{EmbedSettingsResult, LOCAL_MODEL, ModelSource, Slot};
 
 use super::model::{SWITCH_CHOICES, auto_resolution, embedding_status};
 use super::{ViewCtx, bridge_unavailable, register};
-use corundum_gui::tr;
+use corundum_framework_gui::tr;
 
 /// The embedding status: the workgroup's local and remote model, this device's switch for
 /// each, and whether its API key is set. Read-only; the Embedding section's settings page,

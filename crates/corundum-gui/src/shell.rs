@@ -20,52 +20,41 @@ pub struct Destination<D> {
     /// A Lucide icon (see [`icons`](crate::icons)), stroked in white so it takes the text
     /// colour: the rail shows only this.
     pub icon: egui::ImageSource<'static>,
-    /// The screen's name, shown when the icon is hovered.
-    pub label: String,
+    /// The id of the screen's name in the app's translations, looked up each frame and shown
+    /// when the icon is hovered.
+    pub label: &'static str,
 }
 
 impl<D> Destination<D> {
-    /// A screen called `label`, drawn as `icon`.
-    pub fn new(
-        id: D,
-        icon: egui::ImageSource<'static>,
-        label: impl Into<String>,
-    ) -> Destination<D> {
-        Destination {
-            id,
-            icon,
-            label: label.into(),
-        }
+    /// A screen named by the message `label`, drawn as `icon`.
+    pub fn new(id: D, icon: egui::ImageSource<'static>, label: &'static str) -> Destination<D> {
+        Destination { id, icon, label }
     }
 }
 
-/// A button of the app's on the rail that does something — "New entry" — rather than
+/// A button of the app's on the rail that does something — "new-entry" — rather than
 /// open a screen. [`Shell::take_action`] says which one was clicked.
 pub struct Action {
     /// What [`Shell::take_action`] returns when it is clicked.
     pub id: &'static str,
     /// A Lucide icon, as for a [`Destination`].
     pub icon: egui::ImageSource<'static>,
-    /// What it does, shown when the icon is hovered.
-    pub label: String,
+    /// The id of what it does in the app's translations, looked up each frame and shown
+    /// when the icon is hovered.
+    pub label: &'static str,
 }
 
 impl Action {
-    /// A button called `label`, drawn as `icon`, reported as `id`.
-    pub fn new(
-        id: &'static str,
-        icon: egui::ImageSource<'static>,
-        label: impl Into<String>,
-    ) -> Action {
-        Action {
-            id,
-            icon,
-            label: label.into(),
-        }
+    /// A button named by the message `label`, drawn as `icon`, reported as `id`.
+    pub fn new(id: &'static str, icon: egui::ImageSource<'static>, label: &'static str) -> Action {
+        Action { id, icon, label }
     }
 }
 
 /// The window frame. Hold one as the app's root; call [`ui`](Self::ui) every frame.
+///
+/// Labels are message ids: each frame the hover text is looked up in the language
+/// installed (see [`i18n`](crate::i18n)), so a language switch shows on the next frame.
 ///
 /// ```no_run
 /// # use corundum_gui::{Destination, Shell, icons};
@@ -75,10 +64,10 @@ impl Action {
 ///
 /// let mut shell = Shell::new(vec![
 ///     // The app's own Lucide SVGs: `egui::include_image!("../assets/icons/images.svg")`.
-///     Destination::new(Screen::Gallery, icons::folder(), "Gallery"),
-///     Destination::new(Screen::Albums, icons::folder(), "Albums"),
+///     Destination::new(Screen::Gallery, icons::folder(), "gallery"),
+///     Destination::new(Screen::Albums, icons::folder(), "albums"),
 /// ])
-/// .with_footer(vec![Destination::new(Screen::Settings, icons::settings(), "Settings")]);
+/// .with_footer(vec![Destination::new(Screen::Settings, icons::settings(), "settings")]);
 /// shell.ui(ui, |ui, screen| match screen {
 ///     Screen::Gallery => { egui::CentralPanel::default().show(ui, |ui| ui.label("…")); }
 ///     Screen::Albums => { egui::CentralPanel::default().show(ui, |ui| ui.label("…")); }
@@ -98,7 +87,7 @@ pub struct Shell<D> {
     #[cfg(test)]
     footer_rects: Vec<egui::Rect>,
     open: Option<D>,
-    /// Whether the SVG loader and the theme have been put in place.
+    /// Whether the SVG loader, the theme and the language have been put in place.
     loaders: bool,
 }
 
@@ -154,8 +143,8 @@ impl<D: Copy + PartialEq> Shell<D> {
 
     /// Render into the window's root `ui`. `content` draws the open destination into what
     /// the frame leaves of `ui`, as it would at the root: its own panels, then a
-    /// `CentralPanel`. The first frame installs the default [`theme`](crate::theme) if the
-    /// app has not installed one.
+    /// `CentralPanel`. The first frame installs the default [`theme`](crate::theme) and
+    /// [`language`](crate::i18n) if the app has not installed them.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
         self.ui_with_foot(ui, |_| None, content);
     }
@@ -173,6 +162,10 @@ impl<D: Copy + PartialEq> Shell<D> {
             // The app may have installed its saved theme already; only fill the gap.
             if !crate::theme::is_installed(ui.ctx()) {
                 crate::theme::install(ui.ctx(), &crate::theme::ThemeSettings::default());
+            }
+            // Likewise the language.
+            if !crate::i18n::is_installed(ui.ctx()) {
+                crate::i18n::install(ui.ctx(), &crate::i18n::LanguageSettings::default());
             }
         }
         let opened = if ui.available_width() < COMPACT_WIDTH {
@@ -265,17 +258,24 @@ impl<D: Copy + PartialEq> Shell<D> {
         let d = &self.destinations[i];
         let open = self.open == Some(d.id);
         if icon_button(ui, open, d.icon.clone())
-            .on_hover_text(&d.label)
+            .on_hover_text(crate::i18n::tr(ui.ctx(), d.label))
             .clicked()
         {
             self.open = Some(d.id);
         }
     }
 
+    /// What the hover text of destination `i` says now.
+    #[cfg(test)]
+    fn label_text(&self, ctx: &egui::Context, i: usize) -> String {
+        crate::i18n::tr(ctx, self.destinations[i].label)
+    }
+
     fn footer_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let d = &self.footer[i];
         let open = self.open == Some(d.id);
-        let response = icon_button(ui, open, d.icon.clone()).on_hover_text(&d.label);
+        let response =
+            icon_button(ui, open, d.icon.clone()).on_hover_text(crate::i18n::tr(ui.ctx(), d.label));
         #[cfg(test)]
         {
             self.footer_rects
@@ -289,7 +289,8 @@ impl<D: Copy + PartialEq> Shell<D> {
 
     fn action_ui(&mut self, ui: &mut egui::Ui, i: usize) {
         let a = &self.actions[i];
-        let response = icon_button(ui, false, a.icon.clone()).on_hover_text(&a.label);
+        let response = icon_button(ui, false, a.icon.clone())
+            .on_hover_text(crate::i18n::tr(ui.ctx(), a.label));
         #[cfg(test)]
         {
             self.action_rects
@@ -328,8 +329,8 @@ mod tests {
 
     fn shell() -> Shell<Screen> {
         Shell::new(vec![
-            Destination::new(Screen::Entries, crate::icons::settings(), "Entries"),
-            Destination::new(Screen::Summary, crate::icons::arrow_left(), "Summary"),
+            Destination::new(Screen::Entries, crate::icons::settings(), "entries"),
+            Destination::new(Screen::Summary, crate::icons::arrow_left(), "summary"),
         ])
     }
 
@@ -337,7 +338,7 @@ mod tests {
         vec![Destination::new(
             Screen::Prefs,
             crate::icons::settings(),
-            "Preferences",
+            "preferences",
         )]
     }
 
@@ -391,7 +392,7 @@ mod tests {
     #[test]
     fn actions_are_drawn_in_both_layouts_and_report_nothing_unclicked() {
         let mut shell =
-            shell().with_actions(vec![Action::new("new", crate::icons::plus(), "New entry")]);
+            shell().with_actions(vec![Action::new("new", crate::icons::plus(), "new-entry")]);
         for size in SIZES {
             shell.action_rects.clear();
             render(size, |ui| shell.ui(ui, |ui, _| screen(ui)));
@@ -404,7 +405,7 @@ mod tests {
     #[test]
     fn a_clicked_action_is_taken_once_and_opens_nothing() {
         let mut shell =
-            shell().with_actions(vec![Action::new("new", crate::icons::plus(), "New entry")]);
+            shell().with_actions(vec![Action::new("new", crate::icons::plus(), "new-entry")]);
         click(&mut shell, SIZES[0], |s| s.action_rects[0].center());
         assert_eq!(shell.take_action(), Some("new"));
         assert_eq!(shell.take_action(), None);
@@ -497,6 +498,59 @@ mod tests {
             crate::theme::Tint::Swatch(crate::theme::Swatch::Blue),
         );
         assert_eq!(*crate::theme::current(&ctx), high);
+    }
+
+    const T: crate::i18n::Resources = crate::i18n::Resources {
+        name: "shell-test",
+        files: &[
+            ("en", "t-entries = Entries\n"),
+            ("ja", "t-entries = 項目\n"),
+        ],
+    };
+
+    #[test]
+    fn the_shell_installs_the_default_language() {
+        let ctx = egui::Context::default();
+        let mut shell = shell();
+        crate::test_support::render_in(&ctx, [900.0, 600.0], |ui| shell.ui(ui, |ui, _| screen(ui)));
+        assert!(crate::i18n::is_installed(&ctx));
+    }
+
+    #[test]
+    fn the_shell_keeps_an_installed_language() {
+        use crate::i18n::{Language, LanguageSettings};
+        let ctx = egui::Context::default();
+        let ja = LanguageSettings {
+            language: Language::Explicit("ja".into()),
+        };
+        crate::i18n::install(&ctx, &ja);
+        let mut shell = shell();
+        crate::test_support::render_in(&ctx, [900.0, 600.0], |ui| shell.ui(ui, |ui, _| screen(ui)));
+        assert_eq!(crate::i18n::current(&ctx).to_string(), "ja");
+    }
+
+    #[test]
+    fn hover_text_follows_the_language() {
+        use crate::i18n::{Language, LanguageSettings};
+        let ctx = egui::Context::default();
+        crate::i18n::register(&ctx, T);
+        let shell = Shell::new(vec![Destination::new(
+            Screen::Entries,
+            crate::icons::settings(),
+            "t-entries",
+        )]);
+        let set = |tag: &str| {
+            crate::i18n::install(
+                &ctx,
+                &LanguageSettings {
+                    language: Language::Explicit(tag.into()),
+                },
+            )
+        };
+        set("en");
+        assert_eq!(shell.label_text(&ctx, 0), "Entries");
+        set("ja");
+        assert_eq!(shell.label_text(&ctx, 0), "項目");
     }
 
     #[test]

@@ -8,7 +8,9 @@ use sapphire_bridge_api::{
 
 use crate::client::{Command, CommandError, CommandOutput};
 
-use super::{ViewCtx, error_line, unavailable};
+use super::{ViewCtx, backend_error, bridge_unavailable, error_line, register};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
 /// The workgroup's external devices: clients that reach its apps with a key (#199).
 #[derive(Default)]
@@ -23,7 +25,7 @@ pub struct ExternalDeviceList {
     token: Option<(String, String)>,
     /// The name a token-producing command was sent for.
     pending_name: Option<String>,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 /// `a, b ,, c` → `["a", "b", "c"]`.
@@ -38,24 +40,25 @@ pub fn parse_apps(text: &str) -> Vec<String> {
 impl ExternalDeviceList {
     /// Render. Returns the change the user asked for.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+        register(ui);
         ui.horizontal(|ui| {
-            ui.heading("External devices");
+            ui.heading(tr!(ui, "sapphire-external-title"));
             if cx.busy {
                 ui.spinner();
             }
         });
-        ui.small("Clients that reach the workgroup's apps with a key instead of syncing.");
+        ui.small(tr!(ui, "sapphire-external-hint"));
         ui.separator();
         let Some(bridge) = cx.snapshot.bridge.up() else {
-            unavailable(ui, "The bridge");
+            bridge_unavailable(ui);
             return None;
         };
         if bridge.status.workgroup.is_none() {
-            ui.label("Found or join a workgroup first.");
+            ui.label(tr!(ui, "sapphire-external-found-first"));
             return None;
         }
         let Some(list) = &bridge.external_devices else {
-            ui.label("This bridge is too old to manage external devices; update sapphire-bridge.");
+            ui.label(tr!(ui, "sapphire-external-too-old"));
             return None;
         };
         error_line(ui, &mut self.error);
@@ -63,17 +66,17 @@ impl ExternalDeviceList {
 
         if let Some((name, token)) = self.token.clone() {
             egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.strong(format!("The token for «{name}». It is shown only now."));
+                ui.strong(tr!(ui, "sapphire-external-token", name = name.as_str()));
                 ui.add(
                     egui::TextEdit::singleline(&mut token.as_str())
                         .font(egui::TextStyle::Monospace)
                         .desired_width(f32::INFINITY),
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Copy").clicked() {
+                    if ui.button(tr!(ui, "sapphire-action-copy")).clicked() {
                         ui.ctx().copy_text(token.clone());
                     }
-                    if ui.button("Done").clicked() {
+                    if ui.button(tr!(ui, "sapphire-external-done")).clicked() {
                         self.token = None;
                     }
                 });
@@ -93,29 +96,32 @@ impl ExternalDeviceList {
                 }
             });
         if list.is_empty() {
-            ui.label("No external devices.");
+            ui.label(tr!(ui, "sapphire-external-none"));
         }
 
         ui.add_space(8.0);
         ui.separator();
-        ui.label("Add an external device");
+        ui.label(tr!(ui, "sapphire-external-add-heading"));
         egui::Grid::new("external_add")
             .num_columns(2)
             .show(ui, |ui| {
-                ui.label("Name");
+                ui.label(tr!(ui, "sapphire-external-name"));
                 ui.text_edit_singleline(&mut self.name);
                 ui.end_row();
-                ui.label("Apps");
+                ui.label(tr!(ui, "sapphire-external-apps"));
                 ui.add(egui::TextEdit::singleline(&mut self.apps).hint_text(cx.app_name));
                 ui.end_row();
-                ui.label("Note");
+                ui.label(tr!(ui, "sapphire-external-note"));
                 ui.text_edit_singleline(&mut self.description);
                 ui.end_row();
             });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let name = self.name.trim().to_owned();
             if ui
-                .add_enabled(!cx.busy && !name.is_empty(), egui::Button::new("Add"))
+                .add_enabled(
+                    !cx.busy && !name.is_empty(),
+                    egui::Button::new(tr!(ui, "sapphire-action-add")),
+                )
                 .clicked()
             {
                 let mut apps = parse_apps(&self.apps);
@@ -142,7 +148,7 @@ impl ExternalDeviceList {
         ui.vertical(|ui| {
             ui.strong(&d.name);
             if d.retired_at.is_some() {
-                ui.small("retired");
+                ui.small(tr!(ui, "sapphire-external-retired"));
             }
         });
         let editing = self
@@ -154,7 +160,10 @@ impl ExternalDeviceList {
             let apps = parse_apps(editing);
             if apps != d.apps
                 && ui
-                    .add_enabled(!cx.busy, egui::Button::new("Save apps"))
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-external-save-apps")),
+                    )
                     .clicked()
             {
                 out = Some(Command::ExternalDevice(ExternalDeviceRequest::SetApps(
@@ -169,14 +178,20 @@ impl ExternalDeviceList {
             let id = d.id.to_string();
             if d.retired_at.is_some() {
                 if ui
-                    .add_enabled(!cx.busy, egui::Button::new("Restore"))
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-external-restore")),
+                    )
                     .clicked()
                 {
                     out = Some(Command::ExternalDevice(ExternalDeviceRequest::Restore(id)));
                 }
             } else {
                 if ui
-                    .add_enabled(!cx.busy, egui::Button::new("New token"))
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-external-new-token")),
+                    )
                     .clicked()
                 {
                     self.pending_name = Some(d.name.clone());
@@ -185,7 +200,10 @@ impl ExternalDeviceList {
                     )));
                 }
                 if ui
-                    .add_enabled(!cx.busy, egui::Button::new("Retire"))
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-action-retire")),
+                    )
                     .clicked()
                 {
                     out = Some(Command::ExternalDevice(ExternalDeviceRequest::Retire(id)));
@@ -214,7 +232,7 @@ impl ExternalDeviceList {
             }
             Err(e) => {
                 self.pending_name = None;
-                self.error = Some(e.message.clone());
+                self.error = Some(backend_error(&e.message));
             }
         }
     }

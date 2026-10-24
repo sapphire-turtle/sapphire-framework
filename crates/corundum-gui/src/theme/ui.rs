@@ -1,6 +1,7 @@
 //! [`settings_ui`]: the theme's settings, for an app's settings screen.
 
 use super::{Contrast, DEFAULT_ACCENT, ThemeSettings, TintPicker};
+use crate::tr;
 
 /// Light / dark / system, the contrast, and the accent (a [`TintPicker`] with its
 /// preview). A change is [`install`](super::install)ed at once, so dragging on the accent's
@@ -13,24 +14,48 @@ pub fn settings_ui(ui: &mut egui::Ui, settings: &mut ThemeSettings) -> bool {
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
-            ui.label("Appearance");
+            ui.label(tr!(ui, "corundum-theme-appearance"));
             ui.horizontal(|ui| {
                 use egui::ThemePreference::*;
-                ui.radio_value(&mut settings.preference, Light, "Light");
-                ui.radio_value(&mut settings.preference, Dark, "Dark");
-                ui.radio_value(&mut settings.preference, System, "System");
+                ui.radio_value(
+                    &mut settings.preference,
+                    Light,
+                    tr!(ui, "corundum-theme-light"),
+                );
+                ui.radio_value(
+                    &mut settings.preference,
+                    Dark,
+                    tr!(ui, "corundum-theme-dark"),
+                );
+                ui.radio_value(
+                    &mut settings.preference,
+                    System,
+                    tr!(ui, "corundum-theme-system"),
+                );
             });
             ui.end_row();
 
-            ui.label("Contrast");
+            ui.label(tr!(ui, "corundum-theme-contrast"));
             ui.horizontal(|ui| {
-                ui.radio_value(&mut settings.contrast, Contrast::Low, "Low");
-                ui.radio_value(&mut settings.contrast, Contrast::Medium, "Medium");
-                ui.radio_value(&mut settings.contrast, Contrast::High, "High");
+                ui.radio_value(
+                    &mut settings.contrast,
+                    Contrast::Low,
+                    tr!(ui, "corundum-theme-low"),
+                );
+                ui.radio_value(
+                    &mut settings.contrast,
+                    Contrast::Medium,
+                    tr!(ui, "corundum-theme-medium"),
+                );
+                ui.radio_value(
+                    &mut settings.contrast,
+                    Contrast::High,
+                    tr!(ui, "corundum-theme-high"),
+                );
             });
             ui.end_row();
 
-            ui.label("Accent");
+            ui.label(tr!(ui, "corundum-theme-accent"));
             picked = TintPicker::new(&mut settings.accent, DEFAULT_ACCENT)
                 .preview(true)
                 .show(ui);
@@ -68,6 +93,22 @@ mod tests {
         });
         assert!(!changed);
         assert_eq!(settings, ThemeSettings::default());
+    }
+
+    #[test]
+    fn theme_labels_follow_the_language() {
+        let ctx = egui::Context::default();
+        crate::i18n::install(
+            &ctx,
+            &crate::i18n::LanguageSettings {
+                language: crate::i18n::Language::Explicit("ja".into()),
+            },
+        );
+        let mut settings = ThemeSettings::default();
+        render_in(&ctx, [600.0, 400.0], |ui| {
+            settings_ui(ui, &mut settings);
+        });
+        assert_eq!(crate::i18n::tr(&ctx, "corundum-theme-appearance"), "外観");
     }
 
     #[test]

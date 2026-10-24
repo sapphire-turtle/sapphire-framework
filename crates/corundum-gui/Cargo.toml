@@ -4,10 +4,10 @@ name = "corundum-gui"
 # new version with every sapphire release.
 version = "0.1.0"
 edition.workspace = true
-description = "The look shared by sapphire and asteria apps: egui shell, system fonts, Lucide icons"
+description = "The look shared by sapphire and asteria apps: egui shell, system fonts, Lucide icons, translations"
 license = "MIT OR Apache-2.0"
 repository.workspace = true
-keywords = ["gui", "egui", "icons", "fonts"]
+keywords = ["gui", "egui", "icons", "fonts", "i18n"]
 categories = ["gui"]
 
 # The components render inside a host app's egui context, on the desktops and on phones
@@ -27,11 +27,9 @@ android = [
     "eframe/android-game-activity",
     "dep:android-activity",
     "dep:android_log-sys",
-    "dep:jni",
-    "dep:ndk-context",
     "dep:tracing-subscriber",
 ]
-# Serialize / Deserialize on the theme settings, for the app to save them.
+# Serialize / Deserialize on the theme and language settings, for the app to save them.
 serde = ["dep:serde", "egui/serde"]
 
 [dependencies]
@@ -39,10 +37,17 @@ eframe = { version = "0.36", optional = true }
 egui = "0.36"
 # The SVG loader for the bundled Lucide icons (assets/icons), and for the apps' own.
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+# The translations (i18n): Fluent messages, and matching the user's languages to them.
+fluent-bundle = "0.16"
+fluent-langneg = "0.14"
+# The parsed files' entries, for i18n::check (already a dependency of fluent-bundle).
+fluent-syntax = "0.12"
 fontdb = "0.24"
+sys-locale = "0.3"
 ttf-parser = "0.25"
 tracing.workspace = true
 serde = { workspace = true, optional = true }
+unic-langid = "0.9"
 
 [dev-dependencies]
 serde_json.workspace = true
@@ -53,10 +58,12 @@ serde_json.workspace = true
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFSet", "CFString", "CFURL"] }
 objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFontDescriptor", "CTFontCollection"] }
 
-# The `android` feature's: the activity, logcat, and JNI for the clipboard and the insets.
+# The `android` feature's: the activity and logcat. JNI is always there: the language list
+# is read from the JVM (i18n::system; sys-locale gives only one), and the `android` feature
+# uses it for the clipboard and the insets.
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", optional = true }
 android_log-sys = { version = "0.3", optional = true }
-jni = { version = "0.21", optional = true }
-ndk-context = { version = "0.1", optional = true }
+jni = "0.21"
+ndk-context = "0.1"
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"], optional = true }

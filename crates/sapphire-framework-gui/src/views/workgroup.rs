@@ -3,7 +3,9 @@ use egui::{Align, Layout};
 use crate::client::{Command, CommandError, CommandOutput};
 
 use super::model::{default_device_name, is_this_device, valid_name};
-use super::{ViewCtx, error_line, unavailable};
+use super::{ViewCtx, backend_error, bridge_unavailable, error_line, register};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
 /// Join with a ticket: the ticket and the name this device was invited as.
 ///
@@ -13,7 +15,7 @@ use super::{ViewCtx, error_line, unavailable};
 pub struct JoinDialog {
     ticket: String,
     device_name: String,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 impl JoinDialog {
@@ -34,12 +36,15 @@ impl JoinDialog {
 
     /// Render the form inline. Returns [`Command::WorkgroupJoin`] on submit.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+        register(ui);
         let mut out = None;
         ui.horizontal(|ui| {
-            ui.label("Ticket");
+            ui.label(tr!(ui, "sapphire-workgroup-ticket"));
             // Where egui has no clipboard of its own (Android), a ticket is pasted from here.
             if crate::platform::needs_paste_button()
-                && ui.small_button("Paste").clicked()
+                && ui
+                    .small_button(tr!(ui, "sapphire-workgroup-paste"))
+                    .clicked()
                 && let Some(text) = crate::platform::clipboard_text()
             {
                 self.ticket = text;
@@ -50,11 +55,14 @@ impl JoinDialog {
                 .desired_rows(3)
                 .desired_width(f32::INFINITY),
         );
-        ui.label("The name this device was invited as");
+        ui.label(tr!(ui, "sapphire-workgroup-invited-name"));
         ui.text_edit_singleline(&mut self.device_name);
         let submission = self.submission();
         if ui
-            .add_enabled(!cx.busy && submission.is_some(), egui::Button::new("Join"))
+            .add_enabled(
+                !cx.busy && submission.is_some(),
+                egui::Button::new(tr!(ui, "sapphire-workgroup-join")),
+            )
             .clicked()
         {
             out = submission;
@@ -70,7 +78,7 @@ impl JoinDialog {
     pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
         match result {
             Ok(_) => *self = JoinDialog::default(),
-            Err(e) => self.error = Some(e.message.clone()),
+            Err(e) => self.error = Some(backend_error(&e.message)),
         }
     }
 }
@@ -81,7 +89,7 @@ pub struct WorkgroupView {
     name: String,
     device_name: Option<String>,
     join: JoinDialog,
-    error: Option<String>,
+    error: Option<Message>,
     last: Option<Last>,
 }
 
@@ -94,31 +102,32 @@ enum Last {
 impl WorkgroupView {
     /// Render.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+        register(ui);
         ui.horizontal(|ui| {
-            ui.heading("Workgroup");
+            ui.heading(tr!(ui, "sapphire-workgroup-title"));
             if cx.busy {
                 ui.spinner();
             }
         });
         ui.separator();
         let Some(bridge) = cx.snapshot.bridge.up() else {
-            unavailable(ui, "The bridge");
+            bridge_unavailable(ui);
             return None;
         };
         if let Some(wg) = &bridge.status.workgroup {
             egui::Grid::new("workgroup").num_columns(2).show(ui, |ui| {
-                ui.label("Name");
+                ui.label(tr!(ui, "sapphire-workgroup-name"));
                 ui.strong(&wg.name);
                 ui.end_row();
-                ui.label("Id");
+                ui.label(tr!(ui, "sapphire-workgroup-id"));
                 ui.horizontal(|ui| {
                     ui.monospace(wg.workgroup_id.to_string());
-                    if ui.small_button("Copy").clicked() {
+                    if ui.small_button(tr!(ui, "sapphire-action-copy")).clicked() {
                         ui.ctx().copy_text(wg.workgroup_id.to_string());
                     }
                 });
                 ui.end_row();
-                ui.label("Devices");
+                ui.label(tr!(ui, "sapphire-workgroup-devices"));
                 ui.label(wg.devices.to_string());
                 ui.end_row();
                 if let Some(me) = bridge
@@ -126,7 +135,7 @@ impl WorkgroupView {
                     .iter()
                     .find(|p| is_this_device(p, &bridge.status.node_id))
                 {
-                    ui.label("This device");
+                    ui.label(tr!(ui, "sapphire-workgroup-this-device"));
                     ui.label(&me.name);
                     ui.end_row();
                 }
@@ -138,15 +147,18 @@ impl WorkgroupView {
         let device_name = self.device_name.get_or_insert_with(default_device_name);
         ui.columns(2, |cols| {
             egui::Frame::group(cols[0].style()).show(&mut cols[0], |ui| {
-                ui.strong("Create a workgroup");
-                ui.label("Name");
+                ui.strong(tr!(ui, "sapphire-workgroup-create-heading"));
+                ui.label(tr!(ui, "sapphire-workgroup-name"));
                 ui.text_edit_singleline(&mut self.name);
-                ui.label("This device's name");
+                ui.label(tr!(ui, "sapphire-workgroup-device-name"));
                 ui.text_edit_singleline(device_name);
                 let ready = valid_name(&self.name).zip(valid_name(device_name));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
-                        .add_enabled(!cx.busy && ready.is_some(), egui::Button::new("Create"))
+                        .add_enabled(
+                            !cx.busy && ready.is_some(),
+                            egui::Button::new(tr!(ui, "sapphire-action-create")),
+                        )
                         .clicked()
                         && let Some((name, device_name)) = ready
                     {
@@ -156,7 +168,7 @@ impl WorkgroupView {
                 });
             });
             egui::Frame::group(cols[1].style()).show(&mut cols[1], |ui| {
-                ui.strong("Join with a ticket");
+                ui.strong(tr!(ui, "sapphire-workgroup-join-heading"));
                 if let Some(c) = self.join.ui(ui, cx) {
                     self.last = Some(Last::Join);
                     out = Some(c);
@@ -173,7 +185,7 @@ impl WorkgroupView {
             Some(Last::Join) => self.join.on_outcome(result),
             _ => {
                 if let Err(e) = result {
-                    self.error = Some(e.message.clone());
+                    self.error = Some(backend_error(&e.message));
                 } else {
                     self.name.clear();
                 }
@@ -216,7 +228,7 @@ mod tests {
             ..WorkgroupView::default()
         };
         view.on_outcome(&Err("bad ticket".into()));
-        assert_eq!(view.join.error.as_deref(), Some("bad ticket"));
+        assert_eq!(view.join.error, Some(backend_error("bad ticket")));
         assert!(view.error.is_none());
     }
 
@@ -227,7 +239,7 @@ mod tests {
             ..WorkgroupView::default()
         };
         view.on_outcome(&Err("exists".into()));
-        assert_eq!(view.error.as_deref(), Some("exists"));
+        assert_eq!(view.error, Some(backend_error("exists")));
         assert!(view.join.error.is_none());
     }
 }

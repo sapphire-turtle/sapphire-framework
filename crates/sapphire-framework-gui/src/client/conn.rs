@@ -65,11 +65,14 @@ pub(crate) fn gui_failure(err: &sapphire_ipc::Error) -> GuiFailure {
     }
 }
 
-/// The effective value of each of the theme's settings; `None` from a bridge that does not
-/// know them.
+/// The effective value of each of the theme's settings, and of the language
+/// (`gui.locale`) where the bridge knows it; `None` from a bridge that does not know the
+/// theme's. A bridge that knows the theme but not the language gives the theme's values
+/// alone, so the theme is still followed.
 async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<Option<GuiValues>> {
+    use sapphire_bridge_api::settings::gui;
     let mut values = GuiValues::new();
-    for key in sapphire_bridge_api::settings::gui::THEME_KEYS {
+    for key in gui::THEME_KEYS {
         match c.config_get(key).await {
             Ok(entry) => {
                 if let EntryValue::Value(value) = entry.value {
@@ -82,6 +85,17 @@ async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<Option<GuiValues>>
                 GuiFailure::Connection => return Err(err),
             },
         }
+    }
+    match c.config_get(gui::LOCALE).await {
+        Ok(entry) => {
+            if let EntryValue::Value(value) = entry.value {
+                values.insert(gui::LOCALE.to_owned(), value);
+            }
+        }
+        Err(err) => match gui_failure(&err) {
+            GuiFailure::OldBridge | GuiFailure::SkipKey => {}
+            GuiFailure::Connection => return Err(err),
+        },
     }
     Ok(Some(values))
 }

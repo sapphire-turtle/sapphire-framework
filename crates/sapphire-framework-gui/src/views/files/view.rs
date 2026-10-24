@@ -6,11 +6,13 @@ use std::sync::{Arc, Mutex};
 
 use super::model::{self, Entry, Preview};
 use corundum_gui::COMPACT_WIDTH;
+use corundum_gui::i18n::Message;
+use corundum_gui::tr;
 
 /// A read in flight or done, tagged with what it was for so a stale answer is dropped.
 struct Slot<T> {
     for_path: PathBuf,
-    result: Option<Result<T, String>>,
+    result: Option<Result<T, Message>>,
 }
 
 type Shared<T> = Arc<Mutex<Option<Slot<T>>>>;
@@ -50,6 +52,7 @@ impl FileBrowser {
 
     /// Render into `ui`, browsing `root`.
     pub fn ui(&mut self, ui: &mut egui::Ui, root: Option<&Path>) {
+        super::super::register(ui);
         if self.root.as_deref() != root {
             // Another workspace (or none): start again at its top.
             self.root = root.map(Path::to_path_buf);
@@ -62,8 +65,8 @@ impl FileBrowser {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(ui.available_height() / 3.0);
-                    ui.heading("Files");
-                    ui.label("No workspace yet — choose one in Settings → Workspace.");
+                    ui.heading(tr!(ui, "sapphire-files-title"));
+                    ui.label(tr!(ui, "sapphire-files-no-workspace"));
                 });
             });
             return;
@@ -72,7 +75,7 @@ impl FileBrowser {
         if ui.available_width() < COMPACT_WIDTH {
             egui::CentralPanel::default().show(ui, |ui| {
                 if self.open.is_some() {
-                    if ui.button("← Files").clicked() {
+                    if ui.button(tr!(ui, "sapphire-files-back")).clicked() {
                         self.open = None;
                     }
                     ui.separator();
@@ -92,7 +95,7 @@ impl FileBrowser {
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() / 3.0);
-                        ui.weak("Select a file to preview it.");
+                        ui.weak(tr!(ui, "sapphire-files-select"));
                     });
                 }
             });
@@ -111,7 +114,11 @@ impl FileBrowser {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("⟳").on_hover_text("Refresh").clicked() {
+                if ui
+                    .small_button("⟳")
+                    .on_hover_text(tr!(ui, "sapphire-files-refresh"))
+                    .clicked()
+                {
                     self.load_listing();
                     if self.open.is_some() {
                         self.load_preview();
@@ -134,11 +141,11 @@ impl FileBrowser {
             Some(Err(err)) => {
                 ui.colored_label(
                     crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
-                    err,
+                    err.text(ui.ctx()),
                 );
             }
             Some(Ok(entries)) if entries.is_empty() => {
-                ui.weak("This folder is empty.");
+                ui.weak(tr!(ui, "sapphire-files-empty"));
             }
             Some(Ok(entries)) => {
                 let mut go_into = None;
@@ -154,7 +161,7 @@ impl FileBrowser {
                             let label = entry_label(entry);
                             let response = ui.selectable_label(selected, label);
                             if entry.is_symlink {
-                                response.on_hover_text("A symbolic link: not followed.");
+                                response.on_hover_text(tr!(ui, "sapphire-files-symlink-hover"));
                             } else if response.clicked() {
                                 if entry.is_dir {
                                     go_into = Some(self.dir.join(&entry.name));
@@ -195,17 +202,18 @@ impl FileBrowser {
             Some(Err(err)) => {
                 ui.colored_label(
                     crate::theme::current(ui.ctx()).text(crate::theme::Swatch::DANGER),
-                    err,
+                    err.text(ui.ctx()),
                 );
             }
             Some(Ok(Preview::Binary { size })) => {
-                ui.weak(format!("Binary file, {} — no preview.", human_size(size)));
+                ui.weak(tr!(ui, "sapphire-files-binary", size = human_size(size)));
             }
             Some(Ok(Preview::Text { text, truncated })) => {
                 if truncated {
-                    ui.weak(format!(
-                        "Showing the first {}.",
-                        human_size(model::PREVIEW_LIMIT as u64)
+                    ui.weak(tr!(
+                        ui,
+                        "sapphire-files-truncated",
+                        size = human_size(model::PREVIEW_LIMIT as u64)
                     ));
                 }
                 egui::ScrollArea::both()
@@ -245,7 +253,7 @@ impl FileBrowser {
         &self,
         slot: &Shared<T>,
         for_path: PathBuf,
-        read: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+        read: impl FnOnce() -> Result<T, Message> + Send + 'static,
     ) {
         *lock(slot) = Some(Slot {
             for_path: for_path.clone(),
@@ -254,7 +262,7 @@ impl FileBrowser {
         let slot = Arc::clone(slot);
         let repaint = Arc::clone(&self.repaint);
         self.runtime.spawn_blocking(move || {
-            let result = read().map_err(|e| e.to_string());
+            let result = read();
             let mut guard = lock(&slot);
             // A later request replaced this one: its answer is the one to show.
             if let Some(current) = guard.as_mut()

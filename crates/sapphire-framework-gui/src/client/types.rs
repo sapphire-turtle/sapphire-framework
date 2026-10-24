@@ -138,8 +138,10 @@ pub struct BridgeState {
     pub embedding: Option<EmbedSettingsResult>,
     /// `external_device.list` (empty without a workgroup); `None` from an older bridge.
     pub external_devices: Option<Vec<ExternalDeviceInfo>>,
-    /// The theme's settings (`gui.theme.*`), effective values; `None` from a bridge that
-    /// does not know them.
+    /// The theme's settings (`gui.theme.*`) and the language (`gui.locale`), effective
+    /// values; `None` from a bridge that does not know the theme's. `gui.locale` is missing
+    /// from a bridge that knows the theme but not the language: the theme is followed, the
+    /// language stays as installed.
     pub gui: Option<GuiValues>,
 }
 

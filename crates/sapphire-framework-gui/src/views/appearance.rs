@@ -1,37 +1,68 @@
-//! The Appearance page: the theme's settings (`gui.theme.*`, stored by the bridge) edited
-//! with corundum's widget, per scope, and converted to and from [`ThemeSettings`].
+//! The Appearance page: the theme's settings (`gui.theme.*`) and the language
+//! (`gui.locale`), stored by the bridge, edited with corundum's widgets, per scope, and
+//! converted to and from [`ThemeSettings`] and [`LanguageSettings`].
 
+use corundum_gui::i18n::{self, Language, LanguageIdentifier, LanguageSettings};
 use corundum_gui::theme::{self, Contrast, Swatch, ThemeSettings, Tint};
 use egui::ThemePreference;
 use sapphire_bridge_api::settings::{Entry, EntryValue, Origin, Scope, gui};
 use sapphire_bridge_api::{ConfigEntry, Value};
 
-use super::error_line;
+use super::{error_text_line, register};
 use crate::client::{Command, CommandError, CommandOutput, ConfigState, GuiValues};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
-/// What the bridge says when it does not know the theme's settings.
-pub(crate) const OLD_BRIDGE: &str =
-    "this sapphire-bridge does not know the appearance settings; update it";
+/// What the page says when the bridge does not know the theme's settings.
+pub(crate) fn old_bridge() -> Message {
+    Message::new("sapphire-appearance-old-bridge")
+}
+
+/// What the page says when the bridge knows the theme's settings but not the language.
+pub(crate) fn old_bridge_language() -> Message {
+    Message::new("sapphire-appearance-old-bridge-language")
+}
+
+/// Every key the page edits: the theme's, then the language.
+const KEYS: [&str; 6] = [
+    gui::THEME_PREFERENCE,
+    gui::THEME_CONTRAST,
+    gui::THEME_ACCENT,
+    gui::THEME_ACCENT_HUE,
+    gui::THEME_ACCENT_CHROMA,
+    gui::LOCALE,
+];
+
+/// What the page says when there is no bridge to ask.
+pub(crate) fn bridge_down() -> Message {
+    Message::new("sapphire-bridge-not-running")
+}
 
 /// What the Appearance page reads.
 pub(crate) struct AppearanceCtx<'a> {
     /// The settings as last loaded.
     pub state: Option<&'a ConfigState>,
     /// Why the settings cannot be edited now; the widget is shown disabled.
-    pub unavailable: Option<&'a str>,
+    pub unavailable: Option<Message>,
     /// A write this page sent is still running.
     pub busy: bool,
     /// The bridge is in a workgroup: without one there is nothing to override, and no tabs.
     pub workgroup: bool,
+    /// The bridge knows the language (`gui.locale`); an older one does not, and the
+    /// picker is shown disabled.
+    pub language: bool,
 }
 
-/// The Appearance page: a tab per scope, and the theme widget over the tab's values. A
-/// change is written as it is made — a click, or the end of a drag.
+/// The Appearance page: a tab per scope, and the theme widget and the language picker over
+/// the tab's values. A change is written as it is made — a click, a choice, or the end of a
+/// drag.
 pub(crate) struct AppearancePage {
     /// The open tab.
     pub tab: Scope,
     /// What the widget edits.
     working: ThemeSettings,
+    /// What the language picker edits.
+    language: LanguageSettings,
     /// A drag is under way, or a write is out: keep `working` rather than the loaded values.
     editing: bool,
     /// A write was sent and has not answered.
@@ -45,6 +76,7 @@ impl Default for AppearancePage {
         AppearancePage {
             tab: Scope::Workgroup,
             working: ThemeSettings::default(),
+            language: LanguageSettings::default(),
             editing: false,
             held: false,
             error: None,
@@ -55,22 +87,27 @@ impl Default for AppearancePage {
 impl AppearancePage {
     /// Render; the write the user asked for, if any.
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui, cx: &AppearanceCtx) -> Option<Command> {
+        register(ui);
         ui.horizontal(|ui| {
-            ui.heading("Appearance");
+            ui.heading(tr!(ui, "sapphire-settings-appearance"));
             if cx.busy {
                 ui.spinner();
             }
         });
         ui.separator();
-        let state = match (cx.state, cx.unavailable) {
+        let state = match (cx.state, cx.unavailable.as_ref()) {
             (Some(state), None) => state,
             (_, why) => {
                 if let Some(why) = why {
-                    ui.weak(why);
+                    ui.weak(why.text(ui.ctx()));
                 }
                 // Shown as it is, not editable.
                 let mut shown = self.working.clone();
-                ui.add_enabled_ui(false, |ui| theme::settings_ui(ui, &mut shown));
+                let mut language = self.language.clone();
+                ui.add_enabled_ui(false, |ui| {
+                    theme::settings_ui(ui, &mut shown);
+                    language_row(ui, &mut language);
+                });
                 return None;
             }
         };
@@ -78,7 +115,8 @@ impl AppearancePage {
             self.tab = Scope::Workgroup;
         } else {
             ui.horizontal(|ui| {
-                for (scope, label) in [(Scope::Workgroup, "Workgroup"), (Scope::Device, "Device")] {
+                for scope in [Scope::Workgroup, Scope::Device] {
+                    let label = tr!(ui, scope_id(scope));
                     if ui
                         .add(egui::Button::selectable(self.tab == scope, label))
                         .clicked()
@@ -94,26 +132,36 @@ impl AppearancePage {
         if cx.workgroup {
             match self.tab {
                 Scope::Device => {
-                    for (label, names) in inherited(state) {
-                        ui.weak(format!("{}: {label}", names.join(", ")));
+                    for (origin, names) in inherited(state) {
+                        let names = joined(ui, &names);
+                        ui.weak(tr!(
+                            ui,
+                            "sapphire-appearance-inherited",
+                            names = names,
+                            origin = tr!(ui, origin)
+                        ));
                     }
                     if !overridden(state).is_empty()
                         && ui
-                            .add_enabled(!cx.busy, egui::Button::new("Use the workgroup's"))
+                            .add_enabled(
+                                !cx.busy,
+                                egui::Button::new(tr!(ui, "sapphire-appearance-use-workgroup")),
+                            )
                             .clicked()
                     {
-                        out = Some(use_the_workgroups());
+                        out = Some(use_the_workgroups(state));
                     }
                 }
                 _ => {
                     let own = overridden(state);
                     if !own.is_empty() {
-                        ui.weak(format!("This device uses its own {}", own.join(", ")));
+                        let names = joined(ui, &own);
+                        ui.weak(tr!(ui, "sapphire-appearance-own", names = names));
                     }
                 }
             }
         }
-        error_line(ui, &mut self.error);
+        error_text_line(ui, &mut self.error);
 
         if !self.editing && !self.held {
             self.working = tab_theme(state, self.tab);
@@ -128,14 +176,60 @@ impl AppearancePage {
                 let look = expected_theme(state, self.tab, &self.working, cx.workgroup);
                 theme::install(ui.ctx(), &look);
                 self.held = true;
-                out = Some(write);
+                out = merged(out, Some(write));
             }
         } else if self.working != before {
             self.editing = true;
         } else if !ui.input(|i| i.pointer.any_down()) {
             self.editing = false;
         }
-        out
+        ui.add_space(8.0);
+        let language = self.language_ui(ui, state, cx);
+        merged(out, language)
+    }
+
+    /// The language picker over the tab's value; the write a choice asks for.
+    fn language_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &ConfigState,
+        cx: &AppearanceCtx,
+    ) -> Option<Command> {
+        if !self.held {
+            self.language = tab_language(state, self.tab);
+        }
+        if !cx.language {
+            ui.weak(old_bridge_language().text(ui.ctx()));
+        }
+        let changed = ui
+            .add_enabled_ui(!cx.busy && cx.language, |ui| {
+                language_row(ui, &mut self.language)
+            })
+            .inner;
+        if !changed {
+            return None;
+        }
+        self.language_chosen(ui.ctx(), state, cx)
+    }
+
+    /// The picker chose `self.language` (and installed it): install the language the page
+    /// will show once it is written — the device's own still wins on the workgroup's tab —
+    /// and give the write.
+    fn language_chosen(
+        &mut self,
+        ctx: &egui::Context,
+        state: &ConfigState,
+        cx: &AppearanceCtx,
+    ) -> Option<Command> {
+        let write = locale_write(state, self.tab, &self.language);
+        i18n::install(
+            ctx,
+            &expected_language(state, self.tab, &self.language, cx.workgroup),
+        );
+        if write.is_some() {
+            self.held = true;
+        }
+        write
     }
 
     /// Take a write's outcome; `true` when it failed, so the stored theme is shown again.
@@ -162,11 +256,25 @@ impl AppearancePage {
     }
 }
 
-/// The theme keys `entries` give a value.
+/// A row of the language picker, aligned as the theme widget's rows; `true` on a choice.
+fn language_row(ui: &mut egui::Ui, language: &mut LanguageSettings) -> bool {
+    egui::Grid::new("sapphire_language_row")
+        .num_columns(2)
+        .spacing([16.0, 8.0])
+        .show(ui, |ui| {
+            ui.label(tr!(ui, "corundum-language"));
+            let changed = i18n::settings_ui(ui, language);
+            ui.end_row();
+            changed
+        })
+        .inner
+}
+
+/// The page's keys `entries` give a value.
 fn values_of(entries: &[Entry]) -> GuiValues {
     entries
         .iter()
-        .filter(|e| gui::THEME_KEYS.contains(&e.key.as_str()))
+        .filter(|e| KEYS.contains(&e.key.as_str()))
         .filter_map(|e| match &e.value {
             EntryValue::Value(v) => Some((e.key.clone(), v.clone())),
             _ => None,
@@ -233,7 +341,64 @@ pub(crate) fn expected_theme(
     theme_settings(&values)
 }
 
-/// The settings this device sets itself, by their names on the page.
+/// The message naming `scope`.
+pub(crate) fn scope_id(scope: Scope) -> &'static str {
+    match scope {
+        Scope::Device => "sapphire-scope-device",
+        Scope::Workgroup => "sapphire-scope-workgroup",
+        Scope::Workspace => "sapphire-scope-workspace",
+    }
+}
+
+/// The language the `tab` shows, as [`tab_theme`] does the theme.
+pub(crate) fn tab_language(state: &ConfigState, tab: Scope) -> LanguageSettings {
+    match tab {
+        Scope::Device => language_settings(&values_of(&state.effective)),
+        _ => language_settings(&scope_values(state, tab)),
+    }
+}
+
+/// The write that stores `language` in `tab`: `gui.locale` alone, and only when it differs
+/// from what the tab shows.
+pub(crate) fn locale_write(
+    state: &ConfigState,
+    tab: Scope,
+    language: &LanguageSettings,
+) -> Option<Command> {
+    let entry = locale_entry(language);
+    (entry != locale_entry(&tab_language(state, tab))).then(|| Command::ConfigWrite {
+        scope: tab,
+        set: vec![entry],
+        unset: Vec::new(),
+    })
+}
+
+/// The language once `language` is written to `tab`: on the workgroup's tab, the device's
+/// own still wins — if there is a workgroup.
+pub(crate) fn expected_language(
+    state: &ConfigState,
+    tab: Scope,
+    language: &LanguageSettings,
+    workgroup: bool,
+) -> LanguageSettings {
+    let device = scope_values(state, Scope::Device);
+    if tab == Scope::Workgroup && workgroup && device.contains_key(gui::LOCALE) {
+        language_settings(&device)
+    } else {
+        language.clone()
+    }
+}
+
+/// The page's names (message ids) resolved and joined as a list.
+fn joined(ui: &egui::Ui, ids: &[&str]) -> String {
+    let separator = tr!(ui, "sapphire-list-separator");
+    ids.iter()
+        .map(|id| tr!(ui, id))
+        .collect::<Vec<_>>()
+        .join(&separator)
+}
+
+/// The settings this device sets itself, by their names on the page (message ids).
 pub(crate) fn overridden(state: &ConfigState) -> Vec<&'static str> {
     names(
         scope_values(state, Scope::Device)
@@ -242,18 +407,19 @@ pub(crate) fn overridden(state: &ConfigState) -> Vec<&'static str> {
     )
 }
 
-/// The settings this device takes from elsewhere, by where: `from workgroup`, `default`.
+/// The settings this device takes from elsewhere, by where (the origin's message id) and
+/// their names on the page (message ids).
 fn inherited(state: &ConfigState) -> Vec<(&'static str, Vec<&'static str>)> {
     [
-        (Origin::Scope(Scope::Workgroup), "from workgroup"),
-        (Origin::Default, "default"),
+        (Origin::Scope(Scope::Workgroup), "sapphire-origin-workgroup"),
+        (Origin::Default, "sapphire-origin-default"),
     ]
     .into_iter()
     .filter_map(|(origin, label)| {
         let keys = state
             .effective
             .iter()
-            .filter(|e| e.origin == origin && gui::THEME_KEYS.contains(&e.key.as_str()))
+            .filter(|e| e.origin == origin && KEYS.contains(&e.key.as_str()))
             .map(|e| e.key.as_str());
         let names = names(keys);
         (!names.is_empty()).then_some((label, names))
@@ -261,15 +427,16 @@ fn inherited(state: &ConfigState) -> Vec<(&'static str, Vec<&'static str>)> {
     .collect()
 }
 
-/// The page's names for `keys`, each once, in the page's order.
+/// The page's names (message ids) for `keys`, each once, in the page's order.
 fn names<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<&'static str> {
     let keys: Vec<&str> = keys.collect();
     let mut out = Vec::new();
-    for key in gui::THEME_KEYS {
+    for key in KEYS {
         let name = match key {
-            gui::THEME_PREFERENCE => "light/dark",
-            gui::THEME_CONTRAST => "contrast",
-            _ => "accent",
+            gui::THEME_PREFERENCE => "sapphire-appearance-name-theme",
+            gui::THEME_CONTRAST => "sapphire-appearance-name-contrast",
+            gui::LOCALE => "sapphire-appearance-name-language",
+            _ => "sapphire-appearance-name-accent",
         };
         if keys.contains(&key) && !out.contains(&name) {
             out.push(name);
@@ -278,12 +445,78 @@ fn names<'a>(keys: impl Iterator<Item = &'a str>) -> Vec<&'static str> {
     out
 }
 
-/// Drop every theme setting this device sets, so the workgroup's apply.
-pub(crate) fn use_the_workgroups() -> Command {
+/// Drop every theme setting and the language this device sets, so the workgroup's apply.
+/// Only the keys the device sets: a bridge that does not know `gui.locale` would refuse the
+/// whole write over it.
+pub(crate) fn use_the_workgroups(state: &ConfigState) -> Command {
+    let own = scope_values(state, Scope::Device);
     Command::ConfigWrite {
         scope: Scope::Device,
         set: Vec::new(),
-        unset: gui::THEME_KEYS.iter().map(|k| (*k).to_owned()).collect(),
+        unset: KEYS
+            .iter()
+            .filter(|k| own.contains_key(**k))
+            .map(|k| (*k).to_owned())
+            .collect(),
+    }
+}
+
+/// Two writes the page asked for in one frame, as one: a choice of the language and the end
+/// of a theme drag, say. Both are to the open tab's scope; a key set by either is not also
+/// unset. Writes to different scopes cannot happen; the first would be kept.
+fn merged(a: Option<Command>, b: Option<Command>) -> Option<Command> {
+    match (a, b) {
+        (
+            Some(Command::ConfigWrite {
+                scope,
+                mut set,
+                mut unset,
+            }),
+            Some(Command::ConfigWrite {
+                scope: other,
+                set: more_set,
+                unset: more_unset,
+            }),
+        ) if scope == other => {
+            set.extend(more_set);
+            unset.extend(more_unset);
+            unset.retain(|k| !set.iter().any(|e| e.key == *k));
+            unset.dedup();
+            Some(Command::ConfigWrite { scope, set, unset })
+        }
+        (a, b) => a.or(b),
+    }
+}
+
+/// The value of `gui.locale` that follows the system's languages.
+const SYSTEM_LOCALE: &str = "system";
+
+/// The language `values` hold in `gui.locale`: `system`, or a language tag. A missing
+/// value, or one that is not a language tag, follows the system: a synced file may have been
+/// edited by hand.
+pub(crate) fn language_settings(values: &GuiValues) -> LanguageSettings {
+    let language = match values.get(gui::LOCALE) {
+        Some(Value::String(tag))
+            if !tag.trim().eq_ignore_ascii_case(SYSTEM_LOCALE) && !tag.trim().is_empty() =>
+        {
+            tag.trim()
+                .parse::<LanguageIdentifier>()
+                .map_or(Language::System, |id| Language::Explicit(id.to_string()))
+        }
+        _ => Language::System,
+    };
+    LanguageSettings { language }
+}
+
+/// `settings` as the `gui.locale` setting.
+pub(crate) fn locale_entry(settings: &LanguageSettings) -> ConfigEntry {
+    let value = match &settings.language {
+        Language::System => SYSTEM_LOCALE.to_owned(),
+        Language::Explicit(tag) => tag.clone(),
+    };
+    ConfigEntry {
+        key: gui::LOCALE.to_owned(),
+        value: Value::String(value),
     }
 }
 
@@ -564,7 +797,10 @@ mod tests {
                 .collect()
         };
         let mut effective = Vec::new();
-        for e in gui_entries(&ThemeSettings::default()) {
+        let defaults = gui_entries(&ThemeSettings::default())
+            .into_iter()
+            .chain([locale_entry(&LanguageSettings::default())]);
+        for e in defaults {
             let from = |items: &[(&str, Value)]| {
                 items
                     .iter()
@@ -685,14 +921,85 @@ mod tests {
 
     #[test]
     fn use_the_workgroups_unsets_every_key_on_the_device() {
+        let all = [
+            (gui::THEME_PREFERENCE, s("dark")),
+            (gui::THEME_CONTRAST, s("low")),
+            (gui::THEME_ACCENT, s("custom")),
+            (gui::THEME_ACCENT_HUE, Value::Int(10)),
+            (gui::THEME_ACCENT_CHROMA, Value::Int(10)),
+            (gui::LOCALE, s("ja")),
+        ];
         assert_eq!(
-            write(Some(use_the_workgroups())),
+            write(Some(use_the_workgroups(&state(&[], &all)))),
             Some((
                 Scope::Device,
                 Vec::new(),
-                gui::THEME_KEYS.iter().map(|k| (*k).to_owned()).collect()
+                [
+                    gui::THEME_PREFERENCE,
+                    gui::THEME_CONTRAST,
+                    gui::THEME_ACCENT,
+                    gui::THEME_ACCENT_HUE,
+                    gui::THEME_ACCENT_CHROMA,
+                    gui::LOCALE,
+                ]
+                .iter()
+                .map(|k| (*k).to_owned())
+                .collect()
             ))
         );
+    }
+
+    #[test]
+    fn use_the_workgroups_unsets_only_what_the_device_sets() {
+        // A bridge without `gui.locale` (or a device without its own) never sees it unset:
+        // the bridge would refuse the whole write over an unknown key.
+        let st = state(&[], &[(gui::THEME_CONTRAST, s("low"))]);
+        assert_eq!(
+            write(Some(use_the_workgroups(&st))),
+            Some((
+                Scope::Device,
+                Vec::new(),
+                vec![gui::THEME_CONTRAST.to_owned()]
+            ))
+        );
+    }
+
+    #[test]
+    fn writes_in_one_frame_are_merged() {
+        let theme = Some(Command::ConfigWrite {
+            scope: Scope::Device,
+            set: vec![ConfigEntry {
+                key: gui::THEME_CONTRAST.into(),
+                value: s("high"),
+            }],
+            unset: Vec::new(),
+        });
+        let language = locale_write(&state(&[], &[]), Scope::Device, &ja());
+        assert_eq!(
+            write(merged(theme, language)),
+            Some((
+                Scope::Device,
+                vec![
+                    (gui::THEME_CONTRAST.to_owned(), s("high")),
+                    (gui::LOCALE.to_owned(), s("ja")),
+                ],
+                Vec::new()
+            ))
+        );
+        let unset = Some(use_the_workgroups(&state(
+            &[],
+            &[(gui::THEME_CONTRAST, s("low")), (gui::LOCALE, s("en"))],
+        )));
+        let language = locale_write(&state(&[], &[]), Scope::Device, &ja());
+        assert_eq!(
+            write(merged(unset, language)),
+            Some((
+                Scope::Device,
+                vec![(gui::LOCALE.to_owned(), s("ja"))],
+                vec![gui::THEME_CONTRAST.to_owned()]
+            ))
+        );
+        assert_eq!(write(merged(None, None)), None);
     }
 
     #[test]
@@ -715,7 +1022,13 @@ mod tests {
                 (gui::THEME_CONTRAST, s("low")),
             ],
         );
-        assert_eq!(overridden(&st), ["contrast", "accent"]);
+        assert_eq!(
+            overridden(&st),
+            [
+                "sapphire-appearance-name-contrast",
+                "sapphire-appearance-name-accent"
+            ]
+        );
     }
 
     fn drawn(page: &mut AppearancePage, cx: &AppearanceCtx) -> String {
@@ -732,6 +1045,7 @@ mod tests {
             unavailable: None,
             busy: false,
             workgroup: true,
+            language: true,
         };
         let text = drawn(&mut AppearancePage::default(), &cx);
         assert!(text.contains("Workgroup"), "{text}");
@@ -750,6 +1064,7 @@ mod tests {
             unavailable: None,
             busy: false,
             workgroup: true,
+            language: true,
         };
         let mut page = AppearancePage {
             tab: Scope::Device,
@@ -757,17 +1072,53 @@ mod tests {
         };
         let text = drawn(&mut page, &cx);
         assert!(text.contains("light/dark: from workgroup"), "{text}");
-        assert!(text.contains("accent: default"), "{text}");
+        assert!(text.contains("accent, language: default"), "{text}");
         assert!(text.contains("Use the workgroup's"), "{text}");
+    }
+
+    #[test]
+    fn the_tabs_and_lines_follow_the_language() {
+        use crate::views::config::widgets::tests::drawn_text_in;
+        let st = state(
+            &[(gui::THEME_PREFERENCE, s("dark"))],
+            &[(gui::THEME_CONTRAST, s("low"))],
+        );
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        let ctx = crate::test_support::japanese_ctx();
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn_text_in(&ctx, |ui| {
+            page.ui(ui, &cx);
+        });
+        for ja in [
+            "外観",
+            "ワークグループ",
+            "デバイス",
+            "ライト/ダーク: ワークグループから",
+            "アクセント、言語: デフォルト",
+            "ワークグループの設定を使う",
+        ] {
+            assert!(text.contains(ja), "{ja} missing from {text}");
+        }
+        assert!(!text.contains("Use the workgroup's"), "{text}");
     }
 
     #[test]
     fn unavailable_draws_the_reason() {
         let cx = AppearanceCtx {
             state: None,
-            unavailable: Some("sapphire-bridge is not running"),
+            unavailable: Some(bridge_down()),
             busy: false,
             workgroup: true,
+            language: true,
         };
         let text = drawn(&mut AppearancePage::default(), &cx);
         assert!(text.contains("sapphire-bridge is not running"), "{text}");
@@ -791,6 +1142,7 @@ mod tests {
             unavailable: None,
             busy: false,
             workgroup: false,
+            language: true,
         };
         let mut page = AppearancePage {
             tab: Scope::Device,
@@ -823,6 +1175,7 @@ mod tests {
             unavailable: None,
             busy: false,
             workgroup: true,
+            language: true,
         };
         let mut page = AppearancePage {
             working: high(),
@@ -846,6 +1199,7 @@ mod tests {
             unavailable: None,
             busy: false,
             workgroup: true,
+            language: true,
         };
         let mut page = AppearancePage {
             working: high(),
@@ -855,5 +1209,234 @@ mod tests {
         page.on_outcome(&Err("rejected".into()));
         drawn(&mut page, &cx);
         assert_eq!(page.working, ThemeSettings::default());
+    }
+
+    // ── the language ────────────────────────────────────────────────────────
+
+    fn lang(language: Language) -> LanguageSettings {
+        LanguageSettings { language }
+    }
+
+    fn ja() -> LanguageSettings {
+        lang(Language::Explicit("ja".into()))
+    }
+
+    #[test]
+    fn locale_values_map_to_the_language() {
+        assert_eq!(
+            language_settings(&GuiValues::new()),
+            LanguageSettings::default()
+        );
+        assert_eq!(
+            language_settings(&one(gui::LOCALE, s("system"))),
+            lang(Language::System)
+        );
+        assert_eq!(language_settings(&one(gui::LOCALE, s("ja"))), ja());
+        assert_eq!(language_settings(&one(gui::LOCALE, s(" ja "))), ja());
+        for system in ["System", "SYSTEM", " system "] {
+            assert_eq!(
+                language_settings(&one(gui::LOCALE, s(system))),
+                lang(Language::System),
+                "{system}"
+            );
+        }
+        assert_eq!(
+            language_settings(&one(gui::LOCALE, s("en-US"))),
+            lang(Language::Explicit("en-US".into()))
+        );
+    }
+
+    #[test]
+    fn a_bad_locale_follows_the_system() {
+        for bad in [s("not a tag!"), s(""), s("en_US_x_"), Value::Int(3)] {
+            assert_eq!(
+                language_settings(&one(gui::LOCALE, bad.clone())),
+                lang(Language::System),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_language_round_trips_through_its_entry() {
+        for settings in [
+            lang(Language::System),
+            ja(),
+            lang(Language::Explicit("en-US".into())),
+        ] {
+            let entry = locale_entry(&settings);
+            assert_eq!(entry.key, gui::LOCALE);
+            assert_eq!(language_settings(&values(vec![entry])), settings);
+        }
+        assert_eq!(
+            locale_entry(&LanguageSettings::default()).value,
+            s("system")
+        );
+        assert_eq!(locale_entry(&ja()).value, s("ja"));
+    }
+
+    #[test]
+    fn a_language_change_writes_only_the_locale_to_the_tab() {
+        let st = state(
+            &[(gui::THEME_CONTRAST, s("high"))],
+            &[(gui::THEME_ACCENT, s("red"))],
+        );
+        for tab in [Scope::Workgroup, Scope::Device] {
+            assert_eq!(
+                write(locale_write(&st, tab, &ja())),
+                Some((tab, vec![(gui::LOCALE.to_owned(), s("ja"))], Vec::new())),
+                "{tab:?}"
+            );
+        }
+        // The tab's own value: nothing to write.
+        assert_eq!(
+            write(locale_write(&st, Scope::Device, &lang(Language::System))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_device_tab_starts_from_the_effective_language() {
+        let st = state(&[(gui::LOCALE, s("ja"))], &[]);
+        assert_eq!(tab_language(&st, Scope::Device), ja());
+        assert_eq!(write(locale_write(&st, Scope::Device, &ja())), None);
+    }
+
+    #[test]
+    fn a_choice_on_the_page_installs_and_writes_once() {
+        let st = state(&[], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        let ctx = crate::test_support::english_ctx();
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            language: ja(),
+            ..Default::default()
+        };
+        let sent = write(page.language_chosen(&ctx, &st, &cx));
+        assert_eq!(
+            sent,
+            Some((
+                Scope::Device,
+                vec![(gui::LOCALE.to_owned(), s("ja"))],
+                Vec::new()
+            ))
+        );
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
+        assert!(page.held);
+    }
+
+    #[test]
+    fn a_workgroup_choice_keeps_the_devices_language() {
+        let st = state(&[], &[(gui::LOCALE, s("en"))]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        let ctx = crate::test_support::english_ctx();
+        let mut page = AppearancePage {
+            language: ja(),
+            ..Default::default()
+        };
+        let sent = write(page.language_chosen(&ctx, &st, &cx));
+        assert_eq!(
+            sent,
+            Some((
+                Scope::Workgroup,
+                vec![(gui::LOCALE.to_owned(), s("ja"))],
+                Vec::new()
+            ))
+        );
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        // Without a workgroup both scopes are one file: the choice is what shows.
+        assert_eq!(expected_language(&st, Scope::Workgroup, &ja(), false), ja());
+    }
+
+    #[test]
+    fn the_picker_is_in_both_tabs() {
+        let st = state(&[], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        for tab in [Scope::Workgroup, Scope::Device] {
+            let mut page = AppearancePage {
+                tab,
+                ..Default::default()
+            };
+            let text = drawn(&mut page, &cx);
+            assert!(text.contains("Language"), "{tab:?}: {text}");
+            assert!(text.contains("System ("), "{tab:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_override_line_names_the_language() {
+        let st = state(&[], &[(gui::LOCALE, s("ja"))]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        let text = drawn(&mut AppearancePage::default(), &cx);
+        assert!(text.contains("This device uses its own language"), "{text}");
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn(&mut page, &cx);
+        assert!(text.contains("Use the workgroup's"), "{text}");
+        assert!(!text.contains("language: "), "{text}");
+    }
+
+    #[test]
+    fn the_device_tab_says_the_language_is_the_workgroups() {
+        let st = state(&[(gui::LOCALE, s("ja"))], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: true,
+        };
+        let mut page = AppearancePage {
+            tab: Scope::Device,
+            ..Default::default()
+        };
+        let text = drawn(&mut page, &cx);
+        assert!(text.contains("language: from workgroup"), "{text}");
+        assert_eq!(page.language, ja());
+    }
+
+    #[test]
+    fn a_bridge_without_the_language_says_so() {
+        let st = state(&[], &[]);
+        let cx = AppearanceCtx {
+            state: Some(&st),
+            unavailable: None,
+            busy: false,
+            workgroup: true,
+            language: false,
+        };
+        let text = drawn(&mut AppearancePage::default(), &cx);
+        assert!(
+            text.contains("this sapphire-bridge does not know the language setting"),
+            "{text}"
+        );
+        // The theme is still there.
+        assert!(text.contains("Workgroup"), "{text}");
     }
 }

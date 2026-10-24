@@ -10,20 +10,26 @@ use crate::client::{
     Snapshot,
 };
 use corundum_gui::COMPACT_WIDTH;
+use corundum_gui::i18n::{self, Message};
 use corundum_gui::theme::{self, ThemeSettings};
+use corundum_gui::tr;
+use sapphire_bridge_api::Value;
 
-use crate::views::appearance::{AppearanceCtx, AppearancePage, OLD_BRIDGE, theme_settings};
+use crate::views::appearance::{
+    AppearanceCtx, AppearancePage, bridge_down, language_settings, old_bridge, theme_settings,
+};
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
     DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
-    WorkspacePicker, error_line, unavailable,
+    WorkspacePicker, error_text_line, unavailable,
 };
 
 /// A page the app adds to [`Settings`], under its own heading.
 pub trait SettingsSection {
-    /// The page's name in the list.
-    fn label(&self) -> String;
+    /// The page's name in the list, in the language installed in `ctx`. It is asked every
+    /// frame, so a language switch reaches the list at once.
+    fn label(&self, ctx: &egui::Context) -> String;
 
     /// Render the page.
     fn ui(&mut self, ui: &mut egui::Ui);
@@ -39,12 +45,16 @@ enum Screen {
     Embedding,
 }
 
+/// The sync pages and the ids of the messages naming them in the list.
 const SYNC_SCREENS: [(Screen, &str); 5] = [
-    (Screen::Workspaces, "Workspace"),
-    (Screen::Devices, "Devices"),
-    (Screen::Workgroup, "Workgroup"),
-    (Screen::ExternalDevices, "External devices"),
-    (Screen::Embedding, "Embedding"),
+    (Screen::Workspaces, "sapphire-settings-workspace"),
+    (Screen::Devices, "sapphire-settings-devices"),
+    (Screen::Workgroup, "sapphire-settings-workgroup"),
+    (
+        Screen::ExternalDevices,
+        "sapphire-settings-external-devices",
+    ),
+    (Screen::Embedding, "sapphire-settings-embedding"),
 ];
 
 /// The screen a settings section of the same name joins, below its own content.
@@ -132,7 +142,9 @@ pub struct Settings {
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
     /// The theme's settings as last installed from the snapshot.
-    seen_gui: Option<GuiValues>,
+    seen_theme: Option<GuiValues>,
+    /// The language (`gui.locale`) as last installed from the snapshot.
+    seen_locale: Option<Value>,
     appearance: AppearancePage,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
@@ -169,7 +181,8 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
-            seen_gui: None,
+            seen_theme: None,
+            seen_locale: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
@@ -245,26 +258,42 @@ impl Settings {
         }
     }
 
-    /// Install the theme the settings hold, whenever the bridge reports other values than
-    /// last time: at start, after a write, after a sync from another device. Only a change
-    /// of the values installs, so a slider being dragged on the Appearance page keeps its
-    /// preview. Without the values (no bridge, or an older one) the theme stays. A
-    /// [`Shell`](crate::Shell) calls this every frame; on its own, [`ui`](Self::ui) does.
+    /// Install the theme and the language the settings hold, whenever the bridge reports
+    /// other values than last time: at start, after a write, after a sync from another
+    /// device. Only a change of the values installs, so a slider being dragged on the
+    /// Appearance page keeps its preview; the theme and the language are compared each on
+    /// its own. Without the values (no bridge, or an older one) the theme stays; without
+    /// `gui.locale` (a bridge that knows the theme but not the language) the language
+    /// stays. A [`Shell`](crate::Shell) calls this every frame; on its own,
+    /// [`ui`](Self::ui) does.
     pub fn follow_theme(&mut self, ctx: &egui::Context) {
         let snapshot = self.snapshot();
         let Some(gui) = snapshot.bridge.up().and_then(|b| b.gui.as_ref()) else {
             return;
         };
-        if self.seen_gui.as_ref() != Some(gui) {
-            theme::install(ctx, &theme_settings(gui));
-            self.seen_gui = Some(gui.clone());
+        let theme: GuiValues = gui
+            .iter()
+            .filter(|(k, _)| sapphire_bridge_api::settings::gui::THEME_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if self.seen_theme.as_ref() != Some(&theme) {
+            theme::install(ctx, &theme_settings(&theme));
+            self.seen_theme = Some(theme);
+        }
+        if let Some(locale) = gui.get(sapphire_bridge_api::settings::gui::LOCALE)
+            && self.seen_locale.as_ref() != Some(locale)
+        {
+            i18n::install(ctx, &language_settings(gui));
+            self.seen_locale = Some(locale.clone());
         }
     }
 
-    /// Install the stored theme again on the next [`follow_theme`](Self::follow_theme),
-    /// even if its values have not changed: the look has moved off them.
+    /// Install the stored theme and language again on the next
+    /// [`follow_theme`](Self::follow_theme), even if their values have not changed: the
+    /// look has moved off them.
     pub(crate) fn forget_seen_theme(&mut self) {
-        self.seen_gui = None;
+        self.seen_theme = None;
+        self.seen_locale = None;
     }
 
     /// Render the status banner: the services and their install buttons, a newer release,
@@ -284,6 +313,7 @@ impl Settings {
     /// Render into `ui`: the list beside the open page, or — narrower than
     /// [`COMPACT_WIDTH`] — the list, or the open page under a way back to it.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        crate::i18n::register(ui.ctx(), crate::RESOURCES);
         self.poll();
         if self.own_banner {
             self.follow_theme(ui.ctx());
@@ -303,7 +333,10 @@ impl Settings {
                 Some(page) => {
                     let back = crate::icons::image(ui, crate::icons::arrow_left(), 14.0);
                     if ui
-                        .add(egui::Button::image_and_text(back, "Settings"))
+                        .add(egui::Button::image_and_text(
+                            back,
+                            tr!(ui, "sapphire-settings"),
+                        ))
                         .clicked()
                     {
                         self.page = None;
@@ -338,8 +371,9 @@ impl Settings {
         }
     }
 
-    /// The list: headings, entries and gaps, in order. A page with a draft is marked.
-    fn list(&self) -> Vec<ListItem> {
+    /// The list: headings, entries and gaps, in order, in the language installed in `ctx`.
+    /// A page with a draft is marked.
+    fn list(&self, ctx: &egui::Context) -> Vec<ListItem> {
         let dirty = self.drafts.dirty_sections();
         let mark = |label: &str, dirty: bool| {
             if dirty {
@@ -369,30 +403,44 @@ impl Settings {
             out.push(ListItem::Heading(heading));
             out.extend(app_pages);
             for (i, section) in self.app_sections.iter().enumerate() {
-                out.push(ListItem::Entry(Page::App(i), section.label()));
+                out.push(ListItem::Entry(Page::App(i), section.label(ctx)));
             }
         }
-        out.push(ListItem::Heading("General".into()));
-        out.push(ListItem::Entry(Page::Appearance, "Appearance".into()));
-        out.push(ListItem::Heading("Sync".into()));
-        for (screen, label) in SYNC_SCREENS {
-            let joined = self.pages.iter().any(|p| {
-                p.placement == Placement::Screen(label.to_owned()) && dirty.contains(&p.section)
-            });
-            out.push(ListItem::Entry(Page::Sync(screen), mark(label, joined)));
+        out.push(ListItem::Heading(tr!(ctx, "sapphire-settings-general")));
+        out.push(ListItem::Entry(
+            Page::Appearance,
+            tr!(ctx, "sapphire-settings-appearance"),
+        ));
+        out.push(ListItem::Heading(tr!(ctx, "sapphire-settings-sync")));
+        for (screen, id) in SYNC_SCREENS {
+            let joined = screen == JOINED_SCREEN.0
+                && self.pages.iter().any(|p| {
+                    p.placement == Placement::Screen(JOINED_SCREEN.1.to_owned())
+                        && dirty.contains(&p.section)
+                });
+            out.push(ListItem::Entry(
+                Page::Sync(screen),
+                mark(&tr!(ctx, id), joined),
+            ));
         }
         let rest = config(Placement::Configuration);
         if !rest.is_empty() {
-            out.push(ListItem::Heading("Configuration".into()));
+            out.push(ListItem::Heading(tr!(
+                ctx,
+                "sapphire-settings-configuration"
+            )));
             out.extend(rest);
         }
         out.push(ListItem::Gap);
-        out.push(ListItem::Entry(Page::About, "About".into()));
+        out.push(ListItem::Entry(
+            Page::About,
+            tr!(ctx, "sapphire-settings-about"),
+        ));
         out
     }
 
     fn list_ui(&mut self, ui: &mut egui::Ui) {
-        let items = self.list();
+        let items = self.list(ui.ctx());
         // Full-width rows, their labels at the left.
         ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
             for item in items {
@@ -445,14 +493,17 @@ impl Settings {
     fn appearance_ui(&mut self, ui: &mut egui::Ui) {
         let snapshot = self.snapshot();
         if snapshot.server.up().is_none() {
-            unavailable(ui, &format!("The {} server", self.client.app().app_name));
+            unavailable(
+                ui,
+                Message::new("sapphire-unavailable-server").arg("app", self.client.app().app_name),
+            );
             return;
         }
         self.ensure_loaded(&snapshot);
         let bridge = snapshot.bridge.up();
         let why = match bridge {
-            None => Some("sapphire-bridge is not running"),
-            Some(b) if b.gui.is_none() => Some(OLD_BRIDGE),
+            None => Some(bridge_down()),
+            Some(b) if b.gui.is_none() => Some(old_bridge()),
             Some(_) => None,
         };
         egui::ScrollArea::vertical()
@@ -467,6 +518,9 @@ impl Settings {
                     unavailable: why,
                     busy: self.busy(&Origin::Appearance),
                     workgroup: bridge.is_some_and(|b| b.status.workgroup.is_some()),
+                    language: bridge.and_then(|b| b.gui.as_ref()).is_some_and(|g| {
+                        g.contains_key(sapphire_bridge_api::settings::gui::LOCALE)
+                    }),
                 };
                 if let Some(command) = self.appearance.ui(ui, &cx) {
                     self.send(command, Origin::Appearance);
@@ -535,7 +589,7 @@ impl Settings {
                 .values()
                 .any(|o| matches!(o, Origin::Page(_) | Origin::Load | Origin::Restart)),
         };
-        error_line(ui, &mut self.load_error);
+        error_text_line(ui, &mut self.load_error);
         let command = page.ui(ui, &cx, spec, state, &mut self.drafts);
         if let Some(command) = command {
             self.send(command, Origin::Page(section.to_owned()));
@@ -553,8 +607,8 @@ impl Settings {
             ui.spinner();
             return;
         }
-        error_line(ui, &mut self.load_error);
-        if ui.button("Load settings").clicked() {
+        error_text_line(ui, &mut self.load_error);
+        if ui.button(tr!(ui, "sapphire-settings-load")).clicked() {
             self.load();
         }
     }
@@ -579,9 +633,9 @@ impl Settings {
     fn about_ui(&mut self, ui: &mut egui::Ui) {
         let app = self.client.app();
         ui.heading(app.app_name);
-        ui.label(format!("Version {}", app.version));
+        ui.label(tr!(ui, "sapphire-settings-version", version = app.version));
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("Services").strong());
+        ui.label(egui::RichText::new(tr!(ui, "sapphire-settings-services")).strong());
         self.status_ui(ui);
     }
 
@@ -712,7 +766,7 @@ mod tests {
     use crate::client::{
         BridgeState, Command, CommandOutput, ConfigState, Conn, ServerState, Snapshot,
     };
-    use crate::test_support::{client, render};
+    use crate::test_support::{client, render, render_in};
     use crate::views::config::widgets::tests::drawn_text;
     use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, SyncStatusResult};
     use sapphire_bridge_api::settings::{Apply, Process};
@@ -852,7 +906,7 @@ mod tests {
     struct Named(&'static str, usize);
 
     impl SettingsSection for Named {
-        fn label(&self) -> String {
+        fn label(&self, _ctx: &egui::Context) -> String {
             self.0.to_owned()
         }
 
@@ -867,6 +921,27 @@ mod tests {
         let settings =
             Settings::new(client).with_app_sections("Example", vec![Box::new(Named("General", 0))]);
         (settings, runtime)
+    }
+
+    #[test]
+    fn settings_list_follows_the_language() {
+        let ctx = crate::test_support::english_ctx();
+        let (mut settings, _rt) = settings();
+        let set = |tag: &str| {
+            crate::i18n::install(
+                &ctx,
+                &crate::i18n::LanguageSettings {
+                    language: crate::i18n::Language::Explicit(tag.into()),
+                },
+            )
+        };
+        let texts = render_in(&ctx, [900.0, 600.0], |ui| settings.ui(ui));
+        assert!(texts.iter().any(|t| t == "Workspace"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "General"), "{texts:?}");
+        set("ja");
+        let texts = render_in(&ctx, [900.0, 600.0], |ui| settings.ui(ui));
+        assert!(texts.iter().any(|t| t == "ワークスペース"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "Workspace"), "{texts:?}");
     }
 
     #[test]
@@ -940,7 +1015,7 @@ mod tests {
 
     fn entry_labels(settings: &Settings) -> Vec<String> {
         settings
-            .list()
+            .list(&crate::test_support::english_ctx())
             .into_iter()
             .map(|item| match item {
                 ListItem::Heading(h) => format!("# {h}"),
@@ -982,7 +1057,7 @@ mod tests {
         );
         assert!(
             settings
-                .list()
+                .list(&crate::test_support::english_ctx())
                 .contains(&ListItem::Entry(Page::Config("Look".into()), "Look".into()))
         );
     }
@@ -1208,7 +1283,7 @@ mod tests {
             .schema
             .push(def("gui.theme.contrast", "Appearance", Process::Bridge));
         settings.loaded(state);
-        let items = settings.list();
+        let items = settings.list(&crate::test_support::english_ctx());
         assert!(
             !items
                 .iter()
@@ -1233,5 +1308,78 @@ mod tests {
         settings.on_outcome(Origin::Appearance, &Err("rejected".into()));
         settings.follow_theme(&ctx);
         assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+    }
+
+    fn with_locale(gui: Option<crate::client::GuiValues>, locale: &str) -> Snapshot {
+        let mut gui = gui.unwrap_or_default();
+        gui.insert(
+            sapphire_bridge_api::settings::gui::LOCALE.to_owned(),
+            sapphire_bridge_api::Value::String(locale.into()),
+        );
+        with_gui(Some(gui))
+    }
+
+    fn registered_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        i18n::register(&ctx, crate::RESOURCES);
+        ctx
+    }
+
+    #[test]
+    fn a_new_locale_in_the_snapshot_is_installed() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+        settings.test_snapshot = Some(with_locale(contrast("high"), "en"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+    }
+
+    #[test]
+    fn an_unchanged_locale_installs_nothing() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
+        settings.follow_theme(&ctx);
+        // The language installed some other way since.
+        i18n::install(
+            &ctx,
+            &i18n::LanguageSettings {
+                language: i18n::Language::Explicit("en".into()),
+            },
+        );
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        // A change of the theme alone does not install the language either.
+        settings.test_snapshot = Some(with_locale(contrast("low"), "ja"));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::Low));
+    }
+
+    #[test]
+    fn a_snapshot_without_the_locale_leaves_the_language() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_gui(contrast("high")));
+        settings.follow_theme(&ctx);
+        assert!(!i18n::is_installed(&ctx));
+        // The theme is still followed.
+        assert!(is_drawn_with(&ctx, corundum_gui::theme::Contrast::High));
+    }
+
+    #[test]
+    fn a_failed_appearance_write_forgets_the_seen_language() {
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        settings.test_snapshot = Some(with_locale(None, "ja"));
+        settings.follow_theme(&ctx);
+        i18n::install(&ctx, &i18n::LanguageSettings::default());
+        settings.on_outcome(Origin::Appearance, &Err("rejected".into()));
+        settings.follow_theme(&ctx);
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
     }
 }

@@ -3,6 +3,8 @@
 use sapphire_bridge_api::settings::SecretState;
 use sapphire_bridge_api::{EntryValue, Kind, Scope, SettingDef, Value};
 
+use corundum_gui::tr;
+
 use super::model::{Edit, parse_text};
 
 /// The id of `key`'s secret field on `scope`'s tab of `section`, the same wherever it is
@@ -54,11 +56,12 @@ pub(crate) fn value_widget(
             }
             // With nothing to show, an empty field rather than a made-up number.
             Kind::Int { min, max } if nothing_shown => ui
-                .add(
-                    egui::TextEdit::singleline(&mut text)
-                        .id(id)
-                        .hint_text(format!("not set ({min}..={max})")),
-                )
+                .add(egui::TextEdit::singleline(&mut text).id(id).hint_text(tr!(
+                    ui,
+                    "sapphire-config-not-set-range",
+                    min = min.to_string(),
+                    max = max.to_string()
+                )))
                 .changed(),
             Kind::Int { min, max } => {
                 let mut n = match current {
@@ -88,13 +91,15 @@ pub(crate) fn value_widget(
                     egui::TextEdit::multiline(&mut text)
                         .id(id)
                         .desired_rows(3)
-                        .hint_text("one per line"),
+                        .hint_text(tr!(ui, "sapphire-config-one-per-line")),
                 )
                 .changed(),
             Kind::Secret => {
                 let hint = match shown {
-                    Some(EntryValue::Secret(SecretState::Set)) => "set",
-                    _ => "not set",
+                    Some(EntryValue::Secret(SecretState::Set)) => {
+                        tr!(ui, "sapphire-config-secret-set")
+                    }
+                    _ => tr!(ui, "sapphire-config-secret-not-set"),
                 };
                 if draft.is_none() {
                     // egui keeps every edit, password fields too, for Ctrl+Z: without a
@@ -194,7 +199,12 @@ pub(crate) mod tests {
     }
 
     /// Every text drawn over two frames of `ui`.
-    pub(crate) fn drawn_text(mut ui: impl FnMut(&mut egui::Ui)) -> String {
+    pub(crate) fn drawn_text(ui: impl FnMut(&mut egui::Ui)) -> String {
+        drawn_text_in(&egui::Context::default(), ui)
+    }
+
+    /// As [`drawn_text`], in `ctx`.
+    pub(crate) fn drawn_text_in(ctx: &egui::Context, mut ui: impl FnMut(&mut egui::Ui)) -> String {
         fn collect(shape: &egui::Shape, out: &mut String) {
             match shape {
                 egui::Shape::Text(t) => {
@@ -205,7 +215,6 @@ pub(crate) mod tests {
                 _ => {}
             }
         }
-        let ctx = egui::Context::default();
         let mut out = String::new();
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), &mut ui);
@@ -378,7 +387,8 @@ pub(crate) mod tests {
     #[test]
     fn an_int_with_no_value_is_an_empty_field() {
         let int = def("k.int", Kind::Int { min: 3, max: 9 });
-        let drawn = drawn_text(|ui| {
+        let ctx = crate::test_support::english_ctx();
+        let drawn = drawn_text_in(&ctx, |ui| {
             value_widget(ui, &int, Scope::Device, None, None, true);
         });
         assert!(drawn.contains("not set (3..=9)"), "{drawn}");
@@ -386,7 +396,7 @@ pub(crate) mod tests {
             !drawn.lines().any(|l| l == "3"),
             "no made-up minimum: {drawn}"
         );
-        let drawn = drawn_text(|ui| {
+        let drawn = drawn_text_in(&ctx, |ui| {
             value_widget(
                 ui,
                 &int,

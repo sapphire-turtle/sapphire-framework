@@ -7,7 +7,9 @@ use std::fmt;
 use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{ConfigEntry, Entry, EntryValue, Kind, Origin, Scope, SettingDef, Value};
 
+use super::super::backend_error;
 use crate::client::{CommandError, ConfigState};
+use crate::i18n::Message;
 
 /// The scopes, in tab order.
 const SCOPES: [Scope; 3] = [Scope::Device, Scope::Workgroup, Scope::Workspace];
@@ -82,7 +84,7 @@ pub(crate) enum Edit {
         /// What was typed.
         text: String,
         /// The text as a value, or why it is not one.
-        parsed: Result<Value, String>,
+        parsed: Result<Value, Message>,
     },
     /// Remove the key from this scope.
     Unset,
@@ -113,11 +115,11 @@ impl fmt::Debug for Edit {
 
 /// Parse typed text as a value of `kind`. A list takes one item per line, blank lines
 /// dropped and items trimmed; a secret takes any non-empty text.
-pub(crate) fn parse_text(kind: &Kind, text: &str) -> Result<Value, String> {
+pub(crate) fn parse_text(kind: &Kind, text: &str) -> Result<Value, Message> {
     match kind {
         Kind::Secret => {
             if text.is_empty() {
-                Err("must not be empty".into())
+                Err(Message::new("sapphire-config-empty"))
             } else {
                 Ok(Value::String(text.to_owned()))
             }
@@ -130,10 +132,10 @@ pub(crate) fn parse_text(kind: &Kind, text: &str) -> Result<Value, String> {
                 .map(|line| parse_text(item, line))
                 .collect::<Result<Vec<_>, _>>()?;
             let value = Value::List(items);
-            kind.check(&value)?;
+            kind.check(&value).map_err(|e| backend_error(&e))?;
             Ok(value)
         }
-        other => other.parse(text),
+        other => other.parse(text).map_err(|e| backend_error(&e)),
     }
 }
 
@@ -291,14 +293,15 @@ impl Drafts {
     }
 }
 
-/// The note on a value that does not come from the tab's scope; `None` when it does.
+/// The note (a message id) on a value that does not come from the tab's scope; `None` when
+/// it does.
 pub(crate) fn origin_label(origin: Origin, tab: Scope) -> Option<&'static str> {
     match origin {
         Origin::Scope(scope) if scope == tab => None,
-        Origin::Scope(Scope::Device) => Some("from device"),
-        Origin::Scope(Scope::Workgroup) => Some("from workgroup"),
-        Origin::Scope(Scope::Workspace) => Some("from workspace"),
-        Origin::Default => Some("default"),
+        Origin::Scope(Scope::Device) => Some("sapphire-origin-device"),
+        Origin::Scope(Scope::Workgroup) => Some("sapphire-origin-workgroup"),
+        Origin::Scope(Scope::Workspace) => Some("sapphire-origin-workspace"),
+        Origin::Default => Some("sapphire-origin-default"),
     }
 }
 
@@ -637,18 +640,21 @@ mod tests {
     fn origin_labels() {
         let dev = Origin::Scope(Scope::Device);
         assert_eq!(origin_label(dev, Scope::Device), None);
-        assert_eq!(origin_label(dev, Scope::Workspace), Some("from device"));
+        assert_eq!(
+            origin_label(dev, Scope::Workspace),
+            Some("sapphire-origin-device")
+        );
         assert_eq!(
             origin_label(Origin::Scope(Scope::Workgroup), Scope::Device),
-            Some("from workgroup")
+            Some("sapphire-origin-workgroup")
         );
         assert_eq!(
             origin_label(Origin::Scope(Scope::Workspace), Scope::Device),
-            Some("from workspace")
+            Some("sapphire-origin-workspace")
         );
         assert_eq!(
             origin_label(Origin::Default, Scope::Device),
-            Some("default")
+            Some("sapphire-origin-default")
         );
     }
 

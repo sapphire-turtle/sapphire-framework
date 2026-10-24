@@ -182,5 +182,7 @@ part 4, or from main once part 4 is merged, and touches:
   is wanted.
 - The language setting (#329). It is meant to follow the same path — a bridge-owned
   `gui.locale` in the workgroup scope, overridable — but its keys and page belong to #329.
+  #329 implemented it so, as `gui.locale` (`2026-10-23-corundum-i18n-design.md`, "Saving
+  the language").
 - A local cache of the theme for the first frames before the services answer.
 - A per-app theme.

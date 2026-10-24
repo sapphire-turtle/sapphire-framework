@@ -2,34 +2,42 @@ use sapphire_backend::protocol::ReleaseInfo;
 
 use crate::client::{Command, CommandError, CommandOutput, Conn, ServerState, ServiceTarget};
 
-use super::{ViewCtx, error_line};
+use super::{ViewCtx, backend_error, error_line, register};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
 /// The status line: is the bridge up, is the app server up. The shell shows it when
 /// something is wrong ([`Health::Problem`](crate::Health::Problem)), and Settings shows it
 /// under About.
 #[derive(Default)]
 pub struct ServiceStatusBanner {
-    error: Option<String>,
+    error: Option<Message>,
+    /// The command the last install failure says to run by hand.
+    manual: Option<String>,
 }
 
 impl ServiceStatusBanner {
     /// Render. Returns a [`Command::ServiceInstall`] when a start button is clicked.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+        register(ui);
         let mut out = None;
         if !cx.snapshot.fetched {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Connecting…");
+                ui.label(tr!(ui, "sapphire-banner-connecting"));
             });
             return None;
         }
-        let mut bridge = describe(&cx.snapshot.bridge, |b| format!("v{}", b.status.version));
+        let ctx = ui.ctx().clone();
+        let mut bridge = describe(&ctx, &cx.snapshot.bridge, |b| {
+            format!("v{}", b.status.version)
+        });
         if !crate::health::bridge_needed(cx.snapshot) && !matches!(cx.snapshot.bridge, Conn::Up(_))
         {
             // Not a fault: the workspace is not synced (see `Health`).
-            bridge.push_str(" — needed only to sync");
+            bridge = tr!(&ctx, "sapphire-banner-sync-only", state = bridge);
         }
-        let server = describe(&cx.snapshot.server, |s| {
+        let server = describe(&ctx, &cx.snapshot.server, |s| {
             format!("v{}", s.info.version.clone().unwrap_or_default())
         });
         ui.horizontal_wrapped(|ui| {
@@ -51,7 +59,10 @@ impl ServiceStatusBanner {
                 ui.label(state);
                 if absent
                     && ui
-                        .add_enabled(!cx.busy, egui::Button::new("Install & start service"))
+                        .add_enabled(
+                            !cx.busy,
+                            egui::Button::new(tr!(ui, "sapphire-banner-install")),
+                        )
                         .clicked()
                 {
                     out = Some(Command::ServiceInstall(target));
@@ -61,23 +72,26 @@ impl ServiceStatusBanner {
         });
         if let Some(release) = available_release(&cx.snapshot.server) {
             ui.horizontal_wrapped(|ui| {
-                ui.label(format!(
-                    "{} {} is available. Install it, then restart the service.",
-                    cx.app_name, release.version
+                ui.label(tr!(
+                    ui,
+                    "sapphire-banner-update",
+                    app = cx.app_name,
+                    version = release.version.as_str()
                 ));
-                ui.hyperlink_to("Release notes", &release.url);
+                ui.hyperlink_to(tr!(ui, "sapphire-banner-release-notes"), &release.url);
             });
         }
         if cx.busy {
             ui.spinner();
         }
         error_line(ui, &mut self.error);
-        if let Some(command) = self.error.as_deref().and_then(manual_command) {
-            let command = command.to_owned();
+        if self.error.is_some()
+            && let Some(command) = self.manual.clone()
+        {
             ui.horizontal(|ui| {
-                ui.small("To install by hand:");
+                ui.small(tr!(ui, "sapphire-banner-by-hand"));
                 ui.monospace(&command);
-                if ui.small_button("Copy").clicked() {
+                if ui.small_button(tr!(ui, "sapphire-action-copy")).clicked() {
                     ui.ctx().copy_text(command.clone());
                 }
             });
@@ -87,7 +101,12 @@ impl ServiceStatusBanner {
 
     /// Show an install failure (it carries the command to run by hand).
     pub fn on_outcome(&mut self, result: &Result<CommandOutput, CommandError>) {
-        self.error = result.as_ref().err().map(|e| e.message.clone());
+        self.error = result.as_ref().err().map(|e| backend_error(&e.message));
+        self.manual = result
+            .as_ref()
+            .err()
+            .and_then(|e| manual_command(&e.message))
+            .map(str::to_owned);
     }
 }
 
@@ -102,12 +121,12 @@ fn available_release(server: &Conn<ServerState>) -> Option<&ReleaseInfo> {
     }
 }
 
-fn describe<T>(conn: &Conn<T>, up: impl Fn(&T) -> String) -> String {
+fn describe<T>(ctx: &egui::Context, conn: &Conn<T>, up: impl Fn(&T) -> String) -> String {
     match conn {
-        Conn::Absent => "not running".to_owned(),
-        Conn::Incompatible(msg) => format!("incompatible: {msg}"),
-        Conn::Error(msg) => format!("error: {msg}"),
-        Conn::Up(t) => format!("running {}", up(t)),
+        Conn::Absent => tr!(ctx, "sapphire-banner-not-running"),
+        Conn::Incompatible(msg) => tr!(ctx, "sapphire-banner-incompatible", message = msg.as_str()),
+        Conn::Error(msg) => tr!(ctx, "sapphire-banner-error", message = msg.as_str()),
+        Conn::Up(t) => tr!(ctx, "sapphire-banner-running", version = up(t)),
     }
 }
 

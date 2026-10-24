@@ -4,7 +4,9 @@
 //! [`Shell`] is the window frame: the app's screens on a rail (a bottom bar when narrow, as
 //! on a phone), with a footer for Settings and a slot of the app's own. [`fonts`] finds a
 //! CJK fallback font on the system; [`icons`] is a set of Lucide icons and the SVG loader
-//! that draws them; [`theme`] is the colours — light and dark, the contrast, the accent.
+//! that draws them; [`theme`] is the colours — light and dark, the contrast, the accent;
+//! [`i18n`] is the translations — every string looked up by id in the user's language,
+//! through [`tr!`].
 //!
 //! The components depend on egui alone, so they render inside any host's egui context, on
 //! the desktops and on phones. With the `eframe` feature (on by default), [`window::run`]
@@ -22,6 +24,7 @@ pub use eframe;
 pub mod fonts;
 #[cfg(feature = "eframe")]
 pub mod gpu;
+pub mod i18n;
 pub mod icons;
 pub mod logcat;
 pub mod platform;

@@ -5,6 +5,8 @@ use super::{Swatch, Theme, Tint, Tone};
 
 use egui::{Color32, Pos2, Rect, Sense, Stroke, vec2};
 
+use crate::tr;
+
 /// The chips' side, and the gap between them.
 const CHIP: f32 = 24.0;
 const GAP: f32 = 4.0;
@@ -108,7 +110,13 @@ impl<'a> TintPicker<'a> {
         let chips = &mut rects.chips;
         let shown = self.value.unwrap_or(self.default);
         let fill = theme.tint(self.tone, self.default);
-        let r = chip(ui, theme, fill, self.value.is_none(), "Default");
+        let r = chip(
+            ui,
+            theme,
+            fill,
+            self.value.is_none(),
+            &tr!(ui, "corundum-theme-default"),
+        );
         paint_icon(ui, r.rect, crate::icons::rotate_ccw(), on(theme, self.tone));
         if r.clicked() {
             *self.value = None;
@@ -121,14 +129,20 @@ impl<'a> TintPicker<'a> {
                 theme,
                 theme.color(self.tone, s),
                 selected,
-                &format!("{s:?}"),
+                &tr!(ui, swatch_id(s)),
             );
             if r.clicked() {
                 *self.value = Some(Tint::Swatch(s));
             }
             chips.push(r.rect);
         }
-        let r = chip(ui, theme, Color32::TRANSPARENT, false, "Random");
+        let r = chip(
+            ui,
+            theme,
+            Color32::TRANSPARENT,
+            false,
+            &tr!(ui, "corundum-theme-random"),
+        );
         let painter = ui.painter();
         let (c, radius) = (r.rect.center(), CHIP * 0.4);
         for k in 0..24 {
@@ -206,6 +220,22 @@ impl<'a> TintPicker<'a> {
     }
 }
 
+/// The message naming a palette swatch.
+fn swatch_id(swatch: Swatch) -> &'static str {
+    match swatch {
+        Swatch::Neutral => "corundum-theme-swatch-neutral",
+        Swatch::Red => "corundum-theme-swatch-red",
+        Swatch::Orange => "corundum-theme-swatch-orange",
+        Swatch::Yellow => "corundum-theme-swatch-yellow",
+        Swatch::Green => "corundum-theme-swatch-green",
+        Swatch::Cyan => "corundum-theme-swatch-cyan",
+        Swatch::Blue => "corundum-theme-swatch-blue",
+        Swatch::Purple => "corundum-theme-swatch-purple",
+        // The accent swatch is the Default chip.
+        Swatch::Accent => "corundum-theme-default",
+    }
+}
+
 /// A chip of `fill`, ringed when `selected`, named `name` on hover.
 fn chip(
     ui: &mut egui::Ui,
@@ -252,9 +282,14 @@ fn preview_ui(ui: &mut egui::Ui, theme: &Theme, tint: Tint) -> Rect {
         ui.add(egui::Label::new(words).selectable(false));
     };
     ui.horizontal(|ui| {
+        let (link, label_text, selected) = (
+            tr!(ui, "corundum-theme-link"),
+            tr!(ui, "corundum-theme-label"),
+            tr!(ui, "corundum-theme-selected"),
+        );
         text(
             ui,
-            RichText::new("Link")
+            RichText::new(link)
                 .small()
                 .underline()
                 .color(theme.tint(Tone::Text, tint)),
@@ -268,12 +303,12 @@ fn preview_ui(ui: &mut egui::Ui, theme: &Theme, tint: Tint) -> Rect {
                     text(ui, RichText::new(words).small().color(colour))
                 });
         };
-        label(ui, Tone::Raised, theme.tint(Tone::Text, tint), "Label");
+        label(ui, Tone::Raised, theme.tint(Tone::Text, tint), &label_text);
         label(
             ui,
             Tone::Pressed,
             theme.color(Tone::Text, Swatch::Neutral),
-            "Selected",
+            &selected,
         );
     })
     .response
@@ -408,6 +443,39 @@ mod tests {
                 assert!(r.right() <= width + 0.5, "{r:?} overflows {width}");
             }
             assert!(rig.made.iter().all(|m| !m));
+        }
+    }
+
+    #[test]
+    fn the_preview_follows_the_language() {
+        fn collect(shape: &egui::Shape, out: &mut String) {
+            match shape {
+                egui::Shape::Text(t) => out.push_str(t.galley.text()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+                _ => {}
+            }
+        }
+        let ctx = egui::Context::default();
+        crate::i18n::install(
+            &ctx,
+            &crate::i18n::LanguageSettings {
+                language: crate::i18n::Language::Explicit("ja".into()),
+            },
+        );
+        let theme = Theme::new(false, Contrast::Medium, Tint::Swatch(Swatch::Blue));
+        let mut drawn = String::new();
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                preview_ui(ui, &theme, Tint::Swatch(Swatch::Blue));
+            });
+            output.textures_delta.clear();
+            drawn.clear();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut drawn);
+            }
+        }
+        for ja in ["リンク", "ラベル", "選択中"] {
+            assert!(drawn.contains(ja), "{ja} missing from {drawn}");
         }
     }
 

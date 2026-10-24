@@ -39,8 +39,18 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
 }
 
 /// Run `ui` over two frames of a `size` screen (the first lays out, the second draws).
-pub(crate) fn render(size: [f32; 2], mut ui: impl FnMut(&mut egui::Ui)) {
-    let ctx = egui::Context::default();
+pub(crate) fn render(size: [f32; 2], ui: impl FnMut(&mut egui::Ui)) {
+    render_in(&egui::Context::default(), size, ui);
+}
+
+/// [`render`] in `ctx`, which may have a language installed. Returns the text the last
+/// frame drew.
+pub(crate) fn render_in(
+    ctx: &egui::Context,
+    size: [f32; 2],
+    mut ui: impl FnMut(&mut egui::Ui),
+) -> Vec<String> {
+    let mut texts = Vec::new();
     for _ in 0..2 {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -52,5 +62,45 @@ pub(crate) fn render(size: [f32; 2], mut ui: impl FnMut(&mut egui::Ui)) {
         let mut output = ctx.run_ui(input, &mut ui);
         // Unapplied texture deltas panic on drop; there is no renderer here.
         output.textures_delta.clear();
+        texts.clear();
+        for clipped in &output.shapes {
+            collect_texts(&clipped.shape, &mut texts);
+        }
     }
+    texts
+}
+
+fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_texts(s, out)),
+        _ => {}
+    }
+}
+
+/// As [`english_ctx`], with Japanese.
+pub(crate) fn japanese_ctx() -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::i18n::register(&ctx, crate::RESOURCES);
+    crate::i18n::install(
+        &ctx,
+        &crate::i18n::LanguageSettings {
+            language: crate::i18n::Language::Explicit("ja".into()),
+        },
+    );
+    ctx
+}
+
+/// A context with English installed and this crate's strings registered, so a test that
+/// looks for English text is not at the mercy of the machine's language.
+pub(crate) fn english_ctx() -> egui::Context {
+    let ctx = egui::Context::default();
+    crate::i18n::register(&ctx, crate::RESOURCES);
+    crate::i18n::install(
+        &ctx,
+        &crate::i18n::LanguageSettings {
+            language: crate::i18n::Language::Explicit("en".into()),
+        },
+    );
+    ctx
 }

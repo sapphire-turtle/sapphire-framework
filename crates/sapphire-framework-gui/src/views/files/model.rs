@@ -2,8 +2,10 @@
 //! preview, and the breadcrumbs of a path. Every path here is relative to the root and never
 //! leaves it.
 
-use std::io::{self, Read};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
+
+use corundum_gui::i18n::Message;
 
 /// The most of a file the preview reads.
 pub const PREVIEW_LIMIT: usize = 1024 * 1024;
@@ -38,29 +40,35 @@ pub enum Preview {
     },
 }
 
+/// An io error the system reported, as a message; its text is the system's, not translated.
+fn io_error(e: std::io::Error) -> Message {
+    Message::new("sapphire-files-io-error").arg("error", e.to_string())
+}
+
 /// `rel` under `root`, refused unless every component is a plain name.
 ///
 /// `..`, a root or a prefix would let a path leave the root; `.` is harmless but has no
 /// business in a path this module built. Symlinks along the way are refused too, so a link
 /// inside the workspace cannot carry the browser outside it.
-fn resolve(root: &Path, rel: &Path) -> io::Result<PathBuf> {
+fn resolve(root: &Path, rel: &Path) -> Result<PathBuf, Message> {
     let mut path = root.to_path_buf();
     for component in rel.components() {
         match component {
             Component::Normal(name) => {
                 path.push(name);
-                if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("{} is a symbolic link", path.display()),
-                    ));
+                if std::fs::symlink_metadata(&path)
+                    .map_err(io_error)?
+                    .file_type()
+                    .is_symlink()
+                {
+                    return Err(Message::new("sapphire-files-symlink")
+                        .arg("path", path.display().to_string()));
                 }
             }
             _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("{} is not a path inside the workspace", rel.display()),
-                ));
+                return Err(
+                    Message::new("sapphire-files-outside").arg("path", rel.display().to_string())
+                );
             }
         }
     }
@@ -69,16 +77,16 @@ fn resolve(root: &Path, rel: &Path) -> io::Result<PathBuf> {
 
 /// The visible entries of the directory `rel` under `root`: directories first, then files,
 /// each by name ignoring case. Names starting with `.` are hidden.
-pub fn list_dir(root: &Path, rel: &Path) -> io::Result<Vec<Entry>> {
+pub fn list_dir(root: &Path, rel: &Path) -> Result<Vec<Entry>, Message> {
     let dir = resolve(root, rel)?;
     let mut entries = Vec::new();
-    for item in std::fs::read_dir(&dir)? {
-        let item = item?;
+    for item in std::fs::read_dir(&dir).map_err(io_error)? {
+        let item = item.map_err(io_error)?;
         let name = item.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;
         }
-        let meta = std::fs::symlink_metadata(item.path())?;
+        let meta = std::fs::symlink_metadata(item.path()).map_err(io_error)?;
         let is_symlink = meta.file_type().is_symlink();
         entries.push(Entry {
             name,
@@ -97,14 +105,15 @@ pub fn list_dir(root: &Path, rel: &Path) -> io::Result<Vec<Entry>> {
 }
 
 /// Read the file `rel` under `root` for the preview.
-pub fn read_preview(root: &Path, rel: &Path) -> io::Result<Preview> {
+pub fn read_preview(root: &Path, rel: &Path) -> Result<Preview, Message> {
     let path = resolve(root, rel)?;
-    let file = std::fs::File::open(&path)?;
-    let size = file.metadata()?.len();
+    let file = std::fs::File::open(&path).map_err(io_error)?;
+    let size = file.metadata().map_err(io_error)?.len();
     let mut bytes = Vec::with_capacity(PREVIEW_LIMIT.min(size as usize) + 1);
     // One byte past the limit tells "exactly the limit" from "more than the limit".
     file.take(PREVIEW_LIMIT as u64 + 1)
-        .read_to_end(&mut bytes)?;
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
     let truncated = bytes.len() > PREVIEW_LIMIT;
     bytes.truncate(PREVIEW_LIMIT);
     match String::from_utf8(bytes) {
@@ -192,17 +201,28 @@ mod tests {
         let link = entries.iter().find(|e| e.name == "link").unwrap();
         assert!(link.is_symlink);
         assert!(!link.is_dir);
-        assert!(list_dir(tmp.path(), Path::new("link")).is_err());
-        assert!(read_preview(tmp.path(), Path::new("link/secret.txt")).is_err());
+        let err = list_dir(tmp.path(), Path::new("link")).unwrap_err();
+        assert_eq!(err.id, "sapphire-files-symlink");
+        let err = read_preview(tmp.path(), Path::new("link/secret.txt")).unwrap_err();
+        assert_eq!(err.id, "sapphire-files-symlink");
     }
 
     #[test]
     fn parent_components_are_refused() {
         let tmp = tree();
         let err = list_dir(tmp.path(), Path::new("../")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.id, "sapphire-files-outside");
         let err = read_preview(tmp.path(), Path::new("b-dir/../../x")).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.id, "sapphire-files-outside");
+    }
+
+    #[test]
+    fn other_io_errors_carry_the_systems_text() {
+        let tmp = tree();
+        let err = list_dir(tmp.path(), Path::new("missing")).unwrap_err();
+        assert_eq!(err.id, "sapphire-files-io-error");
+        assert_eq!(err.args.len(), 1);
+        assert_eq!(err.args[0].0, "error");
     }
 
     #[test]

@@ -2,7 +2,8 @@ use crate::theme::Swatch;
 use sapphire_bridge_api::{EmbedSettingsResult, LOCAL_MODEL, ModelSource, Slot};
 
 use super::model::{SWITCH_CHOICES, auto_resolution, embedding_status};
-use super::{ViewCtx, unavailable};
+use super::{ViewCtx, bridge_unavailable, register};
+use corundum_gui::tr;
 
 /// The embedding status: the workgroup's local and remote model, this device's switch for
 /// each, and whether its API key is set. Read-only; the Embedding section's settings page,
@@ -13,77 +14,102 @@ pub struct EmbeddingView {}
 impl EmbeddingView {
     /// Render.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) {
+        register(ui);
         ui.horizontal(|ui| {
-            ui.heading("Embedding");
+            ui.heading(tr!(ui, "sapphire-embedding-title"));
             if cx.busy {
                 ui.spinner();
             }
         });
         ui.separator();
         let Some(bridge) = cx.snapshot.bridge.up() else {
-            unavailable(ui, "The bridge");
+            bridge_unavailable(ui);
             return;
         };
         let Some(s) = &bridge.embedding else {
-            ui.label("This bridge is too old to report embedding; update sapphire-bridge.");
+            ui.label(tr!(ui, "sapphire-embedding-too-old"));
             return;
         };
 
         let (line, warn) = embedding_status(s);
+        let line = line.text(ui.ctx());
         if warn {
             ui.colored_label(crate::theme::current(ui.ctx()).text(Swatch::WARNING), line);
         } else {
             ui.label(line);
         }
         let whose = match s.source {
-            Some(ModelSource::Device) => "this device",
-            _ if bridge.status.workgroup.is_some() => "the workgroup",
-            _ => "this device",
+            Some(ModelSource::Device) => "device",
+            _ if bridge.status.workgroup.is_some() => "workgroup",
+            _ => "device",
         };
         if s.shadowed_device_models {
-            ui.small("This device's own model settings are ignored: the workgroup's apply.");
+            ui.small(tr!(ui, "sapphire-embedding-shadowed"));
         }
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new(format!("Remote model ({whose})")).strong());
+        ui.label(
+            egui::RichText::new(tr!(ui, "sapphire-embedding-remote-heading", whose = whose))
+                .strong(),
+        );
         egui::Grid::new("embed_remote")
             .num_columns(2)
             .show(ui, |ui| {
                 match &s.models.remote {
                     Some(m) => {
-                        row(ui, "Endpoint", &m.endpoint);
-                        row(ui, "Model", &m.model);
-                        row(ui, "Dimension", &m.dimension.to_string());
+                        row(ui, "sapphire-embedding-endpoint", &m.endpoint);
+                        row(ui, "sapphire-embedding-model", &m.model);
+                        row(ui, "sapphire-embedding-dimension", &m.dimension.to_string());
                     }
-                    None => row(ui, "Model", "not configured"),
+                    None => row(
+                        ui,
+                        "sapphire-embedding-model",
+                        &tr!(ui, "sapphire-embedding-not-configured"),
+                    ),
                 }
                 switch_row(ui, s, Slot::Remote);
-                row(ui, "API key", if s.key_set { "set" } else { "not set" });
+                let key = if s.key_set {
+                    tr!(ui, "sapphire-embedding-key-is-set")
+                } else {
+                    tr!(ui, "sapphire-embedding-key-not-set")
+                };
+                row(ui, "sapphire-embedding-api-key", &key);
             });
-        ui.small("The key stays on this device; it is never synced.");
+        ui.small(tr!(ui, "sapphire-embedding-key-note"));
         ui.add_space(8.0);
 
-        ui.label(egui::RichText::new(format!("Local model ({whose})")).strong());
+        ui.label(
+            egui::RichText::new(tr!(ui, "sapphire-embedding-local-heading", whose = whose))
+                .strong(),
+        );
         egui::Grid::new("embed_local")
             .num_columns(2)
             .show(ui, |ui| {
                 match &s.models.local {
                     Some(m) => {
-                        row(ui, "Model", LOCAL_MODEL);
-                        row(ui, "Dimension", &m.dimension.to_string());
-                        row(ui, "Max tokens", &m.max_tokens.to_string());
+                        row(ui, "sapphire-embedding-model", LOCAL_MODEL);
+                        row(ui, "sapphire-embedding-dimension", &m.dimension.to_string());
+                        row(
+                            ui,
+                            "sapphire-embedding-max-tokens",
+                            &m.max_tokens.to_string(),
+                        );
                     }
-                    None => row(ui, "Model", "not configured"),
+                    None => row(
+                        ui,
+                        "sapphire-embedding-model",
+                        &tr!(ui, "sapphire-embedding-not-configured"),
+                    ),
                 }
                 switch_row(ui, s, Slot::Local);
             });
-        ui.small("Computed on each device's CPU; needs AVX2 to be usable.");
+        ui.small(tr!(ui, "sapphire-embedding-local-hint"));
     }
 }
 
-/// One label and value of the status grid.
+/// One label (the id of its message) and value of the status grid.
 fn row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(label);
+    ui.label(crate::i18n::tr(ui.ctx(), label));
     ui.monospace(value);
     ui.end_row();
 }
@@ -94,12 +120,12 @@ fn switch_row(ui: &mut egui::Ui, s: &EmbedSettingsResult, slot: Slot) {
     let label = SWITCH_CHOICES
         .iter()
         .find(|(_, value)| *value == current)
-        .map_or("Auto", |(label, _)| label);
-    ui.label("On this device");
+        .map_or("sapphire-switch-auto", |(label, _)| label);
+    ui.label(tr!(ui, "sapphire-embedding-on-this-device"));
     if current.is_none() {
-        ui.monospace(auto_resolution(s, slot));
+        ui.monospace(crate::i18n::tr(ui.ctx(), auto_resolution(s, slot)));
     } else {
-        ui.monospace(label);
+        ui.monospace(crate::i18n::tr(ui.ctx(), label));
     }
     ui.end_row();
 }

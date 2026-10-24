@@ -4,9 +4,10 @@
 //! narrow, as on a phone), and [`Settings`] at its foot — the app's own sections, the
 //! framework's sync screens and About — with the services' [`Health`] beside it.
 //!
-//! The theme is a setting like any other: the bridge keeps it for the whole workgroup,
-//! a device may override it, the Appearance page edits it, and [`Settings::follow_theme`]
-//! (which the shell calls) installs it whenever it changes. Apps save nothing.
+//! The theme and the language are settings like any other: the bridge keeps them for the
+//! whole workgroup, a device may override them, the Appearance page edits them, and
+//! [`Settings::follow_theme`] (which the shell calls) installs them whenever they change.
+//! Apps save nothing.
 //!
 //! [`views::WorkspacePicker`] shows the workspace the app server serves and switches it
 //! through the server. [`WorkspaceManager`], a list + management screen over the shared
@@ -43,8 +44,23 @@ mod shell;
 pub mod views;
 
 #[cfg(test)]
+mod i18n_check;
+#[cfg(test)]
 mod test_support;
 
+/// This crate's own strings: register them with [`i18n::register`]. [`Shell`] and
+/// [`Settings`] do so themselves on their first frame.
+pub const RESOURCES: i18n::Resources = i18n::Resources {
+    name: "sapphire-framework-gui",
+    files: &[
+        ("en", include_str!("../locales/en/sapphire.ftl")),
+        ("ja", include_str!("../locales/ja/sapphire.ftl")),
+    ],
+};
+
+/// corundum-gui's translation support, for apps to register their own strings with.
+pub use corundum_gui::i18n;
+pub use corundum_gui::tr;
 pub use corundum_gui::{Action, COMPACT_WIDTH, Destination};
 /// The system CJK fallback font and the Lucide icons, from corundum-gui (shared with asteria).
 pub use corundum_gui::{fonts, icons, theme};

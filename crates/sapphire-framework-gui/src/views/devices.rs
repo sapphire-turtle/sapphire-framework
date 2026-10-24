@@ -10,7 +10,12 @@ use crate::client::{Command, CommandError, CommandOutput};
 use super::model::{
     TTL_CHOICES, is_this_device, prune_edits, record_edit, role_badges, short_id, valid_name,
 };
-use super::{ViewCtx, error_line, unavailable};
+use super::{
+    ViewCtx, backend_error, bridge_unavailable, error_line, register, type_to_confirm,
+    with_strong_name,
+};
+use crate::i18n::Message;
+use corundum_gui::tr;
 
 /// Issue an invite: a name and a lifetime in, a ticket out.
 #[derive(Default)]
@@ -21,7 +26,7 @@ pub struct InviteDialog {
     ticket: Option<String>,
     /// The name the last ticket was requested for: the joiner must type exactly this.
     invited: Option<String>,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 impl InviteDialog {
@@ -39,9 +44,11 @@ impl InviteDialog {
         if !self.open {
             return None;
         }
+        register(ui);
         let mut out = None;
         let mut open = true;
-        egui::Window::new("Invite a device")
+        egui::Window::new(tr!(ui, "sapphire-devices-invite-title"))
+            .id(egui::Id::new("device_invite"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -49,29 +56,27 @@ impl InviteDialog {
             .show(ui.ctx(), |ui| {
                 ui.set_min_width(380.0);
                 if let Some(ticket) = &self.ticket {
-                    ui.label("Give this ticket to the new device. It works once.");
+                    ui.label(tr!(ui, "sapphire-devices-ticket"));
                     if let Some(name) = &self.invited {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label("On the new device, join as");
-                            ui.strong(format!("«{name}»"));
-                        });
+                        let text = tr!(ui, "sapphire-devices-join-as", name = name.as_str());
+                        with_strong_name(ui, &text, name);
                     }
                     ui.add(
                         egui::TextEdit::multiline(&mut ticket.as_str())
                             .font(egui::TextStyle::Monospace)
                             .desired_width(f32::INFINITY),
                     );
-                    if ui.button("Copy").clicked() {
+                    if ui.button(tr!(ui, "sapphire-action-copy")).clicked() {
                         ui.ctx().copy_text(ticket.clone());
                     }
                     return;
                 }
-                ui.label("The new device's name");
+                ui.label(tr!(ui, "sapphire-devices-new-name"));
                 ui.text_edit_singleline(&mut self.name);
                 ui.horizontal(|ui| {
-                    ui.label("Valid for");
+                    ui.label(tr!(ui, "sapphire-devices-valid-for"));
                     for (i, (label, _)) in TTL_CHOICES.iter().enumerate() {
-                        ui.selectable_value(&mut self.ttl, i, *label);
+                        ui.selectable_value(&mut self.ttl, i, tr!(ui, label));
                     }
                 });
                 error_line(ui, &mut self.error);
@@ -80,7 +85,7 @@ impl InviteDialog {
                     if ui
                         .add_enabled(
                             !cx.busy && name.is_some(),
-                            egui::Button::new("Create ticket"),
+                            egui::Button::new(tr!(ui, "sapphire-devices-create-ticket")),
                         )
                         .clicked()
                         && let Some(name) = name
@@ -111,7 +116,7 @@ impl InviteDialog {
                 self.open = true;
             }
             Ok(_) => {}
-            Err(e) => self.error = Some(e.message.clone()),
+            Err(e) => self.error = Some(backend_error(&e.message)),
         }
     }
 }
@@ -121,7 +126,7 @@ impl InviteDialog {
 struct RetireConfirm {
     name: String,
     typed: String,
-    error: Option<String>,
+    error: Option<Message>,
 }
 
 /// Which command the last send was, so its outcome goes back to the right place.
@@ -138,16 +143,17 @@ pub struct DeviceList {
     confirm: Option<RetireConfirm>,
     /// Priorities being edited, by device; dropped once the bridge reports the same value.
     priority_edit: HashMap<GrainId, u8>,
-    error: Option<String>,
+    error: Option<Message>,
     last: Option<Last>,
 }
 
 impl DeviceList {
     /// Render.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+        register(ui);
         let mut out = None;
         ui.horizontal(|ui| {
-            ui.heading("Devices");
+            ui.heading(tr!(ui, "sapphire-devices-title"));
             if cx.busy {
                 ui.spinner();
             }
@@ -158,7 +164,10 @@ impl DeviceList {
                     .up()
                     .is_some_and(|b| b.status.workgroup.is_some());
                 if ui
-                    .add_enabled(joined && !cx.busy, egui::Button::new("Invite…"))
+                    .add_enabled(
+                        joined && !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-devices-invite")),
+                    )
                     .clicked()
                 {
                     self.invite.open();
@@ -168,11 +177,11 @@ impl DeviceList {
         ui.separator();
         error_line(ui, &mut self.error);
         let Some(bridge) = cx.snapshot.bridge.up() else {
-            unavailable(ui, "The bridge");
+            bridge_unavailable(ui);
             return None;
         };
         if bridge.status.workgroup.is_none() {
-            ui.label("This host has not joined a workgroup yet. See the Workgroup screen.");
+            ui.label(tr!(ui, "sapphire-devices-no-workgroup"));
             return None;
         }
         // Follow changes made elsewhere: only a value the user dialled in that differs from
@@ -193,23 +202,27 @@ impl DeviceList {
                         ui.strong(&peer.name);
                         ui.small(short_id(&peer.device_id));
                         for role in role_badges(peer, &bridge.peer_roles) {
-                            ui.small(format!("[{role}]"));
+                            ui.small(format!("[{}]", crate::i18n::tr(ui.ctx(), role)));
                         }
                         if let Some(tier) = peer.availability {
-                            ui.small(format!("availability {tier}/3")).on_hover_text(
-                                "How much of the last week this device's bridge was running: \
-                                 3 is 99 % or more, 2 is 95 %, 1 is 80 %, 0 is less. \
-                                 A device with under a week of history is one lower.",
-                            );
+                            ui.small(tr!(
+                                ui,
+                                "sapphire-devices-availability",
+                                tier = u32::from(tier)
+                            ))
+                            .on_hover_text(tr!(ui, "sapphire-devices-availability-hover"));
                         }
                         let this = is_this_device(peer, &bridge.status.node_id);
                         if this {
-                            ui.small("(this device)");
+                            ui.small(tr!(ui, "sapphire-devices-this"));
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if !this
                                 && ui
-                                    .add_enabled(!cx.busy, egui::Button::new("Retire"))
+                                    .add_enabled(
+                                        !cx.busy,
+                                        egui::Button::new(tr!(ui, "sapphire-action-retire")),
+                                    )
                                     .clicked()
                             {
                                 self.confirm = Some(RetireConfirm {
@@ -225,7 +238,7 @@ impl DeviceList {
                             if ui
                                 .add_enabled(
                                     !cx.busy && p != peer.priority,
-                                    egui::Button::new("Set"),
+                                    egui::Button::new(tr!(ui, "sapphire-action-set")),
                                 )
                                 .clicked()
                             {
@@ -234,11 +247,10 @@ impl DeviceList {
                                     priority: p,
                                 });
                             }
+                            let prefix = format!("{} ", tr!(ui, "sapphire-devices-priority"));
                             ui.add_enabled(
                                 !cx.busy,
-                                egui::DragValue::new(&mut p)
-                                    .range(0..=255)
-                                    .prefix("priority "),
+                                egui::DragValue::new(&mut p).range(0..=255).prefix(prefix),
                             );
                             record_edit(&mut self.priority_edit, peer, p);
                         });
@@ -263,24 +275,24 @@ impl DeviceList {
         let mut out = None;
         let mut open = true;
         let mut cancel = false;
-        egui::Window::new("Retire device")
+        egui::Window::new(tr!(ui, "sapphire-devices-retire-title"))
+            .id(egui::Id::new("device_retire"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ui.ctx(), |ui| {
-                ui.label("A retired device can no longer connect. Its record stays.");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Type");
-                    ui.strong(confirm.name.as_str());
-                    ui.label("to confirm:");
-                });
+                ui.label(tr!(ui, "sapphire-devices-retire-body"));
+                type_to_confirm(ui, &confirm.name);
                 ui.text_edit_singleline(&mut confirm.typed);
                 error_line(ui, &mut confirm.error);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let matches = confirm.typed.trim() == confirm.name;
                     if ui
-                        .add_enabled(matches && !cx.busy, egui::Button::new("Retire"))
+                        .add_enabled(
+                            matches && !cx.busy,
+                            egui::Button::new(tr!(ui, "sapphire-action-retire")),
+                        )
                         .clicked()
                     {
                         confirm.error = None;
@@ -288,7 +300,7 @@ impl DeviceList {
                             selector: confirm.name.clone(),
                         });
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr!(ui, "sapphire-action-cancel")).clicked() {
                         cancel = true;
                     }
                     if cx.busy {
@@ -307,17 +319,17 @@ impl DeviceList {
         match self.last.take() {
             // A failed invite whose dialog was closed meanwhile shows on the screen's line.
             Some(Last::Invite) => match result {
-                Err(e) if !self.invite.open => self.error = Some(e.message.clone()),
+                Err(e) if !self.invite.open => self.error = Some(backend_error(&e.message)),
                 _ => self.invite.on_outcome(result),
             },
             Some(Last::Retire) => match (result, self.confirm.as_mut()) {
                 (Ok(_), _) => self.confirm = None,
-                (Err(e), Some(c)) => c.error = Some(e.message.clone()),
-                (Err(e), None) => self.error = Some(e.message.clone()),
+                (Err(e), Some(c)) => c.error = Some(backend_error(&e.message)),
+                (Err(e), None) => self.error = Some(backend_error(&e.message)),
             },
             None => {
                 if let Err(e) = result {
-                    self.error = Some(e.message.clone());
+                    self.error = Some(backend_error(&e.message));
                 }
             }
         }
@@ -359,7 +371,7 @@ mod tests {
         list.last = Some(Last::Invite);
         list.invite.open = false;
         list.on_outcome(&Err("boom".into()));
-        assert_eq!(list.error.as_deref(), Some("boom"));
+        assert_eq!(list.error, Some(backend_error("boom")));
     }
 
     #[test]
@@ -375,7 +387,7 @@ mod tests {
         };
         list.on_outcome(&Err("boom".into()));
         let c = list.confirm.as_ref().expect("confirm stays open");
-        assert_eq!(c.error.as_deref(), Some("boom"));
+        assert_eq!(c.error, Some(backend_error("boom")));
         assert!(list.error.is_none());
     }
 

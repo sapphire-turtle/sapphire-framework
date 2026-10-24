@@ -29,8 +29,8 @@ enum Open<D> {
 /// let mut shell = Shell::new(
 ///     vec![
 ///         // The app's own Lucide SVGs: `egui::include_image!("../assets/icons/notebook.svg")`.
-///         Destination::new(Screen::Entries, icons::settings(), "Entries"),
-///         Destination::new(Screen::Summary, icons::settings(), "Summary"),
+///         Destination::new(Screen::Entries, icons::settings(), "entries"),
+///         Destination::new(Screen::Summary, icons::settings(), "summary"),
 ///     ],
 ///     settings,
 /// );
@@ -60,7 +60,7 @@ impl<D: Copy + PartialEq> Shell<D> {
         let frame = corundum_gui::Shell::new(destinations).with_footer(vec![Destination::new(
             Open::Settings,
             crate::icons::settings(),
-            "Settings",
+            "sapphire-settings",
         )]);
         Shell {
             frame,
@@ -115,6 +115,7 @@ impl<D: Copy + PartialEq> Shell<D> {
     /// into what the frame leaves of `ui`, as it would at the root: its own panels, then a
     /// `CentralPanel`.
     pub fn ui(&mut self, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui, D)) {
+        crate::i18n::register(ui.ctx(), crate::RESOURCES);
         self.settings.poll();
         self.settings.follow_theme(ui.ctx());
         let health = self.settings.health();
@@ -158,18 +159,18 @@ impl<D: Copy + PartialEq> Shell<D> {
 /// The services' state as a dot; clicking it opens About.
 fn status_dot(ui: &mut egui::Ui, health: Health) -> egui::Response {
     let visuals = ui.visuals();
-    let (color, text) = match health {
-        Health::Connecting => (visuals.weak_text_color(), "Connecting…"),
+    let (color, id) = match health {
+        Health::Connecting => (visuals.weak_text_color(), "sapphire-shell-connecting"),
         Health::Healthy => (
             crate::theme::current(ui.ctx()).text(crate::theme::Swatch::SUCCESS),
-            "Services running",
+            "sapphire-shell-healthy",
         ),
-        Health::UpdateAvailable => (visuals.hyperlink_color, "An update is available"),
-        Health::Problem => (visuals.error_fg_color, "A service needs attention"),
+        Health::UpdateAvailable => (visuals.hyperlink_color, "sapphire-shell-update"),
+        Health::Problem => (visuals.error_fg_color, "sapphire-shell-problem"),
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::click());
     ui.painter().circle_filled(rect.center(), 4.0, color);
-    response.on_hover_text(text)
+    response.on_hover_text(corundum_gui::tr!(ui, id))
 }
 
 #[cfg(test)]
@@ -187,8 +188,8 @@ mod tests {
         let (client, runtime) = client();
         let shell = Shell::new(
             vec![
-                Destination::new(Screen::Entries, crate::icons::settings(), "Entries"),
-                Destination::new(Screen::Summary, crate::icons::arrow_left(), "Summary"),
+                Destination::new(Screen::Entries, crate::icons::settings(), "entries"),
+                Destination::new(Screen::Summary, crate::icons::arrow_left(), "summary"),
             ],
             Settings::new(client),
         );

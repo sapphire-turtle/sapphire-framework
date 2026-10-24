@@ -36,7 +36,7 @@ serde = ["dep:serde", "egui/serde"]
 eframe = { version = "0.36", optional = true }
 egui = "0.36"
 # The SVG loader for the bundled Lucide icons (assets/icons), and for the apps' own.
-egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
 # The translations (i18n): Fluent messages, and matching the user's languages to them.
 fluent-bundle = "0.16"
 fluent-langneg = "0.14"

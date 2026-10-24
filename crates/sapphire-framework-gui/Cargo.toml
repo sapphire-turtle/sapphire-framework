@@ -36,7 +36,7 @@ sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.21.0", path = 
 # its first release, which waits for its demo app: until then this crate cannot be published.
 corundum-framework-gui = { version = "0.1.0", git = "https://github.com/sapphire-turtle/corundum-framework", default-features = false }
 egui = "0.36"
-eframe = { version = "0.36", optional = true }
+eframe = { version = "0.37", optional = true }
 sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.21.0", path = "../sapphire-framework-workspace", default-features = false, optional = true }
 sapphire-framework-server = { version = "0.21.0", path = "../sapphire-framework-server", default-features = false, features = ["redb-store"], optional = true }
 sapphire-framework-bridge = { version = "0.21.0", path = "../sapphire-framework-bridge", optional = true }

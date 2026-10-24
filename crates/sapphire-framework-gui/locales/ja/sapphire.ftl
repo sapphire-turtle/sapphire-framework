@@ -265,7 +265,7 @@ sapphire-appearance-use-workgroup = ワークグループの設定を使う
 sapphire-appearance-own = このデバイスでは { $names } を個別に設定しています
 
 # スキーマから作られる設定ページ。セクション名とキーの名前はスキーマのもので、翻訳しません。
-sapphire-settings-configuration = 構成
+sapphire-settings-configuration = 詳細設定
 sapphire-settings-load = 設定を読み込む
 sapphire-config-reload = 再読み込み
 sapphire-config-no-workspace = ワークスペースが選択されていません

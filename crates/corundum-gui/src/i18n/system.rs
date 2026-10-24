@@ -29,7 +29,10 @@ fn normalise(raw: impl IntoIterator<Item = String>) -> Vec<String> {
 /// cannot be reached.
 #[cfg(target_os = "android")]
 fn android_languages() -> Option<Vec<String>> {
-    let tags = read_locale_list().ok()?;
+    // `android_context` panics when nothing has initialised it (an app not started by
+    // android-activity, say): fall back to sys-locale then.
+    let ctx = std::panic::catch_unwind(ndk_context::android_context).ok()?;
+    let tags = read_locale_list(&ctx).ok()?;
     Some(
         tags.split(',')
             .map(str::trim)
@@ -40,10 +43,9 @@ fn android_languages() -> Option<Vec<String>> {
 }
 
 #[cfg(target_os = "android")]
-fn read_locale_list() -> jni::errors::Result<String> {
+fn read_locale_list(ctx: &ndk_context::AndroidContext) -> jni::errors::Result<String> {
     use jni::JavaVM;
 
-    let ctx = ndk_context::android_context();
     // SAFETY: `ndk_context` holds the process's JavaVM, set by android-activity before
     // `android_main` runs and valid for the process's lifetime.
     let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }?;

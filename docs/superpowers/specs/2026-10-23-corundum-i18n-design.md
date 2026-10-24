@@ -14,8 +14,8 @@ in.
 
 In: an `i18n` module in corundum-gui (lookup, the language setting, the system language, a
 language picker); `Shell` labels as message ids; the theme widget's strings; every string
-sapphire-framework-gui builds for the screen; a Language row on its Appearance page;
-English and Japanese.
+sapphire-framework-gui builds for the screen; the language as a bridge setting
+(`gui.locale`) edited on its Appearance page; English and Japanese.
 
 Out: languages beyond English and Japanese; translation files loaded at run time; number,
 date and size formatting by locale; following a change of the system language while the
@@ -37,8 +37,9 @@ app runs; the apps' own strings (a PR per app repository, after the release).
    built bundles in `ctx.data`; lookups read them every frame. Changing the language
    takes effect on the next frame, without a restart. For that, a label held across
    frames is held as a message id, not as text.
-4. **The crate stores nothing.** The app persists `LanguageSettings`; the `serde` feature
-   derives the traits, as for `ThemeSettings`.
+4. **The crate stores nothing.** corundum-gui only hands `LanguageSettings` in and out; the
+   `serde` feature derives the traits, as for `ThemeSettings`. In the sapphire apps the
+   bridge stores the language (see "Saving the language").
 5. **Missing means English.** A lookup tries the chosen language, then English, then
    shows the message id itself.
 6. **The system language from `sys-locale`, and from Java on Android.** `sys-locale`
@@ -223,9 +224,8 @@ Its row labels and choices ("Appearance", "Light", "Dark", "System", "Contrast",
 - `SettingsSection::label(&self)` becomes `label(&self, ctx: &egui::Context) -> String`,
   so an app can translate its section names. `with_app_sections`' heading stays a
   `String`: it is the app's name.
-- The Appearance page gets a Language row above the theme. `Settings::with_language` and
-  `take_language_changed` mirror `with_theme` and `take_theme_changed`; the app saves
-  what it takes (#327).
+- The language is a bridge setting, `gui.locale`, edited on the Appearance page; see
+  "Saving the language".
 - Each public sapphire view registers sapphire-framework-gui's `Resources` when it draws,
   as do `Shell`, `Settings` and the manager, before the corundum `Shell` installs a
   language. `register` is idempotent by `Resources::name`, so this costs nothing after the
@@ -234,6 +234,45 @@ Its row labels and choices ("Appearance", "Light", "Dark", "System", "Contrast",
 - The views keep their errors as `Option<Message>`, resolved when drawn. Backend text is
   wrapped in `sapphire-error-text = { $text }`, so the text is shown as it came.
 - Files: `crates/sapphire-framework-gui/locales/{en,ja}/sapphire.ftl`.
+
+### Saving the language
+
+The language follows the theme's path (#327, `2026-10-23-theme-sync-design.md`): the bridge
+stores it in the workgroup, a device may override it, and the GUI follows it through its
+poll. The apps save nothing.
+
+1. **The key** is `gui.locale` (`sapphire_bridge_api::settings::gui::LOCALE`; `THEME_KEYS`
+   is unchanged), defined by the bridge beside the theme's keys: section `"Appearance"`,
+   `scopes: [Workgroup]`, `overridable: true`, `Apply::Live`, `Process::Bridge`,
+   `Kind::String { non_empty: true }`, default `"system"`. The bridge's `validate` does
+   not look at it.
+2. **The value**: `"system"` is `Language::System`; anything else is parsed as a language
+   tag (`unic_langid`) and becomes `Language::Explicit` with the tag as it prints; a value
+   that does not parse, or none, is `Language::System`. `language_settings(&GuiValues)`
+   and `locale_entry(&LanguageSettings)` in `views/appearance.rs` convert, beside the
+   theme's conversions.
+3. **The poll** reads `gui.locale` after the theme's keys into the same `GuiValues`. A
+   bridge that does not know it (`unknown setting`) leaves it out of the map rather than
+   making `gui` `None`: the theme is still followed with an older bridge, and the language
+   stays as installed.
+4. **Following**: `Settings::follow_theme` (called by the shell every frame) installs
+   `language_settings` of the snapshot when its `gui.locale` differs from the last one
+   seen. The theme and the language are compared each on its own, so a change of one does
+   not reinstall the other. A failed write on the page forgets both, so the next poll
+   restores what is stored.
+5. **The Appearance page** draws the language picker (`i18n::settings_ui`) in each scope
+   tab, under the theme widget, with the theme's tab semantics: the Workgroup tab edits the
+   workgroup's value; the Device tab shows the effective one, `language: from workgroup`
+   (or `default`) when the device does not set it, and `Use the workgroup's` unsets
+   `gui.locale` on the device with the theme's keys; on the Workgroup tab the override
+   line names the language when the device sets it. A choice writes `gui.locale` alone to
+   the tab's scope at once (`Command::ConfigWrite`) and installs the language that will
+   show — the device's own still wins on the Workgroup tab. Disabled as the theme is with
+   no app server or bridge; with a bridge that does not know `gui.locale`, the picker
+   alone is disabled, with `this sapphire-bridge does not know the language setting;
+   update it`.
+6. `Settings::with_language`, `Settings::take_language_changed` and
+   `Shell::take_language_changed`, never released, are removed.
 
 ### Not translated
 
@@ -275,6 +314,7 @@ One PR, a commit per step:
 2. corundum-gui: the language picker; the theme widget's strings; `Shell` labels as
    message ids.
 3. sapphire-framework-gui: `sapphire.ftl` (en, ja), the views and `model.rs` moved over.
-4. sapphire-framework-gui: the Language row on the Appearance page.
+4. sapphire-framework-gui: the language as the bridge's `gui.locale`, on the Appearance
+   page.
 5. Breaking changes marked with `!` in the commit messages (corundum-gui's API change:
    labels are message ids); release-plz writes the CHANGELOGs.

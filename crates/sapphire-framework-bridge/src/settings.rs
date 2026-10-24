@@ -194,7 +194,8 @@ pub fn bridge_defs() -> Vec<SettingDef> {
     .collect()
 }
 
-/// The theme of every sapphire app's window: the workgroup's, which a device may override.
+/// The theme and the language of every sapphire app's window: the workgroup's, which a device
+/// may override.
 /// The bridge stores them and never reads them.
 fn gui_defs() -> Vec<SettingDef> {
     let def = |key: &str, kind: Kind, default: Value, doc: &str| SettingDef {
@@ -241,6 +242,12 @@ fn gui_defs() -> Vec<SettingDef> {
             Kind::Int { min: 0, max: 250 },
             Value::Int(150),
             "A custom accent's chroma, in thousandths",
+        ),
+        def(
+            gui::LOCALE,
+            Kind::String { non_empty: true },
+            Value::String("system".into()),
+            "The language: system, or a language tag such as ja or en-US",
         ),
     ]
 }
@@ -461,6 +468,7 @@ mod tests {
             ("gui.theme.accent", s("custom")),
             ("gui.theme.accent_hue", Value::Int(30)),
             ("gui.theme.accent_chroma", Value::Int(200)),
+            ("gui.locale", s("ja")),
         ];
         // Every non-secret key is covered, so a new def without a row here fails.
         let remote: Vec<(&str, Value)> = vec![
@@ -642,6 +650,43 @@ mod tests {
         ] {
             assert!(apply(&reg, None, vec![set(key, value)]).is_err(), "{key}");
         }
+    }
+
+    #[test]
+    fn gui_locale_lists_system_by_default() {
+        let (_tmp, _dir, reg) = setup();
+        let entries = sapphire_framework_settings::list(&reg, None, None).unwrap();
+        let entry = entries.iter().find(|e| e.key == gui::LOCALE).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("system")));
+        assert_eq!(entry.origin, Origin::Default);
+    }
+
+    #[test]
+    fn a_device_locale_overrides_the_workgroups() {
+        let (_tmp, dir, reg) = setup();
+        Workgroup::create(&dir, "wg", "dev", "node").unwrap();
+        let locale = |v| vec![set(gui::LOCALE, s(v))];
+        apply(&reg, Some(Scope::Workgroup), locale("ja")).unwrap();
+        let entry = get(&reg, gui::LOCALE).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("ja")));
+        assert_eq!(entry.origin, Origin::Scope(Scope::Workgroup));
+        apply(&reg, Some(Scope::Device), locale("en-US")).unwrap();
+        let entry = get(&reg, gui::LOCALE).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("en-US")));
+        assert_eq!(entry.origin, Origin::Scope(Scope::Device));
+        let unset = vec![Op::Unset {
+            key: gui::LOCALE.into(),
+        }];
+        apply(&reg, Some(Scope::Device), unset).unwrap();
+        let entry = get(&reg, gui::LOCALE).unwrap();
+        assert_eq!(entry.value, EntryValue::Value(s("ja")));
+        assert_eq!(entry.origin, Origin::Scope(Scope::Workgroup));
+    }
+
+    #[test]
+    fn an_empty_locale_is_rejected() {
+        let (_tmp, _dir, reg) = setup();
+        assert!(apply(&reg, None, vec![set(gui::LOCALE, s(""))]).is_err());
     }
 
     #[test]

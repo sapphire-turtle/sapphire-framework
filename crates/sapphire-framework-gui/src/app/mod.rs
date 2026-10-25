@@ -3,7 +3,8 @@
 //! Every desktop app is a pure client of its app server, which relays the bridge, so they
 //! all start alike: the framework's logging, a panic hook that explains a lost GPU device,
 //! a tokio runtime, the app's directories, a [`FrameworkClient`], and corundum-framework-gui's
-//! window (eframe on wgpu, with a backend that works on the host). What differs — the app's name,
+//! window (eframe on wgpu, with a backend that works on the host), which opens in the look
+//! last applied (corundum's store, in the app's config directory). What differs — the app's name,
 //! its window and its own [`eframe::App`] — goes in [`AppOptions`] and the closure.
 //!
 //! ```no_run
@@ -38,6 +39,7 @@ use std::sync::Arc;
 use sapphire_workspace::AppKind;
 use sapphire_workspace::logging::{default_log_filter, install_console_with_filter};
 
+use corundum_framework_gui::store::{self, Store};
 use corundum_framework_gui::window::{self, WindowOptions};
 
 use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient};
@@ -114,6 +116,7 @@ pub fn run(
     let dirs = sapphire_workspace::AppContext::new(app.app_name);
     dirs.init(AppKind::Desktop);
     let data_dir = dirs.data_dir().to_owned();
+    let window = window.remember(corundum_store(&dirs));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -129,6 +132,14 @@ pub fn run(
     // The clients' tasks end with the runtime, after the window that used them.
     drop(runtime);
     result
+}
+
+/// corundum's store in the app's config directory (honouring `SAPPHIRE_<APP>_CONFIG_DIR`):
+/// the look last applied ([`Settings::follow_theme`](crate::Settings::follow_theme) keeps
+/// it), which the window installs before the first frame, so the app opens in it before the
+/// bridge answers, or without one.
+pub(crate) fn corundum_store(dirs: &sapphire_workspace::AppContext) -> Store {
+    Store::at(dirs.config_dir().join(store::FILE_NAME))
 }
 
 /// The app, built once its window exists: the framework client, started on `handle`, and

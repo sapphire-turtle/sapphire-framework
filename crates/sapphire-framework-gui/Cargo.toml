@@ -32,8 +32,9 @@ sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.
 sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version = "0.21.0", path = "../sapphire-framework-bridge-client" }
 sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.21.0", path = "../sapphire-framework-ipc" }
 # The look shared with asteria: the frame, the fonts, the icons and the settings screen
-# (#318). Lives in its own repository (sapphire-turtle/corundum-framework).
-corundum-framework-gui.workspace = true
+# (#318). Lives in its own repository (sapphire-turtle/corundum-framework). `serde` for its
+# store: the look in effect, kept on the device for the next start (#347).
+corundum-framework-gui = { workspace = true, features = ["serde"] }
 egui = "0.37"
 eframe = { version = "0.37", optional = true }
 sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.21.0", path = "../sapphire-framework-workspace", default-features = false, optional = true }

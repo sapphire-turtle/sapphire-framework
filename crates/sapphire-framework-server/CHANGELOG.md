@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.21.0...sapphire-framework-server-v0.22.0) - 2026-10-25
+
+### Added
+
+- *(bridge)* the theme's settings, workgroup-wide and overridable ([#327](https://github.com/sapphire-turtle/sapphire-framework/pull/327))
+- *(settings)* a rejected batch names its keys on the wire ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* AppSettings::validate is told where the files are ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(bridge-api)* [**breaking**] drop StatusResult::config_dry_run; bridge-api goes to 3.0 ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* [**breaking**] <app> config, and dispatch takes the app's settings and build function ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* server.restart rebuilds the app server in place ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* the app server answers config.*, merged with the bridge's ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* the app server's settings, in config.toml ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(settings)* check-only batches, a setting's process, and dry_run on the wire ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* [**breaking**] the app's bridge commands go through the app server ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* a relayed bridge.restart returns once the new bridge is connected ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* relay the bridge's client-facing methods ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(embed, retrieve)* quantize the local model, embed images, ANN search
+- let applications add metrics of their own
+- count IPC connections, re-index runs and sync sessions
+- report workspace, sync, embedding and update state as gauges
+- serve Prometheus metrics at /metrics when server.toml turns them on
+- [**breaking**] move [mcp] http to [http.mcp] enabled in server.toml
+- host the bridge and an app server in-process
+
+### Fixed
+
+- *(settings)* a TOML parse error names the line, never quotes the file ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* a failed restart is logged; build makes a fresh SyncRuntime ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* workspace settings follow the selection and sync ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* offline config can repair a file the server refuses ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* config.toml is shared with the application's own config ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* update, service and mcp go on past unreadable settings ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* the relay has the sync runtime try a new bridge now ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* the relay passes on a bridge's refusal to connect ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- bound the scrape, render re-index durations as a histogram, zero stale embedding gauges
+
+### Other
+
+- *(server)* wait for the handshake before checking the migrated files ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* compare against the canonical path, which Windows runners spell with long names ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* accept Windows' verbatim paths where the config tests look for a file name ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* rustfmt the relay's sync-link restart test ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* cover the workgroup section of workspace show ([#314](https://github.com/sapphire-turtle/sapphire-framework/pull/314))
+- *(server)* wait for the HTTP listener in the metrics tests
+- say /metrics is the one route without a token
+
 ## [0.21.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.20.0...sapphire-framework-server-v0.21.0) - 2026-10-16
 
 ### Fixed

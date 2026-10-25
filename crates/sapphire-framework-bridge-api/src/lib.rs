@@ -835,7 +835,7 @@ mod tests {
     fn the_api_version_is_the_crate_major() {
         let major: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
         assert_eq!(API_VERSION, major);
-        assert_eq!(API_VERSION, 2);
+        assert_eq!(API_VERSION, 3);
     }
 
     #[test]

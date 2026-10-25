@@ -216,7 +216,7 @@ impl WorkspaceManager {
             Some(Dialog::NewLocal { name }) => {
                 let mut open = true;
                 egui::Window::new(tr!(&ctx, "sapphire-manager-new-title"))
-                    .id(egui::Id::new("manager_new"))
+                    .id(egui::Id::unique("manager_new"))
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -269,7 +269,7 @@ impl WorkspaceManager {
                 let expected = name.clone();
                 let mut open = true;
                 egui::Window::new(tr!(&ctx, "sapphire-manager-remove-title"))
-                    .id(egui::Id::new("manager_remove"))
+                    .id(egui::Id::unique("manager_remove"))
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

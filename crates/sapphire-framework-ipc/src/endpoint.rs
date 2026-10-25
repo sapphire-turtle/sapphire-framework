@@ -9,6 +9,8 @@ use std::fs;
 
 use std::path::{Path, PathBuf};
 
+use corundum_framework_platform::dirs;
+
 use crate::error::Result;
 
 /// The endpoint name the host-wide bridge listens under.

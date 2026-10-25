@@ -12,6 +12,7 @@ use super::super::{ViewCtx, error_text_line, register, unavailable};
 use super::model::{Drafts, Edit, PageSpec, origin_label, route_errors, tab_enabled};
 use super::widgets::{secret_id, value_widget};
 use crate::i18n::Message;
+use corundum_framework_gui::settings::{ScopeTab, scope_tabs};
 use corundum_framework_gui::tr;
 
 /// What the page last sent, so its outcome lands in the right place.
@@ -107,41 +108,22 @@ impl ConfigPage {
         let workspace = server.current.is_some();
 
         // Tabs. An unusable open tab yields to the first usable one; its draft is kept.
-        let opened = self.tab;
-        if (!spec.scopes.contains(&self.tab) || !tab_enabled(self.tab, workspace))
-            && let Some(first) = spec
-                .scopes
-                .iter()
-                .copied()
-                .find(|s| tab_enabled(*s, workspace))
-        {
-            self.tab = first;
-        }
-        ui.horizontal_wrapped(|ui| {
-            for scope in &spec.scopes {
-                let dirty = drafts
-                    .get(&spec.section, *scope)
-                    .is_some_and(|d| !d.is_empty());
-                let label = format!(
-                    "{}{}",
-                    tr!(ui, tab_label(*scope)),
-                    if dirty { " •" } else { "" }
-                );
-                if ui
-                    .add_enabled(
-                        tab_enabled(*scope, workspace),
-                        egui::Button::selectable(self.tab == *scope, label),
+        let tabs: Vec<ScopeTab<Scope>> = spec
+            .scopes
+            .iter()
+            .map(|&scope| {
+                ScopeTab::new(scope, tr!(ui, tab_label(scope)))
+                    .enabled(tab_enabled(scope, workspace))
+                    .dirty(
+                        drafts
+                            .get(&spec.section, scope)
+                            .is_some_and(|d| !d.is_empty()),
                     )
-                    .clicked()
-                {
-                    self.tab = *scope;
-                }
-            }
-            if spec.scopes.contains(&Scope::Workspace) && !workspace {
-                ui.small(tr!(ui, "sapphire-config-no-workspace"));
-            }
-        });
-        if self.tab != opened {
+            })
+            .collect();
+        let hint = (spec.scopes.contains(&Scope::Workspace) && !workspace)
+            .then(|| tr!(ui, "sapphire-config-no-workspace"));
+        if scope_tabs(ui, &mut self.tab, &tabs, hint.as_deref()) {
             // Field errors belong to the tab whose write failed.
             self.errors.0.clear();
         }

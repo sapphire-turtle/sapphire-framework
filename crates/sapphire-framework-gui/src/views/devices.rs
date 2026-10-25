@@ -48,7 +48,7 @@ impl InviteDialog {
         let mut out = None;
         let mut open = true;
         egui::Window::new(tr!(ui, "sapphire-devices-invite-title"))
-            .id(egui::Id::new("device_invite"))
+            .id(egui::Id::unique("device_invite"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -188,76 +188,74 @@ impl DeviceList {
         // the bridge's is kept, so an untouched row shows the bridge's priority, and an edit
         // the bridge now agrees with is no longer an edit.
         prune_edits(&mut self.priority_edit, &bridge.peers);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for peer in &bridge.peers {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let theme = crate::theme::current(ui.ctx());
-                        let (dot, colour) = if peer.connected {
-                            ("●", theme.text(Swatch::SUCCESS))
-                        } else {
-                            ("○", theme.color(Tone::Muted, Swatch::Neutral))
-                        };
-                        ui.colored_label(colour, dot);
-                        ui.strong(&peer.name);
-                        ui.small(short_id(&peer.device_id));
-                        for role in role_badges(peer, &bridge.peer_roles) {
-                            ui.small(format!("[{}]", crate::i18n::tr(ui.ctx(), role)));
-                        }
-                        if let Some(tier) = peer.availability {
-                            ui.small(tr!(
-                                ui,
-                                "sapphire-devices-availability",
-                                tier = u32::from(tier)
-                            ))
-                            .on_hover_text(tr!(ui, "sapphire-devices-availability-hover"));
-                        }
-                        let this = is_this_device(peer, &bridge.status.node_id);
-                        if this {
-                            ui.small(tr!(ui, "sapphire-devices-this"));
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if !this
-                                && ui
-                                    .add_enabled(
-                                        !cx.busy,
-                                        egui::Button::new(tr!(ui, "sapphire-action-retire")),
-                                    )
-                                    .clicked()
-                            {
-                                self.confirm = Some(RetireConfirm {
-                                    name: peer.name.clone(),
-                                    ..RetireConfirm::default()
-                                });
-                            }
-                            let mut p = self
-                                .priority_edit
-                                .get(&peer.device_id)
-                                .copied()
-                                .unwrap_or(peer.priority);
-                            if ui
+        for peer in &bridge.peers {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let theme = crate::theme::current(ui.ctx());
+                    let (dot, colour) = if peer.connected {
+                        ("●", theme.text(Swatch::SUCCESS))
+                    } else {
+                        ("○", theme.color(Tone::Muted, Swatch::Neutral))
+                    };
+                    ui.colored_label(colour, dot);
+                    ui.strong(&peer.name);
+                    ui.small(short_id(&peer.device_id));
+                    for role in role_badges(peer, &bridge.peer_roles) {
+                        ui.small(format!("[{}]", crate::i18n::tr(ui.ctx(), role)));
+                    }
+                    if let Some(tier) = peer.availability {
+                        ui.small(tr!(
+                            ui,
+                            "sapphire-devices-availability",
+                            tier = u32::from(tier)
+                        ))
+                        .on_hover_text(tr!(ui, "sapphire-devices-availability-hover"));
+                    }
+                    let this = is_this_device(peer, &bridge.status.node_id);
+                    if this {
+                        ui.small(tr!(ui, "sapphire-devices-this"));
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if !this
+                            && ui
                                 .add_enabled(
-                                    !cx.busy && p != peer.priority,
-                                    egui::Button::new(tr!(ui, "sapphire-action-set")),
+                                    !cx.busy,
+                                    egui::Button::new(tr!(ui, "sapphire-action-retire")),
                                 )
                                 .clicked()
-                            {
-                                out = Some(Command::DevicePrioritySet {
-                                    selector: peer.name.clone(),
-                                    priority: p,
-                                });
-                            }
-                            let prefix = format!("{} ", tr!(ui, "sapphire-devices-priority"));
-                            ui.add_enabled(
-                                !cx.busy,
-                                egui::DragValue::new(&mut p).range(0..=255).prefix(prefix),
-                            );
-                            record_edit(&mut self.priority_edit, peer, p);
-                        });
+                        {
+                            self.confirm = Some(RetireConfirm {
+                                name: peer.name.clone(),
+                                ..RetireConfirm::default()
+                            });
+                        }
+                        let mut p = self
+                            .priority_edit
+                            .get(&peer.device_id)
+                            .copied()
+                            .unwrap_or(peer.priority);
+                        if ui
+                            .add_enabled(
+                                !cx.busy && p != peer.priority,
+                                egui::Button::new(tr!(ui, "sapphire-action-set")),
+                            )
+                            .clicked()
+                        {
+                            out = Some(Command::DevicePrioritySet {
+                                selector: peer.name.clone(),
+                                priority: p,
+                            });
+                        }
+                        let prefix = format!("{} ", tr!(ui, "sapphire-devices-priority"));
+                        ui.add_enabled(
+                            !cx.busy,
+                            egui::DragValue::new(&mut p).range(0..=255).prefix(prefix),
+                        );
+                        record_edit(&mut self.priority_edit, peer, p);
                     });
                 });
-            }
-        });
+            });
+        }
 
         if let Some(c) = self.invite.ui(ui, cx) {
             self.last = Some(Last::Invite);
@@ -276,7 +274,7 @@ impl DeviceList {
         let mut open = true;
         let mut cancel = false;
         egui::Window::new(tr!(ui, "sapphire-devices-retire-title"))
-            .id(egui::Id::new("device_retire"))
+            .id(egui::Id::unique("device_retire"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

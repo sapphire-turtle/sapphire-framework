@@ -19,11 +19,12 @@ pub use args::WorkspaceArgs;
 pub use error::{Error, Result};
 
 // Re-exported so apps can depend on this crate alone: apps build their CLI with
-// clap, and `context` resolves platform directories through `dirs`
-// (issues #128/#129). Apps that depend on this crate alone get the same
-// clap/serde/dirs versions it builds with.
+// clap, and `context` resolves platform directories through
+// corundum-framework-platform's `dirs` (issues #128/#129), which knows a phone's
+// sandbox too. Apps that depend on this crate alone get the same clap/serde
+// versions and the same directories it builds with.
 pub use clap;
-pub use dirs;
+pub use corundum_framework_platform::dirs;
 pub use serde;
 
 pub use bridge_embedder::BridgeEmbedder;

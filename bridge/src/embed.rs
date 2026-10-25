@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use corundum_framework_platform::dirs;
+
 use sapphire_bridge::{BridgeDir, EmbedConfig, EmbedFactory, EmbedProvider};
 use sapphire_bridge_api::EmbedModelInfo;
 use sapphire_framework_bridge_embed::EmbedService;

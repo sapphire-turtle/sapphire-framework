@@ -339,6 +339,7 @@ impl Embed for LocalQwen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use corundum_framework_platform::dirs;
 
     fn dot(a: &[f32], b: &[f32]) -> f32 {
         a.iter().zip(b).map(|(x, y)| x * y).sum()

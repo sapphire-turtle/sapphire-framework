@@ -10,7 +10,7 @@ use super::model::{Edit, parse_text};
 /// The id of `key`'s secret field on `scope`'s tab of `section`, the same wherever it is
 /// drawn, so a successful write can clear what egui kept of the typing.
 pub(crate) fn secret_id(section: &str, scope: Scope, key: &str) -> egui::Id {
-    egui::Id::new(("sapphire-config-secret", section, scope, key))
+    egui::Id::unique(("sapphire-config-secret", section, scope, key))
 }
 
 /// Render `def`'s widget on `scope`'s tab, showing the drafted text when there is a draft

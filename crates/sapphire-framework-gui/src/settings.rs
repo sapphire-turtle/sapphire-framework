@@ -11,6 +11,7 @@ use crate::client::{
 };
 use corundum_framework_gui::COMPACT_WIDTH;
 use corundum_framework_gui::i18n::{self, Message};
+use corundum_framework_gui::settings::{ListItem, SettingsLayout};
 use corundum_framework_gui::theme::{self, ThemeSettings};
 use corundum_framework_gui::tr;
 use sapphire_bridge_api::Value;
@@ -25,15 +26,8 @@ use crate::views::{
     WorkspacePicker, error_text_line, unavailable,
 };
 
-/// A page the app adds to [`Settings`], under its own heading.
-pub trait SettingsSection {
-    /// The page's name in the list, in the language installed in `ctx`. It is asked every
-    /// frame, so a language switch reaches the list at once.
-    fn label(&self, ctx: &egui::Context) -> String;
-
-    /// Render the page.
-    fn ui(&mut self, ui: &mut egui::Ui);
-}
+/// A page the app adds to [`Settings`], under its own heading: corundum-framework-gui's.
+pub use corundum_framework_gui::settings::SettingsSection;
 
 /// The framework's pages.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -89,15 +83,7 @@ enum Origin {
     Appearance,
 }
 
-/// One line of the list.
-#[derive(Clone, PartialEq, Eq, Debug)]
-enum ListItem {
-    Heading(String),
-    Entry(Page, String),
-    Gap,
-}
-
-/// The settings: the app's sections, then General (Appearance), then Sync (workspace,
+/// The settings, on corundum-framework-gui's [`SettingsLayout`]: the app's sections, then General (Appearance), then Sync (workspace,
 /// devices, workgroup, external devices, embedding), then the settings pages under
 /// "Configuration", then About (the services and the version). Hold one; call
 /// [`ui`](Self::ui) every frame it is shown.
@@ -114,8 +100,9 @@ pub struct Settings {
     client: FrameworkClient,
     app_heading: String,
     app_sections: Vec<Box<dyn SettingsSection>>,
-    /// `None` shows the list alone when compact; when wide, the first page opens.
-    page: Option<Page>,
+    /// The list beside the open page, or one at a time when compact. The pages come and
+    /// go with the schema, so the list is given to it every frame.
+    layout: SettingsLayout<Page>,
     /// Whether [`ui`](Self::ui) draws the status banner (off inside a shell, which does).
     own_banner: bool,
     banner: ServiceStatusBanner,
@@ -164,7 +151,7 @@ impl Settings {
             client,
             app_heading: String::new(),
             app_sections: Vec::new(),
-            page: None,
+            layout: SettingsLayout::new(),
             own_banner: true,
             banner: ServiceStatusBanner::default(),
             workspaces: WorkspacePicker::default(),
@@ -230,7 +217,7 @@ impl Settings {
     /// Whether About is the page open.
     #[cfg(test)]
     pub(crate) fn about_open(&self) -> bool {
-        self.page == Some(Page::About)
+        self.layout.current() == Some(&Page::About)
     }
 
     /// Whether the last [`ui`](Self::ui) drew About.
@@ -241,7 +228,7 @@ impl Settings {
 
     /// Open About, where the services' state is.
     pub fn open_about(&mut self) {
-        self.page = Some(Page::About);
+        self.layout.open(Some(Page::About));
     }
 
     /// Hand each finished command's outcome to the view that sent it, and reload the
@@ -318,44 +305,23 @@ impl Settings {
         if self.own_banner {
             self.follow_theme(ui.ctx());
         }
-        #[cfg(test)]
-        {
-            self.drawn = self.page.clone();
-        }
         if self.own_banner && self.health() == Health::Problem {
             egui::Panel::top("settings_status").show(ui, |ui| self.status_ui(ui));
         }
-        if ui.available_width() < COMPACT_WIDTH {
-            egui::CentralPanel::default().show(ui, |ui| match self.page.clone() {
-                None => {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.list_ui(ui));
-                }
-                Some(page) => {
-                    let back = crate::icons::image(ui, crate::icons::arrow_left(), 14.0);
-                    if ui
-                        .add(egui::Button::image_and_text(
-                            back,
-                            tr!(ui, "sapphire-settings"),
-                        ))
-                        .clicked()
-                    {
-                        self.page = None;
-                    }
-                    ui.separator();
-                    self.page_ui(ui, page);
-                }
-            });
-        } else {
-            let first = self.first_page();
-            let page = self.page.get_or_insert(first).clone();
-            egui::Panel::left("settings_nav")
-                .resizable(false)
-                .exact_size(170.0)
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| self.list_ui(ui));
-                });
-            egui::CentralPanel::default().show(ui, |ui| self.page_ui(ui, page));
+        // Wide, a page opens at once: the app's first, else the workspace, rather than the
+        // first in the list (the app's schema pages, loaded later, come before them).
+        if self.layout.current().is_none() && ui.available_width() >= COMPACT_WIDTH {
+            self.layout.open(Some(self.first_page()));
         }
+        #[cfg(test)]
+        {
+            self.drawn = self.layout.current().cloned();
+        }
+        let items = self.list(ui.ctx());
+        // The pages draw through `self`, which holds the layout.
+        let mut layout = std::mem::take(&mut self.layout);
+        layout.ui(ui, &items, |ui, page| self.page_ui(ui, page));
+        self.layout = layout;
     }
 
     /// Hosted by a shell, which polls and shows the banner itself.
@@ -373,22 +339,16 @@ impl Settings {
 
     /// The list: headings, entries and gaps, in order, in the language installed in `ctx`.
     /// A page with a draft is marked.
-    fn list(&self, ctx: &egui::Context) -> Vec<ListItem> {
+    fn list(&self, ctx: &egui::Context) -> Vec<ListItem<Page>> {
         let dirty = self.drafts.dirty_sections();
-        let mark = |label: &str, dirty: bool| {
-            if dirty {
-                format!("{label} •")
-            } else {
-                label.to_owned()
-            }
-        };
-        let config = |placement: Placement| -> Vec<ListItem> {
+        let config = |placement: Placement| -> Vec<ListItem<Page>> {
             self.pages
                 .iter()
                 .filter(|p| p.placement == placement)
-                .map(|p| {
-                    let label = mark(&p.section, dirty.contains(&p.section));
-                    ListItem::Entry(Page::Config(p.section.clone()), label)
+                .map(|p| ListItem::Entry {
+                    page: Page::Config(p.section.clone()),
+                    label: p.section.clone(),
+                    dirty: dirty.contains(&p.section),
                 })
                 .collect()
         };
@@ -403,11 +363,15 @@ impl Settings {
             out.push(ListItem::Heading(heading));
             out.extend(app_pages);
             for (i, section) in self.app_sections.iter().enumerate() {
-                out.push(ListItem::Entry(Page::App(i), section.label(ctx)));
+                out.push(ListItem::Entry {
+                    page: Page::App(i),
+                    label: section.label(ctx),
+                    dirty: section.dirty(),
+                });
             }
         }
         out.push(ListItem::Heading(tr!(ctx, "sapphire-settings-general")));
-        out.push(ListItem::Entry(
+        out.push(ListItem::entry(
             Page::Appearance,
             tr!(ctx, "sapphire-settings-appearance"),
         ));
@@ -418,10 +382,11 @@ impl Settings {
                     p.placement == Placement::Screen(JOINED_SCREEN.1.to_owned())
                         && dirty.contains(&p.section)
                 });
-            out.push(ListItem::Entry(
-                Page::Sync(screen),
-                mark(&tr!(ctx, id), joined),
-            ));
+            out.push(ListItem::Entry {
+                page: Page::Sync(screen),
+                label: tr!(ctx, id),
+                dirty: joined,
+            });
         }
         let rest = config(Placement::Configuration);
         if !rest.is_empty() {
@@ -432,59 +397,33 @@ impl Settings {
             out.extend(rest);
         }
         out.push(ListItem::Gap);
-        out.push(ListItem::Entry(
+        out.push(ListItem::entry(
             Page::About,
             tr!(ctx, "sapphire-settings-about"),
         ));
         out
     }
 
-    fn list_ui(&mut self, ui: &mut egui::Ui) {
-        let items = self.list(ui.ctx());
-        // Full-width rows, their labels at the left.
-        ui.with_layout(egui::Layout::top_down_justified(egui::Align::LEFT), |ui| {
-            for item in items {
-                match item {
-                    ListItem::Heading(text) => {
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new(text).small().weak());
-                    }
-                    ListItem::Entry(page, label) => {
-                        let open = self.page.as_ref() == Some(&page);
-                        if ui.selectable_label(open, label).clicked() {
-                            self.page = Some(page);
-                        }
-                    }
-                    ListItem::Gap => {
-                        ui.add_space(12.0);
-                    }
-                }
-            }
-        });
-    }
-
     fn page_ui(&mut self, ui: &mut egui::Ui, page: Page) {
         match page {
-            Page::App(i) => match self.app_sections.get_mut(i) {
-                Some(section) => section.ui(ui),
-                None => self.page = None,
-            },
+            Page::App(i) => {
+                if let Some(section) = self.app_sections.get_mut(i) {
+                    section.ui(ui);
+                }
+            }
             Page::Appearance => self.appearance_ui(ui),
             Page::Sync(screen) => self.screen_ui(ui, screen),
             Page::Config(section) => {
                 let snapshot = self.snapshot();
                 self.ensure_loaded(&snapshot);
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_page")
-                    .show(ui, |ui| {
-                        self.restart_ui(ui, &snapshot);
-                        if self.config.is_none() {
-                            self.unloaded_ui(ui, &snapshot);
-                        } else if !self.config_page_ui(ui, &snapshot, &section) {
-                            // Gone from the schema.
-                            self.page = None;
-                        }
-                    });
+                self.restart_ui(ui, &snapshot);
+                if self.config.is_none() {
+                    self.unloaded_ui(ui, &snapshot);
+                } else {
+                    // A page gone from the schema is gone from the list too, which closes
+                    // it.
+                    self.config_page_ui(ui, &snapshot, &section);
+                }
             }
             Page::About => self.about_ui(ui),
         }
@@ -506,26 +445,22 @@ impl Settings {
             Some(b) if b.gui.is_none() => Some(old_bridge()),
             Some(_) => None,
         };
-        egui::ScrollArea::vertical()
-            .id_salt("settings_page")
-            .show(ui, |ui| {
-                if self.config.is_none() && why.is_none() {
-                    self.unloaded_ui(ui, &snapshot);
-                    return;
-                }
-                let cx = AppearanceCtx {
-                    state: self.config.as_ref(),
-                    unavailable: why,
-                    busy: self.busy(&Origin::Appearance),
-                    workgroup: bridge.is_some_and(|b| b.status.workgroup.is_some()),
-                    language: bridge.and_then(|b| b.gui.as_ref()).is_some_and(|g| {
-                        g.contains_key(sapphire_bridge_api::settings::gui::LOCALE)
-                    }),
-                };
-                if let Some(command) = self.appearance.ui(ui, &cx) {
-                    self.send(command, Origin::Appearance);
-                }
-            });
+        if self.config.is_none() && why.is_none() {
+            self.unloaded_ui(ui, &snapshot);
+            return;
+        }
+        let cx = AppearanceCtx {
+            state: self.config.as_ref(),
+            unavailable: why,
+            busy: self.busy(&Origin::Appearance),
+            workgroup: bridge.is_some_and(|b| b.status.workgroup.is_some()),
+            language: bridge
+                .and_then(|b| b.gui.as_ref())
+                .is_some_and(|g| g.contains_key(sapphire_bridge_api::settings::gui::LOCALE)),
+        };
+        if let Some(command) = self.appearance.ui(ui, &cx) {
+            self.send(command, Origin::Appearance);
+        }
     }
 
     fn screen_ui(&mut self, ui: &mut egui::Ui, screen: Screen) {
@@ -543,25 +478,21 @@ impl Settings {
             Screen::ExternalDevices => self.external.ui(ui, &cx),
             Screen::Embedding => {
                 self.ensure_loaded(&snapshot);
-                egui::ScrollArea::vertical()
-                    .id_salt("settings_page")
-                    .show(ui, |ui| {
-                        self.restart_ui(ui, &snapshot);
-                        self.embedding.ui(ui, &cx);
-                        ui.add_space(12.0);
-                        if self.config.is_none() {
-                            self.unloaded_ui(ui, &snapshot);
-                        }
-                        let joined: Vec<String> = self
-                            .pages
-                            .iter()
-                            .filter(|p| p.placement == Placement::Screen(JOINED_SCREEN.1.into()))
-                            .map(|p| p.section.clone())
-                            .collect();
-                        for section in joined {
-                            self.config_page_ui(ui, &snapshot, &section);
-                        }
-                    });
+                self.restart_ui(ui, &snapshot);
+                self.embedding.ui(ui, &cx);
+                ui.add_space(12.0);
+                if self.config.is_none() {
+                    self.unloaded_ui(ui, &snapshot);
+                }
+                let joined: Vec<String> = self
+                    .pages
+                    .iter()
+                    .filter(|p| p.placement == Placement::Screen(JOINED_SCREEN.1.into()))
+                    .map(|p| p.section.clone())
+                    .collect();
+                for section in joined {
+                    self.config_page_ui(ui, &snapshot, &section);
+                }
                 None
             }
         };
@@ -948,17 +879,21 @@ mod tests {
     fn wide_it_opens_the_first_app_section_beside_the_list() {
         let (mut settings, _rt) = settings();
         render([900.0, 600.0], |ui| settings.ui(ui));
-        assert_eq!(settings.page, Some(Page::App(0)));
+        assert_eq!(settings.layout.current().cloned(), Some(Page::App(0)));
     }
 
     #[test]
     fn compact_it_shows_the_list_then_one_page() {
         let (mut settings, _rt) = settings();
         render([400.0, 700.0], |ui| settings.ui(ui));
-        assert_eq!(settings.page, None, "the list alone, no page chosen");
+        assert_eq!(
+            settings.layout.current().cloned(),
+            None,
+            "the list alone, no page chosen"
+        );
         settings.open_about();
         render([400.0, 700.0], |ui| settings.ui(ui));
-        assert_eq!(settings.page, Some(Page::About));
+        assert_eq!(settings.layout.current().cloned(), Some(Page::About));
     }
 
     #[test]
@@ -966,7 +901,10 @@ mod tests {
         let (client, _rt) = client();
         let mut settings = Settings::new(client);
         render([900.0, 600.0], |ui| settings.ui(ui));
-        assert_eq!(settings.page, Some(Page::Sync(Screen::Workspaces)));
+        assert_eq!(
+            settings.layout.current().cloned(),
+            Some(Page::Sync(Screen::Workspaces))
+        );
     }
 
     // ── the schema's pages ──────────────────────────────────────────────────
@@ -1019,7 +957,8 @@ mod tests {
             .into_iter()
             .map(|item| match item {
                 ListItem::Heading(h) => format!("# {h}"),
-                ListItem::Entry(_, label) => label,
+                ListItem::Entry { label, dirty, .. } if dirty => format!("{label} •"),
+                ListItem::Entry { label, .. } => label,
                 ListItem::Gap => "-".into(),
             })
             .collect()
@@ -1058,7 +997,7 @@ mod tests {
         assert!(
             settings
                 .list(&crate::test_support::english_ctx())
-                .contains(&ListItem::Entry(Page::Config("Look".into()), "Look".into()))
+                .contains(&ListItem::entry(Page::Config("Look".into()), "Look"))
         );
     }
 
@@ -1077,26 +1016,26 @@ mod tests {
 
     #[test]
     fn showing_a_config_page_loads_once() {
-        for page in [
-            Page::Config("Network".into()),
-            Page::Sync(Screen::Embedding),
-        ] {
-            let (mut settings, _rt) = settings();
-            settings.test_snapshot = Some(rich());
-            settings.page = Some(page.clone());
-            render([900.0, 600.0], |ui| settings.ui(ui));
-            render([900.0, 600.0], |ui| settings.ui(ui));
-            assert_eq!(loads(&settings), 1, "{page:?}");
-            // Loaded: nothing more to fetch.
-            settings.loaded(config_state());
-            render([900.0, 600.0], |ui| settings.ui(ui));
-            assert_eq!(loads(&settings), 1, "{page:?}");
-        }
+        // A schema page is listed only once the schema is loaded; the Embedding screen,
+        // whose section page joins it, is there before.
+        let (mut shown, _rt) = settings();
+        shown.test_snapshot = Some(rich());
+        shown.layout.open(Some(Page::Sync(Screen::Embedding)));
+        render([900.0, 600.0], |ui| shown.ui(ui));
+        render([900.0, 600.0], |ui| shown.ui(ui));
+        assert_eq!(loads(&shown), 1);
+        // Loaded: nothing more to fetch, on a schema page either.
+        shown.loaded(config_state());
+        render([900.0, 600.0], |ui| shown.ui(ui));
+        shown.layout.open(Some(Page::Config("Network".into())));
+        render([900.0, 600.0], |ui| shown.ui(ui));
+        assert_eq!(shown.drawn, Some(Page::Config("Network".into())));
+        assert_eq!(loads(&shown), 1);
         // Another page needs nothing.
-        let (mut settings, _rt) = settings();
-        settings.test_snapshot = Some(rich());
-        render([900.0, 600.0], |ui| settings.ui(ui));
-        assert_eq!(loads(&settings), 0);
+        let (mut other, _rt2) = settings();
+        other.test_snapshot = Some(rich());
+        render([900.0, 600.0], |ui| other.ui(ui));
+        assert_eq!(loads(&other), 0);
     }
 
     #[test]
@@ -1155,7 +1094,7 @@ mod tests {
         // The workspace is the one the load read.
         settings.track_workspace(&rich());
         settings.loaded(config_state());
-        settings.page = Some(Page::Sync(Screen::Embedding));
+        settings.layout.open(Some(Page::Sync(Screen::Embedding)));
         let drawn = drawn_text(|ui| settings.ui(ui));
         for text in [
             "sapphire-bridge needs a restart to apply: embed.cache_dir",
@@ -1183,7 +1122,7 @@ mod tests {
     fn appearance_is_listed_and_drawn() {
         for size in [[900.0, 600.0], [400.0, 700.0]] {
             let (mut settings, _rt) = settings();
-            settings.page = Some(Page::Appearance);
+            settings.layout.open(Some(Page::Appearance));
             render(size, |ui| settings.ui(ui));
             assert_eq!(settings.drawn, Some(Page::Appearance), "{size:?}");
         }
@@ -1304,15 +1243,19 @@ mod tests {
         settings.loaded(state);
         let items = settings.list(&crate::test_support::english_ctx());
         assert!(
-            !items
-                .iter()
-                .any(|i| matches!(i, ListItem::Entry(Page::Config(s), _) if s == "Appearance")),
+            !items.iter().any(
+                |i| matches!(i, ListItem::Entry { page: Page::Config(s), .. } if s == "Appearance")
+            ),
             "{items:?}"
         );
         assert!(
-            items
-                .iter()
-                .any(|i| matches!(i, ListItem::Entry(Page::Appearance, _))),
+            items.iter().any(|i| matches!(
+                i,
+                ListItem::Entry {
+                    page: Page::Appearance,
+                    ..
+                }
+            )),
             "{items:?}"
         );
     }

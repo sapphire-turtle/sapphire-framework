@@ -24,7 +24,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "2.4.0", path = "../crates/sapphire-framework-bridge-api" }
 sapphire-framework-bridge-embed = { version = "0.21.0", path = "../crates/sapphire-framework-bridge-embed" }
 async-trait.workspace = true
-dirs.workspace = true
+corundum-framework-platform.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

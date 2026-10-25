@@ -56,180 +56,176 @@ impl WorkspacePicker {
             return out;
         };
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            match &server.current {
-                None => {
-                    ui.label(tr!(ui, "sapphire-workspaces-none"));
+        match &server.current {
+            None => {
+                ui.label(tr!(ui, "sapphire-workspaces-none"));
+            }
+            Some(current) => {
+                let b = badge(current);
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.strong(display_name(current));
+                                let theme = crate::theme::current(ui.ctx());
+                                let colour = match b {
+                                    Badge::Syncing { .. } => theme.text(Swatch::SUCCESS),
+                                    Badge::NotSynced => theme.color(Tone::Muted, Swatch::Neutral),
+                                    _ => theme.text(Swatch::WARNING),
+                                };
+                                ui.colored_label(colour, b.label().text(ui.ctx()));
+                            });
+                            ui.small(display_path(&current.root).display().to_string());
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !cx.busy,
+                                    egui::Button::new(tr!(ui, "sapphire-workspaces-remove")),
+                                )
+                                .clicked()
+                            {
+                                self.confirm = Some(RemoveConfirm {
+                                    name: display_name(current),
+                                    ..RemoveConfirm::default()
+                                });
+                            }
+                            if platform::folder_picker_available()
+                                && ui
+                                    .add_enabled(
+                                        current.reachable && !cx.busy,
+                                        egui::Button::new(tr!(ui, "sapphire-workspaces-move")),
+                                    )
+                                    .clicked()
+                                && let Some(dir) = platform::pick_folder(&tr!(
+                                    ui,
+                                    "sapphire-workspaces-move-title",
+                                    name = display_name(current)
+                                ))
+                            {
+                                match move_target(&dir, &current.root) {
+                                    Ok(dir) => out = Some(Command::WorkspaceMove { dir }),
+                                    Err(e) => self.error = Some(e),
+                                }
+                            }
+                            if platform::file_manager_available()
+                                && ui
+                                    .add_enabled(
+                                        current.reachable,
+                                        egui::Button::new(tr!(
+                                            ui,
+                                            "sapphire-workspaces-show-folder"
+                                        )),
+                                    )
+                                    .clicked()
+                            {
+                                platform::open_in_file_manager(&display_path(&current.root));
+                            }
+                            let (label, cmd) = if current.sync.enabled {
+                                (
+                                    tr!(ui, "sapphire-workspaces-stop-sync"),
+                                    Command::SyncDisable,
+                                )
+                            } else {
+                                (
+                                    tr!(ui, "sapphire-workspaces-start-sync"),
+                                    Command::SyncEnable,
+                                )
+                            };
+                            if ui
+                                .add_enabled(
+                                    current.reachable && !cx.busy,
+                                    egui::Button::new(label),
+                                )
+                                .clicked()
+                            {
+                                out = Some(cmd);
+                            }
+                        });
+                    });
+                });
+            }
+        }
+
+        ui.add_space(12.0);
+        ui.strong(tr!(ui, "sapphire-workspaces-switch"));
+        ui.small(tr!(ui, "sapphire-workspaces-switch-hint"));
+        if let Some(storage) =
+            platform::app_storage().filter(|_| !platform::folder_picker_available())
+        {
+            if let Some(c) = self.new_in_storage_ui(ui, cx, storage) {
+                out = Some(c);
+            }
+        } else {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-workspaces-open-folder")),
+                    )
+                    .clicked()
+                    && let Some(dir) =
+                        platform::pick_folder(&tr!(ui, "sapphire-workspaces-open-title"))
+                {
+                    out = Some(if dir.join(format!(".{}", cx.app_name)).is_dir() {
+                        Command::WorkspaceSelect { dir }
+                    } else {
+                        // A folder that is not a workspace yet becomes one.
+                        Command::WorkspaceInit { dir, sync: false }
+                    });
                 }
-                Some(current) => {
-                    let b = badge(current);
+                if ui
+                    .add_enabled(
+                        !cx.busy,
+                        egui::Button::new(tr!(ui, "sapphire-workspaces-new")),
+                    )
+                    .clicked()
+                    && let Some(dir) =
+                        platform::pick_folder(&tr!(ui, "sapphire-workspaces-new-title"))
+                {
+                    match new_target_ok(&dir, cx.app_name) {
+                        Ok(()) => out = Some(Command::WorkspaceInit { dir, sync: true }),
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+            });
+        }
+
+        ui.add_space(12.0);
+        ui.strong(tr!(ui, "sapphire-workspaces-from-workgroup"));
+        match cx.snapshot.bridge.up() {
+            None => {
+                ui.small(tr!(ui, "sapphire-unavailable-bridge"));
+            }
+            Some(bridge) => {
+                let elsewhere = others(&bridge.ledger, server.current.as_ref(), cx.app_name);
+                if elsewhere.is_empty() {
+                    ui.small(tr!(ui, "sapphire-workspaces-no-others"));
+                }
+                for w in elsewhere {
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong(display_name(current));
-                                    let theme = crate::theme::current(ui.ctx());
-                                    let colour = match b {
-                                        Badge::Syncing { .. } => theme.text(Swatch::SUCCESS),
-                                        Badge::NotSynced => {
-                                            theme.color(Tone::Muted, Swatch::Neutral)
-                                        }
-                                        _ => theme.text(Swatch::WARNING),
-                                    };
-                                    ui.colored_label(colour, b.label().text(ui.ctx()));
-                                });
-                                ui.small(display_path(&current.root).display().to_string());
-                            });
+                            ui.strong(&w.name);
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui
                                     .add_enabled(
                                         !cx.busy,
-                                        egui::Button::new(tr!(ui, "sapphire-workspaces-remove")),
+                                        egui::Button::new(tr!(ui, "sapphire-workspaces-bring")),
                                     )
                                     .clicked()
+                                    && let Some(dir) = bring_into(ui, &w.name)
                                 {
-                                    self.confirm = Some(RemoveConfirm {
-                                        name: display_name(current),
-                                        ..RemoveConfirm::default()
+                                    out = Some(Command::WorkspaceMap {
+                                        workspace_id: w.workspace_id,
+                                        dir: bring_target(&dir, &w.name, cx.app_name),
                                     });
-                                }
-                                if platform::folder_picker_available()
-                                    && ui
-                                        .add_enabled(
-                                            current.reachable && !cx.busy,
-                                            egui::Button::new(tr!(ui, "sapphire-workspaces-move")),
-                                        )
-                                        .clicked()
-                                    && let Some(dir) = platform::pick_folder(&tr!(
-                                        ui,
-                                        "sapphire-workspaces-move-title",
-                                        name = display_name(current)
-                                    ))
-                                {
-                                    match move_target(&dir, &current.root) {
-                                        Ok(dir) => out = Some(Command::WorkspaceMove { dir }),
-                                        Err(e) => self.error = Some(e),
-                                    }
-                                }
-                                if platform::file_manager_available()
-                                    && ui
-                                        .add_enabled(
-                                            current.reachable,
-                                            egui::Button::new(tr!(
-                                                ui,
-                                                "sapphire-workspaces-show-folder"
-                                            )),
-                                        )
-                                        .clicked()
-                                {
-                                    platform::open_in_file_manager(&display_path(&current.root));
-                                }
-                                let (label, cmd) = if current.sync.enabled {
-                                    (
-                                        tr!(ui, "sapphire-workspaces-stop-sync"),
-                                        Command::SyncDisable,
-                                    )
-                                } else {
-                                    (
-                                        tr!(ui, "sapphire-workspaces-start-sync"),
-                                        Command::SyncEnable,
-                                    )
-                                };
-                                if ui
-                                    .add_enabled(
-                                        current.reachable && !cx.busy,
-                                        egui::Button::new(label),
-                                    )
-                                    .clicked()
-                                {
-                                    out = Some(cmd);
                                 }
                             });
                         });
                     });
                 }
             }
-
-            ui.add_space(12.0);
-            ui.strong(tr!(ui, "sapphire-workspaces-switch"));
-            ui.small(tr!(ui, "sapphire-workspaces-switch-hint"));
-            if let Some(storage) =
-                platform::app_storage().filter(|_| !platform::folder_picker_available())
-            {
-                if let Some(c) = self.new_in_storage_ui(ui, cx, storage) {
-                    out = Some(c);
-                }
-            } else {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !cx.busy,
-                            egui::Button::new(tr!(ui, "sapphire-workspaces-open-folder")),
-                        )
-                        .clicked()
-                        && let Some(dir) =
-                            platform::pick_folder(&tr!(ui, "sapphire-workspaces-open-title"))
-                    {
-                        out = Some(if dir.join(format!(".{}", cx.app_name)).is_dir() {
-                            Command::WorkspaceSelect { dir }
-                        } else {
-                            // A folder that is not a workspace yet becomes one.
-                            Command::WorkspaceInit { dir, sync: false }
-                        });
-                    }
-                    if ui
-                        .add_enabled(
-                            !cx.busy,
-                            egui::Button::new(tr!(ui, "sapphire-workspaces-new")),
-                        )
-                        .clicked()
-                        && let Some(dir) =
-                            platform::pick_folder(&tr!(ui, "sapphire-workspaces-new-title"))
-                    {
-                        match new_target_ok(&dir, cx.app_name) {
-                            Ok(()) => out = Some(Command::WorkspaceInit { dir, sync: true }),
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                });
-            }
-
-            ui.add_space(12.0);
-            ui.strong(tr!(ui, "sapphire-workspaces-from-workgroup"));
-            match cx.snapshot.bridge.up() {
-                None => {
-                    ui.small(tr!(ui, "sapphire-unavailable-bridge"));
-                }
-                Some(bridge) => {
-                    let elsewhere = others(&bridge.ledger, server.current.as_ref(), cx.app_name);
-                    if elsewhere.is_empty() {
-                        ui.small(tr!(ui, "sapphire-workspaces-no-others"));
-                    }
-                    for w in elsewhere {
-                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.strong(&w.name);
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui
-                                        .add_enabled(
-                                            !cx.busy,
-                                            egui::Button::new(tr!(ui, "sapphire-workspaces-bring")),
-                                        )
-                                        .clicked()
-                                        && let Some(dir) = bring_into(ui, &w.name)
-                                    {
-                                        out = Some(Command::WorkspaceMap {
-                                            workspace_id: w.workspace_id,
-                                            dir: bring_target(&dir, &w.name, cx.app_name),
-                                        });
-                                    }
-                                });
-                            });
-                        });
-                    }
-                }
-            }
-        });
+        }
         if let Some(c) = self.confirm_ui(ui, cx) {
             out = Some(c);
         }
@@ -282,7 +278,7 @@ impl WorkspacePicker {
         let mut open = true;
         let mut cancel = false;
         egui::Window::new(tr!(ui, "sapphire-workspaces-remove-title"))
-            .id(egui::Id::new("workspace_remove"))
+            .id(egui::Id::unique("workspace_remove"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

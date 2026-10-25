@@ -18,7 +18,7 @@ path = "src/bin/ipc-test-server.rs"
 required-features = ["test-util"]
 
 [dependencies]
-dirs.workspace = true
+corundum-framework-platform.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 sha2.workspace = true

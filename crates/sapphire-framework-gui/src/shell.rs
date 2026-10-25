@@ -209,7 +209,9 @@ mod tests {
                     egui::CentralPanel::default().show(ui, |ui| ui.label("entries"));
                 })
             });
-            assert_eq!(drawn, [Screen::Entries, Screen::Entries]);
+            // Once a frame, or twice when egui discards a frame's first pass.
+            assert!(drawn.len() >= 2, "{drawn:?}");
+            assert!(drawn.iter().all(|s| *s == Screen::Entries), "{drawn:?}");
         }
     }
 

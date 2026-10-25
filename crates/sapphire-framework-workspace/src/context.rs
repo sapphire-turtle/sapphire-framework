@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use corundum_framework_platform::dirs;
+
 use crate::app_dirs::{AppKind, app_dir_env_var, migrate_keys_to_data, unsplit_app_dir};
 use crate::workspace::path_uuid;
 
@@ -70,7 +72,8 @@ impl AppContext {
     }
 
     /// Initialise the cache, data and config directories from the platform
-    /// defaults (`dirs::cache_dir` / `dirs::data_dir` / `dirs::config_dir`,
+    /// defaults (corundum-framework-platform's `dirs::cache_dir` / `dirs::data_dir` /
+    /// `dirs::config_dir`: the `dirs` crate's on the desktops, the sandbox's on a phone,
     /// each falling back to [`std::env::temp_dir`] when unavailable), applying
     /// each category's env override and the one-shot migrations described in
     /// [`crate::app_dirs`], and store all three (first writer wins, as with

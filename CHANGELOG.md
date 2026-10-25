@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-25
+
+This section also holds the changes released in 0.20.0 and 0.21.0, which went out without a heading here. The API crates are released with it: `sapphire-framework-bridge-api` 3.0.0 and `sapphire-framework-server-api` 5.0.0 (bridge-api 2.4.0 was yanked: its new fields on exhaustive structs broke the published `sapphire-framework-bridge` 0.21.0). **Update `sapphire-bridge` and the apps together:** an older bridge fails the handshake.
+
 ### Added
 
 - The theme is saved in the settings registry and synced across the workgroup (#327). The bridge owns five new keys in the workgroup scope, each overridable per device and applied live: `gui.theme.preference` (`system` / `light` / `dark`), `gui.theme.contrast` (`low` / `medium` / `high`), `gui.theme.accent` (`default`, one of the theme's colours by name, or `custom`) and a custom accent's `gui.theme.accent_hue` (0–360) and `gui.theme.accent_chroma` (0–250, thousandths). `Shell` installs the effective theme and follows it when it changes, whether it was changed on another device, from `<app> config set` or on the Appearance page. The Appearance page has Workgroup and Device tabs when there is a workgroup and saves each change at once; the Device tab shows which values come from the workgroup and has a "Use the workgroup's" button. `gui` is a reserved top-level name. `sapphire-framework-bridge-api` minor: `settings::gui` (`THEME_PREFERENCE`, `THEME_CONTRAST`, `THEME_ACCENT`, `THEME_ACCENT_HUE`, `THEME_ACCENT_CHROMA`, `ACCENT_CHOICES`, `THEME_KEYS`). `BridgeState.gui` (`GuiValues`) on the GUI client.

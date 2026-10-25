@@ -10,11 +10,11 @@ use crate::client::{
     Snapshot,
 };
 use corundum_framework_gui::COMPACT_WIDTH;
-use corundum_framework_gui::i18n::{self, Message};
+use corundum_framework_gui::i18n::Message;
+use corundum_framework_gui::look::{self, Look};
 use corundum_framework_gui::settings::{ListItem, SettingsLayout};
-use corundum_framework_gui::theme::{self, ThemeSettings};
+use corundum_framework_gui::theme::ThemeSettings;
 use corundum_framework_gui::tr;
-use sapphire_bridge_api::Value;
 
 use crate::views::appearance::{
     AppearanceCtx, AppearancePage, bridge_down, language_settings, old_bridge, theme_settings,
@@ -128,10 +128,9 @@ pub struct Settings {
     /// The app server's workspace as last seen (`Some(None)`: it has none).
     workspace: Option<Option<PathBuf>>,
     pending: HashMap<CommandId, Origin>,
-    /// The theme's settings as last installed from the snapshot.
-    seen_theme: Option<GuiValues>,
-    /// The language (`gui.locale`) as last installed from the snapshot.
-    seen_locale: Option<Value>,
+    /// The theme's settings and the language (`gui.locale`) as last applied from the
+    /// snapshot.
+    seen_look: Option<GuiValues>,
     appearance: AppearancePage,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
@@ -168,8 +167,7 @@ impl Settings {
             load_tried: false,
             workspace: None,
             pending: HashMap::new(),
-            seen_theme: None,
-            seen_locale: None,
+            seen_look: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
@@ -245,42 +243,51 @@ impl Settings {
         }
     }
 
-    /// Install the theme and the language the settings hold, whenever the bridge reports
+    /// Apply the theme and the language the settings hold, whenever the bridge reports
     /// other values than last time: at start, after a write, after a sync from another
-    /// device. Only a change of the values installs, so a slider being dragged on the
-    /// Appearance page keeps its preview; the theme and the language are compared each on
-    /// its own. Without the values (no bridge, or an older one) the theme stays; without
-    /// `gui.locale` (a bridge that knows the theme but not the language) the language
-    /// stays. A [`Shell`](crate::Shell) calls this every frame; on its own,
+    /// device. [`look::apply`] installs them and keeps them on the device, so the next start
+    /// opens in them before the bridge answers, or without one. Only a change of the values
+    /// applies, so a slider being dragged on the Appearance page keeps its preview. Without
+    /// the values (no bridge, or an older one) the look stays; without `gui.locale` (a
+    /// bridge that knows the theme but not the language) the language stays the one last
+    /// applied. A [`Shell`](crate::Shell) calls this every frame; on its own,
     /// [`ui`](Self::ui) does.
     pub fn follow_theme(&mut self, ctx: &egui::Context) {
         let snapshot = self.snapshot();
         let Some(gui) = snapshot.bridge.up().and_then(|b| b.gui.as_ref()) else {
             return;
         };
-        let theme: GuiValues = gui
+        let values: GuiValues = gui
             .iter()
-            .filter(|(k, _)| sapphire_bridge_api::settings::gui::THEME_KEYS.contains(&k.as_str()))
+            .filter(|(k, _)| {
+                sapphire_bridge_api::settings::gui::THEME_KEYS.contains(&k.as_str())
+                    || k.as_str() == sapphire_bridge_api::settings::gui::LOCALE
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        if self.seen_theme.as_ref() != Some(&theme) {
-            theme::install(ctx, &theme_settings(&theme));
-            self.seen_theme = Some(theme);
+        if self.seen_look.as_ref() == Some(&values) {
+            return;
         }
-        if let Some(locale) = gui.get(sapphire_bridge_api::settings::gui::LOCALE)
-            && self.seen_locale.as_ref() != Some(locale)
-        {
-            i18n::install(ctx, &language_settings(gui));
-            self.seen_locale = Some(locale.clone());
-        }
+        let language = if values.contains_key(sapphire_bridge_api::settings::gui::LOCALE) {
+            language_settings(&values)
+        } else {
+            look::current(ctx).unwrap_or_default().language
+        };
+        look::apply(
+            ctx,
+            &Look {
+                theme: theme_settings(&values),
+                language,
+            },
+        );
+        self.seen_look = Some(values);
     }
 
-    /// Install the stored theme and language again on the next
+    /// Apply the stored theme and language again on the next
     /// [`follow_theme`](Self::follow_theme), even if their values have not changed: the
     /// look has moved off them.
     pub(crate) fn forget_seen_theme(&mut self) {
-        self.seen_theme = None;
-        self.seen_locale = None;
+        self.seen_look = None;
     }
 
     /// Render the status banner: the services and their install buttons, a newer release,
@@ -699,6 +706,7 @@ mod tests {
     };
     use crate::test_support::{client, render, render_in};
     use crate::views::config::widgets::tests::drawn_text;
+    use corundum_framework_gui::{i18n, theme};
     use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, SyncStatusResult};
     use sapphire_bridge_api::settings::{Apply, Process};
     use sapphire_bridge_api::{ConfigWriteResult, Entry, EntryValue, Kind, Scope, SettingDef};
@@ -1321,10 +1329,10 @@ mod tests {
         );
         settings.follow_theme(&ctx);
         assert_eq!(i18n::current(&ctx).to_string(), "en");
-        // A change of the theme alone does not install the language either.
+        // A change of the theme applies the bridge's look, its language as well.
         settings.test_snapshot = Some(with_locale(contrast("low"), "ja"));
         settings.follow_theme(&ctx);
-        assert_eq!(i18n::current(&ctx).to_string(), "en");
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
         assert!(is_drawn_with(
             &ctx,
             corundum_framework_gui::theme::Contrast::Low
@@ -1332,13 +1340,75 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_without_the_locale_leaves_the_language() {
+    fn a_snapshot_without_the_locale_keeps_the_last_language() {
         let (mut settings, _rt) = settings();
         let ctx = registered_ctx();
+        // The look the device kept from the last start.
+        look::apply(
+            &ctx,
+            &Look {
+                language: i18n::LanguageSettings {
+                    language: i18n::Language::Explicit("ja".into()),
+                },
+                ..Default::default()
+            },
+        );
         settings.test_snapshot = Some(with_gui(contrast("high")));
         settings.follow_theme(&ctx);
-        assert!(!i18n::is_installed(&ctx));
+        assert_eq!(i18n::current(&ctx).to_string(), "ja");
         // The theme is still followed.
+        assert!(is_drawn_with(
+            &ctx,
+            corundum_framework_gui::theme::Contrast::High
+        ));
+    }
+
+    #[test]
+    fn the_applied_look_is_kept_on_the_device() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = corundum_framework_gui::store::Store::at(dir.path().join("corundum.toml"));
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        corundum_framework_gui::store::attach(&ctx, store.clone());
+        settings.test_snapshot = Some(with_locale(contrast("high"), "ja"));
+        settings.follow_theme(&ctx);
+        let kept = store.load().and_then(|s| s.look).expect("a look is saved");
+        assert_eq!(
+            kept.theme.contrast,
+            corundum_framework_gui::theme::Contrast::High
+        );
+        assert_eq!(
+            kept.language.language,
+            i18n::Language::Explicit("ja".into())
+        );
+        // A preview (a slider being dragged) is not kept.
+        theme::install(&ctx, &ThemeSettings::default());
+        settings.follow_theme(&ctx);
+        assert_eq!(store.load().and_then(|s| s.look), Some(kept));
+    }
+
+    #[test]
+    fn a_kept_look_shows_until_the_bridge_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = corundum_framework_gui::store::Store::at(dir.path().join("corundum.toml"));
+        let kept = Look {
+            theme: ThemeSettings {
+                contrast: corundum_framework_gui::theme::Contrast::High,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        store
+            .save(&corundum_framework_gui::store::Stored {
+                look: Some(kept),
+                ..Default::default()
+            })
+            .unwrap();
+        let (mut settings, _rt) = settings();
+        let ctx = registered_ctx();
+        assert!(corundum_framework_gui::store::attach(&ctx, store));
+        settings.test_snapshot = Some(with_gui(None));
+        settings.follow_theme(&ctx);
         assert!(is_drawn_with(
             &ctx,
             corundum_framework_gui::theme::Contrast::High

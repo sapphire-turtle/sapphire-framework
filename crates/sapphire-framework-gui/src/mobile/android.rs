@@ -5,7 +5,7 @@ use corundum_framework_gui::window::{self, WindowOptions};
 use sapphire_workspace::{AppContext, AppKind};
 
 use super::{BuildServer, EntryGuard, MobileOptions, app_log_filter, prepare_dirs, start_services};
-use crate::app::{AppSetup, build_app};
+use crate::app::{AppSetup, build_app, corundum_store};
 use crate::client::ClientConfig;
 
 static ENTRY: EntryGuard = EntryGuard::new();
@@ -61,7 +61,7 @@ fn run_once(
 
     // corundum-framework-gui installs the panic hook, gives its platform calls the activity, and
     // wraps the app in the phone's frame (the insets and the keyboard).
-    let mut window_options = WindowOptions::new(title);
+    let mut window_options = WindowOptions::new(title).remember(corundum_store(&dirs));
     if let Some(install) = fonts {
         window_options = window_options.fonts(install);
     }

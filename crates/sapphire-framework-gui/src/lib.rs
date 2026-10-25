@@ -7,7 +7,9 @@
 //! The theme and the language are settings like any other: the bridge keeps them for the
 //! whole workgroup, a device may override them, the Appearance page edits them, and
 //! [`Settings::follow_theme`] (which the shell calls) installs them whenever they change.
-//! Apps save nothing.
+//! It also keeps the result in corundum's store on the device, which the window installs
+//! before the first frame: an app opens in its look before the bridge answers, or without
+//! one. Apps save nothing.
 //!
 //! [`views::WorkspacePicker`] shows the workspace the app server serves and switches it
 //! through the server. [`WorkspaceManager`], a list + management screen over the shared

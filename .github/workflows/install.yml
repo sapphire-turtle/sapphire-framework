@@ -31,10 +31,10 @@ jobs:
         env:
           # The runners share the unauthenticated API rate limit.
           GITHUB_TOKEN: ${{ github.token }}
-        run: sh install/install.sh --dir "$RUNNER_TEMP/bin" sync journal agent
+        run: sh install/install.sh --dir "$RUNNER_TEMP/bin" sync journal agent ledger tally
       - name: The installed binaries run
         run: |
-          for bin in sapphire-bridge sapphire-sync sapphire-journal; do
+          for bin in sapphire-bridge sapphire-sync sapphire-journal sapphire-ledger sapphire-tally; do
             "$RUNNER_TEMP/bin/$bin" --version
           done
           # sapphire-agent has no --version.
@@ -52,11 +52,11 @@ jobs:
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" sync journal agent
+        run: ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" sync journal agent ledger tally
       - name: The installed binaries run
         shell: pwsh
         run: |
-          foreach ($bin in 'sapphire-bridge', 'sapphire-sync', 'sapphire-journal') {
+          foreach ($bin in 'sapphire-bridge', 'sapphire-sync', 'sapphire-journal', 'sapphire-ledger', 'sapphire-tally') {
             & "$env:RUNNER_TEMP\bin\$bin.exe" --version
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }

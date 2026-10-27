@@ -1436,9 +1436,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e62215a2e28b769a7d0b252a853f6323c5491a5768559d4169a407ed3e9f6d43"
+checksum = "9407d85201aa62c03867207c3a7644cbc101c3525e629302a731155ee9778022"
 dependencies = [
  "android-activity",
  "android_log-sys",
@@ -1453,8 +1453,10 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-text",
+ "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
  "raw-window-handle",
+ "rfd",
  "serde",
  "toml",
  "tracing",
@@ -1465,17 +1467,19 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e58e9a44dfc91cd0880385e628261246721eac89b36a4d93613e9410b0b264c"
+checksum = "cb43ffa9d7bd3eaaf9582938f78fe0c8ec9a25b8aa5c261f1a4ca1d9a8b92400"
 dependencies = [
  "dirs 7.0.0",
  "jni 0.22.4",
  "ndk-context",
  "objc2-foundation 0.3.2",
+ "resvg",
  "sys-locale",
  "tracing",
  "unic-langid",
+ "windows",
 ]
 
 [[package]]
@@ -7368,7 +7372,6 @@ dependencies = [
  "eframe",
  "egui",
  "grain-id",
- "rfd",
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",

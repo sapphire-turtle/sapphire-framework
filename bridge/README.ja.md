@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" alt="" width="72" height="72">
+
 # sapphire-bridge（日本語）
 
 ホスト単位で常駐する sapphire のデーモンです。OS ユーザーごとに 1 プロセスで、そのマシン上の

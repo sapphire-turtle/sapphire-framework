@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" alt="" width="72" height="72">
+
 # sapphire-bridge
 
 The host-wide sapphire daemon. One process per OS user, shared by every sapphire application

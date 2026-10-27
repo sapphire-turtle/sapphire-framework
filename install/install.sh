@@ -21,8 +21,14 @@ agent           sapphire-agent      sapphire-agent           v
 agent-desktop   sapphire-agent      sapphire-agent-desktop   desktop-v
 journal         sapphire-journal    sapphire-journal         v
 journal-desktop sapphire-journal    sapphire-journal-desktop desktop-v
+ledger          sapphire-ledger     sapphire-ledger          v
+ledger-desktop  sapphire-ledger     sapphire-ledger-desktop  desktop-v
 sync            sapphire-sync       sapphire-sync            v
 sync-desktop    sapphire-sync       sapphire-sync-desktop    desktop-v
+tally           sapphire-tally      sapphire-tally           v
+tally-desktop   sapphire-tally      sapphire-tally-desktop   desktop-v
+timer           sapphire-timer      sapphire-timer           v
+timer-desktop   sapphire-timer      sapphire-timer-desktop   desktop-v
 "
 # Names an application no longer has: name, and the app that replaces it.
 RETIRED="

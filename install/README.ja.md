@@ -20,7 +20,10 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 | `bridge` | `sapphire-bridge` のみ |
 | `agent`, `agent-desktop` | `sapphire-agent`, `sapphire-agent-desktop` |
 | `journal`, `journal-desktop` | `sapphire-journal`, `sapphire-journal-desktop` |
+| `ledger`, `ledger-desktop` | `sapphire-ledger`, `sapphire-ledger-desktop` |
 | `sync`, `sync-desktop` | `sapphire-sync`, `sapphire-sync-desktop` |
+| `tally`, `tally-desktop` | `sapphire-tally`, `sapphire-tally-desktop` |
+| `timer`, `timer-desktop` | `sapphire-timer`, `sapphire-timer-desktop` |
 
 | `install.sh` | `install.ps1` | |
 |---|---|---|

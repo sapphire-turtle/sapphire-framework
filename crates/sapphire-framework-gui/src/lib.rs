@@ -2,7 +2,8 @@
 //!
 //! [`Shell`] is every app's window frame: the app's screens on a rail (a bottom bar when
 //! narrow, as on a phone), and [`Settings`] at its foot — the app's own sections, the
-//! framework's sync screens and About — with the services' [`Health`] beside it.
+//! framework's sync screens and About — with the services' [`Health`] beside it. The app is
+//! a [`ShellApp`]: its screens, and the side pane beside them, which shows the item picked.
 //!
 //! The theme and the language are settings like any other: the bridge keeps them for the
 //! whole workgroup, a device may override them, the Appearance page edits them, and
@@ -63,12 +64,12 @@ pub const RESOURCES: i18n::Resources = i18n::Resources {
 /// corundum-framework-gui's translation support, for apps to register their own strings with.
 pub use corundum_framework_gui::i18n;
 pub use corundum_framework_gui::tr;
-pub use corundum_framework_gui::{Action, COMPACT_WIDTH, Destination};
+pub use corundum_framework_gui::{Action, COMPACT_WIDTH, Destination, Side};
 /// The system CJK fallback font and the Lucide icons, from corundum-framework-gui (shared with asteria).
 pub use corundum_framework_gui::{fonts, icons, theme};
 pub use health::{Health, bridge_needed};
 pub use settings::{Settings, SettingsSection};
-pub use shell::Shell;
+pub use shell::{Shell, ShellApp};
 
 /// The sync screens on their own: now [`Settings`], which adds the app's sections and
 /// About to them.

@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-v0.22.0...sapphire-bridge-v0.23.0) - 2026-10-28
+
+### Other
+
+- set the brand colour of the README icon to #4F7FD9
+- *(bridge)* the filled app icon
+- *(bridge)* add sapphire-bridge's icon and show it in its README
+
 ## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-v0.21.0...sapphire-bridge-v0.22.0) - 2026-10-25
 
 ### Added

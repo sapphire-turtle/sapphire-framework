@@ -1,5 +1,10 @@
 name: Shared cargo-deny
 
+# DEPRECATED: moved to sapphire-turtle/.github as `cargo-deny.yml`; call
+# `sapphire-turtle/.github/.github/workflows/cargo-deny.yml@v1` instead. Kept only
+# until every repository that calls this file at `@main` has moved
+# (sapphire-turtle/sapphire-framework#352), then removed.
+
 # License compatibility, RUSTSEC advisories, banned crates and unknown sources,
 # against the caller's deny.toml (see ci/templates/deny.toml). The caller picks
 # the triggers; ci/templates/cargo-deny.yml runs it on manifest changes, on

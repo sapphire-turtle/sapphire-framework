@@ -1,5 +1,10 @@
 name: Shared release-plz
 
+# DEPRECATED: moved to sapphire-turtle/.github as `release-plz.yml`; call
+# `sapphire-turtle/.github/.github/workflows/release-plz.yml@v1` instead. Kept only
+# until every repository that calls this file at `@main` has moved
+# (sapphire-turtle/sapphire-framework#352), then removed.
+
 # release-plz for a sapphire-turtle repository: `release` publishes what a
 # merged release PR bumped (crates.io, tags, GitHub releases), then `release-pr`
 # opens or updates the next release PR. Call it on every push to `main`, with

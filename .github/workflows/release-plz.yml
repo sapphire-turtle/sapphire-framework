@@ -16,7 +16,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: ./.github/workflows/shared-release-plz.yml
+    uses: sapphire-turtle/.github/.github/workflows/release-plz.yml@v1
     with:
       linux-packages: cmake libwayland-dev libxkbcommon-dev
     secrets: inherit

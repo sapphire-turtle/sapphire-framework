@@ -5,7 +5,7 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/shared-rust-ci.yml
+    uses: sapphire-turtle/.github/.github/workflows/rust-ci.yml@v1
     with:
       # cmake for aws-lc-sys; Wayland and xkbcommon for the gui crate.
       linux-packages: cmake libwayland-dev libxkbcommon-dev

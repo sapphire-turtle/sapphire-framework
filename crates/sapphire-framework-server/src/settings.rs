@@ -2,9 +2,9 @@
 //! registry.
 //!
 //! The framework owns `http.*` and `update.check`, all on the device and all read once at
-//! start. The application owns the keys under its own name, on the device or in the
-//! workspace; it says what they are ([`AppSettings`]) and the framework says where they
-//! live:
+//! start. The application owns the keys under its own name and under the top-level names it
+//! declares, on the device or in the workspace; it says what they are ([`AppSettings`]) and
+//! the framework says where they live:
 //!
 //! | Scope | File |
 //! |---|---|
@@ -42,7 +42,7 @@ const OLD_CONFIG_BACKUP: &str = "server.toml.v1";
 const NO_WORKSPACE: &str = "no workspace is selected";
 
 /// Top-level names the framework keeps for itself, whether or not it defines keys there.
-const FRAMEWORK_NAMES: [&str; 5] = ["http", "update", "sync", "retrieve", "workspace"];
+const FRAMEWORK_NAMES: [&str; 5] = sapphire_framework_settings::SERVER_NAMES;
 
 /// The framework's tables the device file is checked under: the names it defines keys in.
 /// Every other name in the file is the application's business (an application keeps its
@@ -55,12 +55,20 @@ pub(crate) const BRIDGE_NAMES: [&str; 3] = ["net", "embed", "gui"];
 /// An application's own settings: what they are, and a check of the edited files as a
 /// whole.
 ///
-/// Every key starts with the application's name and a dot, lives on the device or in the
+/// Every key starts with the application's name and a dot, or with one of the top-level
+/// names it declares ([`names`](AppSettings::names)); it lives on the device or in the
 /// workspace (not in the workgroup), and a secret lives on the device only. Where the files
 /// are is the framework's business. `()` is an application with no settings of its own.
 pub trait AppSettings: Send + Sync + 'static {
     /// The application's settings, in the order a listing shows them.
     fn defs(&self) -> Vec<SettingDef>;
+
+    /// The top-level names the application takes beside its own: tables such as
+    /// `anthropic` for `[anthropic]`, or a bare key such as `day_boundary_hour`. None of
+    /// them may be one the framework or the bridge keeps.
+    fn names(&self) -> &[&str] {
+        &[]
+    }
 
     /// Check the edited files as a whole, before anything is written; also run once when
     /// the server starts, against the files as they are.
@@ -288,22 +296,41 @@ impl SettingsOwner for AppOwner {
 
 /// The app server's registry: the framework (owner 0) and the application (owner 1).
 ///
-/// An application key outside `<app_name>.`, or one the workgroup may hold, is
+/// A declared name the framework or the bridge keeps, an application key outside
+/// `<app_name>.` and the declared names, or one the workgroup may hold, is
 /// [`InvalidDef`](sapphire_framework_settings::Error::InvalidDef).
 pub(crate) fn registry(
     ctx: &AppContext,
     files: &SettingsFiles,
     app: Arc<dyn AppSettings>,
 ) -> sapphire_framework_settings::Result<Registry> {
+    let names: Vec<String> = app.names().iter().map(|n| (*n).to_owned()).collect();
+    for name in &names {
+        let invalid = |message: String| sapphire_framework_settings::Error::InvalidDef {
+            key: name.clone(),
+            message,
+        };
+        if name.is_empty() || name.contains('.') {
+            return Err(invalid(
+                "an application's top-level name is one segment, without a dot".to_owned(),
+            ));
+        }
+        if FRAMEWORK_NAMES.contains(&name.as_str()) || BRIDGE_NAMES.contains(&name.as_str()) {
+            return Err(invalid(format!(
+                "`{name}` is kept by the framework, not an application's"
+            )));
+        }
+    }
     let prefix = format!("{}.", ctx.app_name);
     for def in app.defs() {
         let invalid = |message: String| sapphire_framework_settings::Error::InvalidDef {
             key: def.key.clone(),
             message,
         };
-        if !def.key.starts_with(&prefix) {
+        let top = def.key.split('.').next().unwrap_or_default();
+        if !def.key.starts_with(&prefix) && !names.iter().any(|n| n == top) {
             return Err(invalid(format!(
-                "an application's key starts with `{prefix}`"
+                "an application's key starts with `{prefix}` or a top-level name it declares"
             )));
         }
         if def.scopes.contains(&Scope::Workgroup) {
@@ -317,6 +344,7 @@ pub(crate) fn registry(
     const NO_OWNER: usize = usize::MAX;
     let mut reserved: Vec<(&str, usize)> = FRAMEWORK_NAMES.iter().map(|n| (*n, 0)).collect();
     reserved.push((ctx.app_name, 1));
+    reserved.extend(names.iter().map(|n| (n.as_str(), 1)));
     reserved.extend(BRIDGE_NAMES.iter().map(|n| (*n, NO_OWNER)));
     Registry::new(
         vec![
@@ -821,6 +849,19 @@ mod tests {
         Arc::new(TestApp(vec![def]))
     }
 
+    /// An application with top-level names of its own.
+    struct Named(&'static [&'static str], Vec<SettingDef>);
+
+    impl AppSettings for Named {
+        fn defs(&self) -> Vec<SettingDef> {
+            self.1.clone()
+        }
+
+        fn names(&self) -> &[&str] {
+            self.0
+        }
+    }
+
     fn set(key: &str, value: Value) -> Op {
         Op::Set {
             key: key.into(),
@@ -1115,6 +1156,98 @@ mod tests {
         let files = SettingsFiles::for_app(&ctx).unwrap();
         let def = app_def("http.port", Kind::Bool, vec![Scope::Device], Apply::Live);
         assert!(registry(&ctx, &files, one(def)).is_err());
+    }
+
+    #[test]
+    fn an_app_key_under_a_declared_name_is_taken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let files = SettingsFiles::for_app(&ctx).unwrap();
+        let defs = vec![
+            app_def(
+                "anthropic.model",
+                Kind::String { non_empty: true },
+                vec![Scope::Device],
+                Apply::Live,
+            ),
+            app_def(
+                "day_boundary_hour",
+                Kind::Int { min: 0, max: 23 },
+                vec![Scope::Device],
+                Apply::Live,
+            ),
+            app_def(
+                "settingstest.x",
+                Kind::Bool,
+                vec![Scope::Device],
+                Apply::Live,
+            ),
+        ];
+        let app = Arc::new(Named(&["anthropic", "day_boundary_hour"], defs));
+        assert!(registry(&ctx, &files, app).is_ok());
+    }
+
+    #[test]
+    fn an_app_key_outside_its_names_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let files = SettingsFiles::for_app(&ctx).unwrap();
+        let def = app_def("openai.model", Kind::Bool, vec![Scope::Device], Apply::Live);
+        let app = Arc::new(Named(&["anthropic"], vec![def]));
+        let err = registry(&ctx, &files, app).err().unwrap().to_string();
+        assert!(err.contains("openai.model"), "{err}");
+    }
+
+    #[test]
+    fn a_declared_name_the_framework_keeps_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let files = SettingsFiles::for_app(&ctx).unwrap();
+        for name in ["http", "sync", "workspace", "embed", "net", "", "a.b"] {
+            let names: &'static [&'static str] = Box::leak(Box::new([name]));
+            let app = Arc::new(Named(names, Vec::new()));
+            assert!(registry(&ctx, &files, app).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_top_level_table_and_key_are_written_and_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let defs = vec![
+            app_def(
+                "anthropic.model",
+                Kind::String { non_empty: true },
+                vec![Scope::Device],
+                Apply::Live,
+            ),
+            app_def(
+                "day_boundary_hour",
+                Kind::Int { min: 0, max: 23 },
+                vec![Scope::Device],
+                Apply::Live,
+            ),
+        ];
+        let app = Arc::new(Named(&["anthropic", "day_boundary_hour"], defs));
+        let settings = Settings::load(&ctx, app).unwrap();
+        apply(
+            settings.registry(),
+            None,
+            vec![
+                set("anthropic.model", Value::String("m".into())),
+                set("day_boundary_hour", Value::Int(4)),
+            ],
+        )
+        .unwrap();
+        settings.refresh().unwrap();
+        assert_eq!(
+            settings.get("anthropic.model"),
+            Some(Value::String("m".into()))
+        );
+        assert_eq!(settings.get("day_boundary_hour"), Some(Value::Int(4)));
+        let text = std::fs::read_to_string(tmp.path().join("config").join("config.toml")).unwrap();
+        assert!(text.contains("[anthropic]"), "{text}");
+        assert!(text.contains("day_boundary_hour = 4"), "{text}");
     }
 
     #[test]

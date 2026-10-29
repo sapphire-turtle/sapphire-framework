@@ -419,7 +419,7 @@ mod tests {
     }
 
     fn spec(state: &ConfigState) -> PageSpec {
-        pages(&state.schema, "app", &[]).remove(0)
+        pages(&state.schema, &[]).remove(0)
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod tests {
         for d in &mut ws_only.schema {
             d.scopes = vec![Scope::Workspace];
         }
-        let spec = super::super::model::pages(&ws_only.schema, "app", &[]).remove(0);
+        let spec = super::super::model::pages(&ws_only.schema, &[]).remove(0);
         let mut page = ConfigPage::new("S");
         let drawn = drawn_text(|ui| {
             page.ui(ui, &cx(&snapshot), &spec, &ws_only, &mut drafts);

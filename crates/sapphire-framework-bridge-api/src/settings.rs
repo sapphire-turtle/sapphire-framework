@@ -144,6 +144,11 @@ pub enum Process {
     App,
 }
 
+/// The top-level names the app server's framework keeps for itself, whether or not it
+/// defines keys there: an application declares its own top-level names beside these, never
+/// one of them. Adding a name here is a breaking change.
+pub const SERVER_NAMES: [&str; 5] = ["http", "update", "sync", "retrieve", "workspace"];
+
 /// The registry's description of one setting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettingDef {

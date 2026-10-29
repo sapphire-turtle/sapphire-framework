@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
-use sapphire_bridge_api::settings::Process;
+use sapphire_bridge_api::settings::{Process, SERVER_NAMES};
 use sapphire_bridge_api::{ConfigEntry, Entry, EntryValue, Kind, Origin, Scope, SettingDef, Value};
 
 use super::super::backend_error;
@@ -38,10 +38,18 @@ pub(crate) struct PageSpec {
     pub keys: Vec<String>,
 }
 
+/// Whether `key` is under a top-level name the app server's framework keeps (`http.*`, ...).
+fn is_server_key(key: &str) -> bool {
+    let top = key.split('.').next().unwrap_or_default();
+    SERVER_NAMES.contains(&top)
+}
+
 /// The pages the schema makes, one per distinct section, in schema order. `screens` are the
 /// labels of the existing screens a section may join.
-pub(crate) fn pages(schema: &[SettingDef], app_name: &str, screens: &[&str]) -> Vec<PageSpec> {
-    let prefix = format!("{app_name}.");
+///
+/// A section of the app server's keys outside the framework's own names is the
+/// application's: under `<app_name>.` or a top-level name the application declares.
+pub(crate) fn pages(schema: &[SettingDef], screens: &[&str]) -> Vec<PageSpec> {
     let mut sections: Vec<(&str, Vec<&SettingDef>)> = Vec::new();
     for def in schema {
         match sections.iter_mut().find(|(s, _)| *s == def.section) {
@@ -54,7 +62,7 @@ pub(crate) fn pages(schema: &[SettingDef], app_name: &str, screens: &[&str]) -> 
         .map(|(section, defs)| {
             let placement = if defs
                 .iter()
-                .all(|d| d.process == Process::App && d.key.starts_with(&prefix))
+                .all(|d| d.process == Process::App && !is_server_key(&d.key))
             {
                 Placement::App
             } else if let Some(screen) = screens.iter().find(|s| s.eq_ignore_ascii_case(section)) {
@@ -427,7 +435,7 @@ mod tests {
 
     #[test]
     fn pages_follow_the_schema_order_and_placement() {
-        let p = pages(&schema(), "notes", &["Embedding", "Sync"]);
+        let p = pages(&schema(), &["Embedding", "Sync"]);
         let got: Vec<_> = p
             .iter()
             .map(|p| (p.section.as_str(), p.placement.clone()))
@@ -442,10 +450,23 @@ mod tests {
             ]
         );
         assert_eq!(p[0].keys, ["notes.color", "notes.shared"]);
-        // A bridge-owned section is not the app's even with the prefix.
-        let other = pages(&schema(), "sync", &[]);
-        assert_eq!(other[2].placement, Placement::Configuration);
-        // Nor is the app process's own section without it: the server's `http.*`.
+        // A bridge-owned section is not the app's, whatever its keys' names.
+        assert_eq!(p[2].placement, Placement::Screen("Sync".into()));
+        // An application's top-level table is its own.
+        let mut s = schema();
+        s.push(def(
+            "anthropic.model",
+            "Anthropic",
+            Process::App,
+            &[Scope::Device],
+            string(),
+        ));
+        let anthropic = pages(&s, &[]).pop().unwrap();
+        assert_eq!(
+            (anthropic.section.as_str(), anthropic.placement),
+            ("Anthropic", Placement::App)
+        );
+        // The framework's keys in the app process are not: the server's `http.*`.
         let mut s = schema();
         s.push(def(
             "http.listen",
@@ -454,7 +475,7 @@ mod tests {
             &[Scope::Device],
             string(),
         ));
-        let server = pages(&s, "notes", &[]).pop().unwrap();
+        let server = pages(&s, &[]).pop().unwrap();
         assert_eq!(
             (server.section.as_str(), server.placement),
             ("Server", Placement::Configuration)
@@ -463,17 +484,14 @@ mod tests {
 
     #[test]
     fn tabs_are_the_scopes_the_keys_allow_in_order() {
-        let p = pages(&schema(), "notes", &[]);
+        let p = pages(&schema(), &[]);
         assert_eq!(p[0].scopes, [Scope::Device, Scope::Workspace]);
         assert_eq!(p[3].scopes, [Scope::Device, Scope::Workgroup]);
         let mut s = schema();
         s[1].overridable = true;
-        assert_eq!(pages(&s, "notes", &[])[1].scopes, [Scope::Device]);
+        assert_eq!(pages(&s, &[])[1].scopes, [Scope::Device]);
         s[2].overridable = true;
-        assert_eq!(
-            pages(&s, "notes", &[])[2].scopes,
-            [Scope::Device, Scope::Workgroup]
-        );
+        assert_eq!(pages(&s, &[])[2].scopes, [Scope::Device, Scope::Workgroup]);
     }
 
     #[test]

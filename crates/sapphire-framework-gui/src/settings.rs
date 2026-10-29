@@ -622,8 +622,7 @@ impl Settings {
 
     /// Keep a load's settings, and the pages their schema makes. Drafts are untouched.
     fn loaded(&mut self, state: ConfigState) {
-        let app_name = self.client.app().app_name;
-        self.pages = pages(&state.schema, app_name, &[JOINED_SCREEN.1, APPEARANCE]);
+        self.pages = pages(&state.schema, &[JOINED_SCREEN.1, APPEARANCE]);
         for spec in &self.pages {
             let page = self
                 .config_pages
@@ -938,7 +937,7 @@ mod tests {
                 def("sapphire-gui-test.color", "Look", Process::App),
                 def("net.discovery", "Network", Process::Bridge),
                 def("embed.cache_dir", "Embedding", Process::Bridge),
-                def("server.log", "Server", Process::App),
+                def("http.listen", "Server", Process::App),
             ],
             effective: vec![Entry {
                 key: "embed.cache_dir".into(),

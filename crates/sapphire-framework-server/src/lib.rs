@@ -539,6 +539,9 @@ impl AppServer {
     /// A server run this way answers `server.restart` with an error: nothing would bring it
     /// back. [`serve_restarting`] runs one that can.
     pub async fn run(self) -> Result<()> {
+        // Before anything is bound: a mistake in the application, not in the files.
+        #[cfg(feature = "http")]
+        undeclared_endpoints(self.settings.as_ref(), &self.http_endpoints)?;
         let endpoint = self.endpoint_or_default()?;
         // The app's log file, held for as long as this server serves: the guard's drop
         // flushes the writer thread, so the last lines of a clean shutdown land in the file.
@@ -635,21 +638,8 @@ impl AppServer {
             (None, Some(settings)) => ServerConfig::from_settings(settings)?,
             (None, None) => ServerConfig::default(),
         };
-        // An endpoint the settings do not declare has no switch to turn it on.
         #[cfg(feature = "http")]
-        if let Some(settings) = &settings {
-            for (name, _) in &http_endpoints {
-                if settings
-                    .registry()
-                    .def(&settings::endpoint_key(name))
-                    .is_err()
-                {
-                    return Err(Error::Config(format!(
-                        "the HTTP endpoint `{name}` is not one the application's settings declare"
-                    )));
-                }
-            }
-        }
+        undeclared_endpoints(settings.as_ref(), &http_endpoints)?;
         #[cfg(feature = "http")]
         let http_routes = http_endpoints
             .into_iter()
@@ -1032,6 +1022,29 @@ impl AppServer {
         // Everything else of this server — the router, the relay, `Current`, the host and
         // the sync runtime — goes as this returns, before a restart builds the next one.
         Ok(exit)
+    }
+}
+
+/// An error for the first of `endpoints` the settings do not declare: it has no switch to
+/// turn it on.
+#[cfg(feature = "http")]
+fn undeclared_endpoints(
+    settings: Option<&Settings>,
+    endpoints: &[(String, axum::Router)],
+) -> Result<()> {
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    match endpoints.iter().find(|(name, _)| {
+        settings
+            .registry()
+            .def(&settings::endpoint_key(name))
+            .is_err()
+    }) {
+        Some((name, _)) => Err(Error::Config(format!(
+            "the HTTP endpoint `{name}` is not one the application's settings declare"
+        ))),
+        None => Ok(()),
     }
 }
 

@@ -1,5 +1,10 @@
 name: Shared Rust CI
 
+# DEPRECATED: moved to sapphire-turtle/.github as `rust-ci.yml`; call
+# `sapphire-turtle/.github/.github/workflows/rust-ci.yml@v1` instead. Kept only
+# until every repository that calls this file at `@main` has moved
+# (sapphire-turtle/sapphire-framework#352), then removed.
+
 # The pull request CI every sapphire-turtle Rust repository runs. Call it from a
 # repository's own `ci.yml` (see ci/templates/ci.yml):
 #

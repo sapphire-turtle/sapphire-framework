@@ -30,8 +30,9 @@ corundum-framework-platform.workspace = true
 tempfile = "3"
 
 # `cargo binstall sapphire-bridge` downloads the release file instead of building it. The
-# files are bare binaries named `<binary>-<os>-<arch>` (ci/README.md#conventions), not the
-# `{ target }` archives binstall guesses, so each release platform names its own.
+# files are bare binaries named `<binary>-<os>-<arch>` (sapphire-turtle/.github's
+# README.md#conventions), not the `{ target }` archives binstall guesses, so each release
+# platform names its own.
 # quick-install is a third party's build: only this repository's files, or a build from
 # source, are installed.
 [package.metadata.binstall]

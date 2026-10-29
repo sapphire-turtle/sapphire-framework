@@ -2,9 +2,14 @@
 
 > 日本語: [README.ja.md](README.ja.md)
 
-One pair of scripts installs every sapphire application from its GitHub release, and
-installs or updates [`sapphire-bridge`](../bridge/README.md) along with it: the applications
-sync through the host's bridge.
+One pair of scripts installs the CLI of every sapphire application (the CLI, the app server
+and the MCP server in one binary) from its GitHub release, and installs or updates
+[`sapphire-bridge`](../bridge/README.md) along with it: the applications sync through the
+host's bridge. It is meant for servers and other headless machines.
+
+The desktop apps are not installed by these scripts. Each ships as an installer on its
+application's releases (`https://github.com/sapphire-turtle/sapphire-<app>/releases`), which
+carries the CLI as well and keeps both up to date.
 
 ```sh
 # Linux, macOS
@@ -19,12 +24,12 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 | App | Installs |
 |---|---|
 | `bridge` | `sapphire-bridge` only |
-| `agent`, `agent-desktop` | `sapphire-agent`, `sapphire-agent-desktop` |
-| `journal`, `journal-desktop` | `sapphire-journal`, `sapphire-journal-desktop` |
-| `ledger`, `ledger-desktop` | `sapphire-ledger`, `sapphire-ledger-desktop` |
-| `sync`, `sync-desktop` | `sapphire-sync`, `sapphire-sync-desktop` |
-| `tally`, `tally-desktop` | `sapphire-tally`, `sapphire-tally-desktop` |
-| `timer`, `timer-desktop` | `sapphire-timer`, `sapphire-timer-desktop` |
+| `agent` | `sapphire-agent` |
+| `journal` | `sapphire-journal` |
+| `ledger` | `sapphire-ledger` |
+| `sync` | `sapphire-sync` |
+| `tally` | `sapphire-tally` |
+| `timer` | `sapphire-timer` |
 
 | `install.sh` | `install.ps1` | |
 |---|---|---|
@@ -37,6 +42,11 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
   application's tag prefix, the same rule as the `update` command.
 - A binary already installed by `cargo install` or `cargo binstall` (or, on Linux and macOS,
   by a package manager) is left alone; update it the same way.
+- An application whose desktop app is already installed is skipped: the desktop package
+  includes the same CLI and server, and a second copy would run a second server. It is
+  recognised by `%LocalAppData%\sapphire-<app>\Update.exe` on Windows,
+  `Sapphire <App>.app` in `~/Applications` or `/Applications` on macOS, and a
+  `~/.local/bin/sapphire-<app>` that points to an AppImage on Linux.
 - `install.ps1` adds the directory to the user `PATH`; `install.sh` tells you when it is not on
   `PATH`.
 
@@ -49,12 +59,14 @@ it again.
 
 ```sh
 cargo binstall sapphire-bridge sapphire-journal
-# The desktop apps are not on crates.io
-cargo binstall --git https://github.com/sapphire-turtle/sapphire-journal sapphire-journal-desktop
 ```
 
 ## Adding an application
 
 Add a row to the table at the top of both scripts: the name, the repository, the release
 file name before `-<os>-<arch>`, and the tag prefix in the application's `release-plz.toml`.
-The release files must follow [the shared naming](../ci/README.md#conventions).
+The release files must follow
+[the shared naming](https://github.com/sapphire-turtle/.github#conventions).
+An application's README describes installation as
+[the shared template](https://github.com/sapphire-turtle/.github/blob/main/templates/README-install.md)
+does.

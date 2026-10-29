@@ -1,5 +1,8 @@
-# Install sapphire applications from their GitHub releases, together with
-# sapphire-bridge, the host-wide daemon every one of them syncs through.
+# Install the CLI of sapphire applications (the CLI, the app server and the MCP
+# server, for headless machines) from their GitHub releases, together with
+# sapphire-bridge, the host-wide daemon every one of them syncs through. The
+# desktop apps are not installed here: they ship as installers on each
+# application's releases, which carry the CLI as well.
 #
 #   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) journal
 #
@@ -33,17 +36,11 @@ $Owner = 'sapphire-turtle'
 $Apps = [ordered]@{
     'bridge'          = @('sapphire-framework', 'sapphire-bridge', 'v')
     'agent'           = @('sapphire-agent', 'sapphire-agent', 'v')
-    'agent-desktop'   = @('sapphire-agent', 'sapphire-agent-desktop', 'desktop-v')
     'journal'         = @('sapphire-journal', 'sapphire-journal', 'v')
-    'journal-desktop' = @('sapphire-journal', 'sapphire-journal-desktop', 'desktop-v')
     'ledger'          = @('sapphire-ledger', 'sapphire-ledger', 'v')
-    'ledger-desktop'  = @('sapphire-ledger', 'sapphire-ledger-desktop', 'desktop-v')
     'sync'            = @('sapphire-sync', 'sapphire-sync', 'v')
-    'sync-desktop'    = @('sapphire-sync', 'sapphire-sync-desktop', 'desktop-v')
     'tally'           = @('sapphire-tally', 'sapphire-tally', 'v')
-    'tally-desktop'   = @('sapphire-tally', 'sapphire-tally-desktop', 'desktop-v')
     'timer'           = @('sapphire-timer', 'sapphire-timer', 'v')
-    'timer-desktop'   = @('sapphire-timer', 'sapphire-timer-desktop', 'desktop-v')
 }
 
 # Names an application no longer has, and the app that replaces each.
@@ -54,7 +51,9 @@ $Retired = @{
 function Show-Usage {
     Write-Host 'Usage: install.ps1 [-Dir <dir>] [-Version <x.y.z>] [-NoBridge] <app>...'
     Write-Host ''
-    Write-Host 'Installs each <app> from its latest release, and sapphire-bridge with them.'
+    Write-Host "Installs each <app>'s CLI from its latest release, and sapphire-bridge with"
+    Write-Host "them. For the desktop app, download its installer from the application's"
+    Write-Host 'releases instead.'
     Write-Host ''
     Write-Host 'Apps:'
     foreach ($name in $Apps.Keys) { Write-Host "  $name" }
@@ -70,6 +69,10 @@ if ($App.Count -eq 0) { Show-Usage; exit 2 }
 $Version = $Version.TrimStart('v')
 if ($Version -and $App.Count -gt 1) { throw '-Version applies to one app at a time' }
 foreach ($name in $App) {
+    if ($name.EndsWith('-desktop') -and $Apps.Contains($name.Substring(0, $name.Length - 8))) {
+        $repo = $Apps[$name.Substring(0, $name.Length - 8)][0]
+        throw "$name is not installed by this script: download the desktop app's installer from https://github.com/$Owner/$repo/releases/latest"
+    }
     if ($Retired.Contains($name)) { throw "$name is now part of $($Retired[$name]): install $($Retired[$name]) instead" }
     if (-not $Apps.Contains($name)) { throw "unknown app: $name (see -Help)" }
 }
@@ -110,10 +113,26 @@ function Test-CargoInstall([string] $Path) {
     $Path.StartsWith($cargoBin, [StringComparison]::OrdinalIgnoreCase)
 }
 
+# Where the application's desktop package is installed, or $null. The package
+# (Velopack, installed per user under %LocalAppData%\<packId>) carries the same
+# CLI and app server and updates them itself: a second copy here would run a
+# second server.
+function Get-DesktopInstall([string] $Base) {
+    if (-not $env:LOCALAPPDATA) { return $null }
+    $root = Join-Path $env:LOCALAPPDATA $Base
+    if (Test-Path (Join-Path $root 'Update.exe')) { $root } else { $null }
+}
+
 $Installed = @()
 
 function Install-App([string] $Name, [string] $Want) {
     $repo, $base, $prefix = $Apps[$Name]
+
+    $desktop = Get-DesktopInstall $base
+    if ($desktop) {
+        Write-Host "Skipping ${base}: the desktop app at $desktop already includes it and keeps it up to date."
+        return
+    }
 
     $existing = (Get-Command "$base.exe" -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1).Source

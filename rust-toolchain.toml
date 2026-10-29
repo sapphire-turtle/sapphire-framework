@@ -4,7 +4,7 @@
 # land its new lints directly in a red CI run — and a contributor on an older
 # stable could not reproduce the failure. Bump this deliberately instead, and
 # fix the new lints in the same commit. Every sapphire-turtle repository pins the
-# same version (ci/README.md), and they are bumped together.
+# same version (sapphire-turtle/.github README.md), and they are bumped together.
 [toolchain]
 channel = "1.99.0"
 components = ["clippy", "rustfmt"]

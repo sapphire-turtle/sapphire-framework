@@ -1,6 +1,9 @@
 #!/bin/sh
-# Install sapphire applications from their GitHub releases, together with
-# sapphire-bridge, the host-wide daemon every one of them syncs through.
+# Install the CLI of sapphire applications (the CLI, the app server and the MCP
+# server, for headless machines) from their GitHub releases, together with
+# sapphire-bridge, the host-wide daemon every one of them syncs through. The
+# desktop apps are not installed here: they ship as installers on each
+# application's releases, which carry the CLI as well.
 #
 #   curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- journal
 #
@@ -18,17 +21,11 @@ set -eu
 APPS="
 bridge          sapphire-framework  sapphire-bridge          v
 agent           sapphire-agent      sapphire-agent           v
-agent-desktop   sapphire-agent      sapphire-agent-desktop   desktop-v
 journal         sapphire-journal    sapphire-journal         v
-journal-desktop sapphire-journal    sapphire-journal-desktop desktop-v
 ledger          sapphire-ledger     sapphire-ledger          v
-ledger-desktop  sapphire-ledger     sapphire-ledger-desktop  desktop-v
 sync            sapphire-sync       sapphire-sync            v
-sync-desktop    sapphire-sync       sapphire-sync-desktop    desktop-v
 tally           sapphire-tally      sapphire-tally           v
-tally-desktop   sapphire-tally      sapphire-tally-desktop   desktop-v
 timer           sapphire-timer      sapphire-timer           v
-timer-desktop   sapphire-timer      sapphire-timer-desktop   desktop-v
 "
 # Names an application no longer has: name, and the app that replaces it.
 RETIRED="
@@ -40,7 +37,9 @@ usage() {
   cat <<EOF
 Usage: install.sh [options] <app>...
 
-Installs each <app> from its latest release, and sapphire-bridge with them.
+Installs each <app>'s CLI from its latest release, and sapphire-bridge with
+them. For the desktop app, download its installer from the application's
+releases instead.
 
 Apps:
 $(printf '%s\n' "$APPS" | awk 'NF { printf "  %s\n", $1 }')
@@ -80,6 +79,12 @@ if [ -n "$VERSION" ] && [ $# -gt 1 ]; then
   err "--version applies to one app at a time"
 fi
 for app in $REQUESTED; do
+  case "$app" in
+    *-desktop)
+      repo=$(printf '%s\n' "$APPS" | awk -v app="${app%-desktop}" '$1 == app { print $2 }')
+      [ -z "$repo" ] || err "$app is not installed by this script: download the desktop app's installer from https://github.com/${OWNER}/${repo}/releases/latest"
+      ;;
+  esac
   now=$(printf '%s\n' "$RETIRED" | awk -v app="$app" '$1 == app { print $2 }')
   [ -z "$now" ] || err "$app is now part of $now: install $now instead"
   printf '%s\n' "$APPS" | awk -v app="$app" '$1 == app { found = 1 } END { exit !found }' \
@@ -150,6 +155,32 @@ install_method() {
   esac
 }
 
+# desktop_install <binary>: where the application's desktop package is
+# installed, or nothing. The package (Velopack) carries the same CLI and app
+# server and updates them itself: a second copy here would run a second server.
+desktop_install() {
+  case "$OS" in
+    macos)
+      # sapphire-journal -> Sapphire Journal.app
+      name=$(printf '%s\n' "$1" | awk -F- -v OFS=' ' '{ for (i = 1; i <= NF; i++) $i = toupper(substr($i, 1, 1)) substr($i, 2); print }')
+      for dir in "$HOME/Applications" /Applications; do
+        if [ -d "$dir/$name.app" ]; then echo "$dir/$name.app"; return 0; fi
+      done
+      ;;
+    linux)
+      # The package links (or wraps) its AppImage into ~/.local/bin.
+      link="$HOME/.local/bin/$1"
+      if [ -L "$link" ]; then
+        target=$(readlink "$link")
+        case "$target" in *.AppImage) echo "$target"; return 0 ;; esac
+      elif [ -f "$link" ] && [ "$(head -c 2 "$link")" = '#!' ] && grep -q '\.AppImage' "$link"; then
+        echo "$link"
+        return 0
+      fi
+      ;;
+  esac
+}
+
 INSTALLED=""
 
 # The download in flight, removed if the script stops before it is renamed
@@ -163,6 +194,12 @@ install_app() {
   repo=$(app_field "$1" 2)
   base=$(app_field "$1" 3)
   prefix=$(app_field "$1" 4)
+
+  desktop=$(desktop_install "$base")
+  if [ -n "$desktop" ]; then
+    say "Skipping $base: the desktop app at $desktop already includes it and keeps it up to date."
+    return 0
+  fi
 
   # The binary is installed under its release file name, which is also the
   # name the application's own commands use for it.

@@ -43,6 +43,23 @@ jobs:
         run: |
           if sh install/install.sh --dir "$RUNNER_TEMP/bin" agent-cli 2>err; then exit 1; fi
           grep -q 'install agent instead' err
+      - name: A desktop app points to its installer
+        run: |
+          if sh install/install.sh --dir "$RUNNER_TEMP/bin" journal-desktop 2>err; then exit 1; fi
+          grep -q 'sapphire-journal/releases/latest' err
+      - name: An app whose desktop package is installed is skipped
+        run: |
+          # As the Velopack package lays itself out on each OS.
+          if [ "$RUNNER_OS" = macOS ]; then
+            mkdir -p "$HOME/Applications/Sapphire Sync.app"
+          else
+            mkdir -p "$HOME/.local/bin" "$RUNNER_TEMP/apps"
+            touch "$RUNNER_TEMP/apps/Sapphire_Sync.AppImage"
+            ln -sf "$RUNNER_TEMP/apps/Sapphire_Sync.AppImage" "$HOME/.local/bin/sapphire-sync"
+          fi
+          sh install/install.sh --no-bridge --dir "$RUNNER_TEMP/skip" sync > out
+          grep -q 'Skipping sapphire-sync' out
+          test ! -e "$RUNNER_TEMP/skip/sapphire-sync"
 
   install-ps1:
     runs-on: windows-latest
@@ -63,3 +80,17 @@ jobs:
           # sapphire-agent has no --version.
           & "$env:RUNNER_TEMP\bin\sapphire-agent.exe" --help | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: A desktop app points to its installer
+        shell: pwsh
+        run: |
+          try { ./install/install.ps1 -Dir "$env:RUNNER_TEMP\bin" journal-desktop; exit 1 }
+          catch { if ("$_" -notmatch 'sapphire-journal/releases/latest') { throw } }
+      - name: An app whose desktop package is installed is skipped
+        shell: pwsh
+        run: |
+          # As the Velopack package lays itself out.
+          New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\sapphire-sync" | Out-Null
+          New-Item -ItemType File -Force "$env:LOCALAPPDATA\sapphire-sync\Update.exe" | Out-Null
+          $out = ./install/install.ps1 -NoBridge -Dir "$env:RUNNER_TEMP\skip" sync 6>&1 | Out-String
+          if ($out -notmatch 'Skipping sapphire-sync') { throw "not skipped: $out" }
+          if (Test-Path "$env:RUNNER_TEMP\skip\sapphire-sync.exe") { throw 'installed anyway' }

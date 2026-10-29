@@ -70,6 +70,14 @@ pub trait AppSettings: Send + Sync + 'static {
         &[]
     }
 
+    /// The HTTP endpoints the application serves with
+    /// [`AppServer::http_endpoint`](crate::AppServer::http_endpoint): each gets an
+    /// `http.<name>.enabled` setting, off by default, and is served at `/<name>` only while
+    /// it is on.
+    fn http_endpoints(&self) -> Vec<HttpEndpoint> {
+        Vec::new()
+    }
+
     /// Check the edited files as a whole, before anything is written; also run once when
     /// the server starts, against the files as they are.
     ///
@@ -84,6 +92,39 @@ pub trait AppSettings: Send + Sync + 'static {
         Ok(())
     }
 }
+
+/// An HTTP endpoint an application declares ([`AppSettings::http_endpoints`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpEndpoint {
+    /// Its path and its setting's name: served at `/<name>`, turned on by
+    /// `http.<name>.enabled`. Lowercase letters, digits, `-` and `_`.
+    pub name: String,
+    /// What it serves, for its setting's help text.
+    pub doc: String,
+}
+
+impl HttpEndpoint {
+    /// The endpoint `name`, its switch described by `doc`.
+    pub fn new(name: impl Into<String>, doc: impl Into<String>) -> HttpEndpoint {
+        HttpEndpoint {
+            name: name.into(),
+            doc: doc.into(),
+        }
+    }
+
+    /// The setting that turns it on.
+    pub(crate) fn key(&self) -> String {
+        endpoint_key(&self.name)
+    }
+}
+
+/// The setting that turns the endpoint `name` on.
+pub(crate) fn endpoint_key(name: &str) -> String {
+    format!("http.{name}.enabled")
+}
+
+/// The names under `[http]` the framework's own settings take: no endpoint may use them.
+pub(crate) const HTTP_NAMES: [&str; 4] = ["listen", "allowed_hosts", "mcp", "metrics"];
 
 /// Where an application's settings files are, for [`AppSettings::validate`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,8 +232,9 @@ impl SettingsFiles {
     }
 }
 
-/// The framework's settings, in the order a listing shows them.
-fn framework_defs() -> Vec<SettingDef> {
+/// The framework's settings, in the order a listing shows them: the application's
+/// `endpoints` get their switches after the framework's own.
+fn framework_defs(endpoints: &[HttpEndpoint]) -> Vec<SettingDef> {
     let def = |key: &str, kind: Kind, default: Option<Value>, doc: &str| SettingDef {
         key: key.into(),
         kind,
@@ -204,7 +246,7 @@ fn framework_defs() -> Vec<SettingDef> {
         doc: doc.into(),
         process: Process::App,
     };
-    vec![
+    let mut defs = vec![
         def(
             "http.listen",
             Kind::SocketAddr,
@@ -231,23 +273,34 @@ fn framework_defs() -> Vec<SettingDef> {
             Some(Value::Bool(false)),
             "Serve Prometheus metrics at /metrics, without a token",
         ),
+    ];
+    defs.extend(endpoints.iter().map(|endpoint| {
         def(
-            "update.check",
+            &endpoint.key(),
             Kind::Bool,
-            Some(Value::Bool(true)),
-            "Look for newer releases of the application, at start and once a day",
-        ),
-    ]
+            Some(Value::Bool(false)),
+            &endpoint.doc,
+        )
+    }));
+    defs.push(def(
+        "update.check",
+        Kind::Bool,
+        Some(Value::Bool(true)),
+        "Look for newer releases of the application, at start and once a day",
+    ));
+    defs
 }
 
-/// The framework as a settings owner.
+/// The framework as a settings owner, with the switches of the application's HTTP
+/// endpoints.
 struct FrameworkOwner {
     files: SettingsFiles,
+    endpoints: Vec<HttpEndpoint>,
 }
 
 impl SettingsOwner for FrameworkOwner {
     fn defs(&self) -> Vec<SettingDef> {
-        framework_defs()
+        framework_defs(&self.endpoints)
     }
 
     fn file(&self, scope: Scope) -> sapphire_framework_settings::Result<PathBuf> {
@@ -259,7 +312,7 @@ impl SettingsOwner for FrameworkOwner {
     }
 
     fn validate(&self, staged: &Staged) -> std::result::Result<(), Vec<FieldError>> {
-        check_device_file(&self.files, staged)
+        check_device_file(&self.files, staged, &self.endpoints)
     }
 }
 
@@ -296,8 +349,9 @@ impl SettingsOwner for AppOwner {
 
 /// The app server's registry: the framework (owner 0) and the application (owner 1).
 ///
-/// A declared name the framework or the bridge keeps, an application key outside
-/// `<app_name>.` and the declared names, or one the workgroup may hold, is
+/// A declared name the framework or the bridge keeps, an HTTP endpoint named like one of
+/// the framework's `http.*` settings or badly, an application key outside `<app_name>.`
+/// and the declared names, or one the workgroup may hold, is
 /// [`InvalidDef`](sapphire_framework_settings::Error::InvalidDef).
 pub(crate) fn registry(
     ctx: &AppContext,
@@ -319,6 +373,33 @@ pub(crate) fn registry(
             return Err(invalid(format!(
                 "`{name}` is kept by the framework, not an application's"
             )));
+        }
+    }
+    let endpoints = app.http_endpoints();
+    for (i, endpoint) in endpoints.iter().enumerate() {
+        let invalid = |message: String| sapphire_framework_settings::Error::InvalidDef {
+            key: endpoint.key(),
+            message,
+        };
+        let name = endpoint.name.as_str();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            return Err(invalid(
+                "an endpoint's name is lowercase letters, digits, `-` and `_`".to_owned(),
+            ));
+        }
+        if HTTP_NAMES.contains(&name) {
+            return Err(invalid(format!(
+                "`http.{name}` is the framework's, not an endpoint's"
+            )));
+        }
+        if endpoints[..i].iter().any(|e| e.name == endpoint.name) {
+            return Err(sapphire_framework_settings::Error::Duplicate(
+                endpoint.key(),
+            ));
         }
     }
     let prefix = format!("{}.", ctx.app_name);
@@ -350,6 +431,7 @@ pub(crate) fn registry(
         vec![
             Arc::new(FrameworkOwner {
                 files: files.clone(),
+                endpoints,
             }),
             Arc::new(AppOwner {
                 files: files.clone(),
@@ -368,6 +450,7 @@ pub(crate) fn registry(
 fn check_device_file(
     files: &SettingsFiles,
     staged: &Staged,
+    endpoints: &[HttpEndpoint],
 ) -> std::result::Result<(), Vec<FieldError>> {
     let path = files.device();
     let failure = |key: Option<String>, message: String| FieldError {
@@ -389,7 +472,7 @@ fn check_device_file(
             )]);
         }
     };
-    let defs = framework_defs();
+    let defs = framework_defs(endpoints);
     let mut errors = Vec::new();
     for (name, item) in &table {
         if name == "mcp" {
@@ -761,7 +844,7 @@ impl Settings {
 fn startup_check(files: &SettingsFiles, app: &dyn AppSettings) -> Result<()> {
     let mut errors = Vec::new();
     for result in [
-        check_device_file(files, &Staged::default()),
+        check_device_file(files, &Staged::default(), &app.http_endpoints()),
         app.validate(&files.app_files(), &Staged::default()),
     ] {
         if let Err(e) = result {
@@ -1248,6 +1331,92 @@ mod tests {
         let text = std::fs::read_to_string(tmp.path().join("config").join("config.toml")).unwrap();
         assert!(text.contains("[anthropic]"), "{text}");
         assert!(text.contains("day_boundary_hour = 4"), "{text}");
+    }
+
+    /// An application with HTTP endpoints and no other settings.
+    struct Endpoints(Vec<HttpEndpoint>);
+
+    impl AppSettings for Endpoints {
+        fn defs(&self) -> Vec<SettingDef> {
+            Vec::new()
+        }
+
+        fn http_endpoints(&self) -> Vec<HttpEndpoint> {
+            self.0.clone()
+        }
+    }
+
+    fn endpoints(names: &[&str]) -> Arc<dyn AppSettings> {
+        Arc::new(Endpoints(
+            names
+                .iter()
+                .map(|n| HttpEndpoint::new(*n, format!("Serve {n}")))
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn an_endpoint_gets_a_switch_among_the_framework_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let files = SettingsFiles::for_app(&ctx).unwrap();
+        let reg = registry(&ctx, &files, endpoints(&["acp"])).unwrap();
+        let schema = reg.schema();
+        let keys: Vec<_> = schema.iter().map(|d| d.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "http.listen",
+                "http.allowed_hosts",
+                "http.mcp.enabled",
+                "http.metrics.enabled",
+                "http.acp.enabled",
+                "update.check",
+            ]
+        );
+        let (def, _) = reg.def("http.acp.enabled").unwrap();
+        assert_eq!(def.default, Some(Value::Bool(false)));
+        assert_eq!(def.doc, "Serve acp");
+        assert_eq!(def.section, "Server");
+    }
+
+    #[test]
+    fn an_endpoint_named_badly_or_twice_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let files = SettingsFiles::for_app(&ctx).unwrap();
+        for names in [
+            &["mcp"][..],
+            &["listen"],
+            &["allowed_hosts"],
+            &["metrics"],
+            &[""],
+            &["a.b"],
+            &["A"],
+            &["a/b"],
+            &["acp", "acp"],
+        ] {
+            assert!(
+                registry(&ctx, &files, endpoints(names)).is_err(),
+                "{names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_device_file_takes_a_declared_endpoints_switch_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = context(tmp.path());
+        let file = tmp.path().join("config").join("config.toml");
+        std::fs::write(&file, "[http.acp]\nenabled = true\n").unwrap();
+        let settings = Settings::load(&ctx, endpoints(&["acp"])).unwrap();
+        let config = ServerConfig::from_settings(&settings).unwrap();
+        assert_eq!(config.http.endpoints, ["acp".to_owned()].into());
+
+        let err = Settings::load(&ctx, endpoints(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("http.acp.enabled"), "{err}");
     }
 
     #[test]

@@ -27,13 +27,14 @@
 //! check = false
 //! ```
 
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
 use sapphire_framework_settings::Value;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::settings::Settings;
+use crate::settings::{HTTP_NAMES, Settings};
 
 /// The device settings file's name inside the application's config directory.
 pub const SERVER_CONFIG_FILE: &str = "config.toml";
@@ -73,6 +74,10 @@ pub struct HttpConfig {
     /// Prometheus metrics over HTTP.
     #[serde(default, skip_serializing_if = "is_default")]
     pub metrics: HttpMetricsConfig,
+    /// The application's HTTP endpoints turned on (`http.<name>.enabled`), by name. Read
+    /// from the settings, which know the endpoints the application declares.
+    #[serde(skip)]
+    pub endpoints: BTreeSet<String>,
 }
 
 /// The `[http.mcp]` table.
@@ -140,10 +145,25 @@ impl ServerConfig {
                 .get_as::<Vec<String>>("http.allowed_hosts")
                 .ok_or_else(|| invalid("http.allowed_hosts"))?,
         };
+        let mut endpoints = BTreeSet::new();
+        for def in settings.registry().schema() {
+            let Some(name) = def
+                .key
+                .strip_prefix("http.")
+                .and_then(|rest| rest.strip_suffix(".enabled"))
+                .filter(|name| !name.contains('.') && !HTTP_NAMES.contains(name))
+            else {
+                continue;
+            };
+            if flag(&def.key, false)? {
+                endpoints.insert(name.to_owned());
+            }
+        }
         Ok(ServerConfig {
             http: HttpConfig {
                 listen,
                 allowed_hosts,
+                endpoints,
                 mcp: HttpMcpConfig {
                     enabled: flag("http.mcp.enabled", false)?,
                 },

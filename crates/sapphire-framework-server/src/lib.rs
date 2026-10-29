@@ -82,7 +82,7 @@ pub use sapphire_framework_settings::{
 };
 pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
-pub use settings::{AppFiles, AppSettings, FromValue, Settings};
+pub use settings::{AppFiles, AppSettings, FromValue, HttpEndpoint, Settings};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).
@@ -131,6 +131,9 @@ pub struct AppServer {
     /// The application's own HTTP routes.
     #[cfg(feature = "http")]
     http_routes: Option<axum::Router>,
+    /// The application's switchable HTTP endpoints, by name.
+    #[cfg(feature = "http")]
+    http_endpoints: Vec<(String, axum::Router)>,
     /// How the HTTP routes check a token; `None` asks the bridge.
     #[cfg(feature = "http")]
     http_auth: Option<sapphire_framework_keys::AuthConfig>,
@@ -249,6 +252,8 @@ impl AppServer {
             #[cfg(feature = "http")]
             http_routes: None,
             #[cfg(feature = "http")]
+            http_endpoints: Vec::new(),
+            #[cfg(feature = "http")]
             http_auth: None,
             #[cfg(feature = "mcp")]
             mcp: sapphire_framework_mcp::McpService::framework(),
@@ -337,13 +342,26 @@ impl AppServer {
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
-    /// `/mcp` only when `config.toml` turns it on.
+    /// `/mcp` only when `config.toml` turns it on. For routes a setting turns on and off,
+    /// see [`http_endpoint`](Self::http_endpoint).
     ///
     /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
     /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
     #[cfg(feature = "http")]
     pub fn http(mut self, routes: axum::Router) -> AppServer {
         self.http_routes = Some(routes);
+        self
+    }
+
+    /// Serve `routes` at `/<name>` on the server's listener, behind the same token as
+    /// `/mcp`, while `http.<name>.enabled` is on; it is off by default.
+    ///
+    /// `name` is one the application's settings declare
+    /// ([`AppSettings::http_endpoints`]), which gives the switch its help text: one they
+    /// do not declare stops [`run`](Self::run) with an error.
+    #[cfg(feature = "http")]
+    pub fn http_endpoint(mut self, name: impl Into<String>, routes: axum::Router) -> AppServer {
+        self.http_endpoints.push((name.into(), routes));
         self
     }
 
@@ -581,6 +599,8 @@ impl AppServer {
             #[cfg(feature = "http")]
             http_routes,
             #[cfg(feature = "http")]
+            http_endpoints,
+            #[cfg(feature = "http")]
             http_auth,
             #[cfg(feature = "mcp")]
             mcp,
@@ -615,6 +635,32 @@ impl AppServer {
             (None, Some(settings)) => ServerConfig::from_settings(settings)?,
             (None, None) => ServerConfig::default(),
         };
+        // An endpoint the settings do not declare has no switch to turn it on.
+        #[cfg(feature = "http")]
+        if let Some(settings) = &settings {
+            for (name, _) in &http_endpoints {
+                if settings
+                    .registry()
+                    .def(&settings::endpoint_key(name))
+                    .is_err()
+                {
+                    return Err(Error::Config(format!(
+                        "the HTTP endpoint `{name}` is not one the application's settings declare"
+                    )));
+                }
+            }
+        }
+        #[cfg(feature = "http")]
+        let http_routes = http_endpoints
+            .into_iter()
+            .filter(|(name, _)| config.http.endpoints.contains(name))
+            .fold(http_routes, |routes, (name, endpoint)| {
+                let endpoint = axum::Router::new().nest(&format!("/{name}"), endpoint);
+                Some(match routes {
+                    Some(routes) => routes.merge(endpoint),
+                    None => endpoint,
+                })
+            });
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
             tracing::warn!(

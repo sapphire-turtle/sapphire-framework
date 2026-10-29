@@ -36,6 +36,10 @@ required-features = ["mcp"]
 name = "metrics"
 required-features = ["metrics"]
 
+[[test]]
+name = "http_endpoints"
+required-features = ["http"]
+
 [dependencies]
 sapphire-backend = { package = "sapphire-framework-backend", version = "0.23.0", path = "../sapphire-framework-backend", default-features = false }
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "3.0.0", path = "../sapphire-framework-bridge-api", features = ["cli"] }

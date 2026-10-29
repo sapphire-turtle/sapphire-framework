@@ -82,7 +82,7 @@ pub use sapphire_framework_settings::{
 };
 pub use sapphire_framework_update::{ReleaseSource, UpdateArgs};
 pub use selection::{SELECTION_FILE, Selection, SelectionFile};
-pub use settings::{AppFiles, AppSettings, FromValue, Settings};
+pub use settings::{AppFiles, AppSettings, FromValue, HttpEndpoint, Settings};
 pub use sync::{BackfillTiming, BridgeConnector, SyncRuntime, SyncStatus, sync_router};
 
 /// The MCP tools an application serves, and how (feature `mcp`).
@@ -131,6 +131,9 @@ pub struct AppServer {
     /// The application's own HTTP routes.
     #[cfg(feature = "http")]
     http_routes: Option<axum::Router>,
+    /// The application's switchable HTTP endpoints, by name.
+    #[cfg(feature = "http")]
+    http_endpoints: Vec<(String, axum::Router)>,
     /// How the HTTP routes check a token; `None` asks the bridge.
     #[cfg(feature = "http")]
     http_auth: Option<sapphire_framework_keys::AuthConfig>,
@@ -249,6 +252,8 @@ impl AppServer {
             #[cfg(feature = "http")]
             http_routes: None,
             #[cfg(feature = "http")]
+            http_endpoints: Vec::new(),
+            #[cfg(feature = "http")]
             http_auth: None,
             #[cfg(feature = "mcp")]
             mcp: sapphire_framework_mcp::McpService::framework(),
@@ -337,13 +342,26 @@ impl AppServer {
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
     /// external-device token as `/mcp`. The routes are served whenever they are given;
-    /// `/mcp` only when `config.toml` turns it on.
+    /// `/mcp` only when `config.toml` turns it on. For routes a setting turns on and off,
+    /// see [`http_endpoint`](Self::http_endpoint).
     ///
     /// Every route but `/metrics` is behind the token. While `[http.metrics]` is on, the
     /// public `/metrics` answers first, so an application route at `/metrics` is shadowed.
     #[cfg(feature = "http")]
     pub fn http(mut self, routes: axum::Router) -> AppServer {
         self.http_routes = Some(routes);
+        self
+    }
+
+    /// Serve `routes` at `/<name>` on the server's listener, behind the same token as
+    /// `/mcp`, while `http.<name>.enabled` is on; it is off by default.
+    ///
+    /// `name` is one the application's settings declare
+    /// ([`AppSettings::http_endpoints`]), which gives the switch its help text: one they
+    /// do not declare stops [`run`](Self::run) with an error.
+    #[cfg(feature = "http")]
+    pub fn http_endpoint(mut self, name: impl Into<String>, routes: axum::Router) -> AppServer {
+        self.http_endpoints.push((name.into(), routes));
         self
     }
 
@@ -521,6 +539,9 @@ impl AppServer {
     /// A server run this way answers `server.restart` with an error: nothing would bring it
     /// back. [`serve_restarting`] runs one that can.
     pub async fn run(self) -> Result<()> {
+        // Before anything is bound: a mistake in the application, not in the files.
+        #[cfg(feature = "http")]
+        undeclared_endpoints(self.settings.as_ref(), &self.http_endpoints)?;
         let endpoint = self.endpoint_or_default()?;
         // The app's log file, held for as long as this server serves: the guard's drop
         // flushes the writer thread, so the last lines of a clean shutdown land in the file.
@@ -581,6 +602,8 @@ impl AppServer {
             #[cfg(feature = "http")]
             http_routes,
             #[cfg(feature = "http")]
+            http_endpoints,
+            #[cfg(feature = "http")]
             http_auth,
             #[cfg(feature = "mcp")]
             mcp,
@@ -615,6 +638,19 @@ impl AppServer {
             (None, Some(settings)) => ServerConfig::from_settings(settings)?,
             (None, None) => ServerConfig::default(),
         };
+        #[cfg(feature = "http")]
+        undeclared_endpoints(settings.as_ref(), &http_endpoints)?;
+        #[cfg(feature = "http")]
+        let http_routes = http_endpoints
+            .into_iter()
+            .filter(|(name, _)| config.http.endpoints.contains(name))
+            .fold(http_routes, |routes, (name, endpoint)| {
+                let endpoint = axum::Router::new().nest(&format!("/{name}"), endpoint);
+                Some(match routes {
+                    Some(routes) => routes.merge(endpoint),
+                    None => endpoint,
+                })
+            });
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
             tracing::warn!(
@@ -986,6 +1022,29 @@ impl AppServer {
         // Everything else of this server — the router, the relay, `Current`, the host and
         // the sync runtime — goes as this returns, before a restart builds the next one.
         Ok(exit)
+    }
+}
+
+/// An error for the first of `endpoints` the settings do not declare: it has no switch to
+/// turn it on.
+#[cfg(feature = "http")]
+fn undeclared_endpoints(
+    settings: Option<&Settings>,
+    endpoints: &[(String, axum::Router)],
+) -> Result<()> {
+    let Some(settings) = settings else {
+        return Ok(());
+    };
+    match endpoints.iter().find(|(name, _)| {
+        settings
+            .registry()
+            .def(&settings::endpoint_key(name))
+            .is_err()
+    }) {
+        Some((name, _)) => Err(Error::Config(format!(
+            "the HTTP endpoint `{name}` is not one the application's settings declare"
+        ))),
+        None => Ok(()),
     }
 }
 

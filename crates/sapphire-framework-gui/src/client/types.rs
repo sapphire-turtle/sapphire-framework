@@ -101,7 +101,9 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     /// The defaults: built-in endpoints, sibling executables, a 2 s refresh, 30 s per
-    /// command and 5 min for a service install.
+    /// command and 5 min for a service install. A desktop window started with `app::run`
+    /// (the `eframe` feature) registers itself as the app server instead
+    /// ([`ServiceExes::single_binary`]).
     pub fn new(app: AppIdentity) -> std::io::Result<ClientConfig> {
         Ok(ClientConfig {
             endpoints: Endpoints::default_for(app.app_name).map_err(std::io::Error::other)?,

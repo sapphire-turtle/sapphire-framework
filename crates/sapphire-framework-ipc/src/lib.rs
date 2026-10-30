@@ -22,6 +22,7 @@ mod handshake;
 mod inproc;
 mod message;
 mod raw;
+pub mod roaming;
 mod router;
 mod spawn;
 #[cfg(unix)]
@@ -32,7 +33,7 @@ mod windows;
 pub use carrier::{Carrier, Listener, bind, bind_with, carrier, set_carrier};
 pub use client::{Client, NOTIFICATION_CAPACITY};
 pub use conn::{Connection, Sender};
-pub use endpoint::{BRIDGE_NAME, Endpoint, RUNTIME_DIR_ENV, runtime_dir};
+pub use endpoint::{BRIDGE_DIR_NAME, BRIDGE_NAME, Endpoint, RUNTIME_DIR_ENV, runtime_dir};
 pub use error::{Error, Result};
 pub use handshake::{ClientInfo, FIRST_API, Hello, ManagedBy, ServerInfo, Welcome};
 pub use message::{Message, Notification, Request, Response, ResponsePayload, RpcError, codes};

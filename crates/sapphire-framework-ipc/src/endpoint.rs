@@ -16,6 +16,10 @@ use crate::error::Result;
 /// The endpoint name the host-wide bridge listens under.
 pub const BRIDGE_NAME: &str = "bridge";
 
+/// The bridge's directory under the platform's data directory, which holds the runtime
+/// directory too.
+pub const BRIDGE_DIR_NAME: &str = "sapphire-bridge";
+
 /// Environment variable that replaces the runtime directory outright.
 pub const RUNTIME_DIR_ENV: &str = "SAPPHIRE_RUNTIME_DIR";
 
@@ -50,10 +54,15 @@ pub(crate) fn ensure_private_dir(dir: &Path) -> Result<()> {
 pub fn runtime_dir() -> Result<PathBuf> {
     let dir = match std::env::var_os(RUNTIME_DIR_ENV).filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v),
-        None => dirs::data_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("sapphire-bridge")
-            .join("run"),
+        // In the bridge's directory, which moves from Roaming first on Windows: whichever
+        // process asks first moves it (#365).
+        None => {
+            crate::roaming::migrate_bridge()?;
+            dirs::data_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(BRIDGE_DIR_NAME)
+                .join("run")
+        }
     };
     ensure_private_dir(&dir)?;
     Ok(dir)

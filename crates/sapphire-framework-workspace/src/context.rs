@@ -6,6 +6,10 @@ use corundum_framework_platform::dirs;
 use crate::app_dirs::{AppKind, app_dir_env_var, migrate_keys_to_data, unsplit_app_dir};
 use crate::workspace::path_uuid;
 
+/// The cache's folder in the app's directory where the cache shares its root with the data
+/// (Windows), as corundum-framework-platform's `AppDirs::cache` has it.
+const WINDOWS_CACHE_DIR: &str = "cache";
+
 /// Application-wide context shared across all [`Workspace`](crate::Workspace) instances.
 ///
 /// Holds the `app_name` (used for the marker directory) and the cache / data /
@@ -96,13 +100,47 @@ impl AppContext {
     ///
     /// `kind` now only steers the secrets migration; it never appears in a
     /// resolved path.
+    ///
+    /// On Windows the directory first moves from Roaming to Local
+    /// ([`sapphire_ipc::roaming`], #365). When that fails, this process must not touch its
+    /// settings or data, so `init` reports it and exits; [`try_init`](Self::try_init)
+    /// returns it instead.
     pub fn init(&self, kind: AppKind) {
-        let cache_app = self
-            .category_root("cache", dirs::cache_dir())
-            .join(self.app_name);
-        let data_app = self
-            .category_root("data", dirs::data_dir())
-            .join(self.app_name);
+        if let Err(err) = self.try_init(kind) {
+            eprintln!(
+                "{}: could not move its settings and data out of Roaming: {err}. \
+                 Close its other windows and processes, then start it again.",
+                self.app_name
+            );
+            std::process::exit(1);
+        }
+    }
+
+    /// [`init`](Self::init), returning the error of the move from Roaming instead of
+    /// exiting on it. On an error nothing is initialised, and the caller must not read or
+    /// write the app's settings or data in this run.
+    pub fn try_init(&self, kind: AppKind) -> std::io::Result<()> {
+        let overridden = |category| {
+            std::env::var_os(app_dir_env_var(self.app_name, category))
+                .is_some_and(|v| !v.is_empty())
+        };
+        // Only the platform's own directories moved from Roaming; an override names others.
+        if !overridden("data") && !overridden("config") {
+            let old_cache = (!overridden("cache")).then_some(WINDOWS_CACHE_DIR);
+            sapphire_ipc::roaming::migrate(self.app_name, old_cache, &[])?;
+        }
+
+        let cache_root = self.category_root("cache", dirs::cache_dir());
+        let data_root = self.category_root("data", dirs::data_dir());
+        let data_app = data_root.join(self.app_name);
+        // On Windows the three roots are one (`%LOCALAPPDATA%`), as corundum's are: the
+        // cache keeps to a folder of its own there, whose workspace directories would
+        // otherwise be the data's.
+        let cache_app = if cache_root == data_root {
+            data_app.join(WINDOWS_CACHE_DIR)
+        } else {
+            cache_root.join(self.app_name)
+        };
         let config_app = self
             .category_root("config", dirs::config_dir())
             .join(self.app_name);
@@ -152,6 +190,7 @@ impl AppContext {
         // `init` — or a context initialised after this one already installed
         // the subscriber — changes nothing.
         crate::logging::install_console(self.app_name);
+        Ok(())
     }
 
     /// Resolve one category's platform root: the category's env override
@@ -293,6 +332,27 @@ mod tests {
     use crate::app_dirs::AppKind;
     use crate::test_env::TestEnv;
     use tempfile::tempdir;
+
+    /// Where the cache shares its root with the data, as on Windows (#365), it keeps to
+    /// `<app>/cache`, apart from the data's workspace directories.
+    #[test]
+    fn a_cache_sharing_the_data_root_keeps_to_its_own_folder() {
+        let _env = TestEnv::lock();
+        let (shared, config) = (tempdir().unwrap(), tempdir().unwrap());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL5_CACHE_DIR", shared.path());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL5_DATA_DIR", shared.path());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL5_CONFIG_DIR", config.path());
+        let ctx: &'static AppContext =
+            Box::leak(Box::new(AppContext::new("sapphire-testjournal5")));
+        ctx.try_init(AppKind::Server).unwrap();
+        let app = shared
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("sapphire-testjournal5");
+        assert_eq!(ctx.data_dir(), app);
+        assert_eq!(ctx.cache_dir(), app.join("cache"));
+    }
 
     #[test]
     fn init_sets_all_three_dirs_under_the_app_directory() {

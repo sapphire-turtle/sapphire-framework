@@ -29,9 +29,13 @@ impl BridgeDir {
     pub fn open() -> Result<BridgeDir> {
         let root = match std::env::var_os(BRIDGE_DIR_ENV).filter(|v| !v.is_empty()) {
             Some(v) => PathBuf::from(v),
-            None => dirs::data_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("sapphire-bridge"),
+            // Moved from Roaming first on Windows (#365).
+            None => {
+                sapphire_ipc::roaming::migrate_bridge()?;
+                dirs::data_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join(sapphire_ipc::BRIDGE_DIR_NAME)
+            }
         };
         BridgeDir::at(root)
     }

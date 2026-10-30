@@ -2,10 +2,12 @@
 //!
 //! Every desktop app is a pure client of its app server, which relays the bridge, so they
 //! all start alike: the framework's logging, a panic hook that explains a lost GPU device,
-//! a tokio runtime, the app's directories, a [`FrameworkClient`], and corundum-framework-gui's
-//! window (eframe on wgpu, with a backend that works on the host), which opens in the look
-//! last applied (corundum's store, in the app's config directory). What differs — the app's name,
-//! its window and its own [`eframe::App`] — goes in [`AppOptions`] and the closure.
+//! a tokio runtime, the app's directories, a [`FrameworkClient`] whose "install & start"
+//! registers the window's own binary as the app server (it carries `serve`), and
+//! corundum-framework-gui's window (eframe on wgpu, with a backend that works on the host),
+//! which opens in the look last applied (corundum's store, in the app's config directory).
+//! What differs — the app's name, its window and its own [`eframe::App`] — goes in
+//! [`AppOptions`] and the closure.
 //!
 //! ```no_run
 //! use sapphire_framework_gui::app::{self, AppOptions, AppSetup};
@@ -42,7 +44,7 @@ use sapphire_workspace::logging::{default_log_filter, install_console_with_filte
 use corundum_framework_gui::store::{self, Store};
 use corundum_framework_gui::window::{self, WindowOptions};
 
-use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient};
+use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient, ServiceExes};
 
 /// Sets the egui context's fonts, once, before the app is built.
 pub(crate) type InstallFonts = window::InstallFonts;
@@ -122,7 +124,7 @@ pub fn run(
         .enable_all()
         .build()
         .map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
-    let config = ClientConfig::new(app).map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
+    let config = client_config(app).map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
 
     // corundum-framework-gui installs the panic hook that explains a lost GPU device.
     let handle = runtime.handle().clone();
@@ -132,6 +134,17 @@ pub fn run(
     // The clients' tasks end with the runtime, after the window that used them.
     drop(runtime);
     result
+}
+
+/// The client's defaults, with the window's own binary as the app server's executable.
+///
+/// A desktop app's binary carries the app server, the CLI and MCP as subcommands (#366), so
+/// "install & start" registers it (the AppImage, inside one), not a `sapphire-<app>` beside
+/// it, which a desktop package does not carry (#377).
+fn client_config(app: AppIdentity) -> std::io::Result<ClientConfig> {
+    let mut config = ClientConfig::new(app)?;
+    config.service_exes = ServiceExes::single_binary()?;
+    Ok(config)
 }
 
 /// corundum's store in the app's config directory (honouring `SAPPHIRE_<APP>_CONFIG_DIR`):
@@ -205,5 +218,23 @@ mod tests {
             .fonts(|_| {});
         assert_eq!(options.app.app_name, "sapphire-example");
         assert_eq!(options.app.version, "0.1.0");
+    }
+
+    /// "Install & start" registers the window's own binary, not a `sapphire-example` beside
+    /// it, which a desktop package does not carry (#377).
+    #[test]
+    fn the_window_registers_itself_as_the_app_server() {
+        let app = AppIdentity {
+            app_name: "sapphire-example",
+            version: "0.1.0",
+        };
+        let config = client_config(app).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(config.service_exes.app, exe);
+        let bridge = format!("sapphire-bridge{}", std::env::consts::EXE_SUFFIX);
+        assert_eq!(
+            config.service_exes.bridge,
+            exe.parent().unwrap().join(bridge)
+        );
     }
 }

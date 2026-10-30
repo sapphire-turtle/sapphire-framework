@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
-use crate::launchd::{agent_path, label, render_launch_agent};
+use crate::launchd::{
+    agent_path, label, legacy_agent_path, legacy_label, relabel, render_launch_agent,
+};
 use crate::scope::{Environment, InstallContext, Os, ServiceSpec};
 use crate::systemd::{activation, linger_hint, render_unit, unit_path, words};
 use crate::windows::render_task;
@@ -46,6 +48,15 @@ pub trait ServiceManager {
 
     /// Remove a unit file. Removing one that is not there is not an error.
     fn remove_unit(&self, path: &Path) -> Result<()>;
+
+    /// Read a unit file; `None` when there is none.
+    fn read_unit(&self, path: &Path) -> Result<Option<String>> {
+        match std::fs::read_to_string(path) {
+            Ok(body) => Ok(Some(body)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 /// The real service manager: real files, real commands.
@@ -100,6 +111,8 @@ pub struct Calls {
     pub commands: Vec<Vec<String>>,
     /// Every unit file removed.
     pub removed: Vec<PathBuf>,
+    /// Every unit file read.
+    pub read: Vec<PathBuf>,
 }
 
 /// A service manager that records instead of acting.
@@ -116,6 +129,7 @@ pub struct RecordingManager {
     fail_on: Option<String>,
     output: String,
     order: Option<Arc<Mutex<Vec<String>>>>,
+    existing: Vec<(PathBuf, String)>,
 }
 
 impl RecordingManager {
@@ -151,6 +165,12 @@ impl RecordingManager {
             order: Some(order),
             ..Self::default()
         }
+    }
+
+    /// The same manager, answering a read of `path` with `body`, as if the file were there.
+    pub fn with_unit(mut self, path: impl Into<PathBuf>, body: &str) -> Self {
+        self.existing.push((path.into(), body.to_owned()));
+        self
     }
 
     /// Everything recorded so far.
@@ -213,6 +233,19 @@ impl ServiceManager for RecordingManager {
             .removed
             .push(path.to_owned());
         Ok(())
+    }
+
+    fn read_unit(&self, path: &Path) -> Result<Option<String>> {
+        self.calls
+            .lock()
+            .expect("the recording manager's lock is never held across a panic")
+            .read
+            .push(path.to_owned());
+        Ok(self
+            .existing
+            .iter()
+            .find(|(existing, _)| existing == path)
+            .map(|(_, body)| body.clone()))
     }
 }
 
@@ -294,6 +327,7 @@ pub fn install(
     env: &Environment,
     manager: &dyn ServiceManager,
 ) -> Result<InstallContext> {
+    retire_legacy_agent(spec, env, manager)?;
     let context = InstallContext {
         unit_path: install_path(spec, env)?,
         exe: std::env::current_exe()?,
@@ -340,6 +374,7 @@ pub fn uninstall(
     env: &Environment,
     manager: &dyn ServiceManager,
 ) -> Result<()> {
+    retire_legacy_agent(spec, env, manager)?;
     let path = install_path(spec, env)?;
 
     for command in uninstall_commands(spec, env) {
@@ -355,7 +390,44 @@ pub fn status(
     env: &Environment,
     manager: &dyn ServiceManager,
 ) -> Result<String> {
+    // An agent under the legacy label is the service, renamed: it keeps running, under the
+    // current label, unless one is installed there already.
+    if let Some(legacy) = retire_legacy_agent(spec, env, manager)? {
+        let path = install_path(spec, env)?;
+        if manager.read_unit(&path)?.is_none() {
+            manager.write_unit(&path, &relabel(&legacy, spec.app_name))?;
+            manager.run(&bootstrap_command(&path, env))?;
+        }
+    }
     manager.run(&status_command(spec, env))
+}
+
+/// Take an agent installed under the [`legacy_label`] off launchd and remove its plist,
+/// returning what the plist held; `None` off macOS or when there is none.
+///
+/// Left in place, it would start a second app server next to the one under the current
+/// label.
+fn retire_legacy_agent(
+    spec: &ServiceSpec,
+    env: &Environment,
+    manager: &dyn ServiceManager,
+) -> Result<Option<String>> {
+    if env.os != Os::MacOs {
+        return Ok(None);
+    }
+    let path = legacy_agent_path(spec.app_name, &home_dir(env)?);
+    let Some(legacy) = manager.read_unit(&path)? else {
+        return Ok(None);
+    };
+    // Not loaded (the user booted it out by hand) is what this wants anyway.
+    let _ = manager.run(&words(&[
+        "launchctl",
+        "bootout",
+        &format!("gui/{}", env.euid),
+        &legacy_label(spec.app_name),
+    ]));
+    manager.remove_unit(&path)?;
+    Ok(Some(legacy))
 }
 
 /// Where each platform keeps the file an install writes: the invoking user's own directory;
@@ -387,12 +459,7 @@ fn install_commands(
         Os::Linux => activation(spec.app_name),
         // `gui/<uid>` is the agent session of the user doing the install; a LaunchAgent
         // belongs to them.
-        Os::MacOs => vec![words(&[
-            "launchctl",
-            "bootstrap",
-            &format!("gui/{}", env.euid),
-            &context.unit_path.display().to_string(),
-        ])],
+        Os::MacOs => vec![bootstrap_command(&context.unit_path, env)],
         // The task name is the app name — the same key an uninstall and a status address.
         Os::Windows => vec![words(&[
             "schtasks",
@@ -404,6 +471,16 @@ fn install_commands(
             "/f",
         ])],
     }
+}
+
+/// The command that loads a LaunchAgent into the agent session of the user doing the install.
+fn bootstrap_command(path: &Path, env: &Environment) -> Vec<String> {
+    words(&[
+        "launchctl",
+        "bootstrap",
+        &format!("gui/{}", env.euid),
+        &path.display().to_string(),
+    ])
 }
 
 /// The commands that stop and disable an installed service.
@@ -589,6 +666,116 @@ mod tests {
         let flat: Vec<String> = calls.commands.iter().flatten().cloned().collect();
         assert!(flat.contains(&"launchctl".to_owned()), "{flat:?}");
         assert!(flat.contains(&"bootstrap".to_owned()), "{flat:?}");
+    }
+
+    fn legacy_plist() -> PathBuf {
+        PathBuf::from(
+            "/home/user/Library/LaunchAgents/net.fireturtle.sapphire.sapphire-agent.plist",
+        )
+    }
+
+    fn current_plist() -> PathBuf {
+        PathBuf::from("/home/user/Library/LaunchAgents/net.sapphire-turtle.sapphire-agent.plist")
+    }
+
+    fn legacy_body() -> String {
+        "<plist><dict><key>Label</key>\n  <string>net.fireturtle.sapphire.sapphire-agent</string>\n\
+         <key>ProgramArguments</key><array><string>/opt/old/sapphire-agent</string></array>\
+         </dict></plist>\n"
+            .to_owned()
+    }
+
+    fn boots_out_legacy(calls: &Calls) -> bool {
+        calls.commands.contains(&words(&[
+            "launchctl",
+            "bootout",
+            "gui/1000",
+            "net.fireturtle.sapphire.sapphire-agent",
+        ]))
+    }
+
+    #[test]
+    fn a_macos_install_retires_an_agent_under_the_legacy_label() {
+        let manager = RecordingManager::new().with_unit(legacy_plist(), &legacy_body());
+        install(&spec(), &macos(), &manager).unwrap();
+
+        let calls = manager.calls();
+        assert!(boots_out_legacy(&calls), "{:?}", calls.commands);
+        assert_eq!(calls.removed, vec![legacy_plist()]);
+        assert_eq!(calls.units.len(), 1);
+        assert_eq!(calls.units[0].0, current_plist());
+    }
+
+    #[test]
+    fn a_macos_uninstall_removes_both_labels() {
+        let manager = RecordingManager::new().with_unit(legacy_plist(), &legacy_body());
+        uninstall(&spec(), &macos(), &manager).unwrap();
+
+        let calls = manager.calls();
+        assert!(boots_out_legacy(&calls), "{:?}", calls.commands);
+        assert_eq!(calls.removed, vec![legacy_plist(), current_plist()]);
+    }
+
+    #[test]
+    fn a_macos_status_moves_a_legacy_agent_to_the_current_label() {
+        let manager = RecordingManager::new().with_unit(legacy_plist(), &legacy_body());
+        status(&spec(), &macos(), &manager).unwrap();
+
+        let calls = manager.calls();
+        assert!(boots_out_legacy(&calls), "{:?}", calls.commands);
+        assert_eq!(calls.removed, vec![legacy_plist()]);
+        assert_eq!(calls.units.len(), 1);
+        let (path, body) = &calls.units[0];
+        assert_eq!(path, &current_plist());
+        assert!(
+            body.contains("<string>net.sapphire-turtle.sapphire-agent</string>"),
+            "{body}"
+        );
+        assert!(
+            body.contains("/opt/old/sapphire-agent"),
+            "the agent keeps its own program: {body}"
+        );
+        assert!(
+            calls.commands.contains(&words(&[
+                "launchctl",
+                "bootstrap",
+                "gui/1000",
+                &current_plist().display().to_string(),
+            ])),
+            "{:?}",
+            calls.commands
+        );
+    }
+
+    #[test]
+    fn a_macos_status_leaves_an_agent_already_under_the_current_label() {
+        let manager = RecordingManager::new()
+            .with_unit(legacy_plist(), &legacy_body())
+            .with_unit(current_plist(), "<plist/>");
+        status(&spec(), &macos(), &manager).unwrap();
+
+        let calls = manager.calls();
+        assert!(boots_out_legacy(&calls), "{:?}", calls.commands);
+        assert!(calls.units.is_empty(), "{:?}", calls.units);
+        assert!(
+            !calls.commands.iter().flatten().any(|w| w == "bootstrap"),
+            "{:?}",
+            calls.commands
+        );
+    }
+
+    #[test]
+    fn without_a_legacy_agent_nothing_extra_runs() {
+        let manager = RecordingManager::new();
+        status(&spec(), &macos(), &manager).unwrap();
+        let calls = manager.calls();
+        assert_eq!(calls.commands.len(), 1, "{:?}", calls.commands);
+        assert!(calls.removed.is_empty());
+
+        // Off macOS, there is no legacy plist to look for.
+        let manager = RecordingManager::new();
+        status(&spec(), &linux(), &manager).unwrap();
+        assert!(manager.calls().read.is_empty());
     }
 
     #[test]

@@ -7365,6 +7365,7 @@ dependencies = [
  "sapphire-framework-bridge-client",
  "sapphire-framework-ipc",
  "sapphire-framework-server",
+ "sapphire-framework-service",
  "sapphire-framework-workspace",
  "serde_json",
  "tempfile",

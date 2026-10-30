@@ -44,7 +44,8 @@ pub type PostInstall = Box<dyn Fn(&InstallContext) -> Result<()> + Send + Sync>;
 pub struct InstallContext {
     /// Where the unit was written.
     pub unit_path: std::path::PathBuf,
-    /// The absolute path of the running executable, the unit's `ExecStart` head.
+    /// The executable the unit starts, the `ExecStart` head: the running one, or the
+    /// AppImage it runs from ([`service_exe`](crate::service_exe)).
     pub exe: std::path::PathBuf,
 }
 

@@ -25,6 +25,7 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod exe;
 pub mod launchd;
 pub mod manager;
 pub mod scope;
@@ -32,6 +33,7 @@ pub mod systemd;
 pub mod windows;
 
 pub use error::{Error, Result};
+pub use exe::service_exe;
 pub use launchd::{
     agent_path, label, legacy_agent_path, legacy_label, relabel, render_launch_agent,
 };

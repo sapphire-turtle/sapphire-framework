@@ -503,9 +503,10 @@ impl AppServer {
     ///
     /// `["serve"]`: a service manager starts the executable directly with
     /// [`FrameworkCommand::Serve`](crate::FrameworkCommand::Serve) — the bare invocation
-    /// only prints the help. A CLI that wants its
-    /// service installed hands this to
-    /// [`ServiceCommand`](sapphire_framework_service::ServiceCommand).
+    /// prints the help in the CLI version and opens the window in the desktop one. A CLI
+    /// that wants its service installed hands this to
+    /// [`ServiceCommand`](sapphire_framework_service::ServiceCommand), which registers the
+    /// running executable (the AppImage, inside one).
     pub fn service_spec(&self) -> ServiceSpec {
         ServiceSpec {
             app_name: self.ctx.app_name,

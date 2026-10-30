@@ -28,6 +28,24 @@ pub use sapphire_backend::protocol::{StatusReport, StatusRow};
 /// An application composes these beside its own verbs by giving its subcommand enum a
 /// `#[command(flatten)] Framework(FrameworkCommand)` variant, so every verb — the app's and
 /// the framework's — sits at the same top level. The parse tests below pin that shape.
+///
+/// A desktop app's binary carries the same enum (#366): it is the CLI as well, so the CLI
+/// version is a subset of it. Its subcommand is optional, and with none it opens the
+/// window; the CLI version's is required, so a bare invocation prints the help. The verbs
+/// are one definition either way:
+///
+/// ```rust,ignore
+/// #[derive(clap::Parser)]
+/// struct Desktop {
+///     #[command(subcommand)]
+///     command: Option<Command>, // `Command` for the CLI version
+/// }
+///
+/// match Desktop::parse().command {
+///     None => open_the_window(),
+///     Some(command) => runtime.block_on(run(command)),
+/// }
+/// ```
 #[derive(Debug, clap::Subcommand)]
 pub enum FrameworkCommand {
     /// Run the server in this process until SIGTERM or SIGINT.
@@ -1083,6 +1101,28 @@ mod tests {
         Greet,
         #[command(flatten)]
         Framework(FrameworkCommand),
+    }
+
+    /// A desktop binary: the same verbs, and none at all to open the window.
+    #[derive(Parser)]
+    struct DesktopProbe {
+        #[command(subcommand)]
+        command: Option<Command>,
+    }
+
+    #[test]
+    fn a_desktop_binary_takes_the_same_verbs_or_none() {
+        let probe = DesktopProbe::try_parse_from(["app"]).unwrap();
+        assert!(probe.command.is_none());
+        let probe = DesktopProbe::try_parse_from(["app", "serve"]).unwrap();
+        assert!(matches!(
+            probe.command,
+            Some(Command::Framework(FrameworkCommand::Serve))
+        ));
+        let probe = DesktopProbe::try_parse_from(["app", "greet"]).unwrap();
+        assert!(matches!(probe.command, Some(Command::Greet)));
+        // The CLI version's bare invocation is an error, which clap answers with the help.
+        assert!(Probe::try_parse_from(["app"]).is_err());
     }
 
     #[test]

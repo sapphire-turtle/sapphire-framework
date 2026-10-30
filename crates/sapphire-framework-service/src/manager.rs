@@ -314,8 +314,11 @@ impl ServiceCommand {
 /// post-install hook on what was installed.
 ///
 /// The unit's `ExecStart` (or its platform's equivalent) is the absolute path of the
-/// running executable — the app that called this — plus the spec's own arguments, because a
-/// service manager starts one file and nothing else.
+/// running executable — the app that called this, or the AppImage it runs from
+/// ([`service_exe`](crate::service_exe)) — plus the spec's own arguments, because a service
+/// manager starts one file and nothing else. A desktop app that carries its server as a
+/// subcommand registers itself this way: started from its console shim on Windows, the
+/// running executable is the GUI-subsystem binary, which opens no console window.
 ///
 /// The hook runs last, with the [`InstallContext`] the install resolved, so what it sees is
 /// what was installed. When the hook fails, the install reports the hook's own error and
@@ -330,7 +333,7 @@ pub fn install(
     retire_legacy_agent(spec, env, manager)?;
     let context = InstallContext {
         unit_path: install_path(spec, env)?,
-        exe: std::env::current_exe()?,
+        exe: crate::exe::service_exe()?,
     };
     let body = render_install(spec, &context, env.os);
     manager.write_unit(&context.unit_path, &body)?;

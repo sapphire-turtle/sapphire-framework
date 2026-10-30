@@ -45,7 +45,7 @@ impl Endpoints {
 pub struct ServiceExes {
     /// `sapphire-bridge`.
     pub bridge: PathBuf,
-    /// The application's own CLI.
+    /// The application's own CLI, or the desktop binary that carries it.
     pub app: PathBuf,
 }
 
@@ -58,6 +58,21 @@ impl ServiceExes {
         Ok(ServiceExes {
             bridge: dir.join(format!("sapphire-bridge{suffix}")),
             app: dir.join(format!("{app_name}{suffix}")),
+        })
+    }
+
+    /// For a desktop binary that carries the app server, the CLI and MCP as subcommands
+    /// (#366): the app's server is this executable — the AppImage it runs from, inside one
+    /// ([`service_exe`](sapphire_framework_service::service_exe)) — and `sapphire-bridge`
+    /// is still looked for next to it, until where the bridge is installed is settled
+    /// (#357, #363).
+    pub fn single_binary() -> std::io::Result<ServiceExes> {
+        let exe = std::env::current_exe()?;
+        let dir = exe.parent().map(PathBuf::from).unwrap_or_default();
+        let suffix = std::env::consts::EXE_SUFFIX;
+        Ok(ServiceExes {
+            bridge: dir.join(format!("sapphire-bridge{suffix}")),
+            app: sapphire_framework_service::service_exe()?,
         })
     }
 }

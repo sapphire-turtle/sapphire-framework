@@ -12,9 +12,17 @@ use crate::scope::{InstallContext, ServiceSpec};
 ///
 /// A LaunchAgent label is a global namespace on the machine: a generic label such as
 /// `sapphire-agent` would collide with anything else that claims the same one, so the label
-/// carries the repository owner, matching the `repository` field in `Cargo.toml`
-/// (`github.com/fluo10/sapphire-framework`): `net.fireturtle.sapphire.<app>`.
+/// carries the publisher's domain, `sapphire-turtle.net`, the namespace corundum's apps use
+/// too: `net.sapphire-turtle.<app>`.
 pub fn label(app_name: &str) -> String {
+    format!("net.sapphire-turtle.{app_name}")
+}
+
+/// The label agents were registered under before [`label`]: `net.fireturtle.sapphire.<app>`.
+///
+/// An install, an uninstall and a status take an agent still under it off launchd, so the
+/// app server does not run twice, once under each label.
+pub fn legacy_label(app_name: &str) -> String {
     format!("net.fireturtle.sapphire.{app_name}")
 }
 
@@ -22,8 +30,26 @@ pub fn label(app_name: &str) -> String {
 ///
 /// The file is named by the label, so `launchctl` finds it by the label's reverse-DNS path.
 pub fn agent_path(app_name: &str, home: &Path) -> PathBuf {
+    labelled_path(&label(app_name), home)
+}
+
+/// Where an agent under the [`legacy_label`] was installed.
+pub fn legacy_agent_path(app_name: &str, home: &Path) -> PathBuf {
+    labelled_path(&legacy_label(app_name), home)
+}
+
+fn labelled_path(label: &str, home: &Path) -> PathBuf {
     home.join("Library/LaunchAgents")
-        .join(format!("{}.plist", label(app_name)))
+        .join(format!("{label}.plist"))
+}
+
+/// A legacy agent's plist under the current [`label`]: the same program, arguments and
+/// description, registered under the new name.
+pub fn relabel(plist: &str, app_name: &str) -> String {
+    plist.replace(
+        &format!("<string>{}</string>", escape(&legacy_label(app_name))),
+        &format!("<string>{}</string>", escape(&label(app_name))),
+    )
 }
 
 /// Escape a string for inclusion as XML character data.
@@ -105,8 +131,25 @@ mod tests {
         assert_eq!(
             agent_path("sapphire-agent", Path::new("/Users/alice")),
             PathBuf::from(
+                "/Users/alice/Library/LaunchAgents/net.sapphire-turtle.sapphire-agent.plist"
+            )
+        );
+        assert_eq!(
+            legacy_agent_path("sapphire-agent", Path::new("/Users/alice")),
+            PathBuf::from(
                 "/Users/alice/Library/LaunchAgents/net.fireturtle.sapphire.sapphire-agent.plist"
             )
+        );
+    }
+
+    #[test]
+    fn a_legacy_agent_is_relabelled_and_keeps_its_program() {
+        let legacy = render_launch_agent(&spec(), &ctx())
+            .replace(&label("sapphire-agent"), &legacy_label("sapphire-agent"));
+        assert!(legacy.contains("net.fireturtle.sapphire.sapphire-agent"));
+        assert_eq!(
+            relabel(&legacy, "sapphire-agent"),
+            render_launch_agent(&spec(), &ctx())
         );
     }
 
@@ -118,19 +161,30 @@ mod tests {
         assert_eq!(escape("<&>"), "&lt;&amp;&gt;");
     }
 
+    fn spec() -> ServiceSpec {
+        ServiceSpec {
+            app_name: "sapphire-agent",
+            description: "Sapphire agent server".into(),
+            args: vec!["server".into(), "run".into()],
+            post_install: None,
+        }
+    }
+
+    fn ctx() -> InstallContext {
+        InstallContext {
+            unit_path: PathBuf::from("/dev/null"),
+            exe: PathBuf::from("/usr/bin/sapphire-agent"),
+        }
+    }
+
     #[test]
     fn a_double_hyphen_in_a_description_is_comment_safe() {
         let spec = ServiceSpec {
-            app_name: "sapphire-agent",
             description: "Notes -- ledger".into(),
             args: vec![],
-            post_install: None,
+            ..spec()
         };
-        let ctx = InstallContext {
-            unit_path: PathBuf::from("/dev/null"),
-            exe: PathBuf::from("/usr/bin/sapphire-agent"),
-        };
-        let rendered = render_launch_agent(&spec, &ctx);
+        let rendered = render_launch_agent(&spec, &ctx());
         assert!(rendered.contains("<!-- Notes - - ledger -->"), "{rendered}");
         assert!(
             !rendered.contains("<!-- Notes -- ledger -->"),

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>net.fireturtle.sapphire.sapphire-agent</string>
+  <string>net.sapphire-turtle.sapphire-agent</string>
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/sapphire-agent</string>

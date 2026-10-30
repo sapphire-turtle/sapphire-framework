@@ -32,7 +32,9 @@ pub mod systemd;
 pub mod windows;
 
 pub use error::{Error, Result};
-pub use launchd::{agent_path, label, render_launch_agent};
+pub use launchd::{
+    agent_path, label, legacy_agent_path, legacy_label, relabel, render_launch_agent,
+};
 pub use manager::{
     Calls, RecordingManager, ServiceCommand, ServiceManager, SystemManager, install, status,
     uninstall,

@@ -668,14 +668,14 @@ mod tests {
         assert!(flat.contains(&"bootstrap".to_owned()), "{flat:?}");
     }
 
+    // Built the way the install builds them: on Windows, joining onto `/home/user` mixes
+    // separators, and the bootstrap command carries the path as text.
     fn legacy_plist() -> PathBuf {
-        PathBuf::from(
-            "/home/user/Library/LaunchAgents/net.fireturtle.sapphire.sapphire-agent.plist",
-        )
+        legacy_agent_path("sapphire-agent", Path::new("/home/user"))
     }
 
     fn current_plist() -> PathBuf {
-        PathBuf::from("/home/user/Library/LaunchAgents/net.sapphire-turtle.sapphire-agent.plist")
+        agent_path("sapphire-agent", Path::new("/home/user"))
     }
 
     fn legacy_body() -> String {

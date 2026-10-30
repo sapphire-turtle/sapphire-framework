@@ -97,8 +97,11 @@ deprecated); open the root with `Workspace::from_root`.  Pass an `AppContext` to
 method to set the `app_name` so that marker directories and XDG caches
 use the host application's namespace.  Initialise the context once at
 startup with `init(AppKind::…)`; it resolves the cache / data / config
-directories to the per-binary-type layout `<platform-root>/<app-name>/<kind>/`
-(first writer wins) and applies the one-shot directory migration:
+directories to `<platform-root>/<app-name>/` (first writer wins) and applies the
+one-shot directory migrations. On Windows the three platform roots are one,
+`%LOCALAPPDATA%` (corundum-framework-platform 0.4), so the cache keeps to
+`<app-name>\cache\` there; a directory from an earlier version is moved out of
+Roaming (`%APPDATA%`) at the first start:
 
 ```rust
 use sapphire_workspace::{AppContext, AppKind};
@@ -106,7 +109,8 @@ use sapphire_workspace::{AppContext, AppKind};
 let ctx = AppContext::new("sapphire-journal");
 ctx.init(AppKind::Server);
 // marker: {root}/.sapphire-journal/
-// cache:  $XDG_CACHE_HOME/sapphire-journal/server/{uuid}/
+// cache:  $XDG_CACHE_HOME/sapphire-journal/{uuid}/
+//         %LOCALAPPDATA%\sapphire-journal\cache\{uuid}\ on Windows
 ```
 
 ## Stable workspace UUID

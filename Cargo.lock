@@ -1436,9 +1436,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9407d85201aa62c03867207c3a7644cbc101c3525e629302a731155ee9778022"
+checksum = "73bcc609db8f7a2a6f1f3c81a45f79bcae52b5ec6b08c2573ed8ef5e6d4b7fa3"
 dependencies = [
  "android-activity",
  "android_log-sys",
@@ -1467,9 +1467,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb43ffa9d7bd3eaaf9582938f78fe0c8ec9a25b8aa5c261f1a4ca1d9a8b92400"
+checksum = "a202c1c11dcee0ac05ff65cc8426a01af633bbca744264f7b8a9814bae65b803"
 dependencies = [
  "dirs 7.0.0",
  "jni 0.22.4",

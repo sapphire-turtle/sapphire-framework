@@ -43,6 +43,11 @@ pub fn import_external_devices(
         return Ok(ImportReport::default());
     }
     let mut report = ImportReport::default();
+    if !root.join(format!(".{app_name}")).is_dir() {
+        // A workspace moved away or not mounted yet: never recreate it; import into it
+        // once it is back.
+        return Ok(report);
+    }
     let workgroups = bridge_dir.join("workgroups");
     if !bridge_dir.exists() {
         // No bridge here, or one not run since its directory moved: look again next time.
@@ -55,7 +60,15 @@ pub fn import_external_devices(
     }
     .map_err(|e| format!("{}: {e}", workgroups.display()))?;
     let mut store = None;
-    for workgroup in entries {
+    // As the bridge's own `Workgroup::find`: only directories named by a grain id are
+    // workgroups (not `.DS_Store`, not a leftover temporary file).
+    let workgroups = entries.into_iter().filter(|e| {
+        e.path().is_dir()
+            && e.file_name()
+                .to_str()
+                .is_some_and(|n| n.parse::<sapphire_registry::GrainId>().is_ok())
+    });
+    for workgroup in workgroups {
         let ledger_dir = workgroup.path().join("root").join("external_devices");
         let ledger = ExternalDevices::open(&ledger_dir)
             .map_err(|e| format!("{}: {e}", ledger_dir.display()))?;
@@ -114,7 +127,8 @@ mod tests {
         let bridge = tmp.path().join("bridge");
         let root = tmp.path().join("ws");
         std::fs::create_dir_all(&data).unwrap();
-        std::fs::create_dir_all(&root).unwrap();
+        // A workspace: its app directory is there.
+        std::fs::create_dir_all(root.join(format!(".{APP}"))).unwrap();
         let wg = GrainId::random();
         let ledger = ExternalDevices::open(
             &bridge
@@ -214,5 +228,26 @@ mod tests {
         std::fs::set_permissions(&app_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(result.is_err());
         assert!(!f.data.join(IMPORTED_MARKER).exists());
+    }
+
+    #[test]
+    fn a_missing_workspace_gets_nothing_and_no_marker() {
+        let mut f = fixture();
+        f.ledger.add("pendant", None, vec![APP.into()]).unwrap();
+        let gone = f.root.join("moved-away");
+        let result = import_external_devices(APP, &f.data, &f.bridge, &gone);
+        assert_eq!(result.unwrap(), ImportReport::default());
+        assert!(!gone.exists(), "the workspace must not be recreated");
+        assert!(!f.data.join(IMPORTED_MARKER).exists());
+    }
+
+    #[test]
+    fn a_stray_entry_in_workgroups_is_skipped() {
+        let mut f = fixture();
+        f.ledger.add("pendant", None, vec![APP.into()]).unwrap();
+        std::fs::write(f.bridge.join("workgroups").join(".DS_Store"), "x").unwrap();
+        std::fs::create_dir_all(f.bridge.join("workgroups").join("not-a-workgroup")).unwrap();
+        assert_eq!(run(&f).unwrap().imported, 1);
+        assert!(f.data.join(IMPORTED_MARKER).is_file());
     }
 }

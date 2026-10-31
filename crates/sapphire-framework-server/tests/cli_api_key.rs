@@ -123,3 +123,14 @@ async fn external_device_app_is_refused() {
     assert!(run.err.contains("per workspace"), "{run:?}");
     assert!(open_store(APP, &root).unwrap().list().is_empty());
 }
+
+#[tokio::test]
+async fn a_gone_workspace_is_exit_1_and_not_recreated() {
+    let host = Host::new();
+    let root = host.select();
+    std::fs::remove_dir_all(&root).unwrap();
+    let run = host.cli(&["api-key", "list"]).await;
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(run.err.contains("not reachable"), "{run:?}");
+    assert!(!root.exists(), "the workspace must not be recreated");
+}

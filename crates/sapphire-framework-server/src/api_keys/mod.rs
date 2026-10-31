@@ -9,7 +9,7 @@ pub use import::{IMPORTED_MARKER, ImportReport, import_external_devices};
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use sapphire_framework_keys::{Authenticated, KeyVerifier, Verdict, Verifier, store_dir};
 use sapphire_workspace::AppContext;
@@ -19,8 +19,9 @@ use crate::selection::SelectionFile;
 /// Checks tokens against the keys of the workspace this application serves.
 ///
 /// It finds the served root in the application's selection file (`workspace.toml`, which
-/// the server rewrites on a switch), reading it again only when the file's modification time
-/// changed, and keeps one [`KeyVerifier`] — and so one cache — per root. With no workspace
+/// the server rewrites on a switch), parsing it again only when its text changed — not its
+/// modification time, which two writes within one tick share — and keeps one
+/// [`KeyVerifier`] — and so one cache — per root. With no workspace
 /// served, every token is refused.
 pub struct WorkspaceKeyVerifier {
     app: String,
@@ -31,8 +32,9 @@ pub struct WorkspaceKeyVerifier {
 
 #[derive(Default)]
 struct State {
-    /// The selection file's modification time when last read; `None` before the first.
-    stamp: Option<Option<SystemTime>>,
+    /// The selection file's text when last parsed (`None` inside: no file); `None` before
+    /// the first.
+    text: Option<Option<String>>,
     root: Option<PathBuf>,
     verifier: Option<Arc<KeyVerifier>>,
 }
@@ -61,21 +63,26 @@ impl WorkspaceKeyVerifier {
 
     /// The verifier for the root served now, if one is.
     fn current(&self) -> Option<Arc<KeyVerifier>> {
-        let stamp = std::fs::metadata(self.file.path())
-            .and_then(|m| m.modified())
-            .ok();
+        // The file is a few lines; reading it is cheaper than being wrong about a switch.
+        let text = match std::fs::read_to_string(self.file.path()) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::warn!("could not read the served workspace: {err}");
+                return None;
+            }
+        };
         let mut state = self.state.lock().expect("key verifier state");
-        if state.stamp != Some(stamp) {
-            // A file being rewritten reads as unreadable for a moment: refuse, and read it
-            // again on the next request.
+        if state.text.as_ref() != Some(&text) {
+            state.text = Some(text);
+            // The same text is not parsed (nor warned about) again.
             let root = match self.file.load(&self.app) {
                 Ok(selection) => selection.map(|s| s.root),
                 Err(err) => {
                     tracing::warn!("could not read the served workspace: {err}");
-                    return None;
+                    None
                 }
             };
-            state.stamp = Some(stamp);
             if root != state.root {
                 state.verifier = root.as_deref().map(|root| {
                     let verifier = KeyVerifier::new(&store_dir(&self.app, root));
@@ -105,7 +112,7 @@ pub(crate) fn import_once(ctx: &AppContext, root: &std::path::Path) {
         Ok(ImportReport { imported: 0, .. }) => {}
         Ok(report) => tracing::info!(
             imported = report.imported,
-            "the workgroup's external devices are now this workspace's API keys"
+            "the workgroup's external devices are now this workspace's API keys; the workgroup's ledger is no longer read: manage them with `api-key`"
         ),
         Err(err) => tracing::warn!("could not import the external devices: {err}"),
     }
@@ -267,5 +274,41 @@ mod tests {
         h.file.clear().unwrap();
         let v = WorkspaceKeyVerifier::at(APP, h.file.clone());
         assert_eq!(accepted(v.verify(token.expose()).await), None);
+    }
+
+    #[tokio::test]
+    async fn a_switch_in_the_same_tick_is_seen() {
+        let h = host();
+        let (_, in_a) = open_store(APP, &h.a).unwrap().add("a", None, None).unwrap();
+        let (_, in_b) = open_store(APP, &h.b).unwrap().add("b", None, None).unwrap();
+        let save = |root: &std::path::Path| {
+            h.file
+                .save(&Selection {
+                    root: root.to_owned(),
+                    sync: false,
+                })
+                .unwrap()
+        };
+        save(&h.a);
+        let v = WorkspaceKeyVerifier::at(APP, h.file.clone());
+        assert!(accepted(v.verify(in_a.expose()).await).is_some());
+        let tick = std::fs::metadata(h.file.path())
+            .unwrap()
+            .modified()
+            .unwrap();
+        // Rewritten within the file system's timestamp tick (1 s on some): same mtime.
+        save(&h.b);
+        std::fs::File::options()
+            .write(true)
+            .open(h.file.path())
+            .unwrap()
+            .set_modified(tick)
+            .unwrap();
+        assert_eq!(
+            accepted(v.verify(in_a.expose()).await),
+            None,
+            "the old workspace's key"
+        );
+        assert!(accepted(v.verify(in_b.expose()).await).is_some());
     }
 }

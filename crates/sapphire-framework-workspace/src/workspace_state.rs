@@ -603,6 +603,7 @@ impl WorkspaceState {
     /// is synced but not indexed.
     pub fn write_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
         let resolved = self.resolve_path(path)?;
+        self.refuse_protected(&resolved, path)?;
         let abs = resolved.as_path();
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
@@ -1793,6 +1794,11 @@ mod tests {
                 assert!(protected(state.append_file(Path::new(path), "x")), "{path}");
             }
             assert!(protected(state.write_file(&keys.join("k.toml"), "x")));
+            assert!(!keys.join("k.toml").exists());
+            assert!(matches!(
+                state.write_bytes(Path::new(".ws-state-protect-test/api_keys/k.toml"), b"x"),
+                Err(Error::ProtectedPath { .. })
+            ));
             assert!(!keys.join("k.toml").exists());
 
             fs::write(keys.join("real.toml"), "x").unwrap();

@@ -623,6 +623,15 @@ fn api_key(ctx: &AppContext, command: corundum_framework_keys::KeyCommand) -> Re
         );
         return Ok(1);
     };
+    // Opening the store creates its directory: never recreate a workspace that moved away.
+    if !selection.root.join(format!(".{}", ctx.app_name)).is_dir() {
+        eprintln!(
+            "the workspace at {} is not reachable: bring it back, or choose another with `{} workspace select <dir>`",
+            selection.root.display(),
+            ctx.app_name
+        );
+        return Ok(1);
+    }
     let run = sapphire_framework_keys::open_store(ctx.app_name, &selection.root)
         .and_then(|mut store| command.run(&mut store));
     match run {

@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.23.0...sapphire-framework-server-v0.24.0) - 2026-10-31
+
+### Added
+
+- *(bridge)* [**breaking**] remove external devices from the bridge
+- *(cli)* [**breaking**] api-key replaces external-device
+- *(server)* import the workgroup's external devices into the workspace once
+- *(server)* [**breaking**] check HTTP tokens against the workspace's API keys
+- register a single-binary desktop app's own executable as its server
+- *(server)* switchable HTTP endpoints, `http.<name>.enabled`
+- *(settings)* an application declares its own top-level names
+
+### Fixed
+
+- never recreate a workspace for the keys; guard write_bytes; detect a switch by text
+- *(server)* refuse an undeclared HTTP endpoint before binding
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-v0.22.0...sapphire-framework-server-v0.23.0) - 2026-10-28
 
 ### Other

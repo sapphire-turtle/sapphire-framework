@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-keys-v0.23.0...sapphire-framework-keys-v0.24.0) - 2026-10-31
+
+### Added
+
+- *(server)* [**breaking**] check HTTP tokens against the workspace's API keys
+- *(keys)* [**breaking**] drop BridgeVerifier; refuse unconfigured with 401
+
 ## [0.22.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-keys-v0.21.0...sapphire-framework-keys-v0.22.0) - 2026-10-25
 
 ### Added

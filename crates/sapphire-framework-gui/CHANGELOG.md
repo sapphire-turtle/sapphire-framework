@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.23.0...sapphire-framework-gui-v0.24.0) - 2026-10-31
+
+### Added
+
+- *(gui)* [**breaking**] Settings › API keys over the workspace's keys
+- register a single-binary desktop app's own executable as its server
+- *(settings)* an application declares its own top-level names
+
+### Fixed
+
+- *(gui)* register the desktop window's own binary as the app server
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.22.0...sapphire-framework-gui-v0.23.0) - 2026-10-28
 
 ### Added

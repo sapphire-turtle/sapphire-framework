@@ -140,9 +140,9 @@ impl BridgePage {
 | Logs | The last 500 lines of the newest file in `BridgeDir::log_dir()`, read again every 2 s while the page is shown; a "Open the folder" button |
 | About | The version, and `UpdatesPanel` with one target, the running `sapphire-bridge-desktop` (the GitHub-release updater; part C adds the package's row) |
 
-- When no bridge answers, the status banner says so and offers Start. Start uses the OS
-  service when one is registered (its start), else runs this executable with `serve`,
-  detached.
+- When no bridge answers, the status banner says so and offers Start: the GUI's existing
+  "install & start" of the bridge's service, registering `sapphire-bridge-desktop serve`
+  (the service manager restarts it, and an existing registration is replaced).
 
 ### `FrameworkClient` in bridge-only mode
 

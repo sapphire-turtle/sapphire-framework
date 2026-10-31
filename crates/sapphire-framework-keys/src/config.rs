@@ -21,7 +21,7 @@ impl AuthConfig {
         }
     }
 
-    /// No verifier: the layer fails **closed** and refuses every request with 503.
+    /// No verifier: the layer fails **closed** and refuses every request with 401.
     pub fn unconfigured() -> Self {
         Self::default()
     }

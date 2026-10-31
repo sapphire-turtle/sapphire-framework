@@ -1,5 +1,8 @@
 # External devices: API-key clients of a workgroup's applications
 
+> Superseded by `2026-10-31-workspace-api-keys-design.md` (#364): API keys live in the
+> served workspace, and the bridge no longer keeps or checks them.
+
 Issue: #199. Related: #92 (labelled keys, editor records), #103 (`KeyStore` split out),
 #104 (rotate keeping the id), #117 (no way back from retire).
 

@@ -39,9 +39,11 @@ same copy of it, so the keys can live there instead, with no bridge involved.
 6. **The bridge's external-device surface is removed:** its control-plane methods, its CLI,
    the relay entries, and the bridge's use of the ledger. The ledger files stay where they
    are, unused; nothing deletes them.
-7. **An app's own tools must not write under `.<app>/api_keys/`.** A tool that could would
-   let an agent issue itself a key. The framework has no file-writing tool and its indexer
-   skips dot directories; each app checks its own tools when it adopts this (see Rollout).
+7. **No file tool writes under `.<app>/api_keys/`.** A tool that could would let an agent
+   issue itself a key. The framework's own write tools (`workspace_write_tools()`, and so
+   `/mcp`) go through `WorkspaceState`, whose write, append and delete refuse that
+   directory (`Error::ProtectedPath`); each app checks its own tools when it adopts this
+   (see Rollout).
 
 ## Design
 

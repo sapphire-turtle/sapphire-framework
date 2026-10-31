@@ -23,6 +23,6 @@ jobs:
     uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
     with:
       tag: ${{ inputs.tag }}
-      package: sapphire-bridge
+      package: sapphire-bridge-headless
       binary: sapphire-bridge
       linux-packages: libssl-dev pkg-config

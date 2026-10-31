@@ -22,11 +22,11 @@ jobs:
     secrets: inherit
 
   # Only sapphire-framework-workspace makes the `v{version}` tag and GitHub
-  # release (release-plz.toml); sapphire-bridge shares its version group, so its
+  # release (release-plz.toml); sapphire-bridge-headless shares its version group, so its
   # binaries go onto that release.
   build-bridge:
     needs: release-plz
-    if: contains(fromJSON(needs.release-plz.outputs.packages), 'sapphire-bridge')
+    if: contains(fromJSON(needs.release-plz.outputs.packages), 'sapphire-bridge-headless')
     permissions:
       contents: write
     uses: ./.github/workflows/release-bridge.yml

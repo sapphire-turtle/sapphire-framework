@@ -7236,12 +7236,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sapphire-bridge"
+name = "sapphire-bridge-headless"
 version = "0.23.0"
 dependencies = [
- "async-trait",
  "clap",
- "corundum-framework-platform",
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",
  "sapphire-framework-bridge-embed",
@@ -7364,11 +7362,13 @@ dependencies = [
 name = "sapphire-framework-bridge-embed"
 version = "0.23.0"
 dependencies = [
+ "async-trait",
  "candle-core",
  "candle-nn",
  "corundum-framework-platform",
  "hf-hub",
  "image",
+ "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",
  "serde",
  "serde_json",

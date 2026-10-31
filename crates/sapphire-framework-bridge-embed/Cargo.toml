@@ -12,6 +12,9 @@ categories = ["science"]
 default = ["local"]
 # The local model (candle, on the CPU).
 local = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:hf-hub", "dep:image"]
+# `factory`: the bridge's embedding hook built from its settings, for the binaries that
+# serve it (sapphire-bridge, sapphire-bridge-desktop).
+factory = ["dep:sapphire-framework-bridge", "dep:async-trait", "dep:corundum-framework-platform"]
 
 [dependencies]
 candle-core = { version = "0.11.0", optional = true }
@@ -27,6 +30,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
+sapphire-framework-bridge = { version = "0.23.0", path = "../sapphire-framework-bridge", optional = true }
+async-trait = { workspace = true, optional = true }
+corundum-framework-platform = { workspace = true, optional = true }
 
 [dev-dependencies]
 corundum-framework-platform.workspace = true

@@ -3,7 +3,7 @@
 > English: [README.md](README.md)
 
 sapphire の各アプリの CLI 版（CLI・app server・MCP サーバーを 1 つにしたバイナリ）を、GitHub のリリースから
-インストールするスクリプトです。1 組で全アプリを扱い、[`sapphire-bridge`](../bridge/README.ja.md) も一緒にインストール・更新します
+インストールするスクリプトです。1 組で全アプリを扱い、[`sapphire-bridge`](../bridge/headless/README.ja.md) も一緒にインストール・更新します
 （アプリはホストの bridge を通じて同期するため）。サーバー機などヘッドレスの環境向けです。
 
 デスクトップ版はこのスクリプトでは入りません。各アプリのリリース（`https://github.com/sapphire-turtle/sapphire-<app>/releases`）に

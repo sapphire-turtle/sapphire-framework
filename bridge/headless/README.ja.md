@@ -2,6 +2,10 @@
 
 # sapphire-bridge（日本語）
 
+> 0.24 から `sapphire-bridge-headless` として公開しています。クレート `sapphire-bridge` は 0.23 で
+> 止まりました。コマンド名は `sapphire-bridge` のままです。ウィンドウのあるデスクトップ版は
+> `sapphire-bridge-desktop` です。
+
 ホスト単位で常駐する sapphire のデーモンです。OS ユーザーごとに 1 プロセスで、そのマシン上の
 すべての sapphire アプリに共有されます。
 

@@ -1,14 +1,14 @@
 //! Builds the bridge's embedding service from the resolved settings, through the
-//! [`sapphire_bridge::EmbedProvider`] hook.
+//! [`sapphire_framework_bridge::EmbedProvider`] hook.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use corundum_framework_platform::dirs;
 
-use sapphire_bridge::{BridgeDir, EmbedConfig, EmbedFactory, EmbedProvider};
+use crate::EmbedService;
 use sapphire_bridge_api::EmbedModelInfo;
-use sapphire_framework_bridge_embed::EmbedService;
+use sapphire_framework_bridge::{BridgeDir, EmbedConfig, EmbedFactory, EmbedProvider};
 
 /// Adapts the embedding service to the bridge's hook.
 pub struct ServiceProvider(EmbedService);

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-ipc-v0.23.0...sapphire-framework-ipc-v0.24.0) - 2026-10-31
+
+### Added
+
+- [**breaking**] corundum-framework 0.4; move Windows settings and data from Roaming to Local
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-ipc-v0.22.0...sapphire-framework-ipc-v0.23.0) - 2026-10-28
 
 ### Other

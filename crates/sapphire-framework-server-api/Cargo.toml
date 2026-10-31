@@ -2,7 +2,7 @@
 name = "sapphire-framework-server-api"
 # The major is the app server's API version (`API_VERSION`); it moves only when the
 # methods or their types break, not with the framework's version.
-version = "5.0.0"
+version = "5.0.1"
 edition.workspace = true
 description = "The methods every sapphire-framework app server serves, and their types"
 license.workspace = true
@@ -11,7 +11,7 @@ keywords = ["ipc", "protocol", "local-first"]
 categories = ["network-programming"]
 
 [dependencies]
-sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "3.0.0", path = "../sapphire-framework-bridge-api" }
+sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "4.0.0", path = "../sapphire-framework-bridge-api" }
 grain-id.workspace = true
 serde.workspace = true
 

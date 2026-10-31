@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.23.0...v0.24.0) - 2026-10-31
+
+### Added
+
+- *(bridge)* [**breaking**] remove external devices from the bridge
+- [**breaking**] corundum-framework 0.4; move Windows settings and data from Roaming to Local
+
+### Fixed
+
+- never recreate a workspace for the keys; guard write_bytes; detect a switch by text
+- *(workspace)* file tools do not change the workspace's API keys
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.22.0...v0.23.0) - 2026-10-28
 
 ### Other

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [5.0.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-api-v5.0.0...sapphire-framework-server-api-v5.0.1) - 2026-10-31
+
+### Other
+
+- updated the following local packages: sapphire-framework-bridge-api
+
 ## [5.0.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-server-api-v4.2.0...sapphire-framework-server-api-v5.0.0) - 2026-10-25
 
 ### Added

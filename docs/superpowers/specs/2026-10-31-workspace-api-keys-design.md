@@ -54,16 +54,22 @@ CLI, the GUI and the import.
 ### HTTP
 
 `AppServer`'s HTTP layer uses a `WorkspaceKeyVerifier`, which wraps
-`corundum_framework_keys::KeyVerifier` for the workspace the `WorkspaceHost` has open:
+`corundum_framework_keys::KeyVerifier` for the workspace this app serves:
 
-- it asks the host for the current root on each request and keeps one `KeyVerifier` per
-  root, replacing it (and so its cache) when the root changes;
+- it finds the served root in the app's selection file (`workspace.toml`, which the
+  server rewrites on a switch), checking the file's modification time on each request and
+  re-reading it only when that changed, so any process — the server, or an app building
+  its own verifier — can make one with `WorkspaceKeyVerifier::for_app(ctx)`;
+- it keeps one `KeyVerifier` per root, replacing it (and so its cache) when the root
+  changes;
 - with no workspace served it refuses every token (401).
 
-`sapphire_framework::keys` re-exports what an app needs (`Authenticated`, `Verdict`, the
-layer). `BridgeVerifier`, `Verdict::Unavailable` and `AuthConfig::new(verifier)` with a
-bridge verifier go. `sapphire-framework-keys` becomes a deprecated re-export of the
-corundum crate for one release, then is removed.
+`sapphire-framework-keys` keeps its `Verifier` trait, `AuthConfig` and `protect`: apps
+wrap the verifier in their own (sapphire-agent maps a key to a room profile).
+`BridgeVerifier` and `Verdict::Unavailable` go, and `Authenticated::id` becomes corundum's
+`KeyId` (imported keys keep their grain-id text; new keys get a UUIDv7). With no verifier
+configured, `protect` refuses with 401 instead of 503. corundum's own axum layer is
+asteria's; sapphire keeps its own because of the trait.
 
 The 30 s success cache stays (corundum's default): a retire takes effect within the sync
 delay plus 30 s, as it did with the workgroup ledger.
@@ -153,7 +159,7 @@ once the workspace syncs.
 3. Each app updates the framework and checks that no tool writes under `.<app>/`.
    sapphire-agent also moves `device_auth.rs` off `BridgeVerifier` and its startup check
    off `external_device.list`; its room profiles keep naming keys by name or id.
-4. A later release removes the `external-device` alias, `sapphire-framework-keys`, the
+4. A later release removes the `external-device` alias, the
    import and `ExternalDevices`.
 
 ## Out of scope

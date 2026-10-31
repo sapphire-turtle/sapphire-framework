@@ -5,9 +5,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sapphire_backend::protocol as proto;
-use sapphire_bridge_api::{
-    DevicePrioritySetParams, DeviceRetireParams, InviteParams, JoinParams, WorkgroupCreateParams,
-};
 use sapphire_bridge_client::BridgeClient;
 use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
 use sapphire_ipc::{ClientInfo, Endpoint};
@@ -64,16 +61,6 @@ pub enum FrameworkCommand {
     /// at a time.
     #[command(subcommand)]
     Workspace(WorkspaceCommand),
-    /// Found, show or join the workgroup this device belongs to.
-    #[command(subcommand)]
-    Workgroup(WorkgroupCommand),
-    /// List the workgroup's devices, invite one or retire one.
-    #[command(subcommand)]
-    Device(DeviceCommand),
-    /// Show or change the embedding models (the workgroup's local and remote one), this
-    /// device's switches, and its API key. Needs the running bridge.
-    #[command(subcommand)]
-    Embedding(sapphire_bridge_api::EmbeddingCommand),
     /// Add, list, retire, restore and rotate the API keys of the workspace this application
     /// serves — for clients that reach it over HTTP. Works on the workspace's files, with or
     /// without a running server; the keys sync with the workspace.
@@ -165,9 +152,6 @@ impl FrameworkCommand {
             }
             FrameworkCommand::Config(command) => config::config(ctx, owner, command, version).await,
             FrameworkCommand::Workspace(command) => command.dispatch(app, version).await,
-            FrameworkCommand::Workgroup(command) => command.dispatch(app, version).await,
-            FrameworkCommand::Device(command) => command.dispatch(app, version).await,
-            FrameworkCommand::Embedding(command) => embedding(command, app, version).await,
             FrameworkCommand::ApiKey(command) => api_key(ctx, command),
             FrameworkCommand::ExternalDevice(legacy) => {
                 eprintln!("warning: `external-device` is renamed to `api-key`");
@@ -359,248 +343,6 @@ pub enum WorkspaceSyncCommand {
     Disable,
     /// Show the server's workspace's sync state.
     Status,
-}
-
-/// The `workgroup` subcommands.
-///
-/// The workgroup's ledger is the bridge's business end to end, so these go to the bridge's
-/// endpoint directly, including `create`, which goes through the running bridge.
-#[derive(Debug, clap::Subcommand)]
-pub enum WorkgroupCommand {
-    /// Found a workgroup on this host.
-    Create {
-        /// The workgroup's name.
-        name: String,
-        /// This host's device name inside it.
-        #[arg(long)]
-        device_name: String,
-    },
-    /// Show the workgroup this host belongs to.
-    List,
-    /// Join the workgroup a ticket names.
-    Join {
-        /// The ticket the inviting device printed.
-        ticket: String,
-        /// The name this device will carry. Defaults to this host's name.
-        #[arg(long)]
-        device_name: Option<String>,
-    },
-}
-
-impl WorkgroupCommand {
-    /// Carry out the command, returning the process exit code.
-    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
-        match self {
-            WorkgroupCommand::Create { name, device_name } => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                let created = client
-                    .workgroup_create(WorkgroupCreateParams { name, device_name })
-                    .await?;
-                println!(
-                    "created workgroup {} ({}); this device is {}",
-                    created.name, created.workgroup_id, created.device_id
-                );
-                Ok(0)
-            }
-            WorkgroupCommand::List => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                match client.status().await?.workgroup {
-                    Some(workgroup) => {
-                        println!("{} ({})", workgroup.name, workgroup.workgroup_id);
-                        Ok(0)
-                    }
-                    None => {
-                        println!("this host has not joined a workgroup");
-                        Ok(1)
-                    }
-                }
-            }
-            WorkgroupCommand::Join {
-                ticket,
-                device_name,
-            } => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                let joined = client
-                    .join(JoinParams {
-                        ticket,
-                        device_name,
-                    })
-                    .await?;
-                println!(
-                    "joined workgroup {} ({}); this device is {}",
-                    joined.workgroup_name, joined.workgroup_id, joined.device_id
-                );
-                Ok(0)
-            }
-        }
-    }
-}
-
-/// The `device` subcommands.
-///
-/// The ledger's word for taking a device out is `retire` — a device id is written into
-/// synced content and must keep resolving, so its record stays as a tombstone — and this
-/// command goes through the running bridge to retire a device.
-#[derive(Debug, clap::Subcommand)]
-pub enum DeviceCommand {
-    /// List the workgroup's devices, and which are reachable.
-    List,
-    /// Create an invite ticket for a device that is about to join.
-    Invite {
-        /// What the joining device will be called.
-        #[arg(long)]
-        name: String,
-        /// How long the invite stays good, in seconds.
-        #[arg(long)]
-        ttl: Option<u64>,
-        /// The workgroup to invite into, by name or id.
-        #[arg(long)]
-        workgroup: Option<String>,
-    },
-    /// Retire a device, so it may no longer connect.
-    Retire {
-        /// The device's name or id.
-        selector: String,
-    },
-    /// Show or set a device's election priority (0-255; 0 = never primary or secondary).
-    /// The election is non-preemptive: raising a priority does not move a role already held.
-    Priority {
-        /// The device's name or id.
-        selector: String,
-        /// The new priority. Omit to show the current one.
-        priority: Option<u8>,
-    },
-}
-
-impl DeviceCommand {
-    /// Carry out the command, returning the process exit code.
-    pub async fn dispatch(self, app: &'static str, version: &'static str) -> Result<i32> {
-        match self {
-            DeviceCommand::List => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                let peers = client.peers().await?;
-                if peers.peers.is_empty() {
-                    println!("no devices");
-                    return Ok(0);
-                }
-                for peer in peers.peers {
-                    println!(
-                        "{} {} p{}{}{}",
-                        peer.name,
-                        peer.device_id,
-                        peer.priority,
-                        peer.availability
-                            .map(|a| format!(" a{a}"))
-                            .unwrap_or_default(),
-                        if peer.connected { " (online)" } else { "" }
-                    );
-                }
-                Ok(0)
-            }
-            DeviceCommand::Invite {
-                name,
-                ttl,
-                workgroup,
-            } => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                let invite = client
-                    .invite(InviteParams {
-                        name,
-                        ttl,
-                        workgroup,
-                    })
-                    .await?;
-                // The ticket on its own line, and nothing else on it: this is the one
-                // output a user pipes to the joining device.
-                println!("{}", invite.ticket);
-                Ok(0)
-            }
-            DeviceCommand::Retire { selector } => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                let retired = client
-                    .device_retire(DeviceRetireParams { selector })
-                    .await?;
-                println!("retired device {} ({})", retired.name, retired.device_id);
-                Ok(0)
-            }
-            DeviceCommand::Priority { selector, priority } => {
-                let Some(client) = relayed_bridge(app, version).await? else {
-                    return Ok(1);
-                };
-                match priority {
-                    Some(priority) => {
-                        let set = client
-                            .device_priority_set(DevicePrioritySetParams { selector, priority })
-                            .await?;
-                        println!("{} ({}) priority {}", set.name, set.device_id, set.priority);
-                    }
-                    None => {
-                        let peers = client.peers().await?;
-                        match peers
-                            .peers
-                            .iter()
-                            .find(|p| p.name == selector || p.device_id.to_string() == selector)
-                        {
-                            Some(p) => {
-                                println!("{} ({}) priority {}", p.name, p.device_id, p.priority)
-                            }
-                            None => {
-                                println!("no device {selector:?}");
-                                return Ok(1);
-                            }
-                        }
-                    }
-                }
-                Ok(0)
-            }
-        }
-    }
-}
-
-/// The bridge, through `app`'s server, or `None` after saying no server is running.
-///
-/// The app's server relays the bridge's client-facing methods, so the CLI holds one
-/// connection, to the app, whichever bridge answers behind it. The bridge being absent
-/// surfaces on the first call as the error whose text the `main` prints: "no
-/// sapphire-bridge is running".
-async fn relayed_bridge(app: &str, version: &str) -> Result<Option<BridgeClient>> {
-    let Some(client) = connect_app(app, version).await? else {
-        return Ok(None);
-    };
-    Ok(Some(BridgeClient::relayed(
-        Arc::new(client),
-        sapphire_ipc::runtime_dir()?,
-    )))
-}
-
-/// `embedding …`: always through the app's server, to the bridge whose files these are.
-async fn embedding(
-    command: sapphire_bridge_api::EmbeddingCommand,
-    app: &str,
-    version: &str,
-) -> Result<i32> {
-    // Connect first: `key set` asks for the key, which is pointless with no server to take it.
-    let Some(client) = relayed_bridge(app, version).await? else {
-        return Ok(1);
-    };
-    let request = command.request()?;
-    let report = client.embed_request(request).await?;
-    for line in sapphire_bridge_api::describe(&report) {
-        println!("{line}");
-    }
-    Ok(0)
 }
 
 /// `external-device …`, kept one release as a hidden alias of `api-key`.
@@ -1291,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_and_bridge_commands_parse() {
+    fn the_workspace_commands_parse() {
         for args in [
             vec!["app", "workspace", "init"],
             vec!["app", "workspace", "init", "papers"],
@@ -1322,26 +1064,6 @@ mod tests {
             vec!["app", "workspace", "move", "../papers"],
             vec!["app", "workspace", "remove"],
             vec!["app", "workspace", "remove", "--delete"],
-            vec![
-                "app",
-                "workgroup",
-                "create",
-                "--device-name",
-                "laptop",
-                "home",
-            ],
-            vec!["app", "workgroup", "list"],
-            vec![
-                "app",
-                "workgroup",
-                "join",
-                "--device-name",
-                "laptop",
-                "TICKET",
-            ],
-            vec!["app", "device", "list"],
-            vec!["app", "device", "invite", "--name", "phone"],
-            vec!["app", "device", "retire", "phone"],
         ] {
             assert!(Probe::try_parse_from(&args).is_ok(), "{args:?}");
         }

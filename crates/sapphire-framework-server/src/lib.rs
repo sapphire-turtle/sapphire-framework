@@ -41,6 +41,7 @@ use crate::restart::Exit;
 /// after the server has answered its own shutdown call.
 const SERVE_GRACE: Duration = Duration::from_secs(2);
 
+pub mod api_keys;
 mod command;
 mod config;
 mod config_methods;
@@ -365,7 +366,9 @@ impl AppServer {
         self
     }
 
-    /// Check HTTP tokens with `auth` rather than with the bridge: for fixtures.
+    /// Check HTTP tokens with `auth` rather than with the served workspace's API keys: for
+    /// fixtures, or for an application whose own [`Verifier`](sapphire_framework_keys::Verifier)
+    /// wraps [`api_keys::WorkspaceKeyVerifier`] to map a key to something of its own.
     #[cfg(feature = "http")]
     pub fn http_auth(mut self, auth: sapphire_framework_keys::AuthConfig) -> AppServer {
         self.http_auth = Some(auth);
@@ -878,7 +881,7 @@ impl AppServer {
                 (true, Some(addr)) => {
                     let auth = http_auth.unwrap_or_else(|| {
                         sapphire_framework_keys::AuthConfig::new(Arc::new(
-                            sapphire_framework_keys::BridgeVerifier::new(ctx.app_name, version),
+                            api_keys::WorkspaceKeyVerifier::for_app(ctx),
                         ))
                     });
                     http::start(addr, routes, public, auth, http_stop.clone()).await

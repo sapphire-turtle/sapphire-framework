@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::routing::get;
 use sapphire_backend::protocol as proto;
-use sapphire_framework_keys::{AuthConfig, Authenticated, GrainId, Verdict, Verifier};
+use sapphire_framework_keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier};
 use sapphire_framework_server::{AppServer, HttpConfig, HttpMetricsConfig, ServerConfig};
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::{AppContext, AppKind};
@@ -29,7 +29,7 @@ static CTX_REINDEX: AppContext = AppContext::new("sapphire-metricstest-reindex")
 static CTX_COLLECT: AppContext = AppContext::new("sapphire-metricstest-collect");
 
 /// The one token the fake verifier accepts.
-const TOKEN: &str = "sapphire-ed-good";
+const TOKEN: &str = "sapphire-ak-good";
 
 /// Accepts [`TOKEN`] and nothing else.
 struct Fake;
@@ -39,7 +39,7 @@ impl Verifier for Fake {
     async fn verify(&self, token: &str) -> Verdict {
         if token == TOKEN {
             Verdict::Accepted(Authenticated {
-                id: GrainId::random(),
+                id: KeyId::generate(),
                 name: "agent".into(),
             })
         } else {

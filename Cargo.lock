@@ -7498,6 +7498,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "corundum-framework-keys",
  "grain-id",
  "indexmap",
  "libc",

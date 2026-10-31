@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::routing::get;
 use sapphire_backend::protocol as proto;
-use sapphire_framework_keys::{AuthConfig, Authenticated, GrainId, Verdict, Verifier};
+use sapphire_framework_keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier};
 use sapphire_framework_server::{AppServer, AppSettings, HttpEndpoint, SettingDef};
 use sapphire_ipc::{ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::{AppContext, AppKind};
@@ -19,7 +19,7 @@ static CTX_SERVED: AppContext = AppContext::new("sapphire-endpointtest-served");
 static CTX_UNDECLARED: AppContext = AppContext::new("sapphire-endpointtest-undeclared");
 
 /// The one token the fake verifier accepts.
-const TOKEN: &str = "sapphire-ed-good";
+const TOKEN: &str = "sapphire-ak-good";
 
 /// Accepts [`TOKEN`] and nothing else.
 struct Fake;
@@ -29,7 +29,7 @@ impl Verifier for Fake {
     async fn verify(&self, token: &str) -> Verdict {
         if token == TOKEN {
             Verdict::Accepted(Authenticated {
-                id: GrainId::random(),
+                id: KeyId::generate(),
                 name: "agent".into(),
             })
         } else {
@@ -147,7 +147,7 @@ async fn an_endpoint_is_served_while_its_switch_is_on() {
     let on = get("/on/ping", Some(TOKEN)).await.unwrap();
     assert_eq!(on.status(), reqwest::StatusCode::OK);
     assert_eq!(on.text().await.unwrap(), "pong");
-    for token in [None, Some("sapphire-ed-bad")] {
+    for token in [None, Some("sapphire-ak-bad")] {
         let refused = get("/on/ping", token).await.unwrap();
         assert_eq!(
             refused.status(),

@@ -16,7 +16,7 @@ redb-store = ["sapphire-backend/redb-store"]
 test-util = []
 # The HTTP listener (`AppServer::http`, `[http]` in config.toml), every route but /metrics
 # behind an external device's token.
-http = ["dep:axum", "dep:sapphire-framework-keys", "dep:tokio-util"]
+http = ["dep:axum", "sapphire-framework-keys/axum", "dep:tokio-util"]
 # The MCP tools: the `mcp` subcommand (stdio, through the IPC endpoint) and `/mcp` on the
 # HTTP listener when config.toml turns it on.
 mcp = ["http", "dep:sapphire-framework-mcp"]
@@ -40,6 +40,10 @@ required-features = ["metrics"]
 name = "http_endpoints"
 required-features = ["http"]
 
+[[test]]
+name = "api_keys"
+required-features = ["http"]
+
 [dependencies]
 sapphire-backend = { package = "sapphire-framework-backend", version = "0.23.0", path = "../sapphire-framework-backend", default-features = false }
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "3.0.0", path = "../sapphire-framework-bridge-api", features = ["cli"] }
@@ -50,7 +54,10 @@ sapphire-framework-settings = { version = "0.23.0", path = "../sapphire-framewor
 sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.23.0", path = "../sapphire-framework-ipc" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.23.0", path = "../sapphire-framework-sync" }
 sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.23.0", path = "../sapphire-framework-workspace", default-features = false }
-sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys", features = ["axum"], optional = true }
+# The served workspace's API keys: the HTTP layer's verifier, `api-key` and the import.
+sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
+async-trait.workspace = true
+corundum-framework-keys.workspace = true
 sapphire-framework-mcp = { version = "0.23.0", path = "../sapphire-framework-mcp", optional = true }
 axum = { workspace = true, optional = true }
 tokio-util = { version = "0.7", default-features = false, optional = true }

@@ -17,9 +17,14 @@
 #[cfg(feature = "axum")]
 mod auth;
 mod config;
+mod store;
 mod verify;
 
 #[cfg(feature = "axum")]
 pub use auth::protect;
 pub use config::AuthConfig;
+pub use store::{TOKEN_PREFIX, open_store, store_dir};
+
+/// The key store and its verifier, from corundum-framework.
+pub use corundum_framework_keys::{KeyStore, KeyVerifier};
 pub use verify::{Authenticated, KeyId, Verdict, Verifier};

@@ -58,6 +58,8 @@ sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.23
 sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
 async-trait.workspace = true
 corundum-framework-keys.workspace = true
+# The workgroup's external-device ledger, read once to import it into the workspace (#364).
+sapphire-registry = { package = "sapphire-framework-registry", version = "0.23.0", path = "../sapphire-framework-registry" }
 sapphire-framework-mcp = { version = "0.23.0", path = "../sapphire-framework-mcp", optional = true }
 axum = { workspace = true, optional = true }
 tokio-util = { version = "0.7", default-features = false, optional = true }

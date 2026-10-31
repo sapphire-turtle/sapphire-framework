@@ -7514,6 +7514,7 @@ dependencies = [
  "sapphire-framework-ipc",
  "sapphire-framework-keys",
  "sapphire-framework-mcp",
+ "sapphire-framework-registry",
  "sapphire-framework-server",
  "sapphire-framework-service",
  "sapphire-framework-session",

@@ -3,6 +3,10 @@
 //! The keys live in the workspace (`<root>/.<app>/api_keys/`, see
 //! [`sapphire_framework_keys::store_dir`]), so they sync with it and no bridge is asked.
 
+mod import;
+
+pub use import::{IMPORTED_MARKER, ImportReport, import_external_devices};
+
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -84,6 +88,26 @@ impl WorkspaceKeyVerifier {
             }
         }
         state.verifier.clone()
+    }
+}
+
+/// Import the workgroup's external devices into the workspace at `root`, once per host
+/// (see [`import_external_devices`]). Failures are logged and retried at the next start.
+pub(crate) fn import_once(ctx: &AppContext, root: &std::path::Path) {
+    let bridge_dir = match std::env::var_os("SAPPHIRE_BRIDGE_DIR").filter(|v| !v.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => match sapphire_workspace::dirs::data_dir() {
+            Some(dir) => dir.join(sapphire_ipc::BRIDGE_DIR_NAME),
+            None => return,
+        },
+    };
+    match import_external_devices(ctx.app_name, ctx.data_dir(), &bridge_dir, root) {
+        Ok(ImportReport { imported: 0, .. }) => {}
+        Ok(report) => tracing::info!(
+            imported = report.imported,
+            "the workgroup's external devices are now this workspace's API keys"
+        ),
+        Err(err) => tracing::warn!("could not import the external devices: {err}"),
     }
 }
 

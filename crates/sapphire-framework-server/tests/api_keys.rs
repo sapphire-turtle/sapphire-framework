@@ -101,6 +101,22 @@ async fn a_workspace_key_is_accepted_without_a_bridge() {
         .unwrap()
         .add("pendant", None, None)
         .unwrap();
+    // An external device from before #364, in the bridge's workgroup ledger: the server
+    // imports it at start, so its token keeps working.
+    let bridge_dir = tmp.path().join("bridge");
+    // SAFETY: serialised by `point_at`'s lock, held for the test.
+    unsafe { std::env::set_var("SAPPHIRE_BRIDGE_DIR", &bridge_dir) };
+    #[allow(deprecated)]
+    let (_, old_token) = sapphire_registry::ExternalDevices::open(
+        &bridge_dir
+            .join("workgroups")
+            .join(sapphire_registry::GrainId::random().to_string())
+            .join("root")
+            .join("external_devices"),
+    )
+    .unwrap()
+    .add("old pendant", None, vec![CTX.app_name.to_owned()])
+    .unwrap();
     let endpoint = Endpoint::in_dir(CTX.app_name, tmp.path().join("run"));
 
     // No `http_auth`: the default is the workspace's keys.
@@ -131,6 +147,12 @@ async fn a_workspace_key_is_accepted_without_a_bridge() {
     let ok = get(token.expose()).await.unwrap();
     assert_eq!(ok.status(), reqwest::StatusCode::OK);
     assert_eq!(ok.text().await.unwrap(), "pong");
+    let imported = get(old_token.expose()).await.unwrap();
+    assert_eq!(
+        imported.status(),
+        reqwest::StatusCode::OK,
+        "the imported key"
+    );
     let refused = get("sapphire-ak-wrong").await.unwrap();
     assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
 

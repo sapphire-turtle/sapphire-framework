@@ -43,20 +43,12 @@ pub use embed::{
     SlotModel, describe,
 };
 
-mod external;
-pub use external::{
-    ExternalDeviceAddParams, ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult,
-    ExternalDeviceInfo, ExternalDeviceListResult, ExternalDeviceOutcome, ExternalDeviceRequest,
-    ExternalDeviceSelectParams, ExternalDeviceSetAppsParams, ExternalDeviceTokenResult,
-    describe_external_device, describe_external_outcome,
-};
-
 #[cfg(feature = "cli")]
 mod cli;
 #[cfg(feature = "cli")]
 pub use cli::{
-    ConfigCommand, EmbeddingCommand, ExternalDeviceCommand, KeyCommand, LocalCommand,
-    RemoteCommand, ScopeFlags, Switch, describe_entries, parse_entries, read_key, read_secret,
+    ConfigCommand, EmbeddingCommand, KeyCommand, LocalCommand, RemoteCommand, ScopeFlags, Switch,
+    describe_entries, parse_entries, read_key, read_secret,
 };
 
 /// The version of the bridge's control-plane API: the methods below and their types.
@@ -112,20 +104,6 @@ pub const EMBED: &str = "embed.embed";
 /// Embed images with the bridge's embedding model, into the texts' space. Served only when
 /// [`EmbedModelInfo::images`] is set; absent from bridges before 2.4.
 pub const EMBED_IMAGES: &str = "embed.embed_images";
-/// List the workgroup's external devices.
-pub const EXTERNAL_DEVICE_LIST: &str = "external_device.list";
-/// Add an external device; the answer carries its token, once.
-pub const EXTERNAL_DEVICE_ADD: &str = "external_device.add";
-/// Retire an external device: its token stops working, the record stays.
-pub const EXTERNAL_DEVICE_RETIRE: &str = "external_device.retire";
-/// Bring a retired external device back, with its token.
-pub const EXTERNAL_DEVICE_RESTORE: &str = "external_device.restore";
-/// Replace an external device's token, keeping its id.
-pub const EXTERNAL_DEVICE_ROTATE: &str = "external_device.rotate";
-/// Set the applications an external device may use.
-pub const EXTERNAL_DEVICE_SET_APPS: &str = "external_device.set_apps";
-/// Check a presented token for an application: who it is, or an error.
-pub const EXTERNAL_DEVICE_AUTHENTICATE: &str = "external_device.authenticate";
 /// Read the embedding settings and what they resolve to.
 pub const EMBED_SETTINGS: &str = "embed.settings";
 /// Set or clear one model slot.
@@ -177,12 +155,6 @@ pub const RELAYED: &[&str] = &[
     EMBED_DEVICE_SET,
     EMBED_KEY_SET,
     EMBED_KEY_CLEAR,
-    EXTERNAL_DEVICE_LIST,
-    EXTERNAL_DEVICE_ADD,
-    EXTERNAL_DEVICE_ROTATE,
-    EXTERNAL_DEVICE_RETIRE,
-    EXTERNAL_DEVICE_RESTORE,
-    EXTERNAL_DEVICE_SET_APPS,
     RESTART,
 ];
 
@@ -205,7 +177,6 @@ pub const NOT_RELAYED: &[&str] = &[
     EMBED_INFO,
     EMBED,
     EMBED_IMAGES,
-    EXTERNAL_DEVICE_AUTHENTICATE,
 ];
 
 /// A device's priority when its record names none. Mirrors the registry's own constant;
@@ -767,13 +738,6 @@ mod tests {
             EMBED_INFO,
             EMBED,
             EMBED_IMAGES,
-            EXTERNAL_DEVICE_LIST,
-            EXTERNAL_DEVICE_ADD,
-            EXTERNAL_DEVICE_RETIRE,
-            EXTERNAL_DEVICE_RESTORE,
-            EXTERNAL_DEVICE_ROTATE,
-            EXTERNAL_DEVICE_SET_APPS,
-            EXTERNAL_DEVICE_AUTHENTICATE,
             EMBED_SETTINGS,
             EMBED_MODEL_SET,
             EMBED_DEVICE_SET,

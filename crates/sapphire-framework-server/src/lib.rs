@@ -342,7 +342,7 @@ impl AppServer {
     }
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
-    /// external-device token as `/mcp`. The routes are served whenever they are given;
+    /// API key's token as `/mcp`. The routes are served whenever they are given;
     /// `/mcp` only when `config.toml` turns it on. For routes a setting turns on and off,
     /// see [`http_endpoint`](Self::http_endpoint).
     ///
@@ -445,8 +445,8 @@ impl AppServer {
         Ok(self.sync(Arc::new(runtime)))
     }
 
-    /// Reach the bridge with `connector` for the relayed `bridge.*`, `embed.*`,
-    /// `external_device.*` and `config.*` methods, rather than at the host's standard
+    /// Reach the bridge with `connector` for the relayed `bridge.*`, `embed.*` and
+    /// `config.*` methods, rather than at the host's standard
     /// endpoint.
     ///
     /// Used only without [`sync`](Self::sync): a server with a sync runtime relays over the

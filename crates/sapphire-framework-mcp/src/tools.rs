@@ -3,7 +3,7 @@
 //! The same vocabulary as the framework's half of the CLI, cut to what an agent should be
 //! handed: reading the server's state, the workgroup's, and the workspace's files. The
 //! commands that change who may connect or where the workspace lives (`device invite` /
-//! `retire`, `external-device`, `workgroup join`, `workspace select` / `move` / `remove`,
+//! `retire`, `api-key`, `workgroup join`, `workspace select` / `move` / `remove`,
 //! `service`) stay with the human at the CLI.
 //!
 //! Writing the workspace's files is a separate set, [`workspace_write_tools`]: most apps

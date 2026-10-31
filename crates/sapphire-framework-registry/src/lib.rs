@@ -8,12 +8,14 @@
 
 mod devices;
 mod error;
+#[allow(deprecated)]
 mod external_devices;
 mod migrate;
 mod store;
 
 pub use devices::{DEFAULT_PRIORITY, Device, Devices};
 pub use error::{Error, Result};
+#[allow(deprecated)]
 pub use external_devices::{ExternalDevice, ExternalDevices, TOKEN_PREFIX, Token, token_hash};
 pub use migrate::{MigrationReport, migrate_single_file};
 // Re-exported so an application can name `Device::id` without depending on grain-id itself.

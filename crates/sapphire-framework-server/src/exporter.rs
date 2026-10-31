@@ -1,6 +1,6 @@
 //! Prometheus metrics at `/metrics` on the HTTP listener (feature `metrics`).
 //!
-//! The one route not behind an external device's token, and not behind `allowed_hosts`
+//! The one route not behind an API key's token, and not behind `allowed_hosts`
 //! either: it carries nothing worth hiding — counts and states, never an identifier — and
 //! Prometheus scrapers expect an open endpoint. The rmcp `Host` check that `allowed_hosts`
 //! drives protects `/mcp` from DNS rebinding; a read-only page of numbers needs no such guard.

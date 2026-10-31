@@ -12,15 +12,11 @@ use sapphire_bridge_api::{
     DEVICE_PRIORITY_SET, DEVICE_RETIRE, DataHeader, DevicePrioritySetParams,
     DevicePrioritySetResult, DeviceRetireParams, DeviceRetireResult, EMBED, EMBED_DEVICE_SET,
     EMBED_IMAGES, EMBED_INFO, EMBED_KEY_CLEAR, EMBED_KEY_SET, EMBED_MODEL_SET, EMBED_SETTINGS,
-    EXTERNAL_DEVICE_ADD, EXTERNAL_DEVICE_AUTHENTICATE, EXTERNAL_DEVICE_LIST,
-    EXTERNAL_DEVICE_RESTORE, EXTERNAL_DEVICE_RETIRE, EXTERNAL_DEVICE_ROTATE,
-    EXTERNAL_DEVICE_SET_APPS, EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult,
-    EmbedKeySetParams, EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult,
-    EmbedSettingsResult, Entry, ExternalDeviceAuthenticateParams, ExternalDeviceAuthenticateResult,
-    ExternalDeviceListResult, ExternalDeviceOutcome, ExternalDeviceRequest,
-    ExternalDeviceSelectParams, GrainId, INVITE, IncomingParams, InviteParams, InviteResult, JOIN,
-    JoinParams, JoinResult, PEERS, PeersResult, REGISTER, RESTART, RegisterParams, RegisterResult,
-    STATUS, Scope, StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
+    EmbedDeviceSetParams, EmbedImagesParams, EmbedInfoResult, EmbedKeySetParams,
+    EmbedModelSetParams, EmbedParams, EmbedRequest, EmbedResult, EmbedSettingsResult, Entry,
+    GrainId, INVITE, IncomingParams, InviteParams, InviteResult, JOIN, JoinParams, JoinResult,
+    PEERS, PeersResult, REGISTER, RESTART, RegisterParams, RegisterResult, STATUS, Scope,
+    StatusResult, UNREGISTER, UnregisterParams, WORKGROUP_CREATE, WORKSPACES,
     WorkgroupCreateParams, WorkgroupCreateResult, WorkspacesResult,
 };
 
@@ -368,53 +364,6 @@ impl BridgeClient {
     /// Ask the bridge to restart, so restart-only settings take effect.
     pub async fn restart(&self) -> sapphire_ipc::Result<Ack> {
         self.call(RESTART, serde_json::json!({})).await
-    }
-
-    /// Carry out one external device management request.
-    pub async fn external_device_request(
-        &self,
-        request: ExternalDeviceRequest,
-    ) -> sapphire_ipc::Result<ExternalDeviceOutcome> {
-        let select = |selector: String| ExternalDeviceSelectParams { selector };
-        Ok(match request {
-            ExternalDeviceRequest::List => {
-                let r: ExternalDeviceListResult = self
-                    .call(EXTERNAL_DEVICE_LIST, serde_json::json!({}))
-                    .await?;
-                ExternalDeviceOutcome::List(r.external_devices)
-            }
-            ExternalDeviceRequest::Add(params) => {
-                ExternalDeviceOutcome::WithToken(self.call(EXTERNAL_DEVICE_ADD, params).await?)
-            }
-            ExternalDeviceRequest::Retire(s) => {
-                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_RETIRE, select(s)).await?)
-            }
-            ExternalDeviceRequest::Restore(s) => {
-                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_RESTORE, select(s)).await?)
-            }
-            ExternalDeviceRequest::Rotate(s) => ExternalDeviceOutcome::WithToken(
-                self.call(EXTERNAL_DEVICE_ROTATE, select(s)).await?,
-            ),
-            ExternalDeviceRequest::SetApps(params) => {
-                ExternalDeviceOutcome::One(self.call(EXTERNAL_DEVICE_SET_APPS, params).await?)
-            }
-        })
-    }
-
-    /// Who presented `token` to `app`; an error when the bridge refuses it.
-    pub async fn external_device_authenticate(
-        &self,
-        token: ApiKey,
-        app: &str,
-    ) -> sapphire_ipc::Result<ExternalDeviceAuthenticateResult> {
-        self.call(
-            EXTERNAL_DEVICE_AUTHENTICATE,
-            ExternalDeviceAuthenticateParams {
-                token,
-                app: app.to_owned(),
-            },
-        )
-        .await
     }
 
     /// Carry out one settings request.

@@ -1,4 +1,6 @@
 //! The external device ledger: clients that reach a workgroup's applications with a key.
+//! Deprecated (#364): the workspace's API keys replace it, and only the one-time import
+//! reads it.
 //!
 //! An external device does not sync. It talks HTTP to an application's server and proves
 //! who it is with a bearer token. The ledger sits beside the device ledger, one record per
@@ -138,6 +140,9 @@ struct RawExternalDevice {
 
 /// The ledger directory, as read when it was opened. Every mutation rewrites one record.
 #[derive(Debug)]
+#[deprecated(
+    note = "external devices became the workspace's API keys (#364); read only by the one-time import"
+)]
 pub struct ExternalDevices {
     dir: PathBuf,
     entries: Vec<ExternalDevice>,

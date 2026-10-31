@@ -18,7 +18,7 @@
 //! The console layer writes to **stderr**, never stdout (#232). One binary carries every
 //! subcommand of an app, and several of them own their stdout: a protocol spoken over
 //! stdio (JSON-RPC to an agent, say), or a value printed once for a script to capture (a
-//! token from `external-device add`). A log line there corrupts the stream or the value.
+//! token from `api-key add`). A log line there corrupts the stream or the value.
 //! journald and the other service managers collect stderr just as they collect stdout, so a
 //! service-managed server's log reaches the journal all the same.
 

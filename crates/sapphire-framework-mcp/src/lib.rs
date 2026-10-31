@@ -8,7 +8,7 @@
 //!   child process. It dials the running server and never starts one (a missing server is
 //!   reported per call, and the next call tries again).
 //! - **HTTP**, on the server side: `/mcp` on the app server's HTTP listener, behind the
-//!   external-device bearer token (`sapphire-framework-keys`), switched on in the server's
+//!   API key's bearer token (`sapphire-framework-keys`), switched on in the server's
 //!   config. The tools reach the server over an in-process IPC connection.
 //!
 //! The pieces:

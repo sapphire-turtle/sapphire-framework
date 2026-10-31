@@ -153,7 +153,6 @@ mod tests {
                 peers: vec![],
                 peer_roles: vec![],
                 ledger: vec![],
-                external_devices: None,
                 embedding: Some(EmbedSettingsResult {
                     models: ModelSettings {
                         local: Some(LocalModel::default()),

@@ -1442,6 +1442,7 @@ checksum = "eee2de3daba4059cc02629f01c32cb9989cdc5c235c0cbf80c932229844665b5"
 dependencies = [
  "android-activity",
  "android_log-sys",
+ "corundum-framework-keys",
  "corundum-framework-platform",
  "eframe",
  "egui",
@@ -7404,6 +7405,7 @@ dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-bridge-client",
  "sapphire-framework-ipc",
+ "sapphire-framework-keys",
  "sapphire-framework-server",
  "sapphire-framework-service",
  "sapphire-framework-workspace",

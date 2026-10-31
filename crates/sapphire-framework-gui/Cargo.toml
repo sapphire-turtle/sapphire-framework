@@ -36,7 +36,9 @@ sapphire-framework-service = { version = "0.23.0", path = "../sapphire-framework
 # The look shared with asteria: the frame, the fonts, the icons and the settings screen
 # (#318). Lives in its own repository (sapphire-turtle/corundum-framework). `serde` for its
 # store: the look in effect, kept on the device for the next start (#347).
-corundum-framework-gui = { workspace = true, features = ["serde"] }
+corundum-framework-gui = { workspace = true, features = ["serde", "keys"] }
+# The served workspace's API keys: where they are (Settings › API keys).
+sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
 egui = "0.37"
 eframe = { version = "0.37", optional = true }
 sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.23.0", path = "../sapphire-framework-workspace", default-features = false, optional = true }

@@ -22,7 +22,7 @@ use crate::views::appearance::{
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
-    DeviceList, EmbeddingView, ExternalDeviceList, ServiceStatusBanner, ViewCtx, WorkgroupView,
+    ApiKeysView, DeviceList, EmbeddingView, ServiceStatusBanner, ViewCtx, WorkgroupView,
     WorkspacePicker, error_text_line, unavailable,
 };
 
@@ -35,7 +35,7 @@ enum Screen {
     Workspaces,
     Devices,
     Workgroup,
-    ExternalDevices,
+    ApiKeys,
     Embedding,
 }
 
@@ -44,10 +44,7 @@ const SYNC_SCREENS: [(Screen, &str); 5] = [
     (Screen::Workspaces, "sapphire-settings-workspace"),
     (Screen::Devices, "sapphire-settings-devices"),
     (Screen::Workgroup, "sapphire-settings-workgroup"),
-    (
-        Screen::ExternalDevices,
-        "sapphire-settings-external-devices",
-    ),
+    (Screen::ApiKeys, "sapphire-settings-api-keys"),
     (Screen::Embedding, "sapphire-settings-embedding"),
 ];
 
@@ -84,7 +81,7 @@ enum Origin {
 }
 
 /// The settings, on corundum-framework-gui's [`SettingsLayout`]: the app's sections, then General (Appearance), then Sync (workspace,
-/// devices, workgroup, external devices, embedding), then the settings pages under
+/// devices, workgroup, API keys, embedding), then the settings pages under
 /// "Configuration", then About (the services and the version). Hold one; call
 /// [`ui`](Self::ui) every frame it is shown.
 ///
@@ -110,7 +107,7 @@ pub struct Settings {
     devices: DeviceList,
     workgroup: WorkgroupView,
     embedding: EmbeddingView,
-    external: ExternalDeviceList,
+    api_keys: ApiKeysView,
     /// The settings as last loaded; `None` until a load answers.
     config: Option<ConfigState>,
     /// The pages the loaded schema makes, in schema order.
@@ -157,7 +154,7 @@ impl Settings {
             devices: DeviceList::default(),
             workgroup: WorkgroupView::default(),
             embedding: EmbeddingView::default(),
-            external: ExternalDeviceList::default(),
+            api_keys: ApiKeysView::default(),
             config: None,
             pages: Vec::new(),
             config_pages: HashMap::new(),
@@ -482,7 +479,10 @@ impl Settings {
             Screen::Workspaces => self.workspaces.ui(ui, &cx),
             Screen::Devices => self.devices.ui(ui, &cx),
             Screen::Workgroup => self.workgroup.ui(ui, &cx),
-            Screen::ExternalDevices => self.external.ui(ui, &cx),
+            Screen::ApiKeys => {
+                self.api_keys.ui(ui, &cx);
+                None
+            }
             Screen::Embedding => {
                 self.ensure_loaded(&snapshot);
                 self.restart_ui(ui, &snapshot);
@@ -584,7 +584,8 @@ impl Settings {
             Origin::Screen(Screen::Workspaces) => self.workspaces.on_outcome(result),
             Origin::Screen(Screen::Devices) => self.devices.on_outcome(result),
             Origin::Screen(Screen::Workgroup) => self.workgroup.on_outcome(result),
-            Origin::Screen(Screen::ExternalDevices) => self.external.on_outcome(result),
+            // It sends nothing: the keys are the workspace's files.
+            Origin::Screen(Screen::ApiKeys) => {}
             // It only shows; its settings page sends.
             Origin::Screen(Screen::Embedding) => {}
             Origin::Page(section) => {
@@ -710,8 +711,8 @@ mod tests {
     use sapphire_bridge_api::settings::{Apply, Process};
     use sapphire_bridge_api::{ConfigWriteResult, Entry, EntryValue, Kind, Scope, SettingDef};
     use sapphire_bridge_api::{
-        EmbedInfoResult, EmbedNote, EmbedSettingsResult, ExternalDeviceInfo, GrainId, LocalModel,
-        ModelSettings, ModelSource, PeerInfo, RemoteModel, Slot, StatusResult, WorkgroupStatus,
+        EmbedInfoResult, EmbedNote, EmbedSettingsResult, GrainId, LocalModel, ModelSettings,
+        ModelSource, PeerInfo, RemoteModel, Slot, StatusResult, WorkgroupStatus,
         WorkgroupWorkspaceInfo,
     };
 
@@ -756,15 +757,6 @@ mod tests {
                     app_name: "app".into(),
                     name: "remote".into(),
                 }],
-                external_devices: Some(vec![ExternalDeviceInfo {
-                    id: GrainId::random(),
-                    name: "pendant".into(),
-                    description: None,
-                    apps: vec!["app".into()],
-                    created_at: "2026-10-11T00:00:00Z".into(),
-                    rotated_at: None,
-                    retired_at: None,
-                }]),
                 embedding: Some(EmbedSettingsResult {
                     models: ModelSettings {
                         local: Some(LocalModel::default()),
@@ -810,7 +802,7 @@ mod tests {
         let mut devices = DeviceList::default();
         let mut workspaces = WorkspacePicker::default();
         let mut embedding = EmbeddingView::default();
-        let mut external = ExternalDeviceList::default();
+        let mut api_keys = ApiKeysView::default();
         render([800.0, 600.0], |ui| {
             let cx = ViewCtx {
                 snapshot,
@@ -822,7 +814,7 @@ mod tests {
             assert!(devices.ui(ui, &cx).is_none());
             assert!(workspaces.ui(ui, &cx).is_none());
             embedding.ui(ui, &cx);
-            assert!(external.ui(ui, &cx).is_none());
+            api_keys.ui(ui, &cx);
         });
     }
 
@@ -992,7 +984,7 @@ mod tests {
                 "Workspace",
                 "Devices",
                 "Workgroup",
-                "External devices",
+                "API keys",
                 "Embedding",
                 "# Configuration",
                 "Network",

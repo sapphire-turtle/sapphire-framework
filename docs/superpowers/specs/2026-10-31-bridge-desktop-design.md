@@ -54,8 +54,8 @@ Success means:
 Additive, not breaking.
 
 - `platform::instance`:
-  - `AlreadyRunning::activate_with(&self, message: &str) -> io::Result<()>` sends the
-    message with the activation.
+  - `AlreadyRunning::activate_with(&self, message: &str) -> bool` sends the message with
+    the activation (whether the running start answered, as `activate`).
   - `Instance::on_activate_with(&mut self, f: impl Fn(Option<&str>) + Send + 'static)`
     receives it. `activate` sends none, and `on_activate`'s callback ignores it.
   - A window of an older version that receives a message comes to the front as before.
@@ -66,8 +66,8 @@ Additive, not breaking.
 - `platform::instance::acquire_or_activate_with(app_name, message: Option<&str>)` is the
   start that opens a window and carries the message when it is second.
 - The wire stays one line: `activate\n`, or `activate <message>\n`. A start whose message
-  gets no answer (an older window, which does not know the form) asks again without it, so
-  the older window still comes to the front.
+  is refused (an older window closes the connection unanswered) asks again without it, so
+  the older window still comes to the front; one that is merely slow is not asked again.
 - `corundum-framework-service`: `registered_program(spec, env, manager) ->
   Result<Option<PathBuf>>`, the program a registered service starts (what `state` already
   reads from the unit, the plist or the task), for an app to find another program's

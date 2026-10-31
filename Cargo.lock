@@ -1474,6 +1474,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "chrono",
+ "clap",
  "getrandom 0.4.3",
  "serde",
  "sha2",

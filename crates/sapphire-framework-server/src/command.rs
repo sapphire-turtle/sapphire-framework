@@ -14,6 +14,7 @@ use sapphire_ipc::{ClientInfo, Endpoint};
 
 use crate::AppServer;
 use crate::error::{Error, Result};
+use crate::selection::SelectionFile;
 use crate::settings::{AppSettings, Settings};
 use sapphire_workspace::AppContext;
 
@@ -73,11 +74,14 @@ pub enum FrameworkCommand {
     /// device's switches, and its API key. Needs the running bridge.
     #[command(subcommand)]
     Embedding(sapphire_bridge_api::EmbeddingCommand),
-    /// Add, list, retire, restore and rotate the workgroup's external devices — clients
-    /// that reach this application with a key. `add` allows this application unless told
-    /// otherwise. Needs the running bridge.
+    /// Add, list, retire, restore and rotate the API keys of the workspace this application
+    /// serves — for clients that reach it over HTTP. Works on the workspace's files, with or
+    /// without a running server; the keys sync with the workspace.
     #[command(subcommand)]
-    ExternalDevice(sapphire_bridge_api::ExternalDeviceCommand),
+    ApiKey(corundum_framework_keys::KeyCommand),
+    /// Renamed to `api-key` (#364).
+    #[command(hide = true)]
+    ExternalDevice(LegacyExternalDevice),
     /// List, show, set and unset this application's settings and the bridge's, by key.
     /// Without a running server, this application's own, on its files.
     #[command(subcommand)]
@@ -164,8 +168,16 @@ impl FrameworkCommand {
             FrameworkCommand::Workgroup(command) => command.dispatch(app, version).await,
             FrameworkCommand::Device(command) => command.dispatch(app, version).await,
             FrameworkCommand::Embedding(command) => embedding(command, app, version).await,
-            FrameworkCommand::ExternalDevice(command) => {
-                external_device(command, app, version).await
+            FrameworkCommand::ApiKey(command) => api_key(ctx, command),
+            FrameworkCommand::ExternalDevice(legacy) => {
+                eprintln!("warning: `external-device` is renamed to `api-key`");
+                if !legacy.app.is_empty() {
+                    eprintln!(
+                        "API keys are per workspace now, not per application: `--app` is not taken"
+                    );
+                    return Ok(2);
+                }
+                api_key(ctx, legacy.command)
             }
             #[cfg(feature = "mcp")]
             FrameworkCommand::Mcp => {
@@ -591,22 +603,35 @@ async fn embedding(
     Ok(0)
 }
 
-/// `external-device …`: always through the app's server, to the bridge that owns the ledger.
-async fn external_device(
-    command: sapphire_bridge_api::ExternalDeviceCommand,
-    app: &str,
-    version: &str,
-) -> Result<i32> {
-    let Some(client) = relayed_bridge(app, version).await? else {
+/// `external-device …`, kept one release as a hidden alias of `api-key`.
+#[derive(Debug, clap::Args)]
+pub struct LegacyExternalDevice {
+    /// What `external-device add --app` took; refused, as keys are per workspace now.
+    #[arg(long = "app", global = true, hide = true)]
+    app: Vec<String>,
+    #[command(subcommand)]
+    command: corundum_framework_keys::KeyCommand,
+}
+
+/// `api-key …`: on the files of the workspace this application serves, as its selection
+/// file records it. No workspace selected → a line naming `workspace select`, exit 1.
+fn api_key(ctx: &AppContext, command: corundum_framework_keys::KeyCommand) -> Result<i32> {
+    let Some(selection) = SelectionFile::for_app(ctx).load(ctx.app_name)? else {
+        eprintln!(
+            "{} serves no workspace yet: choose one with `{} workspace select <dir>`",
+            ctx.app_name, ctx.app_name
+        );
         return Ok(1);
     };
-    let outcome = client
-        .external_device_request(command.request(Some(app)))
-        .await?;
-    for line in sapphire_bridge_api::describe_external_outcome(&outcome) {
-        println!("{line}");
+    let run = sapphire_framework_keys::open_store(ctx.app_name, &selection.root)
+        .and_then(|mut store| command.run(&mut store));
+    match run {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            eprintln!("{err}");
+            Ok(1)
+        }
     }
-    Ok(0)
 }
 
 /// `workspace init`: the server does the creating, over IPC.

@@ -44,6 +44,10 @@ required-features = ["http"]
 name = "api_keys"
 required-features = ["http"]
 
+[[test]]
+name = "cli_api_key"
+required-features = ["test-util"]
+
 [dependencies]
 sapphire-backend = { package = "sapphire-framework-backend", version = "0.23.0", path = "../sapphire-framework-backend", default-features = false }
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "3.0.0", path = "../sapphire-framework-bridge-api", features = ["cli"] }
@@ -57,7 +61,7 @@ sapphire-workspace = { package = "sapphire-framework-workspace", version = "0.23
 # The served workspace's API keys: the HTTP layer's verifier, `api-key` and the import.
 sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
 async-trait.workspace = true
-corundum-framework-keys.workspace = true
+corundum-framework-keys = { workspace = true, features = ["clap"] }
 # The workgroup's external-device ledger, read once to import it into the workspace (#364).
 sapphire-registry = { package = "sapphire-framework-registry", version = "0.23.0", path = "../sapphire-framework-registry" }
 sapphire-framework-mcp = { version = "0.23.0", path = "../sapphire-framework-mcp", optional = true }

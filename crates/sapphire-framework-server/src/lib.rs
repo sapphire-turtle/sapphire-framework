@@ -65,9 +65,9 @@ mod test_support;
 mod update;
 
 pub use command::{
-    AppConfigCommand, AppScopeFlags, AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport,
-    StatusRow, WorkgroupCommand, WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
-    render_workspace_show,
+    AppConfigCommand, AppScopeFlags, AppUpdateArgs, DeviceCommand, FrameworkCommand,
+    LegacyExternalDevice, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
+    WorkspaceSyncCommand, render_workspace, render_workspace_show,
 };
 pub use config::{
     HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,

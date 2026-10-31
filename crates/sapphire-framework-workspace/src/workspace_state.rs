@@ -476,6 +476,38 @@ impl WorkspaceState {
         }
     }
 
+    /// Refuse a change inside the workspace's API keys (`.<app>/api_keys/`, #364): only the
+    /// keys' own commands change them, so a file tool — an agent's, or `/mcp`'s — cannot
+    /// issue a key. Compared without case, as a case-insensitive file system would.
+    fn refuse_protected(&self, resolved: &ResolvedPath, path: &Path) -> Result<()> {
+        let ResolvedPath::Internal(abs) = resolved else {
+            return Ok(());
+        };
+        let Ok(rel) = abs.strip_prefix(&self.workspace.root) else {
+            return Ok(());
+        };
+        // What is left unresolved of a path through a missing directory (`x/../`).
+        let mut parts: Vec<String> = Vec::new();
+        for component in rel.components() {
+            match component {
+                std::path::Component::Normal(name) => {
+                    parts.push(name.to_string_lossy().to_ascii_lowercase())
+                }
+                std::path::Component::ParentDir => {
+                    parts.pop();
+                }
+                _ => {}
+            }
+        }
+        let app_dir = format!(".{}", self.workspace.ctx.app_name).to_ascii_lowercase();
+        if parts.len() >= 2 && parts[0] == app_dir && parts[1] == "api_keys" {
+            return Err(Error::ProtectedPath {
+                path: path.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     // ── file operations ─────────────────────────────────────────────────────
     //
     // These methods accept either relative or absolute paths.  Relative paths
@@ -545,6 +577,7 @@ impl WorkspaceState {
     /// For internal files, updates the retrieve index and sync backend.
     pub fn write_file(&self, path: &Path, content: &str) -> Result<()> {
         let resolved = self.resolve_path(path)?;
+        self.refuse_protected(&resolved, path)?;
         let abs = resolved.as_path();
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
@@ -570,6 +603,7 @@ impl WorkspaceState {
     /// is synced but not indexed.
     pub fn write_bytes(&self, path: &Path, content: &[u8]) -> Result<()> {
         let resolved = self.resolve_path(path)?;
+        self.refuse_protected(&resolved, path)?;
         let abs = resolved.as_path();
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
@@ -589,6 +623,7 @@ impl WorkspaceState {
     pub fn append_file(&self, path: &Path, content: &str) -> Result<()> {
         use std::io::Write as _;
         let resolved = self.resolve_path(path)?;
+        self.refuse_protected(&resolved, path)?;
         let abs = resolved.as_path();
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
@@ -611,6 +646,7 @@ impl WorkspaceState {
     /// backend.
     pub fn delete_file(&self, path: &Path) -> Result<()> {
         let resolved = self.resolve_path(path)?;
+        self.refuse_protected(&resolved, path)?;
         let abs = resolved.as_path();
         std::fs::remove_file(abs)?;
         if resolved.is_internal() {
@@ -1720,5 +1756,70 @@ mod tests {
             !bytes.ends_with(b"/") && !bytes.ends_with(b"\\"),
             "resolved path must not have a trailing separator: got {resolved:?}",
         );
+    }
+
+    mod protected {
+        use super::super::*;
+        use crate::AppContext;
+        use std::fs;
+
+        fn ctx() -> &'static AppContext {
+            static CTX: std::sync::OnceLock<AppContext> = std::sync::OnceLock::new();
+            CTX.get_or_init(|| AppContext::new("ws-state-protect-test"))
+        }
+
+        fn make_state() -> (tempfile::TempDir, WorkspaceState) {
+            let tmp = tempfile::Builder::new().prefix("ws-").tempdir().unwrap();
+            ctx().set_cache_dir(std::env::temp_dir().join("ws-state-protect-cache"));
+            fs::create_dir_all(tmp.path().join(".ws-state-protect-test/api_keys")).unwrap();
+            let ws = Workspace::from_root(ctx(), tmp.path()).unwrap();
+            let state = WorkspaceState::open(ws).unwrap();
+            (tmp, state)
+        }
+
+        fn protected(result: Result<()>) -> bool {
+            matches!(result, Err(Error::ProtectedPath { .. }))
+        }
+
+        #[test]
+        fn the_api_keys_are_not_written_through_the_workspace() {
+            let (tmp, state) = make_state();
+            let keys = tmp.path().join(".ws-state-protect-test/api_keys");
+            for path in [
+                ".ws-state-protect-test/api_keys/k.toml",
+                "./.ws-state-protect-test/x/../api_keys/k.toml",
+                ".ws-state-protect-test/API_KEYS/k.toml",
+            ] {
+                assert!(protected(state.write_file(Path::new(path), "x")), "{path}");
+                assert!(protected(state.append_file(Path::new(path), "x")), "{path}");
+            }
+            assert!(protected(state.write_file(&keys.join("k.toml"), "x")));
+            assert!(!keys.join("k.toml").exists());
+            assert!(matches!(
+                state.write_bytes(Path::new(".ws-state-protect-test/api_keys/k.toml"), b"x"),
+                Err(Error::ProtectedPath { .. })
+            ));
+            assert!(!keys.join("k.toml").exists());
+
+            fs::write(keys.join("real.toml"), "x").unwrap();
+            assert!(protected(state.delete_file(Path::new(
+                ".ws-state-protect-test/api_keys/real.toml"
+            ))));
+            assert!(keys.join("real.toml").exists());
+        }
+
+        #[test]
+        fn the_rest_of_the_app_directory_is_written() {
+            let (tmp, state) = make_state();
+            state
+                .write_file(Path::new(".ws-state-protect-test/notes.toml"), "x")
+                .unwrap();
+            assert!(
+                tmp.path()
+                    .join(".ws-state-protect-test/notes.toml")
+                    .exists()
+            );
+            state.write_file(Path::new("api_keys/k.toml"), "x").unwrap();
+        }
     }
 }

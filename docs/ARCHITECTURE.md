@@ -27,9 +27,9 @@
   framework 組込みの git 自動同期（`SyncBackend`/`ChangeSource` 抽象）の撤去自体はそのまま維持。
   git は**ユーザーが手動**で併用する。GUI 統合 git は将来ゼロベースで再構築（#91）。
 - 同期は **iroh（QUIC）の上で 2 台の app server が直接セッションを張る p2p**（下の「ワークスペース
-  同期」節）。sync 用の HTTP JSON-RPC と API キーは廃止した。キーで入るのは、同期に参加しない
-  **external device**（下の節）が HTTP エンドポイント（agent の `/acp` や `/audio/ingest` など）に
-  来るときだけ。
+  同期」節）。sync 用の HTTP JSON-RPC は廃止した。キーで入るのは、同期に参加しない
+  クライアントが **API キー**（下の節）で HTTP エンドポイント（agent の `/acp` や `/audio/ingest`
+  など）に来るときだけ。
 - サーバも「ファイル原本＋DBキャッシュ」で対称（**Model B**）という対称性は p2p 設計の出発点として
   残る。全デバイスが同一構造を持ち、「常時稼働のピア」がサーバ役を担う（sync 仕様 §1）。
 - **ベクター索引（redb）は同期対象外だが、ベクター自体はファイルとして同期する**（#187）。
@@ -119,7 +119,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
 | `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
 | `sapphire-framework-server-api` | アプリサーバ共通 API の wire 型（`workspace.*` / `sync.*` / `server.info` のメソッド名・引数・結果、`BackendEvent`・`SearchMode`・`FileSearchResult`）。serde と grain-id のみに依存。**単独でバージョン管理**（4.0.0 — メジャー == `API_VERSION`）。各アプリの API crate はこれに依存する |
-| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを external device のトークンで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/config.toml`（下記「アプリサーバの設定」） |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを、配信中のワークスペースの API キーで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/config.toml`（下記「アプリサーバの設定」） |
 | `sapphire-framework-frontmatter` | YAML フロントマター付き Markdown（#237）: `split` / `parse` / `render` と、コメント・キー順・改行コードを保ったまま 1 キーだけ書き換える `set_top_level_key`。YAML は `serde-saphyr`、型の決まらない値は `serde_json::Value`（`preserve_order`）。ファサード feature `frontmatter` |
 | `sapphire-framework-mcp` | アプリ共通の MCP ツール（`ToolContext`・`framework_tools`・`workspace_write_tools`・`FrameworkServer`）と、stdio / Streamable HTTP の両トランスポートで任意のハンドラを提供する `McpService`。ファサード feature `mcp`（`native` には入れない — sapphire-agent は MCP を持たない） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
@@ -128,7 +128,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-bridge-embed` | bridge の埋め込みコンポーネント（ローカル Qwen3-VL-Embedding-2B を candle で — テキストと画像、重みは読み込み時に量子化 — または OpenAI 互換 REST）。ファサード feature は `bridge-embed`（既定ではなく `native` にも入らない — candle が重いため）。**bridge をプロセス内に持つモバイルアプリがあるため framework crate に残す** |
 | `bridge`（`sapphire-bridge`） | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device`） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
-| `sapphire-framework-keys` | `protect` / `AuthConfig` / `BridgeVerifier`。HTTP エンドポイントで external device の Bearer トークンを bridge に確かめる（#199） |
+| `sapphire-framework-keys` | `protect` / `AuthConfig` / `Verifier`、ワークスペースの API キーの置き場所（`store_dir` / `open_store`）。キーの保存と照合は corundum-framework-keys（#364） |
 | `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec`・systemd user unit・LaunchAgent・タスクスケジューラ） |
 | `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + `IpcBackend` / `LocalBackend`。`protocol` は `sapphire-framework-server-api` の re-export |
 | `sapphire-framework-gui` | app 非依存の egui 部品: 同期 GUI 部品（下記「GUI 部品」）。旧 `WorkspaceManager`（`WorkspaceRegistry` を操作する一覧画面）は deprecated（#217） |
@@ -243,16 +243,16 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
 `SAPPHIRE_<APP>_{DATA,CACHE,CONFIG}_DIR` をアプリの private storage 配下に向ける
 （設計: `docs/superpowers/specs/2026-10-16-mobile-android-design.md`）。
 クライアントが話す相手は自分のアプリサーバだけである。`workspace` / `workgroup` / `device` /
-`embedding` / `external-device` はすべてサーバに接続し（`connect_app`）、bridge の
+`embedding` はすべてサーバに接続し（`connect_app`）、bridge の
 クライアント向けメソッド（`bridge.status` / `peers` / `workspaces`・workgroup 系・`embed.*` の設定・
-`external_device.*`・`bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
+`bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
 サーバが同じ名前のまま中継する（#314）。中継は params と結果・エラーを書き換えず、bridge への接続は
 同期ランタイムのものを使い、無ければ最初の中継時に自前で張る（落ちたら次の呼び出しで張り直す）。
 bridge が居ないか中継中に切れれば `BRIDGE_NOT_RUNNING`（-32001）で答え、
 `BridgeClient::relayed` がそれを従来の `NotRunning` に戻す。中継した params と結果はログに出さない
 （API キーやトークンを運ぶ）。`bridge.restart` は新しい bridge に繋がるまで（最長 30 秒）答えを
 待たせる。中継しないのは `bridge.register` / `unregister` / `incoming`・`embed.info` / `embed` /
-`embed.embed_images`・`external_device.authenticate`（`NOT_RELAYED`）。例外は `sapphire-bridge` 自身の
+`embed.embed_images`（`NOT_RELAYED`）。例外は `sapphire-bridge` 自身の
 CLI で、通る先のアプリサーバが無いので bridge に直接つなぐ。サーバが無いとアプリの bridge 系コマンドは
 `no {app} server is running` で失敗する。`status` の報告書は CLI と IPC `server.info` が同じ
 `StatusReport` 型を共有する（`sapphire-framework-server-api` にあり、`backend::protocol` として
@@ -356,20 +356,25 @@ CLI は `sapphire-bridge`（`serve` / `status` / `service` / `workspace` / `work
 それを所有するアプリの仕事だからである（仕様 §1）。
 詳細はプロセス構成仕様 §5。
 
-### external device（#199）
+### API キー（#364）
 
 同期に参加しない（できない）クライアント — 録音ペンダント、同期していないマシンからの ACP
-クライアント、Webhook など — は **external device** として workgroup の台帳
-`<workgroup root>/external_devices/<grain-id>.toml` に 1 件 1 ファイルで載る。台帳は同期されるので、
-どのホストのアプリサーバーでも同じキーが通る。レコードは使えるアプリの一覧（`apps`）を持ち、
-1 つの external device が複数のアプリを使える（空ならどれも使えない）。トークン
-（`sapphire-ed-…`）は `add` と `rotate` で一度だけ表示し、台帳には SHA-256 だけを置く。retire
-（行は残す）・restore・rotate（id は維持）がある。アプリの HTTP 層は `protect` で Bearer
-トークンを受け、bridge の `external_device.authenticate` に自分のアプリ名と一緒に確かめる（成功は
-30 秒キャッシュ。bridge に聞けなければ 503）。管理は `sapphire-bridge external-device …`、各アプリの
-`external-device …`（`add` は既定でそのアプリ）、Settings の External devices 画面。サーバーごとの
-`KeyStore`（生トークンの `keys.toml`）は廃止した。設計は
-`superpowers/specs/2026-10-11-external-devices-design.md`。
+クライアント、Webhook など — は、アプリの HTTP エンドポイントに **API キー**で入る。キーは配信中の
+ワークスペースの `<root>/.<app>/api_keys/<id>.toml` に 1 件 1 ファイルで置き、ワークスペースと一緒に
+同期される。だから HTTP を公開しているホストに GUI がなくても、GUI のある別のホストで足したキーが
+同期後にそのまま通る。bridge も workgroup も要らない。キーはワークスペース（＝アプリ）ごとで、
+`apps` の一覧はない。保存・照合・管理画面は corundum-framework の `corundum-framework-keys` と
+`corundum-framework-gui` の `KeysPage` にあり（asteria と共通）、トークン（`sapphire-ak-…`）は
+`add` と `rotate` で一度だけ表示し、ファイルにはハッシュだけを置く。retire（行は残す）・restore・
+rotate（id は維持）がある。同期の衝突コピーはトークンを通さないが、どれかが retire なら retire として
+扱う。アプリの HTTP 層は `protect` で Bearer トークンを受け、`WorkspaceKeyVerifier`
+（`sapphire-framework-server::api_keys`）がワークスペースのキーで確かめる（成功は 30 秒キャッシュ）。
+管理は各アプリの `api-key …` と Settings › API キー。どちらもファイルを直接扱うので、サーバーが
+動いていなくてよい。ワークスペースのファイル操作（MCP の書き込みツールを含む）は
+`.<app>/api_keys/` を変えられない（`Error::ProtectedPath`）。以前の external device（#199、
+workgroup の台帳）は、各アプリサーバーが起動時に一度だけ配信中のワークスペースへ取り込む（id と
+ハッシュを保つので、トークンはそのまま使える）。設計は
+`superpowers/specs/2026-10-31-workspace-api-keys-design.md`。
 
 ### MCP（`sapphire-framework-mcp`）
 
@@ -382,7 +387,7 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
   接続は最初のツール呼び出しで張り（`ToolContext::dial`）、サーバ不在はそのツールのエラーとして
   返す。サーバが再起動したら次の呼び出しで張り直す（書き込みの二重適用を避けるため、呼び出し自体は
   再送しない）。stdout はプロトコルなので、ログは stderr に出す（#232 — 下記）。
-- **HTTP（サーバ側）**: サーバの HTTP リスナー上の `/mcp`（全アプリ共通のパス）。external device の
+- **HTTP（サーバ側）**: サーバの HTTP リスナー上の `/mcp`（全アプリ共通のパス）。API キーの
   Bearer トークンを `protect` で確かめる。**既定で無効**で、`<config dir>/config.toml` の
   `[http.mcp] enabled = true` で有効になる（読むのは起動時）。bind 先は `[http] listen`、なければアプリの既定
   （`AppServer::http_listen`）。ツールはプロセス内チャネル（`Connection::pair`）でサーバ自身の
@@ -400,7 +405,7 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
 フレームワークのツールは CLI の共通語彙から、エージェントに渡してよい読み取り系だけを取る:
 `status` / `workspace_show` / `workspace_search` / `workspace_read_file` / `workspace_list_dir` /
 `workgroup_show` / `device_list`。接続権限やワークスペースの所在を変えるもの（`device invite` /
-`retire`、`external-device`、`workgroup join`、`workspace select` / `move` / `remove`、`service`）は
+`retire`、`api-key`、`workgroup join`、`workspace select` / `move` / `remove`、`service`）は
 人間が CLI で行う。ファイルの書き込み（`workspace_write_file` / `append_file` / `delete_file`）は
 `workspace_write_tools()` として別にし、アプリが選んで足す — journal の front matter のように
 アプリがファイルに不変条件を持つ場合、エージェントにはそれを守るアプリのツールを渡すため。
@@ -410,7 +415,7 @@ MCP はフレームワークの基本機能で、アプリはファサード fea
 で渡す。何も渡さなければ共通ツールだけの `FrameworkServer` になる。
 
 **コンソールログは stderr**（#232）: 1 アプリ 1 バイナリなので、stdout がプロトコル（stdio MCP、
-将来の stdio ACP）や一度きりの値（`external-device add` のトークン）になるサブコマンドがある。
+将来の stdio ACP）や一度きりの値（`api-key add` のトークン）になるサブコマンドがある。
 `AppContext::init` が設置するコンソール層も bridge のそれも stderr に書く。journald は stderr も
 拾うので、サービス運用は変わらない。
 

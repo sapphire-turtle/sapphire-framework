@@ -342,6 +342,7 @@ impl Current {
                 tracing::warn!(root = %selection.root.display(), "could not restore the workspace: {err}");
                 return None;
             }
+            crate::api_keys::import_once(self.ctx, &selection.root);
             self.refresh_settings();
         }
         if !selection.sync {
@@ -370,6 +371,7 @@ impl Current {
         let _one = self.switching.lock().await;
         let previous = self.root();
         self.host.select(root, restoring).await?;
+        crate::api_keys::import_once(self.ctx, root);
         if let Some(runtime) = &self.sync {
             if let Some(previous) = previous.filter(|p| p != root)
                 && let Err(err) = runtime.disable(&previous).await

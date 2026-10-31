@@ -41,6 +41,7 @@ use crate::restart::Exit;
 /// after the server has answered its own shutdown call.
 const SERVE_GRACE: Duration = Duration::from_secs(2);
 
+pub mod api_keys;
 mod command;
 mod config;
 mod config_methods;
@@ -64,9 +65,9 @@ mod test_support;
 mod update;
 
 pub use command::{
-    AppConfigCommand, AppScopeFlags, AppUpdateArgs, DeviceCommand, FrameworkCommand, StatusReport,
-    StatusRow, WorkgroupCommand, WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
-    render_workspace_show,
+    AppConfigCommand, AppScopeFlags, AppUpdateArgs, DeviceCommand, FrameworkCommand,
+    LegacyExternalDevice, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
+    WorkspaceSyncCommand, render_workspace, render_workspace_show,
 };
 pub use config::{
     HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,
@@ -341,7 +342,7 @@ impl AppServer {
     }
 
     /// Serve the application's own HTTP routes on the server's listener, behind the same
-    /// external-device token as `/mcp`. The routes are served whenever they are given;
+    /// API key's token as `/mcp`. The routes are served whenever they are given;
     /// `/mcp` only when `config.toml` turns it on. For routes a setting turns on and off,
     /// see [`http_endpoint`](Self::http_endpoint).
     ///
@@ -365,7 +366,9 @@ impl AppServer {
         self
     }
 
-    /// Check HTTP tokens with `auth` rather than with the bridge: for fixtures.
+    /// Check HTTP tokens with `auth` rather than with the served workspace's API keys: for
+    /// fixtures, or for an application whose own [`Verifier`](sapphire_framework_keys::Verifier)
+    /// wraps [`api_keys::WorkspaceKeyVerifier`] to map a key to something of its own.
     #[cfg(feature = "http")]
     pub fn http_auth(mut self, auth: sapphire_framework_keys::AuthConfig) -> AppServer {
         self.http_auth = Some(auth);
@@ -442,8 +445,8 @@ impl AppServer {
         Ok(self.sync(Arc::new(runtime)))
     }
 
-    /// Reach the bridge with `connector` for the relayed `bridge.*`, `embed.*`,
-    /// `external_device.*` and `config.*` methods, rather than at the host's standard
+    /// Reach the bridge with `connector` for the relayed `bridge.*`, `embed.*` and
+    /// `config.*` methods, rather than at the host's standard
     /// endpoint.
     ///
     /// Used only without [`sync`](Self::sync): a server with a sync runtime relays over the
@@ -878,7 +881,7 @@ impl AppServer {
                 (true, Some(addr)) => {
                     let auth = http_auth.unwrap_or_else(|| {
                         sapphire_framework_keys::AuthConfig::new(Arc::new(
-                            sapphire_framework_keys::BridgeVerifier::new(ctx.app_name, version),
+                            api_keys::WorkspaceKeyVerifier::for_app(ctx),
                         ))
                     });
                     http::start(addr, routes, public, auth, http_stop.clone()).await

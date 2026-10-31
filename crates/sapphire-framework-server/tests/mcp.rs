@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
-use sapphire_framework_keys::{AuthConfig, Authenticated, GrainId, Verdict, Verifier};
+use sapphire_framework_keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier};
 use sapphire_framework_server::mcp::{Error as McpError, ToolContext};
 use sapphire_framework_server::{AppServer, HttpConfig, HttpMcpConfig, ServerConfig};
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
@@ -24,7 +24,7 @@ static CTX_HTTP: AppContext = AppContext::new("sapphire-mcptest-http");
 static CTX_DIAL: AppContext = AppContext::new("sapphire-mcptest-dial");
 
 /// The one token the fake verifier accepts.
-const TOKEN: &str = "sapphire-ed-good";
+const TOKEN: &str = "sapphire-ak-good";
 
 /// Accepts [`TOKEN`] and nothing else.
 struct Fake;
@@ -34,7 +34,7 @@ impl Verifier for Fake {
     async fn verify(&self, token: &str) -> Verdict {
         if token == TOKEN {
             Verdict::Accepted(Authenticated {
-                id: GrainId::random(),
+                id: KeyId::generate(),
                 name: "agent".into(),
             })
         } else {
@@ -297,7 +297,7 @@ async fn mcp_over_http_takes_a_token_and_serves_the_framework_tools() {
     workspace_with_a_file(&c, tmp.path().join("ws")).await;
 
     // No token, or the wrong one: refused before MCP sees anything.
-    for token in [None, Some("sapphire-ed-bad")] {
+    for token in [None, Some("sapphire-ak-bad")] {
         let res = Session::new(port, token)
             .post(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
             .send()

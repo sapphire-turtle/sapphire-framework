@@ -265,7 +265,7 @@ fn framework_defs(endpoints: &[HttpEndpoint]) -> Vec<SettingDef> {
             "http.mcp.enabled",
             Kind::Bool,
             Some(Value::Bool(false)),
-            "Serve the application's MCP tools at /mcp, behind an external device's token",
+            "Serve the application's MCP tools at /mcp, behind an API key's token",
         ),
         def(
             "http.metrics.enabled",

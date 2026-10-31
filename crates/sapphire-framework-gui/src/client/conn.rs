@@ -163,18 +163,6 @@ impl Connections {
             };
             // A bridge older than 2.3 has no such method: the screen says so.
             let embedding = c.embed_settings().await.ok();
-            // A bridge older than 2.3 has no such method: the screen says so.
-            let external_devices = if status.workgroup.is_some() {
-                match c
-                    .external_device_request(sapphire_bridge_api::ExternalDeviceRequest::List)
-                    .await
-                {
-                    Ok(sapphire_bridge_api::ExternalDeviceOutcome::List(list)) => Some(list),
-                    _ => None,
-                }
-            } else {
-                Some(Vec::new())
-            };
             // A bridge older than the theme's settings does not know them: the theme stays.
             let gui = gui_values(&c).await?;
             Ok::<_, sapphire_ipc::Error>(Some(BridgeState {
@@ -183,7 +171,6 @@ impl Connections {
                 peer_roles,
                 ledger,
                 embedding,
-                external_devices,
                 gui,
             }))
         })

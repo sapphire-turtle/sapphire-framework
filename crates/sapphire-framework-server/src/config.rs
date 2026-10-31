@@ -14,7 +14,7 @@
 //! allowed_hosts = ["box.tailnet.ts.net"]
 //!
 //! [http.mcp]
-//! # Serve the application's MCP tools at /mcp, behind an external device's token.
+//! # Serve the application's MCP tools at /mcp, behind an API key's token.
 //! enabled = true
 //!
 //! [http.metrics]
@@ -58,7 +58,7 @@ pub struct ServerConfig {
 /// The `[http]` table: the listener every HTTP route shares.
 ///
 /// The listener binds only when something is served over it. Every route on it but
-/// `/metrics` is behind an external device's bearer token (`sapphire-framework-keys`).
+/// `/metrics` is behind an API key's bearer token (`sapphire-framework-keys`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpConfig {

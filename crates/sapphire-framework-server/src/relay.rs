@@ -3,7 +3,7 @@
 //! The app's CLI and GUI reach `sapphire-bridge` only through their app server. Each method
 //! of [`RELAYED`] is registered under its own name and forwarded as it came — params and
 //! result untouched, never read and never logged, since `embed.key_set`, `config.set` of a
-//! secret and `external_device.add` / `rotate` carry API keys and tokens. Anything else the
+//! secret carry API keys. Anything else the
 //! bridge serves is not registered, so a client calling it gets `method not found`.
 //!
 //! See `docs/superpowers/specs/2026-10-22-bridge-relay-design.md`, "The relay".

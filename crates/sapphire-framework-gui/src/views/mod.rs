@@ -3,20 +3,20 @@
 
 pub mod model;
 
+mod api_keys;
 pub(crate) mod appearance;
 mod banner;
 pub(crate) mod config;
 mod devices;
 mod embedding;
-mod external;
 pub mod files;
 mod workgroup;
 mod workspaces;
 
+pub use api_keys::ApiKeysView;
 pub use banner::ServiceStatusBanner;
 pub use devices::{DeviceList, InviteDialog};
 pub use embedding::EmbeddingView;
-pub use external::ExternalDeviceList;
 pub use files::FileBrowser;
 pub use workgroup::{JoinDialog, WorkgroupView};
 pub use workspaces::WorkspacePicker;

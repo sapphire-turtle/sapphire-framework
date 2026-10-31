@@ -44,6 +44,11 @@ impl SelectionFile {
         SelectionFile { path }
     }
 
+    /// The file's path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// The selection, or `None` when there is none yet, or no longer.
     ///
     /// With no file but the list an older server kept beside it, the list's first synced

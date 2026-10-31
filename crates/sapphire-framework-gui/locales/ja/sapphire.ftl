@@ -86,7 +86,7 @@ sapphire-settings-sync = 同期
 sapphire-settings-workspace = ワークスペース
 sapphire-settings-devices = デバイス
 sapphire-settings-workgroup = ワークグループ
-sapphire-settings-external-devices = 外部デバイス
+sapphire-settings-api-keys = API キー
 sapphire-settings-embedding = 埋め込み
 sapphire-settings-about = このアプリについて
 sapphire-settings-version = バージョン { $version }
@@ -172,22 +172,8 @@ sapphire-workgroup-create-heading = ワークグループを作成
 sapphire-workgroup-device-name = このデバイスの名前
 sapphire-workgroup-join-heading = チケットで参加
 
-# 外部デバイス画面。
-sapphire-external-title = 外部デバイス
-sapphire-external-hint = 同期ではなくキーを使って、ワークグループのアプリにアクセスするクライアントです。
-sapphire-external-found-first = 先にワークグループを作成するか、参加してください。
-sapphire-external-too-old = このブリッジは古く、外部デバイスを管理できません。sapphire-bridge を更新してください。
-sapphire-external-token = 「{ $name }」のトークンです。表示されるのは今回だけです。
-sapphire-external-done = 完了
-sapphire-external-none = 外部デバイスはありません。
-sapphire-external-add-heading = 外部デバイスを追加
-sapphire-external-name = 名前
-sapphire-external-apps = アプリ
-sapphire-external-note = メモ
-sapphire-external-retired = 廃止済み
-sapphire-external-save-apps = アプリを保存
-sapphire-external-restore = 復元
-sapphire-external-new-token = 新しいトークン
+# API キー画面：配信中のワークスペースのキーを、corundum のキーのページで扱う。
+sapphire-api-keys-no-workspace = API キーを管理するには、ワークスペースを選んでください。
 
 # 埋め込み画面。`$whose` は `device` か `workgroup` です。
 sapphire-embedding-title = 埋め込み

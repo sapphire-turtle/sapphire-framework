@@ -82,7 +82,7 @@ sapphire-settings-sync = Sync
 sapphire-settings-workspace = Workspace
 sapphire-settings-devices = Devices
 sapphire-settings-workgroup = Workgroup
-sapphire-settings-external-devices = External devices
+sapphire-settings-api-keys = API keys
 sapphire-settings-embedding = Embedding
 sapphire-settings-about = About
 sapphire-settings-version = Version { $version }
@@ -168,22 +168,8 @@ sapphire-workgroup-create-heading = Create a workgroup
 sapphire-workgroup-device-name = This device's name
 sapphire-workgroup-join-heading = Join with a ticket
 
-# The External devices screen.
-sapphire-external-title = External devices
-sapphire-external-hint = Clients that reach the workgroup's apps with a key instead of syncing.
-sapphire-external-found-first = Found or join a workgroup first.
-sapphire-external-too-old = This bridge is too old to manage external devices; update sapphire-bridge.
-sapphire-external-token = The token for «{ $name }». It is shown only now.
-sapphire-external-done = Done
-sapphire-external-none = No external devices.
-sapphire-external-add-heading = Add an external device
-sapphire-external-name = Name
-sapphire-external-apps = Apps
-sapphire-external-note = Note
-sapphire-external-retired = retired
-sapphire-external-save-apps = Save apps
-sapphire-external-restore = Restore
-sapphire-external-new-token = New token
+# The API keys screen: corundum's keys page over the served workspace's keys.
+sapphire-api-keys-no-workspace = Choose a workspace to manage its API keys.
 
 # The Embedding screen. `$whose` is `device` or `workgroup`.
 sapphire-embedding-title = Embedding

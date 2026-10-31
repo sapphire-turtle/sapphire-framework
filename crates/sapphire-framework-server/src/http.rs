@@ -3,7 +3,8 @@
 //! One listener per server, shared by every HTTP route — the framework's `/mcp` (feature
 //! `mcp`) and `/metrics` (feature `metrics`), and the application's own
 //! ([`AppServer::http`](crate::AppServer::http)). Every route but `/metrics` is behind an
-//! external device's bearer token, checked with the bridge (`sapphire-framework-keys`):
+//! API key's bearer token, checked against the served workspace's keys
+//! ([`api_keys::WorkspaceKeyVerifier`](crate::api_keys::WorkspaceKeyVerifier)):
 //! HTTP is how a client that does not sync reaches the application, and the IPC endpoint's
 //! same-user rule does not reach across a network. `/metrics` is for a Prometheus scraper,
 //! and carries nothing worth a token.

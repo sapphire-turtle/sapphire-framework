@@ -20,12 +20,11 @@ use crate::{AuthConfig, Verdict};
 
 /// `router`, guarded by `guard`.
 ///
-/// Without a verifier the layer fails **closed**: every request is refused with 503 — a
+/// Without a verifier the layer fails **closed**: every request is refused with 401 — a
 /// server whose authentication is not wired is misconfigured, not open. The named
 /// [`AuthConfig::insecure_for_tests`] is the only way through without one.
 ///
-/// A missing or refused token is 401. A verifier that could not ask anyone (the bridge is
-/// down) is 503: the client's credentials may be fine, and it should try again later. An
+/// A missing or refused token is 401; the scheme is matched in any case (RFC 7235). An
 /// accepted request carries [`Authenticated`](crate::Authenticated) in its extensions.
 pub fn protect(guard: AuthConfig, router: Router) -> Router {
     if guard.verifier().is_none() {
@@ -46,7 +45,7 @@ async fn refuse(
     _request: Request,
     _next: Next,
 ) -> std::result::Result<Response, StatusCode> {
-    Err(StatusCode::SERVICE_UNAVAILABLE)
+    Err(StatusCode::UNAUTHORIZED)
 }
 
 async fn authenticate(
@@ -55,13 +54,15 @@ async fn authenticate(
     next: Next,
 ) -> std::result::Result<Response, StatusCode> {
     let Some(verifier) = guard.verifier() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
+        return Err(StatusCode::UNAUTHORIZED);
     };
     let presented = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|v| v.split_once(' '))
+        .filter(|(scheme, token)| scheme.eq_ignore_ascii_case("bearer") && !token.is_empty())
+        .map(|(_, token)| token)
         .ok_or(StatusCode::UNAUTHORIZED)?
         .to_owned();
     match verifier.verify(&presented).await {
@@ -70,7 +71,6 @@ async fn authenticate(
             Ok(next.run(request).await)
         }
         Verdict::Refused => Err(StatusCode::UNAUTHORIZED),
-        Verdict::Unavailable => Err(StatusCode::SERVICE_UNAVAILABLE),
     }
 }
 
@@ -82,23 +82,20 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    use crate::{Authenticated, GrainId, Verifier};
+    use crate::{Authenticated, KeyId, Verifier};
 
-    /// Accepts `good`, refuses anything else, or is unreachable.
+    /// Accepts `good`, refuses anything else.
     struct Fake {
         good: &'static str,
-        id: GrainId,
-        reachable: bool,
+        id: KeyId,
     }
 
     #[async_trait::async_trait]
     impl Verifier for Fake {
         async fn verify(&self, token: &str) -> Verdict {
-            if !self.reachable {
-                Verdict::Unavailable
-            } else if token == self.good {
+            if token == self.good {
                 Verdict::Accepted(Authenticated {
-                    id: self.id,
+                    id: self.id.clone(),
                     name: "pendant".into(),
                 })
             } else {
@@ -122,9 +119,13 @@ mod tests {
     }
 
     async fn status(app: Router, token: Option<&str>) -> (StatusCode, String) {
+        status_with(app, token.map(|t| format!("Bearer {t}"))).await
+    }
+
+    async fn status_with(app: Router, authorization: Option<String>) -> (StatusCode, String) {
         let mut req = Request::builder().uri("/whoami");
-        if let Some(t) = token {
-            req = req.header(header::AUTHORIZATION, format!("Bearer {t}"));
+        if let Some(a) = authorization {
+            req = req.header(header::AUTHORIZATION, a);
         }
         let res = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
         let code = res.status();
@@ -134,43 +135,41 @@ mod tests {
 
     #[tokio::test]
     async fn the_layer_admits_the_right_token_and_names_its_device() {
-        let id = GrainId::random();
+        let id = KeyId::generate();
         let guard = AuthConfig::new(Arc::new(Fake {
-            good: "sapphire-ed-good",
-            id,
-            reachable: true,
+            good: "sapphire-ak-good",
+            id: id.clone(),
         }));
         assert_eq!(
             status(app(guard.clone()), None).await.0,
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
-            status(app(guard.clone()), Some("sapphire-ed-bad")).await.0,
+            status(app(guard.clone()), Some("sapphire-ak-bad")).await.0,
             StatusCode::UNAUTHORIZED
         );
-        let (code, body) = status(app(guard), Some("sapphire-ed-good")).await;
+        let (code, body) = status(app(guard), Some("sapphire-ak-good")).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(body, format!("pendant {id}"));
     }
 
     #[tokio::test]
-    async fn an_unreachable_verifier_is_503_not_a_pass() {
+    async fn the_scheme_is_case_insensitive() {
         let guard = AuthConfig::new(Arc::new(Fake {
-            good: "x",
-            id: GrainId::random(),
-            reachable: false,
+            good: "t",
+            id: KeyId::generate(),
         }));
-        assert_eq!(
-            status(app(guard), Some("x")).await.0,
-            StatusCode::SERVICE_UNAVAILABLE
-        );
+        for scheme in ["bearer", "BEARER"] {
+            let (code, _) = status_with(app(guard.clone()), Some(format!("{scheme} t"))).await;
+            assert_eq!(code, StatusCode::OK, "{scheme}");
+        }
     }
 
     #[tokio::test]
     async fn without_a_verifier_everything_is_refused_unless_insecure() {
         assert_eq!(
             status(app(AuthConfig::unconfigured()), Some("x")).await.0,
-            StatusCode::SERVICE_UNAVAILABLE
+            StatusCode::UNAUTHORIZED
         );
         let open = protect(
             AuthConfig::unconfigured().insecure_for_tests(),

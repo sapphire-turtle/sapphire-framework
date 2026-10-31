@@ -27,7 +27,10 @@ to one another as a single client device, so there is nothing to align.
 say). So removal is a tombstone (`retired_at`) by default, and a record is
 deleted physically only by an explicit `purge`.
 
-## External devices
+## External devices (deprecated)
+
+Deprecated (#364): an application's API keys live in its workspace now
+(`corundum-framework-keys`), and each app server imports this ledger into them once.
 
 `ExternalDevices` is the ledger of clients that reach a workgroup's applications with a
 key instead of syncing (#199): one record per file in `external_devices/`, beside

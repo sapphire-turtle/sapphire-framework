@@ -126,17 +126,12 @@ pub mod prelude {
     #[cfg(feature = "backend")]
     pub use crate::backend::{IpcBackend, protocol};
 
-    // Bearer-token authentication against the workgroup's external devices (#199); the
+    // Bearer-token authentication against the served workspace's API keys (#364); the
     // `keys` feature chains the crate's `axum` feature in, so an application hosting its own
-    // authenticated routes gets `protect` and `BridgeVerifier` from here.
+    // authenticated routes gets `protect` from here, and wraps the server's
+    // `WorkspaceKeyVerifier` in a `Verifier` of its own when it maps keys to something.
     #[cfg(feature = "keys")]
-    pub use crate::keys::{AuthConfig, Authenticated, BridgeVerifier, Verdict, Verifier, protect};
-
-    // `registry` and `keys` both expose the same `GrainId` (`Authenticated::id`). Re-exporting
-    // both would collide, so take it from `registry` when that feature is on, and from `keys`
-    // only when it is not.
-    #[cfg(all(feature = "keys", not(feature = "registry")))]
-    pub use crate::keys::GrainId;
+    pub use crate::keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier, protect};
 
     // The app server skeleton: an application builds one of these, adds its own
     // methods, and runs it. `WorkspaceHost` is here for handlers that reach a

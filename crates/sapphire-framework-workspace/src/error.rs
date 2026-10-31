@@ -44,6 +44,11 @@ pub enum Error {
     #[error("path '{path}' escapes workspace root '{root}'")]
     PathEscapesWorkspace { path: PathBuf, root: PathBuf },
 
+    /// A write, append or delete inside the workspace's API keys (`.<app>/api_keys/`),
+    /// which only the keys' own commands change: a file tool must not issue a key.
+    #[error("path '{path}' is in the workspace's API keys, which file tools do not change")]
+    ProtectedPath { path: PathBuf },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

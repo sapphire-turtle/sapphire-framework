@@ -71,7 +71,6 @@ pub(crate) async fn execute(
         | Command::DeviceInvite { .. }
         | Command::DeviceRetire { .. }
         | Command::DevicePrioritySet { .. }
-        | Command::ExternalDevice(_)
         | Command::ConfigLoad
         | Command::ConfigWrite { .. }
         | Command::Restart(Process::Bridge) => {
@@ -152,16 +151,6 @@ async fn bridge_command(
             .device_priority_set(DevicePrioritySetParams { selector, priority })
             .await
             .map(|_| CommandOutput::Done),
-        Command::ExternalDevice(request) => {
-            c.external_device_request(request)
-                .await
-                .map(|outcome| match outcome {
-                    sapphire_bridge_api::ExternalDeviceOutcome::WithToken(r) => {
-                        CommandOutput::Token(r.token.expose().to_owned())
-                    }
-                    _ => CommandOutput::Done,
-                })
-        }
         Command::ConfigLoad => config_load(&c, &server).await.map(CommandOutput::Config),
         Command::ConfigWrite { scope, set, unset } => config_write(&c, scope, set, unset)
             .await

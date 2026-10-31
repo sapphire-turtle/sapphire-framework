@@ -8,9 +8,8 @@ use grain_id::GrainId;
 use sapphire_backend::protocol::{CurrentWorkspace, StatusReport, UpdateStatus};
 use sapphire_bridge_api::settings::Process;
 use sapphire_bridge_api::{
-    ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedSettingsResult, Entry,
-    ExternalDeviceInfo, ExternalDeviceRequest, PeerInfo, Scope, SettingDef, StatusResult, Value,
-    WorkgroupWorkspaceInfo, WorkspaceRoles,
+    ConfigEntry, ConfigFieldError, ConfigWriteResult, EmbedSettingsResult, Entry, PeerInfo, Scope,
+    SettingDef, StatusResult, Value, WorkgroupWorkspaceInfo, WorkspaceRoles,
 };
 use sapphire_ipc::Endpoint;
 
@@ -153,8 +152,6 @@ pub struct BridgeState {
     pub ledger: Vec<WorkgroupWorkspaceInfo>,
     /// `embed.settings`; `None` from a bridge older than 2.3.
     pub embedding: Option<EmbedSettingsResult>,
-    /// `external_device.list` (empty without a workgroup); `None` from an older bridge.
-    pub external_devices: Option<Vec<ExternalDeviceInfo>>,
     /// The theme's settings (`gui.theme.*`) and the language (`gui.locale`), effective
     /// values; `None` from a bridge that does not know the theme's. `gui.locale` is missing
     /// from a bridge that knows the theme but not the language: the theme is followed, the
@@ -235,8 +232,6 @@ pub enum Command {
         /// The device's name or id.
         selector: String,
     },
-    /// Manage the workgroup's external devices.
-    ExternalDevice(ExternalDeviceRequest),
     /// Set a device's election priority.
     DevicePrioritySet {
         /// The device's name or id.
@@ -317,8 +312,6 @@ pub enum CommandOutput {
     Done,
     /// An invite ticket, to show once.
     Ticket(String),
-    /// An external device's token, to show once.
-    Token(String),
     /// The settings [`Command::ConfigLoad`] read.
     Config(ConfigState),
     /// What a [`Command::ConfigWrite`] changed, and every key awaiting a restart.

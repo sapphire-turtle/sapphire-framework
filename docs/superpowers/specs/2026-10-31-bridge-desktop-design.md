@@ -65,6 +65,16 @@ Additive, not breaking.
   front and repaints.
 - `platform::instance::acquire_or_activate_with(app_name, message: Option<&str>)` is the
   start that opens a window and carries the message when it is second.
+- The wire stays one line: `activate\n`, or `activate <message>\n`. A start whose message
+  gets no answer (an older window, which does not know the form) asks again without it, so
+  the older window still comes to the front.
+- `corundum-framework-service`: `registered_program(spec, env, manager) ->
+  Result<Option<PathBuf>>`, the program a registered service starts (what `state` already
+  reads from the unit, the plist or the task), for an app to find another program's
+  executable by its service.
+
+Each lands in corundum-framework's next release; release-plz picks its number (additive:
+0.5.x or 0.6.0), and this repository depends on that release.
 
 ## The bridge's binaries
 
@@ -173,8 +183,9 @@ With `Linked`, the client fetches only what the summary needs (`bridge.status`,
 
 `platform::bridge_desktop_exe() -> Option<PathBuf>`, the first that exists of:
 
-1. Beside the executable the bridge's OS service is registered with: that executable if
-   it is `sapphire-bridge-desktop`, else `sapphire-bridge-desktop` in its directory.
+1. Beside the executable the bridge's OS service is registered with (corundum's
+   `registered_program` for the service named `sapphire-bridge`): that executable if it is
+   `sapphire-bridge-desktop`, else `sapphire-bridge-desktop` in its directory.
 2. `sapphire-bridge-desktop` beside the running app's executable.
 3. `sapphire-bridge-desktop` on `PATH`.
 

@@ -460,7 +460,7 @@ mod tests {
             .dir,
             PathBuf::from("/x")
         );
-        assert_eq!(API_VERSION, 5, "the crate's major is the API version");
+        assert_eq!(API_VERSION, 6, "the crate's major is the API version");
     }
 
     #[test]

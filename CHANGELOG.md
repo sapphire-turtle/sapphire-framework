@@ -8,6 +8,38 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-02
+
+The API crates are released with it: `sapphire-framework-bridge-api` 4.0.0 and `sapphire-framework-server-api` 6.0.0. 0.23.0 went out without a heading here; its changes are in the per-crate CHANGELOGs. **Update `sapphire-bridge` and the apps together:** an app on 0.23 checks HTTP tokens with `external_device.authenticate`, which a 0.24 bridge no longer answers, so its HTTP clients get 401 until the app is updated too.
+
+### Added
+
+- **Sapphire Bridge's own window** (#363, #386). New binary `sapphire-bridge-desktop` (not on crates.io): bare it opens the window (`--page status|workgroup|devices|embedding|appearance|logs|about`, which also switches an open window to that page); given a subcommand it runs `sapphire-bridge`'s, so a service can run `sapphire-bridge-desktop serve`. The window (`app::run_bridge`, `Settings::for_bridge`, `ClientMode::BridgeOnly`) has Status, Workgroup, Devices, Embedding, Appearance, Logs and About, plus the bridge's settings pages. Desktop apps link to it: Settings › Sync becomes Workspace, API keys and a Sapphire Bridge summary whose buttons open the window (`BridgePages::Linked`, `app::run`'s default); phones keep the pages in the app (`InApp`).
+- **Sapphire Bridge as a Velopack package** (#363, #389): a Setup.exe, a `.pkg` and an AppImage per release (package id `sapphire-bridge-desktop`), with a first-run question about running in the background, Service / command line / Updates rows in About, and `sapphire-bridge update` through the package's updater. On Windows the window has no console, and `sapphire-bridge.exe` on `Path` is a small console program that forwards to it. See `docs/release-checklist-bridge.md`.
+- **API keys in the workspace** (#364, #384): HTTP clients authenticate with keys kept in the served workspace, `<root>/.<app>/api_keys/<id>.toml`, which sync with it, so no bridge or workgroup is needed. The store and its Settings page are corundum-framework's `corundum-framework-keys` and `KeysPage`. `<app> api-key list|add|retire|restore|rotate` works on the workspace's files with or without a running server; Settings › API keys in the GUI. Each app server imports the workgroup's external devices once, keeping their ids and hashes, so existing tokens keep working. `WorkspaceState`'s write methods refuse `.<app>/api_keys/` (`Error::ProtectedPath`).
+- **Key profiles** (#388, corundum-framework 0.7): every key has one profile. The framework's are `read-only`, `read-write` and `admin` (`KeyProfiles::standard()`); an app with its own passes them with `AppServer::key_profiles(..)` and `Settings::with_key_profiles(..)`. A read-only key may call only `/mcp` tools marked `readOnlyHint` and only `GET` / `HEAD` / `OPTIONS` on an app's routes; anything else, and a key whose profile the app no longer offers, gets 403. `admin` allows what `read-write` does for now. `Authenticated` carries `profile` and `access`. A read-only key still sees the write tools in `tools/list`.
+- An application declares its own top-level settings names beside `<app>.` (`AppSettings::names()`), so an existing `config.toml` registers without moving under `[<app>]` (#359, #372). The framework's names are `sapphire_bridge_api::settings::SERVER_NAMES`.
+- Switchable HTTP endpoints (#368, #373): `AppSettings::http_endpoints()` declares them, `AppServer::http_endpoint(name, routes)` gives their routes, and `http.<name>.enabled` (off by default, on a restart) serves them at `/<name>` behind the same token as `/mcp`.
+- A desktop window registers its own executable as the app server (`ServiceExes::single_binary()`, `$APPIMAGE` inside an AppImage), so "Install & start service" works from a single-binary desktop package (#376, #377, #380).
+
+### Changed
+
+- **Breaking:** keys that existed before this release become **read-only**: clients that write over HTTP (MCP write tools, POSTs to an app's routes) get 403 until they get a new key, `<app> api-key add <name> --profile read-write`. `<app> api-key add` requires `--profile`. Keys without a profile are given `read-only` once, before the store is read.
+- **Breaking:** API keys are per workspace (and so per app); a key's `apps` list is gone. `<app> external-device` is a hidden alias of `<app> api-key` for this release; `sapphire-bridge external-device` and the bridge's `external_device.*` methods are removed (`sapphire-framework-bridge-api` 4.0.0). `sapphire-framework-keys`: `BridgeVerifier`, `CACHE_TTL` and `Verdict::Unavailable` removed, `Verdict::Forbidden` added, `Authenticated::id` is corundum's `KeyId`; an unconfigured `protect` answers 401 (was 503).
+- **Breaking:** the apps' `workgroup`, `device` and `embedding` subcommands are removed (`FrameworkCommand`'s variants, the server's `WorkgroupCommand` / `DeviceCommand`): use `sapphire-bridge`. `config` still reaches the bridge's settings. `sapphire-framework-gui`: `ClientConfig` gains `mode` and `bridge_pages`, `Endpoints` gains `bridge`; `ExternalDeviceList`, `BridgeState::external_devices`, `Command::ExternalDevice` and `CommandOutput::Token` are removed.
+- **Breaking:** the crate `sapphire-bridge` is now `sapphire-bridge-headless` (`cargo binstall sapphire-bridge-headless`); the command and the release files keep the name `sapphire-bridge`. The crate `sapphire-bridge` stops at 0.23.
+- **Breaking:** OS services go through `corundum-framework-service` (#381, #387). The macOS LaunchAgent label is `org.sapphire-turtle.<app>` (#385, after `net.sapphire-turtle.<app>` in #375); agents under `net.fireturtle.sapphire.<app>` or `net.sapphire-turtle.<app>` are moved by `service install`, `uninstall` and `status`. systemd units and Windows tasks keep their names. `ServiceSpec` gains `legacy_labels`.
+- **Breaking**, Windows only (#365, #382): settings and data move from `%APPDATA%` (Roaming) to `%LOCALAPPDATA%\<app>`, the cache to `%LOCALAPPDATA%\<app>\cache`, on the first start of any of the app's processes; the bridge's directory likewise.
+- corundum-framework 0.3 → 0.7 (its own breaking changes: `PackageSpec.services`, `store::Stored` fields, `first_run::PageAction::Finish`, key profiles in `KeyStore::add`, `KeyCommand::run`, `LocalKeys::new` and `require_key`).
+- The package runtime prints only its failures: `velopack=error,corundum_framework_package=warn` (`PACKAGE_LOG_FILTER`) is in the default console filters of the apps, the bridge and the bridge window (#366).
+- The install scripts install the CLI only and skip an app whose desktop package is installed (#367, #378); on Windows the package is found at `%LOCALAPPDATA%\<app>-desktop`.
+- The shared CI workflows moved to [sapphire-turtle/.github](https://github.com/sapphire-turtle/.github) (#352, #369, #371).
+
+### Deprecated
+
+- `sapphire-framework-service` is a re-export of `corundum-framework-service` for this release (#390 removes it); depend on `corundum-framework-service` or `sapphire_framework::service`.
+- `sapphire-registry`'s `ExternalDevices`, read only by the API key import.
+
 ## [0.22.0] - 2026-10-25
 
 This section also holds the changes released in 0.20.0 and 0.21.0, which went out without a heading here. The API crates are released with it: `sapphire-framework-bridge-api` 3.0.0 and `sapphire-framework-server-api` 5.0.0 (bridge-api 2.4.0 was yanked: its new fields on exhaustive structs broke the published `sapphire-framework-bridge` 0.21.0). **Update `sapphire-bridge` and the apps together:** an older bridge fails the handshake.

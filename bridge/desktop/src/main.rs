@@ -5,6 +5,10 @@
 //! as `sapphire-bridge`, so the service manager can start it with `serve`. The window is a
 //! client of the bridge: closing it stops nothing.
 
+// In the package, a GUI binary on Windows: no console window behind the window or the
+// service. The command line goes through the console shim (src/bin/console.rs).
+#![cfg_attr(all(windows, feature = "velopack"), windows_subsystem = "windows")]
+
 #[cfg(feature = "velopack")]
 mod package;
 

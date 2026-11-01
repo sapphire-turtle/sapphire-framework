@@ -66,6 +66,21 @@ fn main() -> std::process::ExitCode {
     // `update` replaces the running binary with `sapphire-bridge`'s release file, which
     // has no window: the desktop app is updated from its own release file instead, until it
     // is packaged (#363 part C).
+    // In the package, the package's updater does it.
+    #[cfg(feature = "velopack")]
+    if let BridgeCommand::Update(args) = &command
+        && corundum_framework_platform::package::current().is_some()
+    {
+        return match package::updater() {
+            Some(updater) => std::process::ExitCode::from(package::package_update(
+                &updater,
+                args.check,
+                &mut std::io::stdout(),
+                std::time::Duration::from_secs(5 * 60),
+            ) as u8),
+            None => std::process::ExitCode::FAILURE,
+        };
+    }
     if matches!(command, BridgeCommand::Update(_)) {
         eprintln!(
             "sapphire-bridge-desktop is not updated by `update`, which would put sapphire-bridge \

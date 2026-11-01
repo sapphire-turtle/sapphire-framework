@@ -7271,6 +7271,7 @@ dependencies = [
  "clap",
  "corundum-framework-package",
  "corundum-framework-platform",
+ "corundum-framework-update",
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-embed",
  "sapphire-framework-gui",

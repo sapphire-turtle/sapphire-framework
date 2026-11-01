@@ -10,6 +10,8 @@ fn main() -> ! {
 
 #[cfg(not(windows))]
 fn main() -> std::process::ExitCode {
-    eprintln!("sapphire-bridge-console is the Windows package's command; run sapphire-bridge-desktop");
+    eprintln!(
+        "sapphire-bridge-console is the Windows package's command; run sapphire-bridge-desktop"
+    );
     std::process::ExitCode::FAILURE
 }

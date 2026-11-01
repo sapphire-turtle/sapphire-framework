@@ -51,7 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 同じリリースファイルをビルドせずにダウンロードし、`update` もそれを再実行するよう案内します。
 
 ```sh
-cargo binstall sapphire-bridge sapphire-journal
+cargo binstall sapphire-bridge-headless sapphire-journal
 ```
 
 ## アプリを追加するには

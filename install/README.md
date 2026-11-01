@@ -58,7 +58,7 @@ it downloads the same release files rather than building them, and `update` tell
 it again.
 
 ```sh
-cargo binstall sapphire-bridge sapphire-journal
+cargo binstall sapphire-bridge-headless sapphire-journal
 ```
 
 ## Adding an application

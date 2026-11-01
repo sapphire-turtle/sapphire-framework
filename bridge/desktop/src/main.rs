@@ -5,6 +5,9 @@
 //! as `sapphire-bridge`, so the service manager can start it with `serve`. The window is a
 //! client of the bridge: closing it stops nothing.
 
+#[cfg(feature = "velopack")]
+mod package;
+
 use clap::Parser;
 use sapphire_bridge::BridgeCommand;
 use sapphire_framework_gui::bridge_window::BridgePage;
@@ -28,11 +31,23 @@ fn parse_page(s: &str) -> Result<BridgePage, String> {
 
 fn main() -> std::process::ExitCode {
     let cli = Desktop::parse();
+    // Velopack's start: a hook runs and exits here. Not for `serve`, the package's service:
+    // the start starts the services an update stopped, and that is this process.
+    #[cfg(feature = "velopack")]
+    if !matches!(cli.command, Some(BridgeCommand::Serve)) {
+        let start = corundum_framework_package::start(&package::PACKAGE);
+        tracing::debug!("package start: {start:?}");
+    }
     let Some(command) = cli.command else {
         let options = sapphire_framework_gui::bridge_window::BridgeWindowOptions {
             title: "Sapphire Bridge".to_owned(),
             version: env!("CARGO_PKG_VERSION"),
             page: cli.page,
+            #[cfg(feature = "velopack")]
+            package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
+                start_updater: package::start_updater,
+                service: package::bridge_service,
+            }),
         };
         return match sapphire_framework_gui::bridge_window::run_bridge(options) {
             Ok(()) => std::process::ExitCode::SUCCESS,

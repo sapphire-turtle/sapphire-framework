@@ -37,6 +37,7 @@ pub use eframe;
 #[cfg(feature = "eframe")]
 pub mod app;
 
+pub mod bridge_window;
 pub mod client;
 mod health;
 #[cfg(feature = "mobile")]

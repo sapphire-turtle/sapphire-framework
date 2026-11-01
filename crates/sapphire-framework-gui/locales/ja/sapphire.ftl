@@ -276,3 +276,15 @@ sapphire-restart-app-line = 反映するには { $app } サーバーの再起動
 sapphire-restart-app-button = { $app } サーバーを再起動
 
 sapphire-embedding-not-configured = 設定されていません
+
+# Sapphire Bridge のウィンドウ：タイトル、このウィンドウだけのページ、状態とログ。
+sapphire-bridge-window-title = Sapphire Bridge
+sapphire-bridge-page-status = 状態
+sapphire-bridge-page-logs = ログ
+sapphire-bridge-status-not-running = Sapphire Bridge は動いていません。
+sapphire-bridge-status-version = バージョン
+sapphire-bridge-status-workgroup = ワークグループ
+sapphire-bridge-status-workspaces = 同期中のワークスペース
+sapphire-bridge-status-restart = 再起動
+sapphire-bridge-summary-no-workgroup = ワークグループなし
+sapphire-bridge-logs-open-folder = フォルダーを開く

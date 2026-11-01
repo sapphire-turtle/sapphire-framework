@@ -37,6 +37,8 @@ sapphire-framework-service = { version = "0.23.0", path = "../sapphire-framework
 # (#318). Lives in its own repository (sapphire-turtle/corundum-framework). `serde` for its
 # store: the look in effect, kept on the device for the next start (#347).
 corundum-framework-gui = { workspace = true, features = ["serde", "keys"] }
+# The bridge's directory, for its log files (the bridge's window).
+corundum-framework-platform.workspace = true
 # The served workspace's API keys: where they are (Settings › API keys).
 sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
 egui = "0.37"

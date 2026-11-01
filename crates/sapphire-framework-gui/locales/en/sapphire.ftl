@@ -275,3 +275,15 @@ sapphire-restart-app-line = the { $app } server needs a restart to apply: { $key
 sapphire-restart-app-button = Restart { $app } server
 
 sapphire-embedding-not-configured = not configured
+
+# Sapphire Bridge's own window: its title, the pages only it has, and its Status and Logs.
+sapphire-bridge-window-title = Sapphire Bridge
+sapphire-bridge-page-status = Status
+sapphire-bridge-page-logs = Logs
+sapphire-bridge-status-not-running = Sapphire Bridge is not running.
+sapphire-bridge-status-version = Version
+sapphire-bridge-status-workgroup = Workgroup
+sapphire-bridge-status-workspaces = Synced workspaces
+sapphire-bridge-status-restart = Restart
+sapphire-bridge-summary-no-workgroup = No workgroup
+sapphire-bridge-logs-open-folder = Open the folder

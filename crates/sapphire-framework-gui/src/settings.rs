@@ -16,6 +16,7 @@ use corundum_framework_gui::settings::{ListItem, SettingsLayout};
 use corundum_framework_gui::theme::ThemeSettings;
 use corundum_framework_gui::tr;
 
+use crate::bridge_window::{BridgePage, LogsView, StatusView};
 use crate::views::appearance::{
     AppearanceCtx, AppearancePage, bridge_down, language_settings, old_bridge, theme_settings,
 };
@@ -63,6 +64,8 @@ enum Page {
     /// The settings page of this schema section.
     Config(String),
     About,
+    /// A page only the bridge's window has: Status or Logs.
+    Bridge(BridgePage),
 }
 
 /// Which view sent a command, so its outcome goes back there.
@@ -129,6 +132,8 @@ pub struct Settings {
     /// snapshot.
     seen_look: Option<GuiValues>,
     appearance: AppearancePage,
+    /// The bridge's own window's pages, when this is it ([`Settings::for_bridge`]).
+    bridge_window: Option<(StatusView, LogsView)>,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -165,6 +170,7 @@ impl Settings {
             workspace: None,
             pending: HashMap::new(),
             seen_look: None,
+            bridge_window: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
@@ -197,6 +203,31 @@ impl Settings {
     #[deprecated(note = "the framework saves the theme in the settings registry (#327)")]
     pub fn take_theme_changed(&mut self) -> Option<ThemeSettings> {
         None
+    }
+
+    /// Sapphire Bridge's own window: the bridge's pages — Status, Workgroup, Devices,
+    /// Embedding, Appearance, Logs and About — over a
+    /// [`ClientMode::BridgeOnly`](crate::client::ClientMode::BridgeOnly) client.
+    pub fn for_bridge(client: FrameworkClient) -> Settings {
+        let logs = LogsView::new(crate::bridge_window::bridge_log_dir().unwrap_or_default());
+        Settings {
+            bridge_window: Some((StatusView::default(), logs)),
+            ..Settings::new(client)
+        }
+    }
+
+    /// Open `page` of the bridge's window: the page a start or an activation names.
+    pub fn open_page(&mut self, page: BridgePage) {
+        let page = match page {
+            BridgePage::Status => Page::Bridge(BridgePage::Status),
+            BridgePage::Workgroup => Page::Sync(Screen::Workgroup),
+            BridgePage::Devices => Page::Sync(Screen::Devices),
+            BridgePage::Embedding => Page::Sync(Screen::Embedding),
+            BridgePage::Appearance => Page::Appearance,
+            BridgePage::Logs => Page::Bridge(BridgePage::Logs),
+            BridgePage::About => Page::About,
+        };
+        self.layout.open(Some(page));
     }
 
     /// The client the framework's pages use.
@@ -334,6 +365,9 @@ impl Settings {
     }
 
     fn first_page(&self) -> Page {
+        if self.bridge_window.is_some() {
+            return Page::Bridge(BridgePage::Status);
+        }
         if self.app_sections.is_empty() {
             Page::Sync(Screen::Workspaces)
         } else {
@@ -344,6 +378,9 @@ impl Settings {
     /// The list: headings, entries and gaps, in order, in the language installed in `ctx`.
     /// A page with a draft is marked.
     fn list(&self, ctx: &egui::Context) -> Vec<ListItem<Page>> {
+        if self.bridge_window.is_some() {
+            return self.bridge_list(ctx);
+        }
         let dirty = self.drafts.dirty_sections();
         let config = |placement: Placement| -> Vec<ListItem<Page>> {
             self.pages
@@ -408,8 +445,47 @@ impl Settings {
         out
     }
 
+    /// The bridge's window's list: its pages, the bridge's settings pages, About.
+    fn bridge_list(&self, ctx: &egui::Context) -> Vec<ListItem<Page>> {
+        let entry = |page: Page, id: &str| ListItem::entry(page, tr!(ctx, id));
+        let mut out = vec![
+            ListItem::Heading(tr!(ctx, "sapphire-bridge-window-title")),
+            entry(
+                Page::Bridge(BridgePage::Status),
+                "sapphire-bridge-page-status",
+            ),
+            entry(Page::Sync(Screen::Workgroup), "sapphire-settings-workgroup"),
+            entry(Page::Sync(Screen::Devices), "sapphire-settings-devices"),
+            entry(Page::Sync(Screen::Embedding), "sapphire-settings-embedding"),
+            entry(Page::Appearance, "sapphire-settings-appearance"),
+            entry(Page::Bridge(BridgePage::Logs), "sapphire-bridge-page-logs"),
+        ];
+        let dirty = self.drafts.dirty_sections();
+        let rest: Vec<ListItem<Page>> = self
+            .pages
+            .iter()
+            .filter(|p| p.placement == Placement::Configuration)
+            .map(|p| ListItem::Entry {
+                page: Page::Config(p.section.clone()),
+                label: p.section.clone(),
+                dirty: dirty.contains(&p.section),
+            })
+            .collect();
+        if !rest.is_empty() {
+            out.push(ListItem::Heading(tr!(
+                ctx,
+                "sapphire-settings-configuration"
+            )));
+            out.extend(rest);
+        }
+        out.push(ListItem::Gap);
+        out.push(entry(Page::About, "sapphire-settings-about"));
+        out
+    }
+
     fn page_ui(&mut self, ui: &mut egui::Ui, page: Page) {
         match page {
+            Page::Bridge(page) => self.bridge_page_ui(ui, page),
             Page::App(i) => {
                 if let Some(section) = self.app_sections.get_mut(i) {
                     section.ui(ui);
@@ -433,9 +509,37 @@ impl Settings {
         }
     }
 
+    fn bridge_page_ui(&mut self, ui: &mut egui::Ui, page: BridgePage) {
+        let snapshot = self.snapshot();
+        let busy = self.busy(&Origin::Restart);
+        let Some((status, logs)) = &mut self.bridge_window else {
+            return;
+        };
+        let command = match page {
+            BridgePage::Status => {
+                let cx = ViewCtx {
+                    snapshot: &snapshot,
+                    app_name: self.client.app().app_name,
+                    busy,
+                };
+                status.ui(ui, &cx)
+            }
+            BridgePage::Logs => {
+                logs.ui(ui);
+                None
+            }
+            // The others are the shared pages.
+            _ => None,
+        };
+        if let Some(command) = command {
+            self.send(command, Origin::Restart);
+        }
+    }
+
     fn appearance_ui(&mut self, ui: &mut egui::Ui) {
         let snapshot = self.snapshot();
-        if snapshot.server.up().is_none() {
+        // The bridge's window has no app server: the bridge keeps the look.
+        if snapshot.server.up().is_none() && self.bridge_window.is_none() {
             unavailable(
                 ui,
                 Message::new("sapphire-unavailable-server").arg("app", self.client.app().app_name),
@@ -570,7 +674,11 @@ impl Settings {
 
     fn about_ui(&mut self, ui: &mut egui::Ui) {
         let app = self.client.app();
-        ui.heading(app.app_name);
+        if self.bridge_window.is_some() {
+            ui.heading(tr!(ui, "sapphire-bridge-window-title"));
+        } else {
+            ui.heading(app.app_name);
+        }
         ui.label(tr!(ui, "sapphire-settings-version", version = app.version));
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!(ui, "sapphire-settings-services")).strong());
@@ -961,6 +1069,47 @@ mod tests {
                 ListItem::Gap => "-".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn bridge_settings_lists_the_bridge_pages() {
+        let (client, _rt) = crate::test_support::client_with(
+            crate::client::ClientMode::BridgeOnly,
+            crate::client::BridgePages::InApp,
+        );
+        let settings = Settings::for_bridge(client);
+        assert_eq!(
+            entry_labels(&settings),
+            [
+                "# Sapphire Bridge",
+                "Status",
+                "Workgroup",
+                "Devices",
+                "Embedding",
+                "Appearance",
+                "Logs",
+                "-",
+                "About"
+            ]
+        );
+    }
+
+    #[test]
+    fn open_page_from_activation() {
+        let (client, _rt) = crate::test_support::client_with(
+            crate::client::ClientMode::BridgeOnly,
+            crate::client::BridgePages::InApp,
+        );
+        let mut settings = Settings::for_bridge(client);
+        settings.open_page(crate::bridge_window::BridgePage::Devices);
+        render([900.0, 600.0], |ui| settings.ui(ui));
+        assert_eq!(settings.drawn, Some(Page::Sync(Screen::Devices)));
+        settings.open_page(crate::bridge_window::BridgePage::Logs);
+        render([900.0, 600.0], |ui| settings.ui(ui));
+        assert_eq!(
+            settings.drawn,
+            Some(Page::Bridge(crate::bridge_window::BridgePage::Logs))
+        );
     }
 
     #[test]

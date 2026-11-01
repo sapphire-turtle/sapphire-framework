@@ -7397,6 +7397,7 @@ name = "sapphire-framework-gui"
 version = "0.23.0"
 dependencies = [
  "corundum-framework-gui",
+ "corundum-framework-platform",
  "eframe",
  "egui",
  "grain-id",

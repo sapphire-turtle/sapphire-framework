@@ -2,7 +2,6 @@
 //! [`PACKAGE`] is what `main` hands to `package::start`, its one service is the bridge's
 //! `serve`, and its command goes on `PATH` as `sapphire-bridge`.
 
-use std::io::Write as _;
 use std::time::Duration;
 
 use corundum_framework_package::CliSpec;
@@ -84,27 +83,21 @@ pub fn package_update(
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         let status = updater.status();
-        match status.state {
-            PackageState::Checking | PackageState::Downloading { .. }
-                if std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(200));
-            }
-            _ => break status,
+        if settled(&status.state) || std::time::Instant::now() >= deadline {
+            break status;
         }
+        std::thread::sleep(Duration::from_millis(200));
     };
     let current = status.current.map_or_else(String::new, |v| format!(" {v}"));
     let said = match status.state {
-        PackageState::UpToDate | PackageState::Idle => {
-            writeln!(out, "Sapphire Bridge{current} is the newest")
-        }
+        PackageState::UpToDate => writeln!(out, "Sapphire Bridge{current} is the newest"),
         PackageState::Ready { version } if check_only => writeln!(
             out,
             "Sapphire Bridge {version} is ready; run `sapphire-bridge update` to install it"
         ),
         PackageState::Ready { version } => {
             let _ = writeln!(out, "installing Sapphire Bridge {version}");
-            return match updater.apply(corundum_framework_package::After::Exit) {
+            return match updater.apply(after_update()) {
                 Ok(()) => 0,
                 Err(err) => {
                     let _ = writeln!(out, "could not install the update: {err}");
@@ -116,7 +109,7 @@ pub fn package_update(
             let _ = writeln!(out, "could not look for an update: {reason}");
             return 1;
         }
-        PackageState::Checking | PackageState::Downloading { .. } => {
+        PackageState::Idle | PackageState::Checking | PackageState::Downloading { .. } => {
             let _ = writeln!(out, "the update did not finish in time");
             return 1;
         }
@@ -125,6 +118,22 @@ pub fn package_update(
         return 1;
     }
     0
+}
+
+/// Whether the updater has answered the check: a fresh updater is `Idle` until its thread
+/// takes the request.
+fn settled(state: &corundum_framework_update::PackageState) -> bool {
+    use corundum_framework_update::PackageState;
+    !matches!(
+        state,
+        PackageState::Idle | PackageState::Checking | PackageState::Downloading { .. }
+    )
+}
+
+/// After `update` applies: the new version starts once with `--version`, so its package
+/// start starts the service the update stopped (`serve` skips the package start), and exits.
+fn after_update() -> corundum_framework_package::After {
+    corundum_framework_package::After::RestartWith(vec!["--version".into()])
 }
 
 #[cfg(test)]
@@ -169,6 +178,25 @@ mod tests {
         let (code, out) = run(PackageState::Failed("no network".into()), true);
         assert_eq!(code, 1);
         assert!(out.contains("no network"), "{out}");
+    }
+
+    // A fresh updater is Idle until its thread takes the check.
+    #[test]
+    fn idle_is_not_an_answer() {
+        assert!(!settled(&PackageState::Idle));
+        assert!(!settled(&PackageState::Checking));
+        assert!(settled(&PackageState::UpToDate));
+        assert!(settled(&PackageState::Failed(String::new())));
+    }
+
+    // The new version starts once, quietly, so its package start restarts the service the
+    // update stopped.
+    #[test]
+    fn update_restarts_for_the_service() {
+        let corundum_framework_package::After::RestartWith(args) = after_update() else {
+            panic!("an update from the command line must start the new version");
+        };
+        assert_eq!(args, ["--version"]);
     }
 
     #[test]

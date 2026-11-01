@@ -237,17 +237,19 @@ impl Settings {
         }
     }
 
-    /// The bridge's window in a Velopack package: About shows the bridge's service row and
-    /// the package's updates (`updater`; none: the binary's release row).
+    /// The bridge's window in a Velopack package: About shows the bridge's service row, its
+    /// command line `cli`, and the package's updates (`updater`; none: the binary's release
+    /// row).
     #[cfg(feature = "package")]
     pub fn with_package(
         mut self,
         updater: Option<corundum_framework_package::Updater>,
         service: fn() -> corundum_framework_service::ServiceSpec,
+        cli: Option<corundum_framework_package::CliSpec>,
         version: &str,
     ) -> Settings {
         self.package_about = Some(crate::bridge_window::PackageAbout::new(
-            updater, service, version,
+            updater, service, cli, version,
         ));
         self
     }
@@ -1260,6 +1262,7 @@ mod tests {
         let mut settings = Settings::for_bridge(client).with_package(
             Some(Updater::for_tests(PackageState::UpToDate)),
             svc,
+            None,
             "0.0.0",
         );
         settings.open_page(crate::bridge_window::BridgePage::About);

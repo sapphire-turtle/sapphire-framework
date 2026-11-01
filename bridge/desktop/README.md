@@ -20,9 +20,11 @@ Each framework release carries Sapphire Bridge's installers, made with
 | macOS | `sapphire-bridge-osx-Setup.pkg` (signed and notarized when the release had the keys) |
 | Linux | `sapphire-bridge.AppImage` |
 
-The package holds this binary, and its install puts it on `PATH` as `sapphire-bridge` (on
-Windows a small console program of that name runs it, so the command line works while the
-window has no console). No service is registered at install.
+The package holds this binary, as the command `sapphire-bridge`. On Windows the install puts
+it on `PATH` (a small console program of that name runs it, so the command line works while
+the window has no console); on macOS and Linux About › Command line links it
+(`/usr/local/bin`, asking for an administrator; `~/.local/bin`). No service is registered at
+install.
 
 **First run.** The window's first start in the package welcomes you and asks whether to keep
 Sapphire Bridge running in the background — Yes registers `sapphire-bridge serve` with the OS

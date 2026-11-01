@@ -14,11 +14,13 @@ On each of Windows, macOS and Linux:
    running.
 3. **After a reboot** the service is running (`sapphire-bridge status` answers) without
    opening the window.
-4. **`sapphire-bridge` on `PATH`:** a new terminal runs `sapphire-bridge --version` and
-   `sapphire-bridge status` (on Windows, with output in the terminal).
+4. **`sapphire-bridge` on `PATH`:** on macOS and Linux, About › Command line › Install
+   first (Windows has it from the install). A new terminal runs `sapphire-bridge --version`
+   and `sapphire-bridge status` (on Windows, with output in the terminal).
 5. **Update** from the previous release: About › Updates finds the new version, downloads it
    and restarts into it; the service was stopped before and runs the new version after
-   (`sapphire-bridge status`). `sapphire-bridge update --check` reports it too.
+   (`sapphire-bridge status`). Again from the command line with `sapphire-bridge update`:
+   the service runs the new version afterwards without opening the window.
 6. **Uninstall** removes the service (no unit, LaunchAgent or scheduled task left) and the
    command on `PATH`; the bridge's data directory stays.
 

@@ -33,15 +33,30 @@ fn parse_page(s: &str) -> Result<BridgePage, String> {
     })
 }
 
+/// Whether this start goes through the package's start: every start but `serve`, the
+/// package's service (the start starts the services an update stopped, and that is this
+/// process). Velopack's hooks pass arguments clap rejects, so this is decided before clap
+/// may exit on them.
+#[cfg_attr(not(feature = "velopack"), allow(dead_code))]
+fn runs_package_start(parsed: &Result<Desktop, clap::Error>) -> bool {
+    !matches!(
+        parsed,
+        Ok(Desktop {
+            command: Some(BridgeCommand::Serve),
+            ..
+        })
+    )
+}
+
 fn main() -> std::process::ExitCode {
-    let cli = Desktop::parse();
-    // Velopack's start: a hook runs and exits here. Not for `serve`, the package's service:
-    // the start starts the services an update stopped, and that is this process.
+    let parsed = Desktop::try_parse();
+    // Velopack's start: a hook runs and exits here.
     #[cfg(feature = "velopack")]
-    if !matches!(cli.command, Some(BridgeCommand::Serve)) {
+    if runs_package_start(&parsed) {
         let start = corundum_framework_package::start(&package::PACKAGE);
         tracing::debug!("package start: {start:?}");
     }
+    let cli = parsed.unwrap_or_else(|e| e.exit());
     let Some(command) = cli.command else {
         let options = sapphire_framework_gui::bridge_window::BridgeWindowOptions {
             title: "Sapphire Bridge".to_owned(),
@@ -51,6 +66,7 @@ fn main() -> std::process::ExitCode {
             package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
                 start_updater: package::start_updater,
                 service: package::bridge_service,
+                cli: package::PACKAGE.cli,
             }),
         };
         return match sapphire_framework_gui::bridge_window::run_bridge(options) {
@@ -129,5 +145,21 @@ mod tests {
             BridgePage::Status
         );
         assert!(Desktop::try_parse_from(["x", "--page", "nope"]).is_err());
+    }
+
+    // Velopack's hooks start the binary with arguments clap does not know; the package's
+    // start must see them before clap exits on them.
+    #[test]
+    fn package_start_runs_before_clap_rejects() {
+        let parsed = |args: &[&str]| Desktop::try_parse_from(args);
+        assert!(runs_package_start(&parsed(&[
+            "x",
+            "--veloapp-install",
+            "1.0.0"
+        ])));
+        assert!(runs_package_start(&parsed(&["x", "--version"])));
+        assert!(runs_package_start(&parsed(&["x"])));
+        assert!(runs_package_start(&parsed(&["x", "status"])));
+        assert!(!runs_package_start(&parsed(&["x", "serve"])));
     }
 }

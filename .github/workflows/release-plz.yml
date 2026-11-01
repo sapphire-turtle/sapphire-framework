@@ -30,5 +30,7 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/release-bridge.yml
+    # The macOS signing secrets, for the package (release-bridge.yml, job `pack`).
+    secrets: inherit
     with:
       tag: ${{ fromJSON(needs.release-plz.outputs.tags)['sapphire-framework-workspace'] }}

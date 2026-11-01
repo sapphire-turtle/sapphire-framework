@@ -35,6 +35,8 @@ pub struct PackageWindow {
     pub start_updater: fn() -> Option<corundum_framework_package::Updater>,
     /// The bridge's service, which the first run and About register.
     pub service: fn() -> corundum_framework_service::ServiceSpec,
+    /// The package's command on `PATH`, which About offers to link on macOS and Linux.
+    pub cli: Option<corundum_framework_package::CliSpec>,
 }
 
 /// Open Sapphire Bridge's window and run it until it closes; when it is open already, bring
@@ -58,7 +60,7 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
     };
     // This start is the instance: only now may it apply an update.
     #[cfg(feature = "package")]
-    let package = package.map(|p| (p.service, (p.start_updater)()));
+    let package = package.map(|p| (p.service, p.cli, (p.start_updater)()));
     let dirs = AppContext::new(APP_NAME);
     dirs.init(AppKind::Desktop);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -89,8 +91,8 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         #[cfg(feature = "package")]
         let mut first_run = None;
         #[cfg(feature = "package")]
-        if let Some((service, updater)) = package {
-            settings = settings.with_package(updater, service, version);
+        if let Some((service, cli, updater)) = package {
+            settings = settings.with_package(updater, service, cli, version);
             if !corundum_framework_gui::first_run::FirstRun::done(&cc.egui_ctx) {
                 first_run = Some(corundum_framework_gui::first_run::FirstRun::new(
                     "Sapphire Bridge",

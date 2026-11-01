@@ -16,6 +16,7 @@ pub use types::*;
 /// The handle the GUI holds. Dropping it stops the background task.
 pub struct FrameworkClient {
     app: AppIdentity,
+    bridge_pages: BridgePages,
     snapshot: watch::Receiver<Snapshot>,
     commands: mpsc::UnboundedSender<(CommandId, Command)>,
     outcomes: Arc<Mutex<Vec<Outcome>>>,
@@ -35,15 +36,22 @@ impl FrameworkClient {
         let (commands, cmd_rx) = mpsc::unbounded_channel();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
         let app = config.app;
+        let bridge_pages = config.bridge_pages;
         let task = runtime.spawn(run(config, snap_tx, cmd_rx, Arc::clone(&outcomes), repaint));
         FrameworkClient {
             app,
+            bridge_pages,
             snapshot,
             commands,
             outcomes,
             next_id: AtomicU64::new(1),
             task,
         }
+    }
+
+    /// Where Settings shows the bridge's pages.
+    pub fn bridge_pages(&self) -> BridgePages {
+        self.bridge_pages
     }
 
     /// Which application this client serves.

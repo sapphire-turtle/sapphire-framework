@@ -144,6 +144,8 @@ pub fn run(
 fn client_config(app: AppIdentity) -> std::io::Result<ClientConfig> {
     let mut config = ClientConfig::new(app)?;
     config.service_exes = ServiceExes::single_binary()?;
+    // A desktop app sends the user to Sapphire Bridge's own window for the bridge's pages.
+    config.bridge_pages = crate::client::BridgePages::Linked;
     Ok(config)
 }
 
@@ -194,6 +196,18 @@ fn desktop_log_filter(app_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_desktop_window_links_to_sapphire_bridge() {
+        let app = AppIdentity {
+            app_name: "sapphire-linktest",
+            version: "0.0.0",
+        };
+        assert_eq!(
+            super::client_config(app).unwrap().bridge_pages,
+            crate::client::BridgePages::Linked
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -17,9 +17,11 @@ use corundum_framework_gui::theme::ThemeSettings;
 use corundum_framework_gui::tr;
 
 use crate::bridge_window::{BridgePage, LogsView, StatusView};
+use crate::client::BridgePages;
 use crate::views::appearance::{
     AppearanceCtx, AppearancePage, bridge_down, language_settings, old_bridge, theme_settings,
 };
+use crate::views::bridge_summary::{BridgeSummary, spawn_detached};
 use crate::views::config::model::{Drafts, PageSpec, Placement, pages, pending_restarts};
 use crate::views::config::{ConfigPage, RestartBanner};
 use crate::views::{
@@ -38,6 +40,8 @@ enum Screen {
     Workgroup,
     ApiKeys,
     Embedding,
+    /// The summary that links to Sapphire Bridge's window ([`BridgePages::Linked`]).
+    Bridge,
 }
 
 /// The sync pages and the ids of the messages naming them in the list.
@@ -134,6 +138,8 @@ pub struct Settings {
     appearance: AppearancePage,
     /// The bridge's own window's pages, when this is it ([`Settings::for_bridge`]).
     bridge_window: Option<(StatusView, LogsView)>,
+    /// The summary that links to Sapphire Bridge, made when first shown.
+    bridge_summary: Option<BridgeSummary>,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
     #[cfg(test)]
     drawn: Option<Page>,
@@ -171,6 +177,7 @@ impl Settings {
             pending: HashMap::new(),
             seen_look: None,
             bridge_window: None,
+            bridge_summary: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
@@ -417,7 +424,17 @@ impl Settings {
             tr!(ctx, "sapphire-settings-appearance"),
         ));
         out.push(ListItem::Heading(tr!(ctx, "sapphire-settings-sync")));
-        for (screen, id) in SYNC_SCREENS {
+        let linked = self.client.bridge_pages() == BridgePages::Linked;
+        let screens: Vec<(Screen, &str)> = if linked {
+            vec![
+                (Screen::Workspaces, "sapphire-settings-workspace"),
+                (Screen::ApiKeys, "sapphire-settings-api-keys"),
+                (Screen::Bridge, "sapphire-bridge-summary-title"),
+            ]
+        } else {
+            SYNC_SCREENS.to_vec()
+        };
+        for (screen, id) in screens {
             let joined = screen == JOINED_SCREEN.0
                 && self.pages.iter().any(|p| {
                     p.placement == Placement::Screen(JOINED_SCREEN.1.to_owned())
@@ -587,6 +604,16 @@ impl Settings {
                 self.api_keys.ui(ui, &cx);
                 None
             }
+            Screen::Bridge => {
+                let summary = self.bridge_summary.get_or_insert_with(|| {
+                    BridgeSummary::new(
+                        crate::platform::bridge_desktop_exe(),
+                        Box::new(spawn_detached),
+                    )
+                });
+                summary.ui(ui, cx.snapshot);
+                None
+            }
             Screen::Embedding => {
                 self.ensure_loaded(&snapshot);
                 self.restart_ui(ui, &snapshot);
@@ -694,6 +721,8 @@ impl Settings {
             Origin::Screen(Screen::Workgroup) => self.workgroup.on_outcome(result),
             // It sends nothing: the keys are the workspace's files.
             Origin::Screen(Screen::ApiKeys) => {}
+            // It runs the bridge's window; it sends nothing.
+            Origin::Screen(Screen::Bridge) => {}
             // It only shows; its settings page sends.
             Origin::Screen(Screen::Embedding) => {}
             Origin::Page(section) => {
@@ -1069,6 +1098,35 @@ mod tests {
                 ListItem::Gap => "-".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn linked_settings_has_no_bridge_pages() {
+        let (client, _rt) = crate::test_support::client_with(
+            crate::client::ClientMode::App,
+            crate::client::BridgePages::Linked,
+        );
+        let labels = entry_labels(&Settings::new(client));
+        let sync: Vec<&str> = labels
+            .iter()
+            .skip_while(|l| *l != "# Sync")
+            .skip(1)
+            .take_while(|l| !l.starts_with('#') && *l != "-")
+            .map(String::as_str)
+            .collect();
+        assert_eq!(sync, ["Workspace", "API keys", "Sapphire Bridge"]);
+        let (client, _rt) = crate::test_support::client();
+        let labels = entry_labels(&Settings::new(client));
+        for page in ["Devices", "Workgroup", "Embedding"] {
+            assert!(labels.contains(&page.to_owned()), "{labels:?}");
+        }
+    }
+
+    #[test]
+    fn summary_shows_workgroup_and_connected() {
+        let s = crate::views::bridge_summary::Summary::of(&rich());
+        assert_eq!(s.workgroup.as_deref(), Some("home"));
+        assert_eq!((s.connected, s.total), (1, 2));
     }
 
     #[test]

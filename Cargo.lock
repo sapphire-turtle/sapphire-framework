@@ -1430,9 +1430,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f5902e2072ed146495b1bbfb1c7ba1251853a3d31f2eacbb90f623957d0f28"
+checksum = "92f9840be85d8d9bc6d203e8cb044012a2fb1885cbac20dc41a407f6f2ac55ff"
 dependencies = [
  "android-activity",
  "android_log-sys",
@@ -1462,9 +1462,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-keys"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f394df2ae4c6b6b099850f092c83a23addfb0566fa13b775b5bc07a64d57487"
+checksum = "c87a3d1012480730aca3c1af904860a10dd35b1b513d6ac327613d6c2026f409"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1481,9 +1481,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd562a148d3817f6e6c51b49658686a409b69446499f2a76cf781799b2b2aedf"
+checksum = "63482a44c3905280262230d715538b56ac5d1644d391cfa43bc72ee0fb77ac32"
 dependencies = [
  "dirs 7.0.0",
  "interprocess",
@@ -1499,9 +1499,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-service"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88d7c65d1460359d3fdbd2b82e313df0dd7e317d7e286e6048b8d60c7cb281cb"
+checksum = "fd72cd24e441c31540902c1d27194e3d9f6cdf401663b78904df07acad748f26"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -5726,7 +5726,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -7420,6 +7420,7 @@ dependencies = [
  "http-body-util",
  "tempfile",
  "tokio",
+ "toml_edit",
  "tower",
  "tracing",
 ]
@@ -7432,6 +7433,7 @@ dependencies = [
  "rmcp",
  "sapphire-framework-bridge-client",
  "sapphire-framework-ipc",
+ "sapphire-framework-keys",
  "sapphire-framework-server-api",
  "schemars",
  "serde",
@@ -9942,7 +9944,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "once_cell",
- "ordered-float 5.5.1",
+ "ordered-float 3.9.2",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",

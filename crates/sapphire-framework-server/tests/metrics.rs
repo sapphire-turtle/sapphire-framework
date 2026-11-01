@@ -41,6 +41,8 @@ impl Verifier for Fake {
             Verdict::Accepted(Authenticated {
                 id: KeyId::generate(),
                 name: "agent".into(),
+                profile: sapphire_framework_keys::ProfileId::new("read-write").unwrap(),
+                access: sapphire_framework_keys::Access::Write,
             })
         } else {
             Verdict::Refused

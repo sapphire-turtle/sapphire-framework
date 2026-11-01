@@ -74,17 +74,33 @@ impl Host {
 async fn api_key_add_without_server() {
     let host = Host::new();
     let root = host.select();
-    let run = host.cli(&["api-key", "add", "pendant"]).await;
+    let run = host
+        .cli(&["api-key", "add", "pendant", "--profile", "read-write"])
+        .await;
     assert_eq!(run.code, 0, "{run:?}");
     let token = run.out.trim_end();
     assert!(!token.contains('\n'), "{run:?}");
     assert!(token.starts_with("sapphire-ak-"), "{run:?}");
     let store = open_store(APP, &root).unwrap();
-    assert_eq!(store.authenticate(token).unwrap().name, "pendant");
+    let key = store.authenticate(token).unwrap();
+    assert_eq!(key.name, "pendant");
+    assert_eq!(key.profile.as_str(), "read-write");
 
     let run = host.cli(&["api-key", "list"]).await;
     assert_eq!(run.code, 0, "{run:?}");
     assert!(run.out.contains("pendant"), "{run:?}");
+}
+
+#[tokio::test]
+async fn a_profile_the_app_does_not_offer_is_refused() {
+    let host = Host::new();
+    let root = host.select();
+    let run = host
+        .cli(&["api-key", "add", "pendant", "--profile", "everything"])
+        .await;
+    assert_ne!(run.code, 0, "{run:?}");
+    assert!(run.err.contains("read-only"), "names the profiles: {run:?}");
+    assert!(open_store(APP, &root).unwrap().list().is_empty());
 }
 
 #[tokio::test]
@@ -99,7 +115,15 @@ async fn no_workspace_is_exit_1() {
 async fn external_device_alias_warns() {
     let host = Host::new();
     let root = host.select();
-    let run = host.cli(&["external-device", "add", "pendant"]).await;
+    let run = host
+        .cli(&[
+            "external-device",
+            "add",
+            "pendant",
+            "--profile",
+            "read-only",
+        ])
+        .await;
     assert_eq!(run.code, 0, "{run:?}");
     assert!(run.err.contains("renamed to `api-key`"), "{run:?}");
     let store = open_store(APP, &root).unwrap();
@@ -115,6 +139,8 @@ async fn external_device_app_is_refused() {
             "external-device",
             "add",
             "pendant",
+            "--profile",
+            "read-only",
             "--app",
             "sapphire-other",
         ])

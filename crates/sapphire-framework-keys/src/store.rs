@@ -14,9 +14,14 @@ pub fn store_dir(app_name: &str, root: &Path) -> PathBuf {
 }
 
 /// The store of `app_name`'s API keys in the workspace at `root`, created if absent, its new
-/// tokens starting with [`TOKEN_PREFIX`].
+/// tokens starting with [`TOKEN_PREFIX`]. Keys stored without a profile are given one first
+/// ([`fill_missing_profiles`](crate::fill_missing_profiles)).
 pub fn open_store(app_name: &str, root: &Path) -> corundum_framework_keys::Result<KeyStore> {
-    Ok(KeyStore::open(&store_dir(app_name, root))?.token_prefix(TOKEN_PREFIX))
+    let dir = store_dir(app_name, root);
+    if let Err(source) = crate::fill_missing_profiles(&dir) {
+        return Err(corundum_framework_keys::Error::Io { path: dir, source });
+    }
+    Ok(KeyStore::open(&dir)?.token_prefix(TOKEN_PREFIX))
 }
 
 #[cfg(test)]
@@ -35,7 +40,9 @@ mod tests {
     fn new_tokens_have_the_prefix() {
         let root = tempfile::tempdir().unwrap();
         let mut store = open_store("sapphire-test", root.path()).unwrap();
-        let (_, token) = store.add("p", None, None).unwrap();
+        let (_, token) = store
+            .add("p", None, crate::ProfileId::new(crate::READ_ONLY).unwrap())
+            .unwrap();
         assert!(token.expose().starts_with(TOKEN_PREFIX));
         assert!(store_dir("sapphire-test", root.path()).is_dir());
     }

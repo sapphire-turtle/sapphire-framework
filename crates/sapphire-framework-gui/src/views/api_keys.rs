@@ -9,16 +9,31 @@ use super::ViewCtx;
 
 /// Settings › API keys. The page is built over the store of the workspace the app server
 /// serves, and built again when that changes. The keys are files in the workspace, so this
-/// works on them directly, with or without the bridge.
+/// works on them directly, with or without the bridge. A new key takes one of the
+/// application's profiles ([`profiles`](Self::profiles)).
 #[derive(Default)]
 pub struct ApiKeysView {
     /// The workspace the page is over, and the page.
     page: Option<(PathBuf, KeysPage)>,
     /// Why the store could not be opened.
     error: Option<String>,
+    /// The profiles a new key may take.
+    profiles: sapphire_framework_keys::KeyProfiles,
 }
 
 impl ApiKeysView {
+    /// Offer `profiles` for a new key, instead of the framework's three. The page is built
+    /// again with them.
+    pub fn profiles(&mut self, profiles: sapphire_framework_keys::KeyProfiles) {
+        self.profiles = profiles;
+        self.page = None;
+    }
+
+    /// The profiles a new key may take.
+    pub fn offered(&self) -> Vec<sapphire_framework_keys::Profile> {
+        self.profiles.list()
+    }
+
     /// Draw the page.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx<'_>) {
         // An unreachable root (moved, unmounted) is not opened: opening would create it.
@@ -41,7 +56,9 @@ impl ApiKeysView {
             match sapphire_framework_keys::open_store(cx.app_name, &root) {
                 Ok(store) => {
                     self.error = None;
-                    self.page = Some((root, KeysPage::new(Box::new(LocalKeys::new(store)))));
+                    let profiles = self.profiles.clone();
+                    let keys = LocalKeys::new(store, move || profiles.list());
+                    self.page = Some((root, KeysPage::new(Box::new(keys))));
                 }
                 Err(err) => self.error = Some(err.to_string()),
             }
@@ -134,5 +151,27 @@ mod tests {
         draw(&mut view, &serving(Some(&gone), false));
         assert_eq!(view.root(), None);
         assert!(!gone.exists());
+    }
+
+    #[test]
+    fn a_new_key_takes_the_app_s_profiles() {
+        let mut view = ApiKeysView::default();
+        let ids = |view: &ApiKeysView| -> Vec<String> {
+            view.offered()
+                .into_iter()
+                .map(|p| p.id.to_string())
+                .collect()
+        };
+        assert_eq!(ids(&view), ["read-only", "read-write", "admin"]);
+        view.profiles(sapphire_framework_keys::KeyProfiles::new(
+            || {
+                vec![sapphire_framework_keys::Profile {
+                    id: sapphire_framework_keys::ProfileId::new("room-1").unwrap(),
+                    label: "Room 1".into(),
+                }]
+            },
+            |_| Some(sapphire_framework_keys::Access::Write),
+        ));
+        assert_eq!(ids(&view), ["room-1"]);
     }
 }

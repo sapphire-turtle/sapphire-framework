@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use axum::routing::get;
 use sapphire_backend::protocol as proto;
-use sapphire_framework_keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier};
+use sapphire_framework_keys::{
+    Access, AuthConfig, Authenticated, KeyId, ProfileId, Verdict, Verifier,
+};
 use sapphire_framework_server::{AppServer, AppSettings, HttpEndpoint, SettingDef};
 use sapphire_ipc::{ClientInfo, Endpoint, connect_or_absent};
 use sapphire_workspace::{AppContext, AppKind};
@@ -18,23 +20,28 @@ use serde_json::{Value, json};
 static CTX_SERVED: AppContext = AppContext::new("sapphire-endpointtest-served");
 static CTX_UNDECLARED: AppContext = AppContext::new("sapphire-endpointtest-undeclared");
 
-/// The one token the fake verifier accepts.
+/// The token of a key that may write.
 const TOKEN: &str = "sapphire-ak-good";
+/// The token of a read-only key.
+const READ_TOKEN: &str = "sapphire-ak-read";
 
-/// Accepts [`TOKEN`] and nothing else.
+/// Accepts [`TOKEN`] and [`READ_TOKEN`] and nothing else.
 struct Fake;
 
 #[async_trait::async_trait]
 impl Verifier for Fake {
     async fn verify(&self, token: &str) -> Verdict {
-        if token == TOKEN {
-            Verdict::Accepted(Authenticated {
-                id: KeyId::generate(),
-                name: "agent".into(),
-            })
-        } else {
-            Verdict::Refused
-        }
+        let (profile, access) = match token {
+            TOKEN => ("read-write", Access::Write),
+            READ_TOKEN => ("read-only", Access::Read),
+            _ => return Verdict::Refused,
+        };
+        Verdict::Accepted(Authenticated {
+            id: KeyId::generate(),
+            name: "agent".into(),
+            profile: ProfileId::new(profile).unwrap(),
+            access,
+        })
     }
 }
 
@@ -90,9 +97,9 @@ fn free_port() -> u16 {
         .port()
 }
 
-/// The routes each endpoint serves: `/ping` answers `pong`.
+/// The routes each endpoint serves: `/ping` answers `pong`, to a `GET` or a `POST`.
 fn ping() -> axum::Router {
-    axum::Router::new().route("/ping", get(|| async { "pong" }))
+    axum::Router::new().route("/ping", get(|| async { "pong" }).post(|| async { "pong" }))
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -155,6 +162,19 @@ async fn an_endpoint_is_served_while_its_switch_is_on() {
             "{token:?}"
         );
     }
+    // A read-only key may `GET`, not `POST`.
+    let read = get("/on/ping", Some(READ_TOKEN)).await.unwrap();
+    assert_eq!(read.status(), reqwest::StatusCode::OK);
+    let post = |token: &str| {
+        http.post(format!("http://127.0.0.1:{port}/on/ping"))
+            .bearer_auth(token)
+            .send()
+    };
+    assert_eq!(post(TOKEN).await.unwrap().status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        post(READ_TOKEN).await.unwrap().status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
     let off = get("/off/ping", Some(TOKEN)).await.unwrap();
     assert_eq!(off.status(), reqwest::StatusCode::NOT_FOUND);
 

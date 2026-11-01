@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_backend::protocol as proto;
-use sapphire_framework_keys::{AuthConfig, Authenticated, KeyId, Verdict, Verifier};
+use sapphire_framework_keys::{
+    Access, AuthConfig, Authenticated, KeyId, ProfileId, Verdict, Verifier,
+};
 use sapphire_framework_server::mcp::{Error as McpError, ToolContext};
 use sapphire_framework_server::{AppServer, HttpConfig, HttpMcpConfig, ServerConfig};
 use sapphire_ipc::{Client, ClientInfo, Endpoint, connect_or_absent};
@@ -22,24 +24,30 @@ use serde_json::{Value, json};
 static CTX_OFF: AppContext = AppContext::new("sapphire-mcptest-off");
 static CTX_HTTP: AppContext = AppContext::new("sapphire-mcptest-http");
 static CTX_DIAL: AppContext = AppContext::new("sapphire-mcptest-dial");
+static CTX_READ: AppContext = AppContext::new("sapphire-mcptest-read");
 
-/// The one token the fake verifier accepts.
+/// The token of a key that may write.
 const TOKEN: &str = "sapphire-ak-good";
+/// The token of a read-only key.
+const READ_TOKEN: &str = "sapphire-ak-read";
 
-/// Accepts [`TOKEN`] and nothing else.
+/// Accepts [`TOKEN`] and [`READ_TOKEN`] and nothing else.
 struct Fake;
 
 #[async_trait::async_trait]
 impl Verifier for Fake {
     async fn verify(&self, token: &str) -> Verdict {
-        if token == TOKEN {
-            Verdict::Accepted(Authenticated {
-                id: KeyId::generate(),
-                name: "agent".into(),
-            })
-        } else {
-            Verdict::Refused
-        }
+        let (profile, access) = match token {
+            TOKEN => ("read-write", Access::Write),
+            READ_TOKEN => ("read-only", Access::Read),
+            _ => return Verdict::Refused,
+        };
+        Verdict::Accepted(Authenticated {
+            id: KeyId::generate(),
+            name: "agent".into(),
+            profile: ProfileId::new(profile).unwrap(),
+            access,
+        })
     }
 }
 
@@ -398,4 +406,104 @@ async fn the_stdio_side_dials_the_server_when_a_tool_needs_it() {
         }
     }
     stop(&CTX_DIAL, &endpoint, task).await;
+}
+
+/// An application's handler with the framework's tools and the write tools.
+#[derive(Clone)]
+struct Writer {
+    ctx: ToolContext,
+    tools: rmcp::handler::server::router::tool::ToolRouter<Writer>,
+}
+
+impl AsRef<ToolContext> for Writer {
+    fn as_ref(&self) -> &ToolContext {
+        &self.ctx
+    }
+}
+
+use sapphire_framework_server::mcp::rmcp;
+
+impl rmcp::ServerHandler for Writer {
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        sapphire_framework_server::mcp::server_info(&self.ctx)
+    }
+
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        self.tools
+            .call(rmcp::handler::server::tool::ToolCallContext::new(
+                self, request, context,
+            ))
+            .await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        Ok(rmcp::model::ListToolsResult::with_all_items(
+            self.tools.list_all(),
+        ))
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.tools.get(name).cloned()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_only_key_calls_only_the_read_only_tools() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = point_at(&CTX_READ, tmp.path());
+    std::fs::create_dir_all(tmp.path().join("run")).unwrap();
+    let endpoint = Endpoint::in_dir(CTX_READ.app_name, tmp.path().join("run"));
+    let port = free_port();
+    let config = ServerConfig {
+        http: HttpConfig {
+            listen: Some(([127, 0, 0, 1], port).into()),
+            allowed_hosts: Vec::new(),
+            mcp: HttpMcpConfig { enabled: true },
+            ..HttpConfig::default()
+        },
+        ..ServerConfig::default()
+    };
+    let server = AppServer::new(&CTX_READ, "0.0.0")
+        .config(config)
+        .http_auth(AuthConfig::new(Arc::new(Fake)))
+        .mcp(sapphire_framework_server::mcp::McpService::new(|ctx| {
+            Writer {
+                ctx,
+                tools: sapphire_framework_server::mcp::framework_tools()
+                    + sapphire_framework_server::mcp::workspace_write_tools(),
+            }
+        }));
+    let task = start(server, &endpoint).await;
+    let c = client(&CTX_READ, &endpoint).await;
+    workspace_with_a_file(&c, tmp.path().join("ws")).await;
+
+    let write = json!({"path": "notes/new.md", "content": "x"});
+    let mut reader = Session::new(port, Some(READ_TOKEN));
+    reader.initialize().await;
+    let (text, error) = reader
+        .call("workspace_read_file", json!({"path": "notes/hello.md"}))
+        .await;
+    assert!(!error, "{text}");
+    let body = json!({"jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "params": {"name": "workspace_write_file", "arguments": write}});
+    let res = reader.post(&body).send().await.unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
+    assert!(!tmp.path().join("ws/notes/new.md").exists());
+
+    let mut writer = Session::new(port, Some(TOKEN));
+    writer.initialize().await;
+    let (text, error) = writer.call("workspace_write_file", write).await;
+    assert!(!error, "{text}");
+    assert!(tmp.path().join("ws/notes/new.md").is_file());
+
+    drop(c);
+    stop(&CTX_READ, &endpoint, task).await;
 }

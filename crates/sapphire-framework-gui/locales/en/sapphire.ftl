@@ -297,3 +297,7 @@ sapphire-bridge-summary-embedding = Embedding…
 sapphire-bridge-summary-get = Get Sapphire Bridge
 sapphire-bridge-summary-cli-hint = Or use the command line: sapphire-bridge workgroup …
 sapphire-bridge-summary-launch-failed = Could not open Sapphire Bridge: { $error }
+sapphire-bridge-welcome-title = Welcome to Sapphire Bridge
+sapphire-bridge-welcome-body = Sapphire Bridge syncs your apps' workspaces between your devices, and keeps the device's settings for them.
+sapphire-bridge-service-question = Keep Sapphire Bridge running in the background?
+sapphire-bridge-service-reason = Sync and the apps need it while their windows are closed.

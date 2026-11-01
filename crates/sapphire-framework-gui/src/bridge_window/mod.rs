@@ -2,15 +2,25 @@
 //! shows them for a [`ClientMode::BridgeOnly`](crate::client::ClientMode) client, and the
 //! page a start or an activation asks for.
 
+#[cfg(feature = "package")]
+mod about;
+#[cfg(feature = "package")]
+mod first_run;
 mod logs;
 mod status;
 #[cfg(feature = "eframe")]
 mod window;
 
+#[cfg(feature = "package")]
+pub use about::PackageAbout;
+#[cfg(feature = "package")]
+pub use first_run::{WelcomePage, first_run_pages};
 pub use logs::LogsView;
 pub use status::StatusView;
+#[cfg(feature = "package")]
+pub use window::PackageWindow;
 #[cfg(feature = "eframe")]
-pub use window::{BridgeWindowOptions, run_bridge};
+pub use window::{BridgeWindowOptions, install_logging, run_bridge};
 
 /// The pages activations ask for, handed from the listener's thread to the window's.
 pub struct PageInbox {

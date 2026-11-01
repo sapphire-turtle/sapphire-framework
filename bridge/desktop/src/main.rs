@@ -5,6 +5,13 @@
 //! as `sapphire-bridge`, so the service manager can start it with `serve`. The window is a
 //! client of the bridge: closing it stops nothing.
 
+// In the package, a GUI binary on Windows: no console window behind the window or the
+// service. The command line goes through the console shim (src/bin/console.rs).
+#![cfg_attr(all(windows, feature = "velopack"), windows_subsystem = "windows")]
+
+#[cfg(feature = "velopack")]
+mod package;
+
 use clap::Parser;
 use sapphire_bridge::BridgeCommand;
 use sapphire_framework_gui::bridge_window::BridgePage;
@@ -26,13 +33,48 @@ fn parse_page(s: &str) -> Result<BridgePage, String> {
     })
 }
 
+/// Whether this start goes through the package's start: every start but `serve`, the
+/// package's service (the start starts the services an update stopped, and that is this
+/// process). Velopack's hooks pass arguments clap rejects, so this is decided before clap
+/// may exit on them.
+#[cfg_attr(not(feature = "velopack"), allow(dead_code))]
+fn runs_package_start(parsed: &Result<Desktop, clap::Error>) -> bool {
+    !matches!(
+        parsed,
+        Ok(Desktop {
+            command: Some(BridgeCommand::Serve),
+            ..
+        })
+    )
+}
+
 fn main() -> std::process::ExitCode {
-    let cli = Desktop::parse();
+    let parsed = Desktop::try_parse();
+    // The console first, so the package's start below logs where this run prints: the
+    // window's filter for a window start, the command line's otherwise.
+    if matches!(parsed, Ok(Desktop { command: None, .. })) {
+        sapphire_framework_gui::bridge_window::install_logging();
+    } else {
+        sapphire_bridge::install_console();
+    }
+    // Velopack's start: a hook runs and exits here.
+    #[cfg(feature = "velopack")]
+    if runs_package_start(&parsed) {
+        let start = corundum_framework_package::start(&package::PACKAGE);
+        tracing::debug!("package start: {start:?}");
+    }
+    let cli = parsed.unwrap_or_else(|e| e.exit());
     let Some(command) = cli.command else {
         let options = sapphire_framework_gui::bridge_window::BridgeWindowOptions {
             title: "Sapphire Bridge".to_owned(),
             version: env!("CARGO_PKG_VERSION"),
             page: cli.page,
+            #[cfg(feature = "velopack")]
+            package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
+                start_updater: package::start_updater,
+                service: package::bridge_service,
+                cli: package::PACKAGE.cli,
+            }),
         };
         return match sapphire_framework_gui::bridge_window::run_bridge(options) {
             Ok(()) => std::process::ExitCode::SUCCESS,
@@ -47,6 +89,21 @@ fn main() -> std::process::ExitCode {
     // `update` replaces the running binary with `sapphire-bridge`'s release file, which
     // has no window: the desktop app is updated from its own release file instead, until it
     // is packaged (#363 part C).
+    // In the package, the package's updater does it.
+    #[cfg(feature = "velopack")]
+    if let BridgeCommand::Update(args) = &command
+        && corundum_framework_platform::package::current().is_some()
+    {
+        return match package::updater() {
+            Some(updater) => std::process::ExitCode::from(package::package_update(
+                &updater,
+                args.check,
+                &mut std::io::stdout(),
+                std::time::Duration::from_secs(5 * 60),
+            ) as u8),
+            None => std::process::ExitCode::FAILURE,
+        };
+    }
     if matches!(command, BridgeCommand::Update(_)) {
         eprintln!(
             "sapphire-bridge-desktop is not updated by `update`, which would put sapphire-bridge \
@@ -55,9 +112,8 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
-    // The command line's own code, as `sapphire-bridge` runs it: the bridge's subscriber
-    // first, which `serve`'s file layer joins.
-    sapphire_bridge::install_console();
+    // The command line's own code, as `sapphire-bridge` runs it, on the bridge's subscriber
+    // (installed above), which `serve`'s file layer joins.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -95,5 +151,21 @@ mod tests {
             BridgePage::Status
         );
         assert!(Desktop::try_parse_from(["x", "--page", "nope"]).is_err());
+    }
+
+    // Velopack's hooks start the binary with arguments clap does not know; the package's
+    // start must see them before clap exits on them.
+    #[test]
+    fn package_start_runs_before_clap_rejects() {
+        let parsed = |args: &[&str]| Desktop::try_parse_from(args);
+        assert!(runs_package_start(&parsed(&[
+            "x",
+            "--veloapp-install",
+            "1.0.0"
+        ])));
+        assert!(runs_package_start(&parsed(&["x", "--version"])));
+        assert!(runs_package_start(&parsed(&["x"])));
+        assert!(runs_package_start(&parsed(&["x", "status"])));
+        assert!(!runs_package_start(&parsed(&["x", "serve"])));
     }
 }

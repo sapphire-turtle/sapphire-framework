@@ -61,8 +61,12 @@ pub const FRAMEWORK_TARGETS: [&str; 3] = [
 /// How often a following log reader looks for more lines.
 const FOLLOW_POLL: Duration = Duration::from_millis(250);
 
+/// What a packaged app's start (corundum-framework-package, through Velopack) may print:
+/// its failures, not Velopack's info lines on every start (#366).
+pub const PACKAGE_LOG_FILTER: &str = "velopack=error,corundum_framework_package=warn";
+
 /// The log filter a process applies when the environment asks for nothing specific:
-/// the framework's targets and the app's own, at info.
+/// the framework's targets and the app's own, at info, and [`PACKAGE_LOG_FILTER`].
 ///
 /// The same default the console layer and the file layer agree on, so a server's journald
 /// output and its log file carry the same lines without `RUST_LOG` being set.
@@ -72,7 +76,7 @@ pub fn default_log_filter(app_name: &str) -> String {
         .map(|target| format!("{target}=info"))
         .collect::<Vec<_>>()
         .join(",")
-        + &format!(",{}=info", app_target(app_name))
+        + &format!(",{}=info,{PACKAGE_LOG_FILTER}", app_target(app_name))
 }
 
 /// The `tracing` target an application logs under: its app name with dashes as
@@ -480,6 +484,18 @@ impl Write for Rotating {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A packaged app's start runs Velopack's code, which logs at info on every start: on a
+    // command line that is noise, and on stdio MCP a confusing extra output (#366).
+    #[test]
+    fn the_package_runtime_is_quiet_by_default() {
+        let filter = default_log_filter("sapphire-quiettest");
+        assert!(filter.contains("velopack=error"), "{filter}");
+        assert!(
+            filter.contains("corundum_framework_package=warn"),
+            "{filter}"
+        );
+    }
 
     /// The logging tests install the process's one global subscriber, and `cargo test`
     /// runs a binary's tests in parallel threads: one lock takes them turns, so one

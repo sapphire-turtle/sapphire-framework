@@ -22,6 +22,9 @@ pub struct BridgeWindowOptions {
     pub version: &'static str,
     /// The page to show first, or to show in the window already open.
     pub page: BridgePage,
+    /// The window's id and icon, and its entry in the OS's app menu
+    /// (corundum's `WindowOptions::launcher`); `None` leaves the window without them.
+    pub launcher: Option<corundum_framework_platform::launcher::LauncherSpec>,
     /// In a Velopack package: its updater and its service.
     #[cfg(feature = "package")]
     pub package: Option<PackageWindow>,
@@ -57,6 +60,7 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         title,
         version,
         page,
+        launcher,
         #[cfg(feature = "package")]
         package,
     } = options;
@@ -78,7 +82,11 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         ClientConfig::bridge_only(version).map_err(|e| eframe::Error::AppCreation(Box::new(e)))?;
     let (to_inbox, inbox) = PageInbox::new();
     let to_inbox = std::sync::Mutex::new(to_inbox);
-    let options = WindowOptions::new(title)
+    let mut options = WindowOptions::new(title);
+    if let Some(spec) = launcher {
+        options = options.launcher(spec);
+    }
+    let options = options
         .remember(crate::app::corundum_store(&dirs))
         .instance(instance)
         .on_activate(move |message| {

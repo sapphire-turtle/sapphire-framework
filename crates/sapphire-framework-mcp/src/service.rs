@@ -76,6 +76,11 @@ impl McpService {
     /// route is **not authenticated**: the caller puts it behind
     /// `sapphire_framework_keys::protect`. Its sessions end when `cancel` fires.
     ///
+    /// A request whose key may only read
+    /// ([`Access::Read`](sapphire_framework_keys::Access::Read)) may call only the tools
+    /// the handler's `get_tool` marks read-only (`readOnlyHint`); a call to any other is
+    /// refused with 403 before the handler sees it.
+    ///
     /// A `subscriptions/listen` holds its response open as an event stream, kept alive by an
     /// SSE comment every 15 seconds (rmcp's default). That is under common reverse-proxy idle
     /// timeouts, such as nginx's 60-second `proxy_read_timeout`; a proxy with a shorter one
@@ -137,12 +142,123 @@ where
     }
 
     fn http_router(&self, ctx: ToolContext, config: StreamableHttpServerConfig) -> axum::Router {
+        // One handler to ask which tools are read-only.
+        let probe = (self.0)(ctx.clone());
+        let read_only: ReadOnly = Arc::new(move |name: &str| {
+            probe
+                .get_tool(name)
+                .and_then(|tool| tool.annotations)
+                .and_then(|a| a.read_only_hint)
+                == Some(true)
+        });
         let factory = Arc::clone(&self.0);
         let service = StreamableHttpService::new(
             move || Ok(factory(ctx.clone())),
             Arc::new(LocalSessionManager::default()),
             config,
         );
-        axum::Router::new().route_service(crate::HTTP_PATH, service)
+        axum::Router::new()
+            .route_service(crate::HTTP_PATH, service)
+            .layer(axum::middleware::from_fn_with_state(read_only, by_tool))
+    }
+}
+
+/// Whether the tool of this name only reads.
+type ReadOnly = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
+/// The largest `/mcp` request a read-only key's is read into memory to be checked.
+const MAX_CHECKED_BODY: usize = 16 * 1024 * 1024;
+
+/// Refuse a read-only key's `tools/call` of a tool that is not read-only.
+async fn by_tool(
+    axum::extract::State(read_only): axum::extract::State<ReadOnly>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let reader = request
+        .extensions()
+        .get::<sapphire_framework_keys::Authenticated>()
+        .is_some_and(|who| !who.access.may_write());
+    if !reader {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, MAX_CHECKED_BODY).await else {
+        return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    if let Some(tool) = writing_call(&bytes, &*read_only) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            format!("this API key may only read: {tool} is not a read-only tool"),
+        )
+            .into_response();
+    }
+    let request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+    next.run(request).await
+}
+
+/// The first tool a JSON-RPC message (or batch) in `body` calls that `read_only` does not
+/// pass. A body that is not JSON-RPC calls nothing; rmcp answers it.
+fn writing_call(body: &[u8], read_only: &dyn Fn(&str) -> bool) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let messages = match value {
+        serde_json::Value::Array(batch) => batch,
+        message => vec![message],
+    };
+    messages
+        .iter()
+        .filter(|m| m.get("method").and_then(|v| v.as_str()) == Some("tools/call"))
+        .map(|m| {
+            m.pointer("/params/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .find(|name| !read_only(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reads(name: &str) -> bool {
+        name.starts_with("read")
+    }
+
+    fn call(name: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": {}}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_call_of_a_tool_that_is_not_read_only_is_found() {
+        assert_eq!(
+            writing_call(&call("write"), &reads).as_deref(),
+            Some("write")
+        );
+        assert_eq!(writing_call(&call("read"), &reads), None);
+    }
+
+    #[test]
+    fn other_methods_and_batches() {
+        let list = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        assert_eq!(writing_call(list, &reads), None);
+        let batch = format!(
+            "[{},{}]",
+            String::from_utf8(call("read")).unwrap(),
+            String::from_utf8(call("write")).unwrap()
+        );
+        assert_eq!(
+            writing_call(batch.as_bytes(), &reads).as_deref(),
+            Some("write")
+        );
+        assert_eq!(writing_call(b"not json", &reads), None);
+        // A call without a name is no read-only tool's.
+        let nameless = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#;
+        assert_eq!(writing_call(nameless, &reads).as_deref(), Some(""));
     }
 }

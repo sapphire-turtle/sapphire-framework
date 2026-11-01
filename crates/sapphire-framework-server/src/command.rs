@@ -152,7 +152,9 @@ impl FrameworkCommand {
             }
             FrameworkCommand::Config(command) => config::config(ctx, owner, command, version).await,
             FrameworkCommand::Workspace(command) => command.dispatch(app, version).await,
-            FrameworkCommand::ApiKey(command) => api_key(ctx, command),
+            FrameworkCommand::ApiKey(command) => {
+                api_key(ctx, &server(owner)?.profiles().list(), command)
+            }
             FrameworkCommand::ExternalDevice(legacy) => {
                 eprintln!("warning: `external-device` is renamed to `api-key`");
                 if !legacy.app.is_empty() {
@@ -161,7 +163,7 @@ impl FrameworkCommand {
                     );
                     return Ok(2);
                 }
-                api_key(ctx, legacy.command)
+                api_key(ctx, &server(owner)?.profiles().list(), legacy.command)
             }
             #[cfg(feature = "mcp")]
             FrameworkCommand::Mcp => {
@@ -357,7 +359,12 @@ pub struct LegacyExternalDevice {
 
 /// `api-key …`: on the files of the workspace this application serves, as its selection
 /// file records it. No workspace selected → a line naming `workspace select`, exit 1.
-fn api_key(ctx: &AppContext, command: corundum_framework_keys::KeyCommand) -> Result<i32> {
+/// `add --profile` takes one of `profiles`.
+fn api_key(
+    ctx: &AppContext,
+    profiles: &[sapphire_framework_keys::Profile],
+    command: corundum_framework_keys::KeyCommand,
+) -> Result<i32> {
     let Some(selection) = SelectionFile::for_app(ctx).load(ctx.app_name)? else {
         eprintln!(
             "{} serves no workspace yet: choose one with `{} workspace select <dir>`",
@@ -375,7 +382,7 @@ fn api_key(ctx: &AppContext, command: corundum_framework_keys::KeyCommand) -> Re
         return Ok(1);
     }
     let run = sapphire_framework_keys::open_store(ctx.app_name, &selection.root)
-        .and_then(|mut store| command.run(&mut store));
+        .and_then(|mut store| command.run(&mut store, profiles));
     match run {
         Ok(code) => Ok(code),
         Err(err) => {

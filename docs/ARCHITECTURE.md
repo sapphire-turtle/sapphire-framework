@@ -129,7 +129,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `bridge/headless`（`sapphire-bridge-headless`、コマンド `sapphire-bridge`） | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device` / `embedding`）。サーバー向けで、ウィンドウを持たない |
 | `bridge/desktop`（`sapphire-bridge-desktop`、crates.io には出さない） | 引数なしで Sapphire Bridge のウィンドウを開く（`--page <status\|workgroup\|devices\|embedding\|appearance\|logs\|about>`）。サブコマンドを付けると `sapphire-bridge` と同じコードを動かす（サービスは `sapphire-bridge-desktop serve` を登録できる） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
-| `sapphire-framework-keys` | `protect` / `AuthConfig` / `Verifier`、ワークスペースの API キーの置き場所（`store_dir` / `open_store`）。キーの保存と照合は corundum-framework-keys（#364） |
+| `sapphire-framework-keys` | `protect` / `AuthConfig` / `Verifier`、ワークスペースの API キーの置き場所（`store_dir` / `open_store`）、キーのプロファイルとその `Access`（`KeyProfiles`、`read_only_by_method`）。キーの保存と照合は corundum-framework-keys（#364） |
 | `sapphire-framework-service` | 非推奨（#381）。OS のサービスマネージャへの登録は corundum-framework-service（`sapphire_framework::service`）に移った。1 リリースだけ再エクスポートする。macOS の LaunchAgent のラベルは `org.sapphire-turtle.<app>` で、旧ラベル `net.fireturtle.sapphire.<app>`（`ServiceSpec.legacy_labels` で渡す）と `net.sapphire-turtle.<app>`（corundum が自分で扱う）のエージェントは、登録・解除・状態の確認のときに移される（#385） |
 | `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + `IpcBackend` / `LocalBackend`。`protocol` は `sapphire-framework-server-api` の re-export |
 | `sapphire-framework-gui` | app 非依存の egui 部品: 同期 GUI 部品（下記「GUI 部品」）。旧 `WorkspaceManager`（`WorkspaceRegistry` を操作する一覧画面）は deprecated（#217） |
@@ -385,6 +385,19 @@ rotate（id は維持）がある。同期の衝突コピーはトークンを�
 workgroup の台帳）は、各アプリサーバーが起動時に一度だけ配信中のワークスペースへ取り込む（id と
 ハッシュを保つので、トークンはそのまま使える）。設計は
 `superpowers/specs/2026-10-31-workspace-api-keys-design.md`。
+
+**プロファイル（corundum-framework 0.7）**: どのキーもちょうど 1 つのプロファイルに紐づく（`add
+--profile`、作ったあとは変えられない）。framework は `read-only` / `read-write` / `admin` を持ち
+（`KeyProfiles::standard`）、独自のプロファイルを持つアプリ（sapphire-agent のルームプロファイル）は
+一覧と、各プロファイルの `Access`（`Read` / `Write` / `Admin`）を返す関数を
+`AppServer::key_profiles` と `Settings::with_key_profiles` に渡す。framework が強制するのは
+`Access` だけ: `Read` のキーは `/mcp` では読み取り専用（`readOnlyHint`）のツールしか呼べず
+（ほかは 403。ハンドラーの `get_tool` で判定）、アプリの HTTP ルートは `GET` / `HEAD` / `OPTIONS`
+だけ（`read_only_by_method`、ほかは 403）。`admin` は今は `read-write` と同じで、管理者だけの操作の
+ために取ってある。アプリが提供しないプロファイルのキーは 403（`Verdict::Forbidden`）。プロファイルの
+ないキー（0.7 より前のキーと取り込んだ external device）は、ストアを開く前（サーバーの配信先が
+変わったとき、`api-key`、Settings）に一度だけ `read-only` を書き込む（corundum 0.7 はそういう
+ファイルを読み飛ばすため）。書き込みが要るクライアントには `read-write` のキーを足し直す。
 
 ### MCP（`sapphire-framework-mcp`）
 

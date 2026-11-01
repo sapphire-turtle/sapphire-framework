@@ -188,6 +188,14 @@ impl Settings {
         }
     }
 
+    /// Offer `profiles` when an API key is added, instead of the framework's `read-only`,
+    /// `read-write` and `admin`: the same the application's server is given
+    /// (`AppServer::key_profiles`).
+    pub fn with_key_profiles(mut self, profiles: sapphire_framework_keys::KeyProfiles) -> Settings {
+        self.api_keys.profiles(profiles);
+        self
+    }
+
     /// Add the app's own pages, listed first under `heading` (the app's name, say).
     pub fn with_app_sections(
         mut self,

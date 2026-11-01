@@ -70,7 +70,34 @@ async fn authenticate(
             request.extensions_mut().insert(who);
             Ok(next.run(request).await)
         }
+        Verdict::Forbidden => Err(StatusCode::FORBIDDEN),
         Verdict::Refused => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+/// `router`, refusing with 403 a request whose key may only read
+/// ([`Access::Read`](crate::Access::Read)) unless its method is `GET`, `HEAD` or
+/// `OPTIONS`. For the application's own routes, inside [`protect`]; `/mcp` checks each
+/// tool instead, as every MCP request is a `POST`. A request without a key (only through
+/// [`AuthConfig::insecure_for_tests`]) passes.
+pub fn read_only_by_method(router: Router) -> Router {
+    router.layer(axum::middleware::from_fn(by_method))
+}
+
+async fn by_method(request: Request, next: Next) -> std::result::Result<Response, StatusCode> {
+    use axum::http::Method;
+    let reads = matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    let writer = request
+        .extensions()
+        .get::<crate::Authenticated>()
+        .is_none_or(|who| who.access.may_write());
+    if reads || writer {
+        Ok(next.run(request).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
     }
 }
 
@@ -82,12 +109,14 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
-    use crate::{Authenticated, KeyId, Verifier};
+    use crate::{Access, Authenticated, KeyId, ProfileId, Verifier};
 
-    /// Accepts `good`, refuses anything else.
+    /// Accepts `good` with `access`, forbids `"orphan"` (a profile the app dropped), refuses
+    /// anything else.
     struct Fake {
         good: &'static str,
         id: KeyId,
+        access: Access,
     }
 
     #[async_trait::async_trait]
@@ -97,11 +126,23 @@ mod tests {
                 Verdict::Accepted(Authenticated {
                     id: self.id.clone(),
                     name: "pendant".into(),
+                    profile: ProfileId::new("p").unwrap(),
+                    access: self.access,
                 })
+            } else if token == "orphan" {
+                Verdict::Forbidden
             } else {
                 Verdict::Refused
             }
         }
+    }
+
+    fn fake(good: &'static str, access: Access) -> AuthConfig {
+        AuthConfig::new(Arc::new(Fake {
+            good,
+            id: KeyId::generate(),
+            access,
+        }))
     }
 
     fn app(guard: AuthConfig) -> Router {
@@ -139,6 +180,7 @@ mod tests {
         let guard = AuthConfig::new(Arc::new(Fake {
             good: "sapphire-ak-good",
             id: id.clone(),
+            access: Access::Write,
         }));
         assert_eq!(
             status(app(guard.clone()), None).await.0,
@@ -155,10 +197,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_scheme_is_case_insensitive() {
-        let guard = AuthConfig::new(Arc::new(Fake {
-            good: "t",
-            id: KeyId::generate(),
-        }));
+        let guard = fake("t", Access::Write);
         for scheme in ["bearer", "BEARER"] {
             let (code, _) = status_with(app(guard.clone()), Some(format!("{scheme} t"))).await;
             assert_eq!(code, StatusCode::OK, "{scheme}");
@@ -180,5 +219,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_key_of_a_dropped_profile_is_forbidden() {
+        let (code, _) = status(app(fake("t", Access::Write)), Some("orphan")).await;
+        assert_eq!(code, StatusCode::FORBIDDEN);
+    }
+
+    async fn call(access: Access, method: &str) -> StatusCode {
+        let routes = read_only_by_method(Router::new().route(
+            "/x",
+            axum::routing::get(|| async { "r" }).post(|| async { "w" }),
+        ));
+        let app = protect(fake("t", access), routes);
+        let req = Request::builder()
+            .method(method)
+            .uri("/x")
+            .header(header::AUTHORIZATION, "Bearer t")
+            .body(Body::empty())
+            .unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn a_read_only_key_may_only_get() {
+        assert_eq!(call(Access::Read, "GET").await, StatusCode::OK);
+        assert_eq!(call(Access::Read, "POST").await, StatusCode::FORBIDDEN);
+        assert_eq!(call(Access::Write, "POST").await, StatusCode::OK);
+        assert_eq!(call(Access::Admin, "POST").await, StatusCode::OK);
     }
 }

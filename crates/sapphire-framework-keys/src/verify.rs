@@ -2,6 +2,8 @@
 
 pub use corundum_framework_keys::KeyId;
 
+use crate::profiles::{Access, ProfileId};
+
 /// The API key a request came from; put into the request's extensions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Authenticated {
@@ -9,6 +11,10 @@ pub struct Authenticated {
     pub id: KeyId,
     /// Its name.
     pub name: String,
+    /// The profile it acts as.
+    pub profile: ProfileId,
+    /// What its profile may do.
+    pub access: Access,
 }
 
 /// The answer to a presented token.
@@ -16,7 +22,9 @@ pub struct Authenticated {
 pub enum Verdict {
     /// The token belongs to this key, which may use this application.
     Accepted(Authenticated),
-    /// It does not.
+    /// The token belongs to a key whose profile the application no longer offers: 403.
+    Forbidden,
+    /// It does not belong to a key: 401.
     Refused,
 }
 

@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use corundum_framework_keys::{Error as KeyError, Key, KeyHash, KeyId};
+use corundum_framework_keys::{Error as KeyError, Key, KeyHash, KeyId, ProfileId};
 use sapphire_framework_keys::open_store;
 use sapphire_registry::ExternalDevices;
 
@@ -85,7 +85,9 @@ pub fn import_external_devices(
                 id: KeyId::new(&device.id.to_string()).map_err(|e| e.to_string())?,
                 name: device.name.clone(),
                 description: device.description.clone(),
-                subject: None,
+                // The least: what a key may do is chosen again, by adding one.
+                profile: ProfileId::new(sapphire_framework_keys::MIGRATED)
+                    .map_err(|e| e.to_string())?,
                 hash: format!("sha256:{}", device.token_sha256)
                     .parse::<KeyHash>()
                     .map_err(|e| e.to_string())?,
@@ -169,6 +171,11 @@ mod tests {
             .expect("the old token works");
         assert_eq!(key.id.as_str(), mine.id.to_string());
         assert_eq!(key.name, "pendant");
+        assert_eq!(
+            key.profile.as_str(),
+            "read-only",
+            "the least, as before profiles"
+        );
         assert_eq!(store.list().len(), 1);
         assert!(f.data.join(IMPORTED_MARKER).is_file());
     }
@@ -189,7 +196,9 @@ mod tests {
         let (d, _) = f.ledger.add("pendant", None, vec![APP.into()]).unwrap();
         // Another host imported it, and the workspace synced.
         let mut store = open_store(APP, &f.root).unwrap();
-        let (mut key, _) = store.add("placeholder", None, None).unwrap();
+        let (mut key, _) = store
+            .add("placeholder", None, ProfileId::new("read-only").unwrap())
+            .unwrap();
         key.id = KeyId::new(&d.id.to_string()).unwrap();
         store.import(key).unwrap();
 

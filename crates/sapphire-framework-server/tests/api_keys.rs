@@ -99,7 +99,11 @@ async fn a_workspace_key_is_accepted_without_a_bridge() {
         .unwrap();
     let (_, token) = open_store(CTX.app_name, &root)
         .unwrap()
-        .add("pendant", None, None)
+        .add(
+            "pendant",
+            None,
+            sapphire_framework_keys::ProfileId::new("read-write").unwrap(),
+        )
         .unwrap();
     // An external device from before #364, in the bridge's workgroup ledger: the server
     // imports it at start, so its token keeps working.

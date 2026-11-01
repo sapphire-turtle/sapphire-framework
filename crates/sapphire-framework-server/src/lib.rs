@@ -135,9 +135,11 @@ pub struct AppServer {
     /// The application's switchable HTTP endpoints, by name.
     #[cfg(feature = "http")]
     http_endpoints: Vec<(String, axum::Router)>,
-    /// How the HTTP routes check a token; `None` asks the bridge.
+    /// How the HTTP routes check a token; `None`: the served workspace's API keys.
     #[cfg(feature = "http")]
     http_auth: Option<sapphire_framework_keys::AuthConfig>,
+    /// The profiles an API key may act as, and what each may do.
+    key_profiles: sapphire_framework_keys::KeyProfiles,
     /// The application's MCP handler, for the `mcp` subcommand and `/mcp`.
     #[cfg(feature = "mcp")]
     mcp: sapphire_framework_mcp::McpService,
@@ -256,6 +258,7 @@ impl AppServer {
             http_endpoints: Vec::new(),
             #[cfg(feature = "http")]
             http_auth: None,
+            key_profiles: sapphire_framework_keys::KeyProfiles::standard(),
             #[cfg(feature = "mcp")]
             mcp: sapphire_framework_mcp::McpService::framework(),
         }
@@ -373,6 +376,21 @@ impl AppServer {
     pub fn http_auth(mut self, auth: sapphire_framework_keys::AuthConfig) -> AppServer {
         self.http_auth = Some(auth);
         self
+    }
+
+    /// The profiles an API key may act as, and the access each gives: the framework's
+    /// `read-only`, `read-write` and `admin` unless the application has its own
+    /// (sapphire-agent's room profiles). `api-key add --profile` takes one of them, and the
+    /// HTTP routes hold a key to its access: a read-only key calls only `/mcp`'s read-only
+    /// tools, and only `GET` the application's routes.
+    pub fn key_profiles(mut self, profiles: sapphire_framework_keys::KeyProfiles) -> AppServer {
+        self.key_profiles = profiles;
+        self
+    }
+
+    /// The profiles an API key may act as ([`key_profiles`](Self::key_profiles)).
+    pub fn profiles(&self) -> &sapphire_framework_keys::KeyProfiles {
+        &self.key_profiles
     }
 
     /// Answer MCP with the application's own handler, rather than the framework's tools
@@ -612,9 +630,13 @@ impl AppServer {
             http_endpoints,
             #[cfg(feature = "http")]
             http_auth,
+            key_profiles,
             #[cfg(feature = "mcp")]
             mcp,
         } = self;
+        // Only the HTTP routes check a key.
+        #[cfg(not(feature = "http"))]
+        let _ = key_profiles;
         // Without the exporter nothing scrapes, so there is nothing to call them from.
         #[cfg(not(feature = "metrics"))]
         let _ = metrics_collectors;
@@ -658,6 +680,10 @@ impl AppServer {
                     None => endpoint,
                 })
             });
+        // A read-only key may only `GET` the application's routes; `/mcp`, all `POST`,
+        // checks each tool instead.
+        #[cfg(feature = "http")]
+        let http_routes = http_routes.map(sapphire_framework_keys::read_only_by_method);
         #[cfg(not(feature = "mcp"))]
         if config.http.mcp.enabled {
             tracing::warn!(
@@ -884,7 +910,8 @@ impl AppServer {
                 (true, Some(addr)) => {
                     let auth = http_auth.unwrap_or_else(|| {
                         sapphire_framework_keys::AuthConfig::new(Arc::new(
-                            api_keys::WorkspaceKeyVerifier::for_app(ctx),
+                            api_keys::WorkspaceKeyVerifier::for_app(ctx)
+                                .profiles(key_profiles.clone()),
                         ))
                     });
                     http::start(addr, routes, public, auth, http_stop.clone()).await

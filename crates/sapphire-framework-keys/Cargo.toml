@@ -16,6 +16,7 @@ axum = ["dep:axum"]
 axum = { workspace = true, optional = true }
 async-trait.workspace = true
 corundum-framework-keys.workspace = true
+toml_edit.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

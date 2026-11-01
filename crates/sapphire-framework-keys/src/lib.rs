@@ -10,6 +10,10 @@
 //! - [`protect`] (feature `axum`): the layer that checks `Authorization: Bearer <token>`
 //!   before a request reaches any route, the framework's and the app's own alike.
 //! - [`store_dir`] and [`open_store`]: where a workspace's keys are, and the store on them.
+//! - [`KeyProfiles`]: the profiles a key may act as, and the [`Access`] each gives —
+//!   [`READ_ONLY`], [`READ_WRITE`] and [`ADMIN`] unless the application has its own.
+//!   [`read_only_by_method`] (feature `axum`) holds a read-only key to `GET` on the
+//!   application's routes.
 //!
 //! The application server's verifier, `WorkspaceKeyVerifier`, is in
 //! sapphire-framework-server.
@@ -17,12 +21,18 @@
 #[cfg(feature = "axum")]
 mod auth;
 mod config;
+mod migrate;
+mod profiles;
 mod store;
 mod verify;
 
 #[cfg(feature = "axum")]
-pub use auth::protect;
+pub use auth::{protect, read_only_by_method};
 pub use config::AuthConfig;
+pub use migrate::fill_missing_profiles;
+pub use profiles::{
+    ADMIN, Access, KeyProfiles, MIGRATED, Profile, ProfileId, READ_ONLY, READ_WRITE,
+};
 pub use store::{TOKEN_PREFIX, open_store, store_dir};
 
 /// The key store and its verifier, from corundum-framework.

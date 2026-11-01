@@ -44,9 +44,12 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
   by a package manager) is left alone; update it the same way.
 - An application whose desktop app is already installed is skipped: the desktop package
   includes the same CLI and server, and a second copy would run a second server. It is
-  recognised by `%LocalAppData%\sapphire-<app>\Update.exe` on Windows,
-  `Sapphire <App>.app` in `~/Applications` or `/Applications` on macOS, and a
-  `~/.local/bin/sapphire-<app>` that points to an AppImage on Linux.
+  recognised by `%LocalAppData%\sapphire-<app>-desktop\Update.exe` on Windows (the
+  package's id; `%LocalAppData%\sapphire-<app>` is the app's data), `Sapphire <App>.app` in
+  `~/Applications` or `/Applications` on macOS, and a `~/.local/bin/sapphire-<app>` that
+  points to an AppImage on Linux. On Linux the desktop app makes that link only when asked
+  (Settings › About › Command line), so an AppImage that never made it is not recognised:
+  install either the AppImage or the CLI on a host, not both.
 - `install.ps1` adds the directory to the user `PATH`; `install.sh` tells you when it is not on
   `PATH`.
 

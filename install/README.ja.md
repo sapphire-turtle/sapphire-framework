@@ -39,9 +39,11 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 - 「最新」は、そのアプリのタグ接頭辞が付いたリリースのうち最大の `x.y.z` です（`update` コマンドと同じ規則）。
 - すでに `cargo install` や `cargo binstall`（Linux / macOS ではパッケージマネージャも）で入っているものには触れません。同じ方法で更新してください。
 - デスクトップ版がすでに入っているアプリは飛ばします。デスクトップ版のパッケージに同じ CLI とサーバーが含まれ、
-  二重に入れるとサーバーが 2 つ常駐するためです。判定は、Windows は `%LocalAppData%\sapphire-<app>\Update.exe`、
-  macOS は `~/Applications` か `/Applications` の `Sapphire <App>.app`、Linux は AppImage を指す
-  `~/.local/bin/sapphire-<app>` です。
+  二重に入れるとサーバーが 2 つ常駐するためです。判定は、Windows は `%LocalAppData%\sapphire-<app>-desktop\Update.exe`
+  （パッケージの id。`%LocalAppData%\sapphire-<app>` はアプリのデータです）、macOS は `~/Applications` か
+  `/Applications` の `Sapphire <App>.app`、Linux は AppImage を指す `~/.local/bin/sapphire-<app>` です。
+  Linux のデスクトップ版は、頼まれたとき（Settings › About › Command line）にだけこのリンクを作るので、
+  リンクを作っていない AppImage は見つけられません。1 台に入れるのは AppImage か CLI のどちらかにしてください。
 - `install.ps1` はディレクトリをユーザーの `PATH` に追加します。`install.sh` は `PATH` にないときに知らせます。
 
 ## cargo で入れる

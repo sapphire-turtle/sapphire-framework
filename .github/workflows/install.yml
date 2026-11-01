@@ -88,9 +88,16 @@ jobs:
       - name: An app whose desktop package is installed is skipped
         shell: pwsh
         run: |
-          # As the Velopack package lays itself out.
+          # The app's data directory is not its package: a CLI-only host has it too.
           New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\sapphire-sync" | Out-Null
           New-Item -ItemType File -Force "$env:LOCALAPPDATA\sapphire-sync\Update.exe" | Out-Null
+          $out = ./install/install.ps1 -NoBridge -Dir "$env:RUNNER_TEMP\data" sync 6>&1 | Out-String
+          if ($out -match 'Skipping sapphire-sync') { throw "skipped for its data directory: $out" }
+          Remove-Item -Recurse -Force "$env:LOCALAPPDATA\sapphire-sync"
+          # As the Velopack package lays itself out: %LocalAppData%\<packId>, and the packId
+          # is <app>-desktop (corundum-framework#57).
+          New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\sapphire-sync-desktop" | Out-Null
+          New-Item -ItemType File -Force "$env:LOCALAPPDATA\sapphire-sync-desktop\Update.exe" | Out-Null
           $out = ./install/install.ps1 -NoBridge -Dir "$env:RUNNER_TEMP\skip" sync 6>&1 | Out-String
           if ($out -notmatch 'Skipping sapphire-sync') { throw "not skipped: $out" }
           if (Test-Path "$env:RUNNER_TEMP\skip\sapphire-sync.exe") { throw 'installed anyway' }

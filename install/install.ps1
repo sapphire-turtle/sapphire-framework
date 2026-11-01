@@ -116,10 +116,11 @@ function Test-CargoInstall([string] $Path) {
 # Where the application's desktop package is installed, or $null. The package
 # (Velopack, installed per user under %LocalAppData%\<packId>) carries the same
 # CLI and app server and updates them itself: a second copy here would run a
-# second server.
+# second server. The packId is <app>-desktop, never the app's data directory
+# (%LocalAppData%\<app>), which the uninstall would delete (corundum-framework#57).
 function Get-DesktopInstall([string] $Base) {
     if (-not $env:LOCALAPPDATA) { return $null }
-    $root = Join-Path $env:LOCALAPPDATA $Base
+    $root = Join-Path $env:LOCALAPPDATA "$Base-desktop"
     if (Test-Path (Join-Path $root 'Update.exe')) { $root } else { $null }
 }
 

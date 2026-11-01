@@ -35,7 +35,12 @@ Success means:
    binaries. The updater reads `sapphire-turtle/sapphire-framework`'s latest release.
 3. **The first start asks to keep it running,** with corundum's first-run flow and
    `ServicePage`, Yes by default. No service is registered at install.
-4. **Velopack is a build feature.** `bridge/desktop`'s `velopack` feature, on in the release
+4. **On Windows, a GUI binary and a console shim.** With the feature, `sapphire-bridge-desktop`
+   is built for the Windows GUI subsystem (no console window behind the window or the
+   service), and a shim binary, `sapphire-bridge-console`, packed as `sapphire-bridge.exe`,
+   is the command on `PATH`: it runs the desktop binary with its arguments and streams
+   (corundum's `package::console::forward`), as corundum's demo does.
+5. **Velopack is a build feature.** `bridge/desktop`'s `velopack` feature, on in the release
    workflow only, as corundum's demo does; `cargo build` makes the plain binary.
 
 ## The package (`bridge/desktop`, feature `velopack`)
@@ -102,10 +107,9 @@ In a package, About shows, below the version and the services' banner:
 - `sapphire-bridge-desktop update` in a package: `--check` asks the package's updater; plain
   `update` downloads and applies it (the package restarts). This replaces part B's refusal
   there; outside a package the refusal stays.
-- An app's `<app> update` updates the bridge too (`update_bridge`). It now skips a packaged
-  bridge: when the program the bridge's service starts (`registered_program`) is inside a
-  Velopack package (`platform::package::current_with`), it prints "Sapphire Bridge updates
-  itself" and leaves it. A bare binary is updated as before.
+- An app's `<app> update` updates the bridge by running `sapphire-bridge update` from
+  `PATH` (`update_bridge`). For a packaged bridge that is the package's command, so the
+  package's updater does it; nothing changes in the apps.
 
 ## Release workflow
 
@@ -140,9 +144,8 @@ In a package, About shows, below the version and the services' banner:
   - `PACKAGE` has id `sapphire-bridge`, command `sapphire-bridge`, one service whose args
     are `["serve"]`.
   - The first-run pages are the welcome page, then the service page.
-  - `bridge_is_packaged(service_program, appimage)` (the `update` skip) is true for a program
-    inside a tempdir laid out as a Velopack install (corundum's `current_with` rules) and
-    false for a bare binary and for none.
+  - `sapphire-bridge-desktop update` in a package reports and applies through the updater
+    (`Updater::for_tests`).
   - `sapphire-bridge-desktop update` outside a package still refuses (part B's test).
 - CI: `cargo build -p sapphire-bridge-desktop --features velopack` on each desktop OS; the
   `pack` job on a workflow_dispatch run; the AppImage `--version` smoke step.

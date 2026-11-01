@@ -1492,9 +1492,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-package"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20f08a74beef06d92868899fdc40645db77fd7a288756a10cc94ef5b3752fd4a"
+checksum = "8b14c0cfbecefe7780feaa1d40e1d9b9953a011458c1f46bfb819683a22d9cee"
 dependencies = [
  "corundum-framework-platform",
  "corundum-framework-service",
@@ -1540,9 +1540,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-update"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90fa91dc20542164b06a085a07b6c9840692c3eb1eeef45b4bde97de4620a82d"
+checksum = "88470f8b198d8a56eeb68d55ef39bfeed5b68ae7281003926da5ed5c00d1fac4"
 dependencies = [
  "corundum-framework-platform",
  "reqwest 0.13.5",
@@ -5790,7 +5790,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10072,7 +10072,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
  "once_cell",
- "ordered-float 3.9.2",
+ "ordered-float 5.5.1",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",

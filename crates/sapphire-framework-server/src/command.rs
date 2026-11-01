@@ -4,9 +4,9 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use corundum_framework_service::{Environment, ServiceCommand, SystemManager};
 use sapphire_backend::protocol as proto;
 use sapphire_bridge_client::BridgeClient;
-use sapphire_framework_service::{Environment, ServiceCommand, SystemManager};
 use sapphire_ipc::{ClientInfo, Endpoint};
 
 use crate::AppServer;
@@ -1316,6 +1316,17 @@ mod service_spec_tests {
         // starts has no CLI verbs on its command line to misparse.
         let spec = AppServer::new(&CTX, "0.0.0").service_spec();
         assert_eq!(spec.args, vec!["serve".to_owned()]);
+    }
+
+    #[test]
+    fn the_generated_spec_retires_the_first_label() {
+        // The first label sapphire registered on macOS; corundum retires its own earlier
+        // one (net.sapphire-turtle.<app>) by itself.
+        let spec = AppServer::new(&CTX, "0.0.0").service_spec();
+        assert_eq!(
+            spec.legacy_labels,
+            [format!("net.fireturtle.sapphire.{}", CTX.app_name)]
+        );
     }
 
     #[test]

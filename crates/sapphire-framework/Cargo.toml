@@ -36,7 +36,7 @@ eframe = ["gui", "sapphire-framework-gui/eframe"]
 # in-process IPC carrier (Android now, iOS to follow).
 mobile = ["eframe", "server", "bridge", "ipc", "sapphire-framework-gui/mobile"]
 keys = ["dep:sapphire-framework-keys", "sapphire-framework-keys/axum"]
-service = ["dep:sapphire-framework-service"]
+service = ["dep:corundum-framework-service"]
 # The app server's HTTP listener (`AppServer::http`), every route but `/metrics` behind an
 # external device's token.
 http = ["server", "sapphire-framework-server/http"]
@@ -73,6 +73,6 @@ sapphire-framework-bridge-embed = { version = "0.23.0", path = "../sapphire-fram
 sapphire-framework-backend = { version = "0.23.0", path = "../sapphire-framework-backend", optional = true, default-features = false }
 sapphire-framework-gui = { version = "0.23.0", path = "../sapphire-framework-gui", optional = true }
 sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys", optional = true }
-sapphire-framework-service = { version = "0.23.0", path = "../sapphire-framework-service", optional = true }
+corundum-framework-service = { workspace = true, features = ["cli"], optional = true }
 sapphire-framework-mcp = { version = "0.23.0", path = "../sapphire-framework-mcp", optional = true }
 sapphire-framework-frontmatter = { version = "0.23.0", path = "../sapphire-framework-frontmatter", optional = true }

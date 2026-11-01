@@ -48,6 +48,7 @@ use sapphire_ipc::{Endpoint, ServerInfo};
 pub use command::{BridgeCommand, bridge_release_source, bridge_service_spec, serve_in_process};
 // The CLI's `service install | uninstall | status`: re-exported so the binary needs this
 // crate alone and the whole command surface sits in one place.
+pub use corundum_framework_service::{ServiceCommand, ServiceSpec};
 pub use dir::{BRIDGE_DIR_ENV, BRIDGE_FORMAT_VERSION, BridgeDir, InstanceLock};
 pub use embed::{EmbedFactory, EmbedProvider};
 pub use embed_settings::EmbedConfig;
@@ -69,7 +70,6 @@ pub use peer::{LoopbackNetwork, LoopbackTransport};
 pub use relay::EmbeddedRelay;
 pub use relay::{EmbeddedRelayConfig, RelayConfig, TlsConfig, relays};
 pub use routes::{Route, RouteTable};
-pub use sapphire_framework_service::{ServiceCommand, ServiceSpec};
 pub use status::{PeerStatus, STATUS_INTERVAL, StatusFile, StatusSource, StatusWriter};
 #[cfg(any(test, feature = "test-util"))]
 pub use testing::adopt_workgroup;

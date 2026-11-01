@@ -130,7 +130,7 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `bridge/desktop`（`sapphire-bridge-desktop`、crates.io には出さない） | 引数なしで Sapphire Bridge のウィンドウを開く（`--page <status\|workgroup\|devices\|embedding\|appearance\|logs\|about>`）。サブコマンドを付けると `sapphire-bridge` と同じコードを動かす（サービスは `sapphire-bridge-desktop serve` を登録できる） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
 | `sapphire-framework-keys` | `protect` / `AuthConfig` / `Verifier`、ワークスペースの API キーの置き場所（`store_dir` / `open_store`）。キーの保存と照合は corundum-framework-keys（#364） |
-| `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec`・systemd user unit・LaunchAgent・タスクスケジューラ） |
+| `sapphire-framework-service` | 非推奨（#381）。OS のサービスマネージャへの登録は corundum-framework-service（`sapphire_framework::service`）に移った。1 リリースだけ再エクスポートする。macOS の LaunchAgent のラベルは `org.sapphire-turtle.<app>` で、旧ラベル `net.fireturtle.sapphire.<app>`（`ServiceSpec.legacy_labels` で渡す）と `net.sapphire-turtle.<app>`（corundum が自分で扱う）のエージェントは、登録・解除・状態の確認のときに移される（#385） |
 | `sapphire-framework-backend` | GUI 向け**非同期** `WorkspaceBackend` + `IpcBackend` / `LocalBackend`。`protocol` は `sapphire-framework-server-api` の re-export |
 | `sapphire-framework-gui` | app 非依存の egui 部品: 同期 GUI 部品（下記「GUI 部品」）。旧 `WorkspaceManager`（`WorkspaceRegistry` を操作する一覧画面）は deprecated（#217） |
 | ~~`sapphire-framework-rpc`~~ / ~~`-remote-client`~~ / ~~`-remote-server`~~ / ~~`-blob`~~ | **削除**（HTTP 同期スタック。表面テスト `tests/surface.rs` で存在を封じる。内容はファイル原本から直接供給される — sync 仕様 §2.3） |

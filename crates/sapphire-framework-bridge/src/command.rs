@@ -15,12 +15,12 @@ use std::sync::Arc;
 
 use std::io::Write as _;
 
+use corundum_framework_service::{Environment, ServiceCommand, ServiceSpec, SystemManager};
 use sapphire_bridge_api::{
     BRIDGE_NAME, ConfigCommand, EmbedInfoResult, EmbedRequest, EmbedSettingsResult,
     EmbeddingCommand, InviteParams, JoinParams, PeerInfo, StatusResult,
 };
 use sapphire_bridge_client::BridgeClient;
-use sapphire_framework_service::{Environment, ServiceCommand, ServiceSpec, SystemManager};
 use sapphire_ipc::Endpoint;
 
 #[cfg(feature = "node")]
@@ -94,6 +94,9 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
         app_name: "sapphire-bridge",
         description: format!("Sapphire bridge daemon {version}"),
         args: vec!["serve".to_owned()],
+        // The first label sapphire registered on macOS; corundum retires its own earlier
+        // one (net.sapphire-turtle.sapphire-bridge) by itself (#385).
+        legacy_labels: vec!["net.fireturtle.sapphire.sapphire-bridge".to_owned()],
         post_install: None,
     }
 }
@@ -1610,6 +1613,15 @@ mod service_spec_tests {
     fn the_bridge_service_spec_runs_the_bridge() {
         let spec = bridge_service_spec("0.0.0");
         assert_eq!(spec.args, vec!["serve".to_owned()]);
+    }
+
+    #[test]
+    fn the_bridge_service_spec_retires_its_first_label() {
+        let spec = bridge_service_spec("0.0.0");
+        assert_eq!(
+            spec.legacy_labels,
+            ["net.fireturtle.sapphire.sapphire-bridge"]
+        );
     }
 
     #[test]

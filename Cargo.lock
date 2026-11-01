@@ -1503,6 +1503,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88d7c65d1460359d3fdbd2b82e313df0dd7e317d7e286e6048b8d60c7cb281cb"
 dependencies = [
+ "clap",
  "corundum-framework-platform",
  "libc",
  "thiserror 2.0.21",
@@ -7229,6 +7230,7 @@ dependencies = [
 name = "sapphire-framework"
 version = "0.23.0"
 dependencies = [
+ "corundum-framework-service",
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-embed",
@@ -7240,7 +7242,6 @@ dependencies = [
  "sapphire-framework-registry",
  "sapphire-framework-retrieve",
  "sapphire-framework-server",
- "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-sync",
  "sapphire-framework-track",
@@ -7276,6 +7277,7 @@ dependencies = [
  "chrono",
  "clap",
  "corundum-framework-platform",
+ "corundum-framework-service",
  "data-encoding",
  "getrandom 0.4.3",
  "grain-id",
@@ -7290,7 +7292,6 @@ dependencies = [
  "sapphire-framework-bridge-client",
  "sapphire-framework-ipc",
  "sapphire-framework-registry",
- "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-settings",
  "sapphire-framework-sync",
@@ -7385,7 +7386,6 @@ dependencies = [
  "sapphire-framework-ipc",
  "sapphire-framework-keys",
  "sapphire-framework-server",
- "sapphire-framework-service",
  "sapphire-framework-workspace",
  "serde_json",
  "tempfile",
@@ -7480,6 +7480,7 @@ dependencies = [
  "axum",
  "clap",
  "corundum-framework-keys",
+ "corundum-framework-service",
  "grain-id",
  "indexmap",
  "libc",
@@ -7497,7 +7498,6 @@ dependencies = [
  "sapphire-framework-mcp",
  "sapphire-framework-registry",
  "sapphire-framework-server",
- "sapphire-framework-service",
  "sapphire-framework-session",
  "sapphire-framework-settings",
  "sapphire-framework-sync",
@@ -7530,14 +7530,7 @@ dependencies = [
 name = "sapphire-framework-service"
 version = "0.23.0"
 dependencies = [
- "clap",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "toml",
- "tracing",
+ "corundum-framework-service",
 ]
 
 [[package]]

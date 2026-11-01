@@ -35,7 +35,7 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
     } = options;
     install_console_with_filter(
         APP_NAME,
-        &format!("warn,{APP_NAME}=info,sapphire_framework_gui=info"),
+        "warn,sapphire_bridge_desktop=info,sapphire_framework_gui=info",
     );
     let Some(instance) = instance::acquire_or_activate_with(APP_NAME, Some(page.as_str())) else {
         tracing::info!("Sapphire Bridge's window is open already: brought it to the front");

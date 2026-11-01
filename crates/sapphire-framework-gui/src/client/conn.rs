@@ -173,7 +173,7 @@ impl Connections {
     /// Ask the bridge, through the app server, everything the views show.
     pub(crate) async fn fetch_bridge(&mut self, cfg: &ClientConfig) -> Conn<BridgeState> {
         let bridge_only = cfg.mode == ClientMode::BridgeOnly;
-        // An app that links to Sapphire Bridge shows a summary, not the bridge's pages.
+        // An app that links to Sapphire Bridge shows a summary, not the embedding page.
         let summary_only = cfg.bridge_pages == BridgePages::Linked && !bridge_only;
         let result = tokio::time::timeout(cfg.fetch_timeout, async {
             let connected = if bridge_only {
@@ -190,12 +190,8 @@ impl Connections {
             let status = c.status().await?;
             let (peers, peer_roles, ledger) = if status.workgroup.is_some() {
                 let p = c.peers().await?;
-                let ledger = if summary_only {
-                    Vec::new()
-                } else {
-                    c.workspaces().await?.workspaces
-                };
-                (p.peers, p.roles, ledger)
+                // The Workspaces page lists the workgroup's, in Linked mode too.
+                (p.peers, p.roles, c.workspaces().await?.workspaces)
             } else {
                 (Vec::new(), Vec::new(), Vec::new())
             };

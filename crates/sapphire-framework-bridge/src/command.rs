@@ -103,7 +103,7 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
 pub fn bridge_release_source() -> sapphire_framework_update::ReleaseSource {
     sapphire_framework_update::ReleaseSource::github("sapphire-turtle", "sapphire-framework")
         .asset("sapphire-bridge")
-        .cargo_crate("sapphire-bridge")
+        .cargo_crate("sapphire-bridge-headless")
 }
 
 /// `device` subcommands.

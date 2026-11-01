@@ -11,12 +11,22 @@ use corundum_framework_gui::tr;
 /// under About.
 #[derive(Default)]
 pub struct ServiceStatusBanner {
+    /// In Sapphire Bridge's own window: the bridge's row only.
+    bridge_only: bool,
     error: Option<Message>,
     /// The command the last install failure says to run by hand.
     manual: Option<String>,
 }
 
 impl ServiceStatusBanner {
+    /// The banner of Sapphire Bridge's own window, which has no app server.
+    pub fn bridge_only() -> ServiceStatusBanner {
+        ServiceStatusBanner {
+            bridge_only: true,
+            ..ServiceStatusBanner::default()
+        }
+    }
+
     /// Render. Returns a [`Command::ServiceInstall`] when a start button is clicked.
     pub fn ui(&mut self, ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
         register(ui);
@@ -55,6 +65,9 @@ impl ServiceStatusBanner {
                     ServiceTarget::App,
                 ),
             ] {
+                if self.bridge_only && target == ServiceTarget::App {
+                    continue;
+                }
                 ui.strong(label);
                 ui.label(state);
                 if absent

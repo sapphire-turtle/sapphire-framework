@@ -44,6 +44,17 @@ fn main() -> std::process::ExitCode {
             }
         };
     };
+    // `update` replaces the running binary with `sapphire-bridge`'s release file, which
+    // has no window: the desktop app is updated from its own release file instead, until it
+    // is packaged (#363 part C).
+    if matches!(command, BridgeCommand::Update(_)) {
+        eprintln!(
+            "sapphire-bridge-desktop is not updated by `update`, which would put sapphire-bridge \
+             (no window) in its place: download sapphire-bridge-desktop from \
+             https://github.com/sapphire-turtle/sapphire-framework/releases/latest"
+        );
+        return std::process::ExitCode::FAILURE;
+    }
     // The command line's own code, as `sapphire-bridge` runs it: the bridge's subscriber
     // first, which `serve`'s file layer joins.
     sapphire_bridge::install_console();

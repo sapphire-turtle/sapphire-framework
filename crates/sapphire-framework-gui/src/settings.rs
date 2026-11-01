@@ -219,6 +219,7 @@ impl Settings {
         let logs = LogsView::new(crate::bridge_window::bridge_log_dir().unwrap_or_default());
         Settings {
             bridge_window: Some((StatusView::default(), logs)),
+            banner: ServiceStatusBanner::bridge_only(),
             ..Settings::new(client)
         }
     }
@@ -244,7 +245,22 @@ impl Settings {
 
     /// The services' state, as of the last refresh.
     pub fn health(&self) -> Health {
-        Health::of(&self.client.snapshot())
+        let snapshot = self.snapshot();
+        if self.bridge_window.is_some() {
+            Health::of_bridge(&snapshot)
+        } else {
+            Health::of(&snapshot)
+        }
+    }
+
+    /// Whether the process the settings are read from answers: the app server, or — in
+    /// the bridge's own window, which has none — the bridge.
+    fn source_up(&self, snapshot: &Snapshot) -> bool {
+        if self.bridge_window.is_some() {
+            snapshot.bridge.up().is_some()
+        } else {
+            snapshot.server.up().is_some()
+        }
     }
 
     /// Whether About is the page open.
@@ -669,7 +685,7 @@ impl Settings {
     /// Nothing is loaded yet: a spinner while a load runs, else why it failed and a way to
     /// try again. Nothing without an app server, whose absence the page already shows.
     fn unloaded_ui(&mut self, ui: &mut egui::Ui, snapshot: &Snapshot) {
-        if snapshot.server.up().is_none() {
+        if !self.source_up(snapshot) {
             return;
         }
         if self.loading() {
@@ -777,6 +793,14 @@ impl Settings {
     /// Reload once the app server's workspace changes, the settings having been loaded.
     /// The app server going away lets showing a page load again.
     fn track_workspace(&mut self, snapshot: &Snapshot) {
+        // The bridge's window has no workspace; a bridge that went away is loaded from
+        // again when it is back.
+        if self.bridge_window.is_some() {
+            if snapshot.bridge.up().is_none() {
+                self.load_tried = false;
+            }
+            return;
+        }
         let Some(server) = snapshot.server.up() else {
             self.load_tried = false;
             return;
@@ -793,10 +817,7 @@ impl Settings {
 
     /// Load when a page that needs the settings is shown and nothing is loaded.
     fn ensure_loaded(&mut self, snapshot: &Snapshot) {
-        if self.config.is_none()
-            && !self.load_tried
-            && !self.loading()
-            && snapshot.server.up().is_some()
+        if self.config.is_none() && !self.load_tried && !self.loading() && self.source_up(snapshot)
         {
             self.load();
         }
@@ -1149,6 +1170,39 @@ mod tests {
                 "-",
                 "About"
             ]
+        );
+    }
+
+    /// The bridge's window over a bridge that answers: no app server, by design.
+    fn bridge_window_up() -> (Settings, tokio::runtime::Runtime) {
+        let (client, rt) = crate::test_support::client_with(
+            crate::client::ClientMode::BridgeOnly,
+            crate::client::BridgePages::InApp,
+        );
+        let mut settings = Settings::for_bridge(client);
+        settings.test_snapshot = Some(Snapshot {
+            server: Conn::Absent,
+            ..rich()
+        });
+        (settings, rt)
+    }
+
+    #[test]
+    fn the_bridge_window_loads_its_settings_from_the_bridge() {
+        let (mut settings, _rt) = bridge_window_up();
+        settings.open_page(crate::bridge_window::BridgePage::Appearance);
+        render([900.0, 600.0], |ui| settings.ui(ui));
+        assert_eq!(loads(&settings), 1);
+    }
+
+    #[test]
+    fn the_bridge_window_is_healthy_with_the_bridge_alone() {
+        let (mut settings, _rt) = bridge_window_up();
+        assert_eq!(settings.health(), Health::Healthy);
+        let drawn = drawn_text(|ui| settings.status_ui(ui));
+        assert!(
+            !drawn.contains("Install"),
+            "no app server to install: {drawn}"
         );
     }
 

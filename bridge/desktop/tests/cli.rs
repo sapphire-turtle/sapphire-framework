@@ -28,3 +28,19 @@ fn a_subcommand_runs_the_cli() {
     );
     assert!(text.contains("sapphire-bridge"), "{text}");
 }
+
+#[test]
+fn update_is_refused_rather_than_replacing_the_window_with_the_command_line() {
+    let exe = env!("CARGO_BIN_EXE_sapphire-bridge-desktop");
+    let tmp = tempfile::tempdir().unwrap();
+    let out = Command::new(exe)
+        .args(["update", "--check"])
+        .env("SAPPHIRE_RUNTIME_DIR", tmp.path())
+        .env("SAPPHIRE_BRIDGE_DIR", tmp.path().join("bridge"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("sapphire-bridge-desktop"), "{err}");
+    assert!(err.contains("releases"), "{err}");
+}

@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 
 `~/.local/bin` に入り、あとから `sapphire-bridge update` で更新できます。続けて
 `sapphire-bridge service install` でサービスとして動かしてください。オプションや他のアプリについては
-[`install/`](../install/README.ja.md) を参照してください。
+[`install/`](../../install/README.ja.md) を参照してください。
 
 ## 動かす
 

@@ -169,7 +169,9 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
   - 電話（`InApp`）: bridge がアプリのプロセス内にあるので、デバイス / workgroup / 埋め込みのページをアプリに
     置く
   - `Settings::for_bridge` は bridge のウィンドウ自身。`ClientMode::BridgeOnly` のクライアントで bridge に
-    直接つなぎ、状態 / workgroup / デバイス / 埋め込み / 外観 / ログ / About を出す（`app::run_bridge`）幅が広いときは一覧＋ページ、狭いときは
+    直接つなぎ、状態 / workgroup / デバイス / 埋め込み / 外観 / ログ / About を出す（`app::run_bridge`）
+
+  幅が広いときは一覧＋ページ、狭いときは
   一覧 → ページの遷移。`Shell` は全アプリ共通の画面の枠で、アプリ固有の画面を左のナビゲーション
   レール（狭いときは下のバー）に並べ、その下端に Settings とサービス状態のドットを置く。状態は
   `Health` で、問題があるときだけ全画面共通のバナーを出す。同期していないワークスペースでは bridge が

@@ -1023,19 +1023,26 @@ async fn bridge_only_without_a_bridge_is_absent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn linked_fetches_only_the_summary() {
+async fn linked_fetches_the_summary_and_the_workgroup_s_workspaces() {
     let f = fixture();
     let _bridge = start_bridge(&f).await;
     let _server = start_server(&f).await;
+    let (_publisher, _) = published_workspace(&f).await;
     let config = ClientConfig {
         bridge_pages: BridgePages::Linked,
         ..config(&f)
     };
     let client =
         FrameworkClient::spawn(&tokio::runtime::Handle::current(), config, Arc::new(|| {}));
-    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
-    let snapshot = client.snapshot();
-    let bridge = snapshot.bridge.up().unwrap();
-    assert!(bridge.embedding.is_none());
-    assert!(bridge.ledger.is_empty());
+    // The Workspaces page lists the workgroup's workspaces to bring onto this device.
+    wait(|| async {
+        client
+            .snapshot()
+            .bridge
+            .up()
+            .is_some_and(|b| !b.ledger.is_empty())
+    })
+    .await;
+    // The embedding settings are Sapphire Bridge's window's to show.
+    assert!(client.snapshot().bridge.up().unwrap().embedding.is_none());
 }

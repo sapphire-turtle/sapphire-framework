@@ -43,5 +43,7 @@ clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
+# examples/icons.rs renders the package's icons.
+corundum-framework-platform.workspace = true
 corundum-framework-package = { version = "0.6.0", features = ["service", "test-support"] }
 tempfile = "3"

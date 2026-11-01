@@ -15,7 +15,7 @@ use sapphire_ipc::Client;
 
 use super::conn::{Connections, drops_app, unanswered};
 use super::types::{
-    ClientConfig, Command, CommandError, CommandOutput, ConfigState, ServiceTarget,
+    ClientConfig, ClientMode, Command, CommandError, CommandOutput, ConfigState, ServiceTarget,
 };
 
 /// How long a restart may take, waiting for the process to come back included.
@@ -46,6 +46,23 @@ pub(crate) async fn execute(
     command: Command,
 ) -> Result<CommandOutput, CommandError> {
     let limit = limit(cfg, &command);
+    let for_bridge = matches!(
+        command,
+        Command::ServiceInstall(ServiceTarget::Bridge)
+            | Command::WorkgroupCreate { .. }
+            | Command::WorkgroupJoin { .. }
+            | Command::DeviceInvite { .. }
+            | Command::DeviceRetire { .. }
+            | Command::DevicePrioritySet { .. }
+            | Command::ConfigLoad
+            | Command::ConfigWrite { .. }
+            | Command::Restart(Process::Bridge)
+    );
+    if cfg.mode == ClientMode::BridgeOnly && !for_bridge {
+        return Err(CommandError::from(
+            "no app server in Sapphire Bridge's window".to_owned(),
+        ));
+    }
     match command {
         Command::ServiceInstall(target) => {
             let name = match target {
@@ -112,13 +129,24 @@ async fn bridge_command(
     command: Command,
 ) -> Result<sapphire_ipc::Result<CommandOutput>, String> {
     let app = cfg.app.app_name;
-    conns
-        .app(cfg)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("the {app} server is not running"))?;
-    let (Some(c), Some(server)) = (conns.bridge(cfg), conns.app_client()) else {
-        return Err(format!("the {app} server is not running"));
+    let (c, server) = if cfg.mode == ClientMode::BridgeOnly {
+        if !conns.connect_bridge(cfg).await.map_err(|e| e.to_string())? {
+            return Err("no sapphire-bridge is running".to_owned());
+        }
+        let Some(c) = conns.bridge(cfg) else {
+            return Err("no sapphire-bridge is running".to_owned());
+        };
+        (c, None)
+    } else {
+        conns
+            .app(cfg)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("the {app} server is not running"))?;
+        let (Some(c), Some(server)) = (conns.bridge(cfg), conns.app_client()) else {
+            return Err(format!("the {app} server is not running"));
+        };
+        (c, Some(server))
     };
     let out = match command {
         Command::WorkgroupCreate { name, device_name } => c
@@ -151,7 +179,9 @@ async fn bridge_command(
             .device_priority_set(DevicePrioritySetParams { selector, priority })
             .await
             .map(|_| CommandOutput::Done),
-        Command::ConfigLoad => config_load(&c, &server).await.map(CommandOutput::Config),
+        Command::ConfigLoad => config_load(&c, server.as_deref())
+            .await
+            .map(CommandOutput::Config),
         Command::ConfigWrite { scope, set, unset } => config_write(&c, scope, set, unset)
             .await
             .map(CommandOutput::Written),
@@ -167,15 +197,26 @@ async fn bridge_command(
 ///
 /// The relayed calls go out together: with no bridge running, each may wait a while for
 /// one, and those waits overlap rather than add up.
-async fn config_load(c: &BridgeClient, server: &Client) -> sapphire_ipc::Result<ConfigState> {
-    let current: proto::WorkspaceCurrentResult = server
-        .call(proto::WORKSPACE_CURRENT, serde_json::json!({}))
-        .await?;
+async fn config_load(
+    c: &BridgeClient,
+    server: Option<&Client>,
+) -> sapphire_ipc::Result<ConfigState> {
+    // The bridge's own window has no app server, and so no workspace.
+    let has_workspace = match server {
+        Some(server) => {
+            let current: proto::WorkspaceCurrentResult = server
+                .call(proto::WORKSPACE_CURRENT, serde_json::json!({}))
+                .await?;
+            current.workspace.is_some()
+        }
+        None => false,
+    };
     let list = |scope| async move { c.config_list(scope).await.map(|r| r.entries) };
     let workspace = async {
-        match current.workspace {
-            Some(_) => list(Some(Scope::Workspace)).await.map(Some),
-            None => Ok(None),
+        if has_workspace {
+            list(Some(Scope::Workspace)).await.map(Some)
+        } else {
+            Ok(None)
         }
     };
     let (schema, effective, device, workgroup, workspace) = tokio::try_join!(
@@ -476,7 +517,8 @@ mod tests {
         let cfg = ClientConfig {
             app,
             endpoints: super::super::Endpoints {
-                app: sapphire_ipc::Endpoint::in_dir("a", dir),
+                app: sapphire_ipc::Endpoint::in_dir("a", dir.clone()),
+                bridge: sapphire_ipc::Endpoint::in_dir("bridge", dir),
             },
             service_exes: super::super::ServiceExes {
                 bridge: "/b".into(),
@@ -486,6 +528,8 @@ mod tests {
             fetch_timeout: Duration::from_secs(5),
             command_timeout: Duration::from_secs(30),
             install_timeout: Duration::from_secs(300),
+            mode: super::super::ClientMode::App,
+            bridge_pages: super::super::BridgePages::InApp,
         };
         assert_eq!(
             limit(&cfg, &Command::ServiceInstall(ServiceTarget::App)),

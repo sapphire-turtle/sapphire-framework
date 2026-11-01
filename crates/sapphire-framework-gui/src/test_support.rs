@@ -24,6 +24,7 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
         },
         endpoints: Endpoints {
             app: Endpoint::in_dir("app", dir.clone()),
+            bridge: Endpoint::in_dir("bridge", dir.clone()),
         },
         service_exes: ServiceExes {
             bridge: dir.join("sapphire-bridge"),
@@ -33,6 +34,8 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
         fetch_timeout: Duration::from_secs(1),
         command_timeout: Duration::from_secs(1),
         install_timeout: Duration::from_secs(1),
+        mode: crate::client::ClientMode::App,
+        bridge_pages: crate::client::BridgePages::InApp,
     };
     let client = FrameworkClient::spawn(runtime.handle(), config, Arc::new(|| {}));
     (client, runtime)

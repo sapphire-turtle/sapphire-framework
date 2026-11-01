@@ -52,6 +52,7 @@ fn fixture() -> Fixture {
     std::fs::create_dir_all(&bridge_run).unwrap();
     let endpoints = Endpoints {
         app: Endpoint::in_dir(APP.app_name, run),
+        bridge: Endpoint::in_dir("bridge", bridge_run.clone()),
     };
     Fixture {
         tmp,
@@ -73,7 +74,18 @@ fn config(f: &Fixture) -> ClientConfig {
         fetch_timeout: Duration::from_secs(5),
         command_timeout: Duration::from_secs(30),
         install_timeout: Duration::from_secs(300),
+        mode: ClientMode::App,
+        bridge_pages: BridgePages::InApp,
     }
+}
+
+/// The bridge's own window: no app server, the bridge directly.
+fn bridge_only(f: &Fixture) -> FrameworkClient {
+    let config = ClientConfig {
+        mode: ClientMode::BridgeOnly,
+        ..config(f)
+    };
+    FrameworkClient::spawn(&tokio::runtime::Handle::current(), config, Arc::new(|| {}))
 }
 
 /// A bridge running on a runtime of its own, so that stopping it ends every task it spawned.
@@ -958,4 +970,72 @@ async fn no_bridge_leaves_the_theme_unread_and_the_server_up() {
     let snapshot = client.snapshot();
     assert!(snapshot.server.up().is_some());
     assert!(snapshot.bridge.up().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_only_fetches_the_bridge_without_a_server() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let client = bridge_only(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+    assert!(matches!(client.snapshot().server, Conn::Absent));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_only_commands_reach_the_bridge() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let client = bridge_only(&f);
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+    let id = client.send(Command::WorkgroupCreate {
+        name: "home".into(),
+        device_name: "desk".into(),
+    });
+    assert_eq!(outcome(&client, id).await, Ok(CommandOutput::Done));
+    wait(|| async {
+        client
+            .snapshot()
+            .bridge
+            .up()
+            .and_then(|b| b.status.workgroup.as_ref())
+            .is_some_and(|w| w.name == "home")
+    })
+    .await;
+    // The settings pages load from the bridge alone.
+    let id = client.send(Command::ConfigLoad);
+    assert!(matches!(
+        outcome(&client, id).await,
+        Ok(CommandOutput::Config(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_only_without_a_bridge_is_absent() {
+    let f = fixture();
+    let client = bridge_only(&f);
+    wait(|| async { client.snapshot().fetched }).await;
+    assert!(
+        matches!(client.snapshot().bridge, Conn::Absent),
+        "{:?}",
+        client.snapshot().bridge
+    );
+    assert!(matches!(client.snapshot().server, Conn::Absent));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn linked_fetches_only_the_summary() {
+    let f = fixture();
+    let _bridge = start_bridge(&f).await;
+    let _server = start_server(&f).await;
+    let config = ClientConfig {
+        bridge_pages: BridgePages::Linked,
+        ..config(&f)
+    };
+    let client =
+        FrameworkClient::spawn(&tokio::runtime::Handle::current(), config, Arc::new(|| {}));
+    wait(|| async { client.snapshot().bridge.up().is_some() }).await;
+    let snapshot = client.snapshot();
+    let bridge = snapshot.bridge.up().unwrap();
+    assert!(bridge.embedding.is_none());
+    assert!(bridge.ledger.is_empty());
 }

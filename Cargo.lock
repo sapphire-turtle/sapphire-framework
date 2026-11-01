@@ -7274,6 +7274,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire-bridge-desktop"
+version = "0.23.0"
+dependencies = [
+ "clap",
+ "sapphire-framework-bridge",
+ "sapphire-framework-bridge-embed",
+ "sapphire-framework-gui",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "sapphire-bridge-headless"
 version = "0.23.0"
 dependencies = [

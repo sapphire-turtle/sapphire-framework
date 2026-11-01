@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "bridge/headless",
+    "bridge/desktop",
     "crates/sapphire-framework-track",
     "crates/sapphire-framework-sync",
     "crates/sapphire-framework-session",

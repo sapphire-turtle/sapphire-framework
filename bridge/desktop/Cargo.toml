@@ -1,0 +1,24 @@
+[package]
+name = "sapphire-bridge-desktop"
+# Released with the framework, under its `v{version}` tags; its binary goes onto that
+# release (release-bridge.yml), not to crates.io.
+version.workspace = true
+edition.workspace = true
+description = "Sapphire Bridge's desktop app: its window, and the same commands as sapphire-bridge"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "sapphire-bridge-desktop"
+path = "src/main.rs"
+
+[dependencies]
+sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.23.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
+sapphire-framework-bridge-embed = { version = "0.23.0", path = "../../crates/sapphire-framework-bridge-embed", features = ["factory"] }
+sapphire-framework-gui = { version = "0.23.0", path = "../../crates/sapphire-framework-gui", features = ["eframe"] }
+clap.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

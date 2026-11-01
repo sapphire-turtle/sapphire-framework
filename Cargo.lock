@@ -1436,9 +1436,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eee2de3daba4059cc02629f01c32cb9989cdc5c235c0cbf80c932229844665b5"
+checksum = "35f5902e2072ed146495b1bbfb1c7ba1251853a3d31f2eacbb90f623957d0f28"
 dependencies = [
  "android-activity",
  "android_log-sys",
@@ -1468,9 +1468,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-keys"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdc2c61588328ceaf3cd615075846c66998efcefa6d468f2afe23c6a9cef1803"
+checksum = "8f394df2ae4c6b6b099850f092c83a23addfb0566fa13b775b5bc07a64d57487"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1487,11 +1487,12 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d50d826d8ff6f8d3992815894fc15e44a34880f9682ee8d99eac7b8493bd105f"
+checksum = "dd562a148d3817f6e6c51b49658686a409b69446499f2a76cf781799b2b2aedf"
 dependencies = [
  "dirs 7.0.0",
+ "interprocess",
  "jni 0.22.4",
  "ndk-context",
  "objc2-foundation 0.3.2",
@@ -1500,6 +1501,18 @@ dependencies = [
  "tracing",
  "unic-langid",
  "windows",
+]
+
+[[package]]
+name = "corundum-framework-service"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88d7c65d1460359d3fdbd2b82e313df0dd7e317d7e286e6048b8d60c7cb281cb"
+dependencies = [
+ "corundum-framework-platform",
+ "libc",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -1967,6 +1980,12 @@ dependencies = [
  "once_cell",
  "winapi",
 ]
+
+[[package]]
+name = "doctest-file"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2db04e74f0a9a93103b50e90b96024c9b2bdca8bce6a632ec71b88736d3d359"
 
 [[package]]
 name = "document-features"
@@ -3820,6 +3839,19 @@ dependencies = [
  "parking_lot",
  "rand 0.8.8",
  "rayon",
+]
+
+[[package]]
+name = "interprocess"
+version = "2.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4a4fff6c51dece332bdbf3af5fe376c49cfc8dced782725e95be0bb489e35d7"
+dependencies = [
+ "doctest-file",
+ "libc",
+ "recvmsg",
+ "widestring",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6665,6 +6697,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
+name = "recvmsg"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3edd4d5d42c92f0a659926464d4cce56b562761267ecf0f469d85b7de384175"
+
+[[package]]
 name = "redb"
 version = "4.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7398,6 +7436,7 @@ version = "0.23.0"
 dependencies = [
  "corundum-framework-gui",
  "corundum-framework-platform",
+ "corundum-framework-service",
  "eframe",
  "egui",
  "grain-id",

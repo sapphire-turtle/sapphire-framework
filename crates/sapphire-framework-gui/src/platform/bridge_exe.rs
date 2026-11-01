@@ -10,9 +10,32 @@ pub fn bridge_desktop_name() -> String {
 
 /// Where Sapphire Bridge's window is on this host (see [`bridge_desktop_exe_with`]).
 pub fn bridge_desktop_exe() -> Option<PathBuf> {
+    let service = bridge_service_program();
     let own = std::env::current_exe().ok();
     let path = std::env::var_os("PATH");
-    bridge_desktop_exe_with(None, own.as_deref(), path.as_deref())
+    bridge_desktop_exe_with(service.as_deref(), own.as_deref(), path.as_deref())
+}
+
+/// The program the bridge's OS service starts, if one is registered.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn bridge_service_program() -> Option<PathBuf> {
+    use corundum_framework_service::{Environment, ServiceSpec, SystemManager};
+    let spec = ServiceSpec {
+        app_name: "sapphire-bridge",
+        description: String::new(),
+        args: Vec::new(),
+        legacy_labels: Vec::new(),
+        post_install: None,
+    };
+    corundum_framework_service::registered_program(&spec, &Environment::detect(), &SystemManager)
+        .ok()
+        .flatten()
+}
+
+/// A phone has no services.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn bridge_service_program() -> Option<PathBuf> {
+    None
 }
 
 /// The first that exists of: beside the program the bridge's service starts (that program

@@ -22,11 +22,14 @@ pub struct AppIdentity {
     pub version: &'static str,
 }
 
-/// Where the app server listens. The GUI reaches the bridge through it.
+/// Where the app server and the bridge listen. An app's GUI reaches the bridge through
+/// its app server; the bridge's own window ([`ClientMode::BridgeOnly`]) reaches it here.
 #[derive(Clone, Debug)]
 pub struct Endpoints {
     /// The app server.
     pub app: Endpoint,
+    /// The bridge's control plane.
+    pub bridge: Endpoint,
 }
 
 impl Endpoints {
@@ -34,9 +37,30 @@ impl Endpoints {
     pub fn default_for(app_name: &str) -> sapphire_ipc::Result<Endpoints> {
         let dir = sapphire_ipc::runtime_dir()?;
         Ok(Endpoints {
-            app: Endpoint::in_dir(app_name, dir),
+            app: Endpoint::in_dir(app_name, dir.clone()),
+            bridge: Endpoint::in_dir(sapphire_ipc::BRIDGE_NAME, dir),
         })
     }
+}
+
+/// Whom the client talks to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ClientMode {
+    /// An app's GUI: its app server, and the bridge through the server's relay.
+    #[default]
+    App,
+    /// The bridge's own window: the bridge directly, and no app server.
+    BridgeOnly,
+}
+
+/// Where an app's Settings shows the bridge's pages (Devices, Workgroup, Embedding).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BridgePages {
+    /// In the app, as on a phone, whose bridge runs in the app's process.
+    #[default]
+    InApp,
+    /// In Sapphire Bridge's own window: the app shows a summary and links there.
+    Linked,
 }
 
 /// The executables whose `service install` verb registers each service.
@@ -96,6 +120,11 @@ pub struct ClientConfig {
     /// How long `service install` may take. Long, because it may wait on an elevation
     /// (UAC) prompt a person has to answer.
     pub install_timeout: Duration,
+    /// Whom the client talks to.
+    pub mode: ClientMode,
+    /// Where Settings shows the bridge's pages; with [`BridgePages::Linked`] the client
+    /// also fetches only what the summary needs.
+    pub bridge_pages: BridgePages,
 }
 
 impl ClientConfig {
@@ -111,7 +140,27 @@ impl ClientConfig {
             fetch_timeout: Duration::from_secs(5),
             command_timeout: Duration::from_secs(30),
             install_timeout: Duration::from_secs(5 * 60),
+            mode: ClientMode::App,
+            bridge_pages: BridgePages::InApp,
             app,
+        })
+    }
+
+    /// The bridge's own window: the bridge directly, no app server. "Install & start" of
+    /// the bridge registers the running executable (`sapphire-bridge-desktop serve`).
+    pub fn bridge_only(version: &'static str) -> std::io::Result<ClientConfig> {
+        let app = AppIdentity {
+            app_name: "sapphire-bridge-desktop",
+            version,
+        };
+        let exe = std::env::current_exe()?;
+        Ok(ClientConfig {
+            mode: ClientMode::BridgeOnly,
+            service_exes: ServiceExes {
+                bridge: exe.clone(),
+                app: exe,
+            },
+            ..ClientConfig::new(app)?
         })
     }
 }

@@ -40,6 +40,19 @@ impl Health {
 /// so its absence is not a problem then — only what sync, the workgroup and embedding
 /// screens offer waits for it. Until the server says which workspace it serves (or while
 /// it serves none), the answer is yes: choosing a workspace may mean joining one.
+impl Health {
+    /// The health of Sapphire Bridge's own window, which has no app server: the bridge's.
+    pub fn of_bridge(snapshot: &Snapshot) -> Health {
+        if !snapshot.fetched {
+            Health::Connecting
+        } else if matches!(snapshot.bridge, Conn::Up(_)) {
+            Health::Healthy
+        } else {
+            Health::Problem
+        }
+    }
+}
+
 pub fn bridge_needed(snapshot: &Snapshot) -> bool {
     match snapshot.server.up().and_then(|s| s.current.as_ref()) {
         Some(current) => current.sync.enabled,

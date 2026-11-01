@@ -6,6 +6,7 @@ pub mod model;
 mod api_keys;
 pub(crate) mod appearance;
 mod banner;
+pub mod bridge_summary;
 pub(crate) mod config;
 mod devices;
 mod embedding;

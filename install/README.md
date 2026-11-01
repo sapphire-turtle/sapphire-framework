@@ -4,7 +4,7 @@
 
 One pair of scripts installs the CLI of every sapphire application (the CLI, the app server
 and the MCP server in one binary) from its GitHub release, and installs or updates
-[`sapphire-bridge`](../bridge/README.md) along with it: the applications sync through the
+[`sapphire-bridge`](../bridge/headless/README.md) along with it: the applications sync through the
 host's bridge. It is meant for servers and other headless machines.
 
 The desktop apps are not installed by these scripts. Each ships as an installer on its
@@ -58,7 +58,7 @@ it downloads the same release files rather than building them, and `update` tell
 it again.
 
 ```sh
-cargo binstall sapphire-bridge sapphire-journal
+cargo binstall sapphire-bridge-headless sapphire-journal
 ```
 
 ## Adding an application

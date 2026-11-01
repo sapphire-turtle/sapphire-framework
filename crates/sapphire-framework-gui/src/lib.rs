@@ -37,6 +37,7 @@ pub use eframe;
 #[cfg(feature = "eframe")]
 pub mod app;
 
+pub mod bridge_window;
 pub mod client;
 mod health;
 #[cfg(feature = "mobile")]
@@ -61,6 +62,7 @@ pub const RESOURCES: i18n::Resources = i18n::Resources {
     ],
 };
 
+pub use client::BridgePages;
 /// corundum-framework-gui's translation support, for apps to register their own strings with.
 pub use corundum_framework_gui::i18n;
 pub use corundum_framework_gui::tr;

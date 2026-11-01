@@ -15,7 +15,13 @@ categories = ["gui"]
 # logging and the framework client) for apps that are an eframe app and nothing more.
 # Without it, nothing here pulls eframe in, corundum-framework-gui's included.
 [features]
-eframe = ["dep:eframe", "corundum-framework-gui/eframe", "dep:sapphire-workspace", "tokio/rt-multi-thread"]
+eframe = [
+    "dep:eframe",
+    "corundum-framework-gui/eframe",
+    "corundum-framework-gui/single-instance",
+    "dep:sapphire-workspace",
+    "tokio/rt-multi-thread",
+]
 # `mobile::run_android` (and later iOS): the window, with the bridge and the app server
 # hosted in this process over the in-process IPC carrier.
 mobile = [
@@ -37,6 +43,10 @@ sapphire-framework-service = { version = "0.23.0", path = "../sapphire-framework
 # (#318). Lives in its own repository (sapphire-turtle/corundum-framework). `serde` for its
 # store: the look in effect, kept on the device for the next start (#347).
 corundum-framework-gui = { workspace = true, features = ["serde", "keys"] }
+# The bridge's directory, for its log files (the bridge's window).
+corundum-framework-platform.workspace = true
+# The program the bridge's service starts, beside which Sapphire Bridge's window is.
+corundum-framework-service.workspace = true
 # The served workspace's API keys: where they are (Settings › API keys).
 sapphire-framework-keys = { version = "0.23.0", path = "../sapphire-framework-keys" }
 egui = "0.37"

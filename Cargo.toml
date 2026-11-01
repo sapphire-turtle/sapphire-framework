@@ -1,7 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
-    "bridge",
+    "bridge/headless",
+    "bridge/desktop",
     "crates/sapphire-framework-track",
     "crates/sapphire-framework-sync",
     "crates/sapphire-framework-session",
@@ -53,9 +54,10 @@ tracing-subscriber = "0.3"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # The shared app framework (sapphire-turtle/corundum-framework): the platform's
 # directories here, the GUI's look in sapphire-framework-gui.
-corundum-framework-platform = "0.5.0"
-corundum-framework-gui = { version = "0.5.0", default-features = false }
-corundum-framework-keys = "0.5.0"
+corundum-framework-platform = "0.6.0"
+corundum-framework-gui = { version = "0.6.0", default-features = false }
+corundum-framework-keys = "0.6.0"
+corundum-framework-service = "0.6.0"
 getrandom = "0.4"
 async-trait = "0.1"
 axum = "0.8"

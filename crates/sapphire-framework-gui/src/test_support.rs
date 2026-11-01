@@ -11,6 +11,17 @@ use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient, Servi
 /// snapshot reads the app server as absent and the bridge as unknown. Keep the runtime for
 /// as long as the client.
 pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
+    client_with(
+        crate::client::ClientMode::App,
+        crate::client::BridgePages::InApp,
+    )
+}
+
+/// [`client`], in `mode` and showing the bridge's pages as `pages` says.
+pub(crate) fn client_with(
+    mode: crate::client::ClientMode,
+    pages: crate::client::BridgePages,
+) -> (FrameworkClient, tokio::runtime::Runtime) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -24,6 +35,7 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
         },
         endpoints: Endpoints {
             app: Endpoint::in_dir("app", dir.clone()),
+            bridge: Endpoint::in_dir("bridge", dir.clone()),
         },
         service_exes: ServiceExes {
             bridge: dir.join("sapphire-bridge"),
@@ -33,6 +45,8 @@ pub(crate) fn client() -> (FrameworkClient, tokio::runtime::Runtime) {
         fetch_timeout: Duration::from_secs(1),
         command_timeout: Duration::from_secs(1),
         install_timeout: Duration::from_secs(1),
+        mode,
+        bridge_pages: pages,
     };
     let client = FrameworkClient::spawn(runtime.handle(), config, Arc::new(|| {}));
     (client, runtime)

@@ -2,6 +2,10 @@
 
 # sapphire-bridge
 
+> Published as `sapphire-bridge-headless` since 0.24; the crate `sapphire-bridge` stopped
+> at 0.23. The command is still `sapphire-bridge`. The desktop app, with a window, is
+> `sapphire-bridge-desktop`.
+
 The host-wide sapphire daemon. One process per OS user, shared by every sapphire application
 on the machine.
 
@@ -32,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 ```
 
 It goes to `~/.local/bin`, where `sapphire-bridge update` can replace it later. Then run it as
-a service with `sapphire-bridge service install`. See [`install/`](../install/README.md) for
+a service with `sapphire-bridge service install`. See [`install/`](../../install/README.md) for
 the options and the other applications.
 
 ## Running it

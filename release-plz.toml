@@ -123,7 +123,7 @@ name = "sapphire-framework-bridge-embed"
 version_group = "framework"
 
 [[package]]
-name = "sapphire-bridge"
+name = "sapphire-bridge-headless"
 version_group = "framework"
 
 # 単一依存ファサード（#95）。

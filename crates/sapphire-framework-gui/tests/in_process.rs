@@ -69,6 +69,7 @@ async fn a_gui_client_sees_bridge_and_server_without_sockets() {
     let run = tmp.path().join("run");
     let endpoints = Endpoints {
         app: Endpoint::in_dir(APP.app_name, run.clone()),
+        bridge: Endpoint::in_dir("bridge", run.clone()),
     };
     let control = Endpoint::in_dir("bridge", run.clone());
 
@@ -111,6 +112,8 @@ async fn a_gui_client_sees_bridge_and_server_without_sockets() {
             fetch_timeout: Duration::from_secs(5),
             command_timeout: Duration::from_secs(30),
             install_timeout: Duration::from_secs(300),
+            mode: ClientMode::App,
+            bridge_pages: BridgePages::InApp,
         },
         Arc::new(|| {}),
     );

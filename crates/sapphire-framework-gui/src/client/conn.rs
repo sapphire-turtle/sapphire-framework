@@ -9,7 +9,9 @@ use sapphire_ipc::{Client, ClientInfo};
 
 use sapphire_bridge_api::settings::EntryValue;
 
-use super::types::{BridgeState, ClientConfig, Conn, GuiValues, ServerState};
+use super::types::{
+    BridgePages, BridgeState, ClientConfig, ClientMode, Conn, GuiValues, ServerState,
+};
 
 /// What a failure means for the display.
 pub fn classify<T>(err: &sapphire_ipc::Error) -> Conn<T> {
@@ -106,14 +108,36 @@ async fn gui_values(c: &BridgeClient) -> sapphire_ipc::Result<Option<GuiValues>>
 #[derive(Default)]
 pub(crate) struct Connections {
     app: Option<Arc<Client>>,
+    /// The bridge itself, in [`ClientMode::BridgeOnly`].
+    bridge: Option<Arc<BridgeClient>>,
 }
 
 impl Connections {
     /// The bridge, through the cached app-server connection; `None` until
     /// [`app`](Self::app) has connected.
-    pub(crate) fn bridge(&self, cfg: &ClientConfig) -> Option<BridgeClient> {
+    pub(crate) fn bridge(&self, cfg: &ClientConfig) -> Option<Arc<BridgeClient>> {
+        if cfg.mode == ClientMode::BridgeOnly {
+            return self.bridge.clone();
+        }
         let client = Arc::clone(self.app.as_ref()?);
-        Some(BridgeClient::relayed(client, cfg.endpoints.app.dir.clone()))
+        Some(Arc::new(BridgeClient::relayed(
+            client,
+            cfg.endpoints.app.dir.clone(),
+        )))
+    }
+
+    /// In [`ClientMode::BridgeOnly`], connect to the bridge if not yet: whether one
+    /// answers.
+    pub(crate) async fn connect_bridge(
+        &mut self,
+        cfg: &ClientConfig,
+    ) -> sapphire_ipc::Result<bool> {
+        if self.bridge.is_none() {
+            self.bridge = BridgeClient::connect_at(&cfg.endpoints.bridge, "gui", cfg.app.version)
+                .await?
+                .map(Arc::new);
+        }
+        Ok(self.bridge.is_some())
     }
 
     /// The cached app-server connection itself; `None` until [`app`](Self::app) has
@@ -143,12 +167,21 @@ impl Connections {
 
     pub(crate) fn drop_app(&mut self) {
         self.app = None;
+        self.bridge = None;
     }
 
     /// Ask the bridge, through the app server, everything the views show.
     pub(crate) async fn fetch_bridge(&mut self, cfg: &ClientConfig) -> Conn<BridgeState> {
+        let bridge_only = cfg.mode == ClientMode::BridgeOnly;
+        // An app that links to Sapphire Bridge shows a summary, not the embedding page.
+        let summary_only = cfg.bridge_pages == BridgePages::Linked && !bridge_only;
         let result = tokio::time::timeout(cfg.fetch_timeout, async {
-            if self.app(cfg).await?.is_none() {
+            let connected = if bridge_only {
+                self.connect_bridge(cfg).await?
+            } else {
+                self.app(cfg).await?.is_some()
+            };
+            if !connected {
                 return Ok(None);
             }
             let Some(c) = self.bridge(cfg) else {
@@ -157,12 +190,17 @@ impl Connections {
             let status = c.status().await?;
             let (peers, peer_roles, ledger) = if status.workgroup.is_some() {
                 let p = c.peers().await?;
+                // The Workspaces page lists the workgroup's, in Linked mode too.
                 (p.peers, p.roles, c.workspaces().await?.workspaces)
             } else {
                 (Vec::new(), Vec::new(), Vec::new())
             };
             // A bridge older than 2.3 has no such method: the screen says so.
-            let embedding = c.embed_settings().await.ok();
+            let embedding = if summary_only {
+                None
+            } else {
+                c.embed_settings().await.ok()
+            };
             // A bridge older than the theme's settings does not know them: the theme stays.
             let gui = gui_values(&c).await?;
             Ok::<_, sapphire_ipc::Error>(Some(BridgeState {
@@ -177,6 +215,7 @@ impl Connections {
         .await;
         match result {
             Ok(Ok(Some(state))) => Conn::Up(state),
+            Ok(Ok(None)) if bridge_only => Conn::Absent,
             // Without its app server the GUI cannot tell whether a bridge runs.
             Ok(Ok(None)) => Conn::Error(format!("the {} server is not running", cfg.app.app_name)),
             // The app server answered, for the bridge: its connection is fine.
@@ -194,6 +233,9 @@ impl Connections {
 
     /// Ask the app server everything the views show.
     pub(crate) async fn fetch_server(&mut self, cfg: &ClientConfig) -> Conn<ServerState> {
+        if cfg.mode == ClientMode::BridgeOnly {
+            return Conn::Absent;
+        }
         let result = tokio::time::timeout(cfg.fetch_timeout, async {
             let Some(c) = self.app(cfg).await? else {
                 return Ok(None);
@@ -245,7 +287,8 @@ pub(crate) mod tests {
                 version: "0",
             },
             endpoints: super::super::Endpoints {
-                app: sapphire_ipc::Endpoint::in_dir("a", dir),
+                app: sapphire_ipc::Endpoint::in_dir("a", dir.clone()),
+                bridge: sapphire_ipc::Endpoint::in_dir("bridge", dir),
             },
             service_exes: super::super::ServiceExes {
                 bridge: "/b".into(),
@@ -255,6 +298,8 @@ pub(crate) mod tests {
             fetch_timeout: Duration::from_secs(5),
             command_timeout: Duration::from_secs(5),
             install_timeout: Duration::from_secs(5),
+            mode: super::super::ClientMode::App,
+            bridge_pages: super::super::BridgePages::InApp,
         }
     }
 
@@ -289,6 +334,7 @@ pub(crate) mod tests {
         let (client, _) = Client::handshake(client_conn, "app", info).await.unwrap();
         Connections {
             app: Some(Arc::new(client)),
+            bridge: None,
         }
     }
 

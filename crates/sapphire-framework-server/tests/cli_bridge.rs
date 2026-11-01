@@ -1,11 +1,11 @@
-//! Integration tests for framework CLI commands that go through the bridge, by way of the
-//! app server's relay.
+//! Integration tests for framework CLI commands that reach the bridge by way of the app
+//! server's relay.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use sapphire_framework_bridge::{Bridge, BridgeDir, LoopbackNetwork, NetConfig};
-use sapphire_framework_server::{AppServer, BridgeConnector, DeviceCommand, WorkgroupCommand};
+use sapphire_framework_server::{AppServer, BridgeConnector};
 use sapphire_ipc::Endpoint;
 use sapphire_workspace::{AppContext, AppKind};
 
@@ -120,75 +120,6 @@ impl Drop for Fixture {
     }
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn workgroup_create_succeeds() {
-    let _lock = ENV.lock().await;
-    let fixture = Fixture::start().await;
-
-    let result = WorkgroupCommand::Create {
-        name: "home".into(),
-        device_name: "desk".into(),
-    }
-    .dispatch(APP, "0.0.0")
-    .await;
-
-    assert!(result.is_ok(), "Create should succeed: {:?}", result);
-    assert_eq!(result.unwrap(), 0, "Create should return exit code 0");
-
-    // The bridge itself holds the workgroup.
-    let info = sapphire_ipc::ClientInfo {
-        kind: "test".into(),
-        version: "0.0.0".into(),
-        api: sapphire_bridge_api::API_VERSION,
-        app_api: None,
-        pid: std::process::id(),
-    };
-    let (direct, _) = sapphire_ipc::connect_or_absent(&fixture.control, "bridge", info)
-        .await
-        .unwrap()
-        .expect("the bridge is listening");
-    let client = sapphire_bridge_client::BridgeClient::from_client(
-        Arc::new(direct),
-        fixture._tmp.path().to_path_buf(),
-    );
-    let status = client.status().await.expect("should get status");
-    assert_eq!(status.workgroup.expect("the workgroup").name, "home");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn device_retire_own_device_fails() {
-    let _lock = ENV.lock().await;
-    let _fixture = Fixture::start().await;
-
-    let create_result = WorkgroupCommand::Create {
-        name: "home".into(),
-        device_name: "desk".into(),
-    }
-    .dispatch(APP, "0.0.0")
-    .await;
-    assert!(create_result.is_ok(), "Create should succeed");
-
-    let retire_result = DeviceCommand::Retire {
-        selector: "desk".into(),
-    }
-    .dispatch(APP, "0.0.0")
-    .await;
-
-    assert!(
-        retire_result.is_err(),
-        "Retire own device should fail: {:?}",
-        retire_result
-    );
-
-    let err_msg = format!("{:?}", retire_result.unwrap_err());
-    assert!(
-        err_msg.to_lowercase().contains("own device"),
-        "Error should mention 'own device', got: {}",
-        err_msg
-    );
-}
-
-/// Run an app server for [`APP`] (at the environment's runtime directory) that relays to the bridge at `control`.
 fn start_app_server(tmp: &Path, control: Endpoint) -> tokio::task::JoinHandle<()> {
     // SAFETY: callers hold `ENV`, so nothing else reads the environment meanwhile.
     unsafe {
@@ -222,32 +153,19 @@ async fn wait_for_app_server() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn bridge_commands_without_an_app_server_say_so() {
-    let _lock = ENV.lock().await;
-    let tmp = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var(sapphire_ipc::RUNTIME_DIR_ENV, tmp.path());
-    }
-
-    let result = WorkgroupCommand::List.dispatch(APP, "0.0.0").await;
-    assert_eq!(result.unwrap(), 1);
-
-    unsafe {
-        std::env::remove_var(sapphire_ipc::RUNTIME_DIR_ENV);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn workspace_show_lists_the_workgroup_through_the_app_server() {
     let _lock = ENV.lock().await;
     let fixture = Fixture::start().await;
-    let created = WorkgroupCommand::Create {
-        name: "home".into(),
-        device_name: "desk".into(),
-    }
-    .dispatch(APP, "0.0.0")
-    .await;
-    assert_eq!(created.unwrap(), 0);
+    // The workgroup is founded on the bridge, as `sapphire-bridge workgroup create` does.
+    fixture
+        .direct_client()
+        .await
+        .workgroup_create(sapphire_bridge_api::WorkgroupCreateParams {
+            name: "home".into(),
+            device_name: "desk".into(),
+        })
+        .await
+        .unwrap();
 
     // Two apps' servers register a workspace with the bridge, as app servers do; their
     // connections stay open so the registrations stand.

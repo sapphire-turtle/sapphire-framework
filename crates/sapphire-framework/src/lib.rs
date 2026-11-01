@@ -144,9 +144,8 @@ pub mod prelude {
     // and the `Settings` its build function reads; `AppConfigCommand` is `config`.
     #[cfg(feature = "server")]
     pub use sapphire_framework_server::{
-        AppConfigCommand, AppScopeFlags, AppServer, AppSettings, DeviceCommand, FrameworkCommand,
-        ReleaseSource, Settings, StatusReport, StatusRow, WorkgroupCommand, WorkspaceCommand,
-        WorkspaceHost, serve_restarting,
+        AppConfigCommand, AppScopeFlags, AppServer, AppSettings, FrameworkCommand, ReleaseSource,
+        Settings, StatusReport, StatusRow, WorkspaceCommand, WorkspaceHost, serve_restarting,
     };
 }
 
@@ -162,8 +161,6 @@ mod tests {
         let _serve: FrameworkCommand = FrameworkCommand::Serve;
         let _status: FrameworkCommand = FrameworkCommand::Status;
         let _workspace: FrameworkCommand = FrameworkCommand::Workspace(WorkspaceCommand::Show);
-        let _workgroup: FrameworkCommand = FrameworkCommand::Workgroup(WorkgroupCommand::List);
-        let _device: FrameworkCommand = FrameworkCommand::Device(DeviceCommand::List);
         let _config: FrameworkCommand = FrameworkCommand::Config(AppConfigCommand::Get {
             key: "http.listen".to_owned(),
         });

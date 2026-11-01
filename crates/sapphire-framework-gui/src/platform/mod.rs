@@ -11,6 +11,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+mod bridge_exe;
+
+pub use bridge_exe::{bridge_desktop_exe, bridge_desktop_exe_with, bridge_desktop_name};
+
 pub use corundum_framework_gui::platform::{
     AUDIO_EXTENSIONS, FilePicker, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, clipboard_text,
     file_manager_available, file_picker_available, folder_picker_available, needs_paste_button,

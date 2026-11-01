@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn a_desktop_window_links_to_sapphire_bridge() {
         let app = AppIdentity {
-            app_name: "sapphire-linktest",
+            app_name: "linktest",
             version: "0.0.0",
         };
         assert_eq!(

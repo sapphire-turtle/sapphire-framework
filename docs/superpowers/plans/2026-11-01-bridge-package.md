@@ -46,7 +46,7 @@
   - `pub fn bridge_service() -> ServiceSpec` = `bridge_service_spec(env!("CARGO_PKG_VERSION"))`.
   - `pub const REPO: &str`, `pub const CHECK_EVERY: Duration`.
   - `pub fn start_updater() -> Option<Updater>`: `Updater::new(&PACKAGE, source)`; `apply_pending_at_start()`; `run_in_background(CHECK_EVERY)`; `None` outside a package or on error (logged).
-- `main` order with `velopack`: `package::start(&PACKAGE)` → `Start::Done` exits 0; subcommand → as now; bare → `run_bridge` with `package: Some(PackageWindow { updater, service: bridge_service })` where `updater = start_updater()` is made **after** `run_bridge` takes the lock (Task 2's `BridgeWindowOptions::on_instance` hook).
+- `main` order with `velopack`: `package::start(&PACKAGE)` → `Start::Done` exits 0; subcommand → as now; bare → `run_bridge` with `package: Some(PackageWindow { start_updater, service: bridge_service })`. `run_bridge` calls `start_updater` only after it holds the lock (Task 2), so a second start never applies an update.
 
 - [ ] **Step 1: Failing test** in `package.rs`: `package_names_the_bridge_and_its_service` — `PACKAGE.app_name == "sapphire-bridge"`, `PACKAGE.cli.unwrap().command == "sapphire-bridge"`, `bridge_service().args == ["serve"]`, `bridge_service().app_name == "sapphire-bridge"`.
 - [ ] **Step 2: Run** `cargo test -p sapphire-bridge-desktop --features velopack package` — FAIL.
@@ -62,16 +62,16 @@
 
 **Interfaces:**
 - Produces:
-  - `pub struct PackageWindow { pub updater: Option<Updater>, pub service: fn() -> ServiceSpec }` (feature `package`).
+  - `pub struct PackageWindow { pub start_updater: fn() -> Option<Updater>, pub service: fn() -> ServiceSpec }` (feature `package`); `run_bridge` calls `start_updater()` right after `acquire_or_activate_with` returns the instance, before the window opens.
   - `BridgeWindowOptions { …, pub package: Option<PackageWindow> }` (field present only with `package`).
   - `pub fn first_run_pages(service: fn() -> ServiceSpec) -> Vec<Box<dyn FirstRunPage>>` → `[WelcomePage, ServicePage::new(vec![service], question, reason)]`.
-  - `Settings::with_package(self, package: PackageWindow) -> Settings` (bridge window About: `ServiceRow::new(service)` and `UpdatesPanel::new(vec![Target::this_app("Sapphire Bridge".into(), updater, binary_target)], user_agent)`).
+  - `Settings::with_package(self, updater: Option<Updater>, service: fn() -> ServiceSpec) -> Settings` (bridge window About: `ServiceRow::new(service)` and `UpdatesPanel::new(vec![Target::this_app("Sapphire Bridge".into(), updater, binary_target)], user_agent)`).
   - In `run_bridge`: when `package` is `Some` and `FirstRun::done(ctx)` is false, the window draws `FirstRun::new("Sapphire Bridge", first_run_pages(service))` until its `ui` returns true, then Settings.
 - Strings: the first-run strings in Global Constraints, ids `sapphire-bridge-welcome-title`, `-welcome-body`, `sapphire-bridge-service-question`, `-service-reason`.
 
 - [ ] **Step 1: Failing tests:**
   - `first_run_is_welcome_then_service`: `first_run_pages(svc)` has 2 pages; titles (english ctx) are "Welcome to Sapphire Bridge" and "Keep Sapphire Bridge running in the background?".
-  - `about_shows_the_service_and_updates`: `Settings::for_bridge(client).with_package(PackageWindow { updater: Some(Updater::for_tests(PackageState::UpToDate)), service: svc })`; render About → drawn text contains the service row's label and the update panel's "Sapphire Bridge" row.
+  - `about_shows_the_service_and_updates`: `Settings::for_bridge(client).with_package(Some(Updater::for_tests(PackageState::UpToDate)), svc)`; render About → drawn text contains the service row's label and the update panel's "Sapphire Bridge" row.
   - i18n check passes.
 - [ ] **Step 2: Run** `cargo test -p sapphire-framework-gui --features package --lib bridge_window` — FAIL.
 - [ ] **Step 3: Implement.**

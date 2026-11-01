@@ -25,7 +25,6 @@ required-features = ["velopack"]
 # and its service (src/package.rs). `cargo build` makes the plain binary.
 velopack = [
     "dep:corundum-framework-package",
-    "dep:corundum-framework-platform",
     "dep:corundum-framework-update",
     "dep:tracing",
     "sapphire-framework-gui/package",
@@ -36,14 +35,13 @@ sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.24.0", p
 sapphire-framework-bridge-embed = { version = "0.24.0", path = "../../crates/sapphire-framework-bridge-embed", features = ["factory"] }
 sapphire-framework-gui = { version = "0.24.0", path = "../../crates/sapphire-framework-gui", features = ["eframe"] }
 corundum-framework-package = { version = "0.7.0", features = ["service"], optional = true }
-corundum-framework-platform = { workspace = true, optional = true }
+# The window's icon and app-menu entry (`LauncherSpec`); the package's layout.
+corundum-framework-platform.workspace = true
 corundum-framework-update = { version = "0.7.0", default-features = false, optional = true }
 tracing = { workspace = true, optional = true }
 clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
-# examples/icons.rs renders the package's icons.
-corundum-framework-platform.workspace = true
 corundum-framework-package = { version = "0.7.0", features = ["service", "test-support"] }
 tempfile = "3"

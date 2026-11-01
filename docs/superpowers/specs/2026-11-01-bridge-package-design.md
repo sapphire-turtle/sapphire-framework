@@ -123,7 +123,7 @@ In a package, About shows, below the version and the services' banner:
 | Windows | windows-latest | Setup | — |
 
 - It builds `sapphire-bridge-desktop --features velopack --release`, renders the icon from
-  `bridge/headless/assets/app-icon.svg`, runs `vpk pack --packId sapphire-bridge-desktop
+  `bridge/desktop/assets/app-icon.svg`, runs `vpk pack --packId sapphire-bridge-desktop
   --packVersion <version> --packTitle "Sapphire Bridge" --mainExe sapphire-bridge-desktop`,
   and uploads with `vpk upload github --releaseName v<version> --tag v<version> --merge`.
 - `VPK_VERSION` is pinned as corundum's is.

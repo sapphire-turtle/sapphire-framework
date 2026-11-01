@@ -13,6 +13,7 @@
 mod package;
 
 use clap::Parser;
+use corundum_framework_platform::launcher::LauncherSpec;
 use sapphire_bridge::BridgeCommand;
 use sapphire_framework_gui::bridge_window::BridgePage;
 
@@ -24,6 +25,35 @@ struct Desktop {
     page: BridgePage,
     #[command(subcommand)]
     command: Option<BridgeCommand>,
+}
+
+/// Sapphire Bridge in the OS's app menu, and the window's id and icon. As the package's
+/// (`release-bridge.yml`): `org.sapphire-turtle.sapphire-bridge` is its macOS bundle id and
+/// `Network` its Linux category. Not the packId (`sapphire-bridge-desktop`), as corundum's
+/// demo.
+const LAUNCHER: LauncherSpec = LauncherSpec {
+    id: "sapphire-bridge",
+    name: "Sapphire Bridge",
+    description: "Sync and embedding for Sapphire apps",
+    category: "Network",
+    icon_svg: include_bytes!("../assets/app-icon.svg"),
+    bundle_prefix: "org.sapphire-turtle",
+};
+
+/// What the window opens with, on `page`.
+fn window_options(page: BridgePage) -> sapphire_framework_gui::bridge_window::BridgeWindowOptions {
+    sapphire_framework_gui::bridge_window::BridgeWindowOptions {
+        title: "Sapphire Bridge".to_owned(),
+        version: env!("CARGO_PKG_VERSION"),
+        page,
+        launcher: Some(LAUNCHER),
+        #[cfg(feature = "velopack")]
+        package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
+            start_updater: package::start_updater,
+            service: package::bridge_service,
+            cli: package::PACKAGE.cli,
+        }),
+    }
 }
 
 fn parse_page(s: &str) -> Result<BridgePage, String> {
@@ -65,18 +95,7 @@ fn main() -> std::process::ExitCode {
     }
     let cli = parsed.unwrap_or_else(|e| e.exit());
     let Some(command) = cli.command else {
-        let options = sapphire_framework_gui::bridge_window::BridgeWindowOptions {
-            title: "Sapphire Bridge".to_owned(),
-            version: env!("CARGO_PKG_VERSION"),
-            page: cli.page,
-            #[cfg(feature = "velopack")]
-            package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
-                start_updater: package::start_updater,
-                service: package::bridge_service,
-                cli: package::PACKAGE.cli,
-            }),
-        };
-        return match sapphire_framework_gui::bridge_window::run_bridge(options) {
+        return match sapphire_framework_gui::bridge_window::run_bridge(window_options(cli.page)) {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("sapphire-bridge-desktop: cannot open the window: {err}");
@@ -167,5 +186,22 @@ mod tests {
         assert!(runs_package_start(&parsed(&["x"])));
         assert!(runs_package_start(&parsed(&["x", "status"])));
         assert!(!runs_package_start(&parsed(&["x", "serve"])));
+    }
+
+    // The window shows the package's icon even outside a package, and goes by the
+    // package's bundle id, so the OS groups it with the installer's entry.
+    #[test]
+    fn the_window_has_sapphire_bridges_icon_and_id() {
+        let options = window_options(BridgePage::Status);
+        let launcher = options.launcher.expect("a launcher spec");
+        assert_eq!(launcher.id, "sapphire-bridge");
+        assert_eq!(launcher.category, "Network");
+        assert_eq!(launcher.name, "Sapphire Bridge");
+        assert_eq!(launcher.bundle_prefix, "org.sapphire-turtle");
+        assert_eq!(
+            launcher.icon_svg,
+            include_bytes!("../assets/app-icon.svg").as_slice()
+        );
+        assert!(corundum_framework_platform::icon::render_rgba(launcher.icon_svg, 64).is_ok());
     }
 }

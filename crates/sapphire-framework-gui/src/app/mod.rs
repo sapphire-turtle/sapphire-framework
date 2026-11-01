@@ -46,7 +46,8 @@ use corundum_framework_gui::window::{self, WindowOptions};
 
 use crate::client::{AppIdentity, ClientConfig, Endpoints, FrameworkClient, ServiceExes};
 
-/// Sets the egui context's fonts, once, before the app is built.
+/// Sets the egui context's fonts, once, before the app is built. Only `mobile` names it.
+#[cfg_attr(not(feature = "mobile"), allow(dead_code))]
 pub(crate) type InstallFonts = window::InstallFonts;
 
 /// What [`run`] needs to know about the app and its window.

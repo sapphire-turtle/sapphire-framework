@@ -50,6 +50,13 @@ fn runs_package_start(parsed: &Result<Desktop, clap::Error>) -> bool {
 
 fn main() -> std::process::ExitCode {
     let parsed = Desktop::try_parse();
+    // The console first, so the package's start below logs where this run prints: the
+    // window's filter for a window start, the command line's otherwise.
+    if matches!(parsed, Ok(Desktop { command: None, .. })) {
+        sapphire_framework_gui::bridge_window::install_logging();
+    } else {
+        sapphire_bridge::install_console();
+    }
     // Velopack's start: a hook runs and exits here.
     #[cfg(feature = "velopack")]
     if runs_package_start(&parsed) {
@@ -105,9 +112,8 @@ fn main() -> std::process::ExitCode {
         );
         return std::process::ExitCode::FAILURE;
     }
-    // The command line's own code, as `sapphire-bridge` runs it: the bridge's subscriber
-    // first, which `serve`'s file layer joins.
-    sapphire_bridge::install_console();
+    // The command line's own code, as `sapphire-bridge` runs it, on the bridge's subscriber
+    // (installed above), which `serve`'s file layer joins.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

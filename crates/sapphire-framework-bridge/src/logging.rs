@@ -39,7 +39,11 @@ pub const LOG_KEEP: usize = 3;
 ///
 /// The same default the bridge's console output uses, so `bridge serve` and a one-shot
 /// command agree on what is worth printing without `RUST_LOG` being set.
-pub const DEFAULT_LOG_FILTER: &str = "sapphire_framework_bridge=info";
+///
+/// A packaged bridge's start (corundum-framework-package, through Velopack) prints its
+/// failures only, not Velopack's info lines on every command.
+pub const DEFAULT_LOG_FILTER: &str =
+    "sapphire_framework_bridge=info,velopack=error,corundum_framework_package=warn";
 
 /// The target prefix whose events the log file keeps.
 ///
@@ -423,6 +427,12 @@ impl Write for Rotating {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_package_runtime_is_quiet_by_default() {
+        assert!(DEFAULT_LOG_FILTER.contains("velopack=error"));
+        assert!(DEFAULT_LOG_FILTER.contains("corundum_framework_package=warn"));
+    }
     use crate::dir::BridgeDir;
     use std::sync::atomic::{AtomicBool, Ordering};
 

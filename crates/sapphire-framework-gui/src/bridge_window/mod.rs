@@ -20,7 +20,7 @@ pub use status::StatusView;
 #[cfg(feature = "package")]
 pub use window::PackageWindow;
 #[cfg(feature = "eframe")]
-pub use window::{BridgeWindowOptions, run_bridge};
+pub use window::{BridgeWindowOptions, install_logging, run_bridge};
 
 /// The pages activations ask for, handed from the listener's thread to the window's.
 pub struct PageInbox {

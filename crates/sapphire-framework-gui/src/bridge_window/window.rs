@@ -39,6 +39,16 @@ pub struct PackageWindow {
     pub cli: Option<corundum_framework_package::CliSpec>,
 }
 
+/// What the window prints when `RUST_LOG` asks for nothing: its renderer's warnings, its
+/// own and the gui's info, and the package runtime's failures only.
+const WINDOW_LOG_FILTER: &str = "warn,sapphire_bridge_desktop=info,sapphire_framework_gui=info,velopack=error,corundum_framework_package=warn";
+
+/// Install the window's console logging. [`run_bridge`] does; a binary calls it first when it
+/// runs anything before (the package's start, whose hooks log), and then it changes nothing.
+pub fn install_logging() {
+    install_console_with_filter(APP_NAME, WINDOW_LOG_FILTER);
+}
+
 /// Open Sapphire Bridge's window and run it until it closes; when it is open already, bring
 /// that one to the front on `options.page` and return. Closing the window stops nothing:
 /// the bridge is its own process (`serve`).
@@ -50,10 +60,7 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         #[cfg(feature = "package")]
         package,
     } = options;
-    install_console_with_filter(
-        APP_NAME,
-        "warn,sapphire_bridge_desktop=info,sapphire_framework_gui=info",
-    );
+    install_logging();
     let Some(instance) = instance::acquire_or_activate_with(APP_NAME, Some(page.as_str())) else {
         tracing::info!("Sapphire Bridge's window is open already: brought it to the front");
         return Ok(());
@@ -137,5 +144,15 @@ impl eframe::App for BridgeApp {
             return;
         }
         egui::CentralPanel::default().show(ui, |ui| self.settings.ui(ui));
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    // The window prints its renderer's warnings, but not the package runtime's (#366).
+    #[test]
+    fn the_window_filter_quiets_the_package_runtime() {
+        assert!(super::WINDOW_LOG_FILTER.contains("velopack=error"));
+        assert!(super::WINDOW_LOG_FILTER.contains("corundum_framework_package=warn"));
     }
 }

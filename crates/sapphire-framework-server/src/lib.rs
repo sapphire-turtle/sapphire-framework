@@ -25,8 +25,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use corundum_framework_service::ServiceSpec;
 use sapphire_backend::protocol as proto;
-use sapphire_framework_service::ServiceSpec;
 use sapphire_ipc::{Endpoint, ManagedBy, Router, ServerInfo, serve};
 use sapphire_workspace::AppContext;
 use tokio::sync::Notify;
@@ -508,13 +508,16 @@ impl AppServer {
     /// [`FrameworkCommand::Serve`](crate::FrameworkCommand::Serve) — the bare invocation
     /// prints the help in the CLI version and opens the window in the desktop one. A CLI
     /// that wants its service installed hands this to
-    /// [`ServiceCommand`](sapphire_framework_service::ServiceCommand), which registers the
+    /// [`ServiceCommand`](corundum_framework_service::ServiceCommand), which registers the
     /// running executable (the AppImage, inside one).
     pub fn service_spec(&self) -> ServiceSpec {
         ServiceSpec {
             app_name: self.ctx.app_name,
             description: format!("{} server {}", self.ctx.app_name, self.version),
             args: vec!["serve".to_owned()],
+            // The first label sapphire registered on macOS; corundum retires its own
+            // earlier one (net.sapphire-turtle.<app>) by itself (#385).
+            legacy_labels: vec![format!("net.fireturtle.sapphire.{}", self.ctx.app_name)],
             post_install: None,
         }
     }

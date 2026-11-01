@@ -94,7 +94,7 @@ pub use sapphire_backend as backend;
 pub use sapphire_framework_gui as gui;
 
 #[cfg(feature = "service")]
-pub use sapphire_framework_service as service;
+pub use corundum_framework_service as service;
 
 #[cfg(feature = "mcp")]
 pub use sapphire_framework_mcp as mcp;

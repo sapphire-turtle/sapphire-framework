@@ -86,7 +86,7 @@ impl ServiceExes {
 
     /// For a desktop binary that carries the app server, the CLI and MCP as subcommands
     /// (#366): the app's server is this executable — the AppImage it runs from, inside one
-    /// ([`service_exe`](sapphire_framework_service::service_exe)) — and `sapphire-bridge`
+    /// ([`service_exe`](corundum_framework_service::service_exe)) — and `sapphire-bridge`
     /// is still looked for next to it, until where the bridge is installed is settled
     /// (#357, #363).
     pub fn single_binary() -> std::io::Result<ServiceExes> {
@@ -95,7 +95,7 @@ impl ServiceExes {
         let suffix = std::env::consts::EXE_SUFFIX;
         Ok(ServiceExes {
             bridge: dir.join(format!("sapphire-bridge{suffix}")),
-            app: sapphire_framework_service::service_exe()?,
+            app: service_exe()?,
         })
     }
 }
@@ -402,4 +402,16 @@ pub struct Outcome {
     pub id: CommandId,
     /// Its result; the error carries the message to show.
     pub result: Result<CommandOutput, CommandError>,
+}
+
+/// The executable a service runs: the running one, or the AppImage it runs from.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn service_exe() -> std::io::Result<PathBuf> {
+    corundum_framework_service::service_exe()
+}
+
+/// A phone has no services: the running executable.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn service_exe() -> std::io::Result<PathBuf> {
+    std::env::current_exe()
 }

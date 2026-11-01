@@ -2,24 +2,11 @@
 name = "sapphire-framework-service"
 version.workspace = true
 edition.workspace = true
-description = "Register a sapphire-framework application with the OS service manager"
+description = "Deprecated: the OS service registration moved to corundum-framework-service; this re-exports it for one release"
 license.workspace = true
 repository.workspace = true
 keywords = ["service", "systemd", "launchd", "daemon"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-clap.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-tracing.workspace = true
-
-# `effective_uid()` reads `libc::geteuid` under `cfg(unix)` — `geteuid` is POSIX, defined on
-# every unix, not just Linux; the gate here matches that `cfg(unix)` use.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
-[dev-dependencies]
-serde_json.workspace = true
-tempfile = "3"
-toml.workspace = true
+corundum-framework-service = { workspace = true, features = ["cli"] }

@@ -51,7 +51,7 @@ pub enum Error {
     /// Carries the service crate's own message, which already says what to do about the
     /// case at hand, or which platform offers what.
     #[error(transparent)]
-    Service(#[from] sapphire_framework_service::Error),
+    Service(#[from] corundum_framework_service::Error),
 
     /// Finding, verifying or installing a release failed.
     #[error(transparent)]

@@ -1,46 +1,59 @@
-//! Registering a sapphire application with the OS service manager.
+//! Deprecated (#381): an application's OS service registration is
+//! [`corundum-framework-service`](corundum_framework_service), which this crate re-exports
+//! for one release. Depend on that crate, or on `sapphire_framework::service`, instead.
 //!
-//! An application describes itself with a [`ServiceSpec`]; this crate turns that into a unit
-//! file and hands it to the OS service manager — one real implementation per platform, plus
-//! a recording one for tests, so no test ever touches the host's service manager. See the
-//! process-architecture spec, §3 and §9 step 10.
+//! What changed for an application:
 //!
-//! The one unit kind each platform offers, and how this crate installs it:
-//!
-//! | Platform | Unit | Activation |
-//! |---|---|---|
-//! | Linux | `~/.config/systemd/user/<app>.service` | `systemctl --user enable --now` |
-//! | macOS | `~/Library/LaunchAgents/<label>.plist` | `launchctl bootstrap gui/<uid>` |
-//! | Windows | a scheduled task, handed over from a temporary XML | `schtasks /create` |
-//!
-//! Every install is user level: the service runs as the user who installed it, with their
-//! own home directory and their own directories. LaunchDaemons and real Windows services
-//! are per-machine services this crate does not install — a service the machine runs
-//! without a user is outside what it offers.
-//!
-//! The install flow itself lives in [`manager`]: [`install`], [`uninstall`] and [`status`]
-//! drive everything through the [`ServiceManager`] trait, whose real implementation is the
-//! only thing in the crate that writes to the machine or runs a command.
+//! - [`ServiceSpec`] has `legacy_labels`: the macOS labels an earlier version registered
+//!   under, which install, uninstall and status take off launchd. sapphire's first one is
+//!   [`legacy_label`]; corundum retires its own earlier `net.sapphire-turtle.<app>` itself.
+//! - The macOS label is `org.sapphire-turtle.<app>` (#385). The systemd unit
+//!   (`<app>.service`) and the Windows task (`<app>`) are named as before.
 
-#![warn(missing_docs)]
+#![allow(deprecated)]
 
-pub mod error;
-pub mod exe;
-pub mod launchd;
-pub mod manager;
-pub mod scope;
-pub mod systemd;
-pub mod windows;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub use corundum_framework_service::*;
 
-pub use error::{Error, Result};
-pub use exe::service_exe;
-pub use launchd::{
-    agent_path, label, legacy_agent_path, legacy_label, relabel, render_launch_agent,
-};
-pub use manager::{
-    Calls, RecordingManager, ServiceCommand, ServiceManager, SystemManager, install, status,
-    uninstall,
-};
-pub use scope::{Environment, InstallContext, Os, PostInstall, ServiceSpec};
-pub use systemd::{activation, linger_hint, render_unit, unit_path};
-pub use windows::render_task;
+/// The label sapphire's first LaunchAgents were registered under:
+/// `net.fireturtle.sapphire.<app>`. Put it in [`ServiceSpec::legacy_labels`].
+#[deprecated(note = "pass it in corundum_framework_service::ServiceSpec::legacy_labels")]
+pub fn legacy_label(app_name: &str) -> String {
+    format!("net.fireturtle.sapphire.{app_name}")
+}
+
+/// Where an agent under the [`legacy_label`] was installed.
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+#[deprecated(note = "corundum_framework_service::labelled_agent_path(&legacy_label(app), home)")]
+pub fn legacy_agent_path(app_name: &str, home: &std::path::Path) -> std::path::PathBuf {
+    corundum_framework_service::labelled_agent_path(&legacy_label(app_name), home)
+}
+
+#[cfg(all(test, not(any(target_os = "ios", target_os = "android"))))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_re_exports_and_helpers_stay() {
+        let spec = ServiceSpec {
+            app_name: "sapphire-agent",
+            description: String::new(),
+            args: vec!["serve".into()],
+            legacy_labels: vec![legacy_label("sapphire-agent")],
+            post_install: None,
+        };
+        assert_eq!(
+            spec.legacy_labels,
+            ["net.fireturtle.sapphire.sapphire-agent"]
+        );
+        assert_eq!(
+            label("sapphire-agent"),
+            "org.sapphire-turtle.sapphire-agent"
+        );
+        assert!(
+            legacy_agent_path("sapphire-agent", std::path::Path::new("/Users/a"))
+                .ends_with("net.fireturtle.sapphire.sapphire-agent.plist")
+        );
+        let _: fn() -> ServiceCommand = || ServiceCommand::Status;
+    }
+}

@@ -25,7 +25,7 @@ sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version
 sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.23.0", path = "../sapphire-framework-ipc" }
 sapphire-registry = { package = "sapphire-framework-registry", version = "0.23.0", path = "../sapphire-framework-registry" }
 sapphire-framework-session = { version = "0.23.0", path = "../sapphire-framework-session" }
-sapphire-framework-service = { version = "0.23.0", path = "../sapphire-framework-service" }
+corundum-framework-service = { workspace = true, features = ["cli"] }
 sapphire-framework-settings = { version = "0.23.0", path = "../sapphire-framework-settings" }
 sapphire-framework-update = { version = "0.23.0", path = "../sapphire-framework-update" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.23.0", path = "../sapphire-framework-sync" }

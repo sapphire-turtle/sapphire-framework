@@ -24,7 +24,6 @@ fn every_module_feature_has_a_matching_optional_dependency() {
         "server",
         "bridge",
         "keys",
-        "service",
         "registry",
         "backend",
         "gui",
@@ -36,6 +35,14 @@ fn every_module_feature_has_a_matching_optional_dependency() {
             "the feature {feature} has no dependency behind it"
         );
     }
+}
+
+#[test]
+fn the_service_feature_is_corundum_s() {
+    // #381: the OS service registration is corundum-framework-service's.
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("service = [\"dep:corundum-framework-service\"]"));
+    assert!(manifest.contains("corundum-framework-service = {"));
 }
 
 #[test]

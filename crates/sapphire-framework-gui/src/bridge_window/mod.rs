@@ -4,9 +4,35 @@
 
 mod logs;
 mod status;
+#[cfg(feature = "eframe")]
+mod window;
 
 pub use logs::LogsView;
 pub use status::StatusView;
+#[cfg(feature = "eframe")]
+pub use window::{BridgeWindowOptions, run_bridge};
+
+/// The pages activations ask for, handed from the listener's thread to the window's.
+pub struct PageInbox {
+    rx: std::sync::mpsc::Receiver<String>,
+}
+
+impl PageInbox {
+    /// An inbox, and what the activation callback sends into it.
+    pub fn new() -> (std::sync::mpsc::Sender<String>, PageInbox) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (tx, PageInbox { rx })
+    }
+
+    /// The page the latest activation that named one asks for, if any arrived since the
+    /// last call; messages that name no page are dropped.
+    pub fn take(&self) -> Option<BridgePage> {
+        self.rx
+            .try_iter()
+            .filter_map(|m| BridgePage::parse(&m))
+            .last()
+    }
+}
 
 /// A page of the bridge's window: what `--page` and an activation's message name.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -64,6 +90,18 @@ pub fn bridge_log_dir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inbox_gives_the_latest_page() {
+        let (tx, inbox) = PageInbox::new();
+        assert_eq!(inbox.take(), None);
+        tx.send("devices".into()).unwrap();
+        tx.send("nope".into()).unwrap();
+        tx.send("logs".into()).unwrap();
+        tx.send("also nope".into()).unwrap();
+        assert_eq!(inbox.take(), Some(BridgePage::Logs));
+        assert_eq!(inbox.take(), None);
+    }
 
     #[test]
     fn bridge_page_round_trips() {

@@ -119,14 +119,15 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 | `sapphire-framework-session` | 2 つのレプリカ間のセッション（フレーミング・vv 交換・差分と内容の転送） |
 | `sapphire-framework-ipc` | ローカル IPC（UDS / 名前付きパイプ / プロセス内チャネル上の NDJSON JSON-RPC、ルータ、`connect` / `probe`） |
 | `sapphire-framework-server-api` | アプリサーバ共通 API の wire 型（`workspace.*` / `sync.*` / `server.info` のメソッド名・引数・結果、`BackendEvent`・`SearchMode`・`FileSearchResult`）。serde と grain-id のみに依存。**単独でバージョン管理**（4.0.0 — メジャー == `API_VERSION`）。各アプリの API crate はこれに依存する |
-| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `workgroup` / `device` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを、配信中のワークスペースの API キーで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/config.toml`（下記「アプリサーバの設定」） |
+| `sapphire-framework-server` | アプリサーバ骨格（`workspace.*` 名前空間・多重管理・`FrameworkCommand` — `serve` / `status` / `service` / `workspace` / `api-key` / `config` フラット語彙・同期ランタイム）。feature `http` で HTTP リスナー（`/metrics` 以外の全ルートを、配信中のワークスペースの API キーで保護）、`mcp` で `mcp` サブコマンドと `/mcp`、`metrics` で `[http.metrics] enabled` のとき `/metrics` に Prometheus メトリクス（トークンなし・件数と状態のみで識別子は載せない）。設定は `<config dir>/config.toml`（下記「アプリサーバの設定」） |
 | `sapphire-framework-frontmatter` | YAML フロントマター付き Markdown（#237）: `split` / `parse` / `render` と、コメント・キー順・改行コードを保ったまま 1 キーだけ書き換える `set_top_level_key`。YAML は `serde-saphyr`、型の決まらない値は `serde_json::Value`（`preserve_order`）。ファサード feature `frontmatter` |
 | `sapphire-framework-mcp` | アプリ共通の MCP ツール（`ToolContext`・`framework_tools`・`workspace_write_tools`・`FrameworkServer`）と、stdio / Streamable HTTP の両トランスポートで任意のハンドラを提供する `McpService`。ファサード feature `mcp`（`native` には入れない — sapphire-agent は MCP を持たない） |
 | `sapphire-framework-bridge-api` | bridge 制御プレーンの wire 型（メソッド名・引数・結果。serde と grain-id のみに依存し、ipc にも iroh にも依存しない）。**単独でバージョン管理**（メジャー == 制御面 `API_VERSION`。`version.workspace` ではない） |
 | `sapphire-framework-bridge-client` | bridge 制御プレーンの型付きクライアント `BridgeClient` とデータプレーンの `handshake_data`（ipc 上）。framework と同じバージョンで動く |
 | `sapphire-framework-bridge` | ホスト常駐デーモン本体（デバイス同一性・workgroup 認可・ペアリング・交換台・iroh）。埋め込みは `EmbedProvider` フック越しに受け取り、この crate 自体は埋め込みコンポーネントに依存しない |
 | `sapphire-framework-bridge-embed` | bridge の埋め込みコンポーネント（ローカル Qwen3-VL-Embedding-2B を candle で — テキストと画像、重みは読み込み時に量子化 — または OpenAI 互換 REST）。ファサード feature は `bridge-embed`（既定ではなく `native` にも入らない — candle が重いため）。**bridge をプロセス内に持つモバイルアプリがあるため framework crate に残す** |
-| `bridge`（`sapphire-bridge`） | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device`） |
+| `bridge/headless`（`sapphire-bridge-headless`、コマンド `sapphire-bridge`） | 上記のバイナリと CLI（`serve` / `status` / `log` / `service` / `workspace` / `workgroup` / `device` / `embedding`）。サーバー向けで、ウィンドウを持たない |
+| `bridge/desktop`（`sapphire-bridge-desktop`、crates.io には出さない） | 引数なしで Sapphire Bridge のウィンドウを開く（`--page <status\|workgroup\|devices\|embedding\|appearance\|logs\|about>`）。サブコマンドを付けると `sapphire-bridge` と同じコードを動かす（サービスは `sapphire-bridge-desktop serve` を登録できる） |
 | `sapphire-framework-registry` | デバイス台帳（`<dir>/<grain-id>.toml` を 1 デバイス 1 ファイル。`node_id` を保持。users は撤去） |
 | `sapphire-framework-keys` | `protect` / `AuthConfig` / `Verifier`、ワークスペースの API キーの置き場所（`store_dir` / `open_store`）。キーの保存と照合は corundum-framework-keys（#364） |
 | `sapphire-framework-service` | OS のサービスマネージャへの登録（`ServiceSpec`・systemd user unit・LaunchAgent・タスクスケジューラ） |
@@ -160,8 +161,15 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
   スキーマから組み立てるので、キーを足してもコードは要らない。書き込みの拒否は
   `RpcError.data` の `ConfigFieldErrors` を `CommandError.fields` として保つ。
   `views::*` はスナップショットから表示用の行・文言を作る**純関数**で、egui なしでテストできる。
-- **表示層**: `Settings` が上記を egui で描く（アプリが追加するセクション、Sync — ワークスペース /
-  デバイス / workgroup / 外部デバイス / 埋め込み — 、About）。幅が広いときは一覧＋ページ、狭いときは
+- **表示層**: `Settings` が上記を egui で描く（アプリが追加するセクション、Sync、About）。Sync の中身は
+  `BridgePages` で変わる（#363）:
+  - デスクトップ（`app::run` の既定 `Linked`）: ワークスペース / API キー / Sapphire Bridge。Sapphire
+    Bridge は要約（workgroup 名、接続中のデバイス数、bridge の状態）と、bridge のウィンドウを該当ページで
+    開くボタン（`sapphire-bridge-desktop --page …`）だけを持つ
+  - 電話（`InApp`）: bridge がアプリのプロセス内にあるので、デバイス / workgroup / 埋め込みのページをアプリに
+    置く
+  - `Settings::for_bridge` は bridge のウィンドウ自身。`ClientMode::BridgeOnly` のクライアントで bridge に
+    直接つなぎ、状態 / workgroup / デバイス / 埋め込み / 外観 / ログ / About を出す（`app::run_bridge`）幅が広いときは一覧＋ページ、狭いときは
   一覧 → ページの遷移。`Shell` は全アプリ共通の画面の枠で、アプリ固有の画面を左のナビゲーション
   レール（狭いときは下のバー）に並べ、その下端に Settings とサービス状態のドットを置く。状態は
   `Health` で、問題があるときだけ全画面共通のバナーを出す。同期していないワークスペースでは bridge が
@@ -242,8 +250,8 @@ CLI は全アプリ共通のフラット語彙 `serve` / `status` / `service` / 
 `dirs` が解決できないため、`SAPPHIRE_RUNTIME_DIR` / `SAPPHIRE_BRIDGE_DIR` /
 `SAPPHIRE_<APP>_{DATA,CACHE,CONFIG}_DIR` をアプリの private storage 配下に向ける
 （設計: `docs/superpowers/specs/2026-10-16-mobile-android-design.md`）。
-クライアントが話す相手は自分のアプリサーバだけである。`workspace` / `workgroup` / `device` /
-`embedding` はすべてサーバに接続し（`connect_app`）、bridge の
+クライアントが話す相手は自分のアプリサーバだけである。`workspace` / `config` はサーバに接続し
+（`connect_app`）、bridge の
 クライアント向けメソッド（`bridge.status` / `peers` / `workspaces`・workgroup 系・`embed.*` の設定・
 `bridge.restart` — `sapphire-framework-bridge-api` の `RELAYED`）は
 サーバが同じ名前のまま中継する（#314）。中継は params と結果・エラーを書き換えず、bridge への接続は
@@ -293,7 +301,7 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
 （`IpcBackend::check_cwd`）。`serve` は起動時に `workspace.toml` のワークスペースとその同期を
 復元する。詳細はプロセス構成仕様 §2, §4 と[1 サーバ 1 ワークスペース仕様](superpowers/specs/2026-10-11-single-workspace-server-design.md)。
 
-### bridge はホスト常駐の交換台（`bridge/`）
+### bridge はホスト常駐の交換台（`bridge/headless`、`bridge/desktop`）
 
 1 ユーザー 1 プロセスの独立バイナリ。`<データルート>/sapphire-bridge/`（`SAPPHIRE_BRIDGE_DIR`）に
 `node.key`、`config.toml`（このデバイスの設定）、`routes.toml`（workspace_id → 所有サーバ）、workgroup 台帳、`status.json`

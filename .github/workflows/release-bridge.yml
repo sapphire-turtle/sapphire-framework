@@ -1,6 +1,7 @@
 name: Release sapphire-bridge binaries
 
-# Builds the sapphire-bridge binaries and attaches them to an existing release.
+# Builds the sapphire-bridge binaries (the command line, and the desktop app with its
+# window) and attaches them to an existing release.
 # release-plz.yml calls it after a release; run it by hand to (re)upload them
 # for an existing tag.
 on:
@@ -26,3 +27,15 @@ jobs:
       package: sapphire-bridge-headless
       binary: sapphire-bridge
       linux-packages: libssl-dev pkg-config
+
+  # The window (#363): the same commands, and a bare start opens Sapphire Bridge's window.
+  # eframe's windowing needs the Wayland and xkb headers on Linux.
+  build-desktop:
+    permissions:
+      contents: write
+    uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
+    with:
+      tag: ${{ inputs.tag }}
+      package: sapphire-bridge-desktop
+      binary: sapphire-bridge-desktop
+      linux-packages: libssl-dev pkg-config cmake libwayland-dev libxkbcommon-dev

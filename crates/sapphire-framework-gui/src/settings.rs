@@ -138,6 +138,9 @@ pub struct Settings {
     appearance: AppearancePage,
     /// The bridge's own window's pages, when this is it ([`Settings::for_bridge`]).
     bridge_window: Option<(StatusView, LogsView)>,
+    /// The bridge window's About rows in a package ([`Settings::with_package`]).
+    #[cfg(feature = "package")]
+    package_about: Option<crate::bridge_window::PackageAbout>,
     /// The summary that links to Sapphire Bridge, made when first shown.
     bridge_summary: Option<BridgeSummary>,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
@@ -178,6 +181,8 @@ impl Settings {
             seen_look: None,
             bridge_window: None,
             bridge_summary: None,
+            #[cfg(feature = "package")]
+            package_about: None,
             appearance: AppearancePage::default(),
             #[cfg(test)]
             drawn: None,
@@ -230,6 +235,21 @@ impl Settings {
             banner: ServiceStatusBanner::bridge_only(),
             ..Settings::new(client)
         }
+    }
+
+    /// The bridge's window in a Velopack package: About shows the bridge's service row and
+    /// the package's updates (`updater`; none: the binary's release row).
+    #[cfg(feature = "package")]
+    pub fn with_package(
+        mut self,
+        updater: Option<corundum_framework_package::Updater>,
+        service: fn() -> corundum_framework_service::ServiceSpec,
+        version: &str,
+    ) -> Settings {
+        self.package_about = Some(crate::bridge_window::PackageAbout::new(
+            updater, service, version,
+        ));
+        self
     }
 
     /// Open `page` of the bridge's window: the page a start or an activation names.
@@ -734,6 +754,11 @@ impl Settings {
         ui.add_space(8.0);
         ui.label(egui::RichText::new(tr!(ui, "sapphire-settings-services")).strong());
         self.status_ui(ui);
+        #[cfg(feature = "package")]
+        if let Some(about) = &mut self.package_about {
+            ui.add_space(8.0);
+            about.ui(ui);
+        }
     }
 
     /// Take a finished command's outcome, for the view that sent it.
@@ -1212,6 +1237,35 @@ mod tests {
             !drawn.contains("Install"),
             "no app server to install: {drawn}"
         );
+    }
+
+    #[cfg(feature = "package")]
+    #[test]
+    fn about_shows_the_service_and_updates() {
+        use corundum_framework_package::Updater;
+        use corundum_framework_update::PackageState;
+        fn svc() -> corundum_framework_service::ServiceSpec {
+            corundum_framework_service::ServiceSpec {
+                app_name: "sapphire-bridge",
+                description: String::new(),
+                args: vec!["serve".into()],
+                legacy_labels: Vec::new(),
+                post_install: None,
+            }
+        }
+        let (client, _rt) = crate::test_support::client_with(
+            crate::client::ClientMode::BridgeOnly,
+            crate::client::BridgePages::InApp,
+        );
+        let mut settings = Settings::for_bridge(client).with_package(
+            Some(Updater::for_tests(PackageState::UpToDate)),
+            svc,
+            "0.0.0",
+        );
+        settings.open_page(crate::bridge_window::BridgePage::About);
+        let drawn = drawn_text(|ui| settings.ui(ui));
+        assert!(drawn.contains("Background: sapphire-bridge"), "{drawn}");
+        assert!(drawn.contains("Sapphire Bridge"), "{drawn}");
     }
 
     #[test]

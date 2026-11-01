@@ -22,6 +22,19 @@ pub struct BridgeWindowOptions {
     pub version: &'static str,
     /// The page to show first, or to show in the window already open.
     pub page: BridgePage,
+    /// In a Velopack package: its updater and its service.
+    #[cfg(feature = "package")]
+    pub package: Option<PackageWindow>,
+}
+
+/// What the window does in a Velopack package.
+#[cfg(feature = "package")]
+pub struct PackageWindow {
+    /// Make the package's updater; called once this start holds the window's lock, so a
+    /// second start never applies an update under the first.
+    pub start_updater: fn() -> Option<corundum_framework_package::Updater>,
+    /// The bridge's service, which the first run and About register.
+    pub service: fn() -> corundum_framework_service::ServiceSpec,
 }
 
 /// Open Sapphire Bridge's window and run it until it closes; when it is open already, bring
@@ -32,6 +45,8 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         title,
         version,
         page,
+        #[cfg(feature = "package")]
+        package,
     } = options;
     install_console_with_filter(
         APP_NAME,
@@ -41,6 +56,9 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         tracing::info!("Sapphire Bridge's window is open already: brought it to the front");
         return Ok(());
     };
+    // This start is the instance: only now may it apply an update.
+    #[cfg(feature = "package")]
+    let package = package.map(|p| (p.service, (p.start_updater)()));
     let dirs = AppContext::new(APP_NAME);
     dirs.init(AppKind::Desktop);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -68,8 +86,25 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || ctx.request_repaint());
         let client = FrameworkClient::spawn(&handle, config, repaint);
         let mut settings = Settings::for_bridge(client);
+        #[cfg(feature = "package")]
+        let mut first_run = None;
+        #[cfg(feature = "package")]
+        if let Some((service, updater)) = package {
+            settings = settings.with_package(updater, service, version);
+            if !corundum_framework_gui::first_run::FirstRun::done(&cc.egui_ctx) {
+                first_run = Some(corundum_framework_gui::first_run::FirstRun::new(
+                    "Sapphire Bridge",
+                    super::first_run_pages(&cc.egui_ctx, service),
+                ));
+            }
+        }
         settings.open_page(page);
-        Box::new(BridgeApp { settings, inbox })
+        Box::new(BridgeApp {
+            settings,
+            inbox,
+            #[cfg(feature = "package")]
+            first_run,
+        })
     });
     drop(runtime);
     result
@@ -79,12 +114,25 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
 struct BridgeApp {
     settings: Settings,
     inbox: PageInbox,
+    /// The first run, until it is finished.
+    #[cfg(feature = "package")]
+    first_run: Option<corundum_framework_gui::first_run::FirstRun>,
 }
 
 impl eframe::App for BridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if let Some(page) = self.inbox.take() {
             self.settings.open_page(page);
+        }
+        #[cfg(feature = "package")]
+        if let Some(first_run) = &mut self.first_run {
+            let finished = egui::CentralPanel::default()
+                .show(ui, |ui| first_run.ui(ui))
+                .inner;
+            if finished {
+                self.first_run = None;
+            }
+            return;
         }
         egui::CentralPanel::default().show(ui, |ui| self.settings.ui(ui));
     }

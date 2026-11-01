@@ -298,3 +298,7 @@ sapphire-bridge-summary-embedding = 埋め込み…
 sapphire-bridge-summary-get = Sapphire Bridge を入手
 sapphire-bridge-summary-cli-hint = コマンドラインでは sapphire-bridge workgroup … で操作できます
 sapphire-bridge-summary-launch-failed = Sapphire Bridge を開けませんでした: { $error }
+sapphire-bridge-welcome-title = Sapphire Bridge へようこそ
+sapphire-bridge-welcome-body = Sapphire Bridge は、アプリのワークスペースをデバイス間で同期し、このデバイスの設定を保ちます。
+sapphire-bridge-service-question = Sapphire Bridge をバックグラウンドで動かし続けますか？
+sapphire-bridge-service-reason = アプリのウィンドウを閉じている間も、同期とアプリが使います。

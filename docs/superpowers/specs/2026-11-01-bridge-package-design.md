@@ -26,7 +26,7 @@ Success means:
 
 ## Decisions
 
-1. **One package with the desktop binary only.** Package id `sapphire-bridge`, title
+1. **One package with the desktop binary only.** Package id `sapphire-bridge-desktop` (never the data directory's name, `sapphire-bridge`: Velopack's Windows uninstall deletes `%LOCALAPPDATA%\<packId>`; corundum-framework#57), title
    "Sapphire Bridge". It holds `sapphire-bridge-desktop`, which is a superset of the command
    line; corundum's `cli_path` puts it on `PATH` as `sapphire-bridge`. The headless
    `sapphire-bridge` binary stays as it is, for servers (install script, `cargo binstall`).
@@ -123,7 +123,7 @@ In a package, About shows, below the version and the services' banner:
 | Windows | windows-latest | Setup | — |
 
 - It builds `sapphire-bridge-desktop --features velopack --release`, renders the icon from
-  `bridge/headless/assets/app-icon.svg`, runs `vpk pack --packId sapphire-bridge
+  `bridge/headless/assets/app-icon.svg`, runs `vpk pack --packId sapphire-bridge-desktop
   --packVersion <version> --packTitle "Sapphire Bridge" --mainExe sapphire-bridge-desktop`,
   and uploads with `vpk upload github --releaseName v<version> --tag v<version> --merge`.
 - `VPK_VERSION` is pinned as corundum's is.

@@ -83,8 +83,9 @@ jobs:
       # together; keep vpk at corundum's version.
       VPK_VERSION: 1.2.161
       # On Windows the package is installed in %LocalAppData%\<package id>, which its
-      # uninstall deletes: not the data directory's name.
-      PACK_ID: sapphire-bridge
+      # uninstall deletes: never the data directory's name (`sapphire-bridge`, which holds
+      # the device's identity), so `<app>-desktop` (corundum-framework#57).
+      PACK_ID: sapphire-bridge-desktop
       TAG: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v7

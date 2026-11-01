@@ -16,9 +16,9 @@ Each framework release carries Sapphire Bridge's installers, made with
 
 | OS | File |
 |---|---|
-| Windows | `sapphire-bridge-win-Setup.exe` (not signed yet: SmartScreen warns) |
-| macOS | `sapphire-bridge-osx-Setup.pkg` (signed and notarized when the release had the keys) |
-| Linux | `sapphire-bridge.AppImage` |
+| Windows | `sapphire-bridge-desktop-win-Setup.exe` (not signed yet: SmartScreen warns) |
+| macOS | `sapphire-bridge-desktop-osx-Setup.pkg` (signed and notarized when the release had the keys) |
+| Linux | `sapphire-bridge-desktop.AppImage` |
 
 The package holds this binary, as the command `sapphire-bridge`. On Windows the install puts
 it on `PATH` (a small console program of that name runs it, so the command line works while

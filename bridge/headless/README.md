@@ -24,8 +24,8 @@ It never looks inside a workspace: it routes *to* the app server that owns one, 
 
 On a desktop, install **Sapphire Bridge** from the installer attached to each
 [release](https://github.com/sapphire-turtle/sapphire-framework/releases/latest)
-(`sapphire-bridge-win-Setup.exe`, `sapphire-bridge-osx-Setup.pkg`,
-`sapphire-bridge.AppImage`): it has the bridge's window and the `sapphire-bridge` command (on `PATH` from the
+(`sapphire-bridge-desktop-win-Setup.exe`, `sapphire-bridge-desktop-osx-Setup.pkg`,
+`sapphire-bridge-desktop.AppImage`): it has the bridge's window and the `sapphire-bridge` command (on `PATH` from the
 install on Windows, from About › Command line on macOS and Linux),
 asks on its first start to keep the bridge running in the background, and updates itself.
 See [`sapphire-bridge-desktop`](../desktop/README.md).

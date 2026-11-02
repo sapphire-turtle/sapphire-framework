@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.24.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-headless-v0.24.0...sapphire-bridge-headless-v0.24.1) - 2026-11-02
+
+### Fixed
+
+- *(bridge)* name the release files sapphire-bridge-headless-<os>-<arch>
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-v0.22.0...sapphire-bridge-v0.23.0) - 2026-10-28
 
 ### Other

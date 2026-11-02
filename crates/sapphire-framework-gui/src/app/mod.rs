@@ -54,6 +54,9 @@ pub(crate) type InstallFonts = window::InstallFonts;
 pub struct AppOptions {
     app: AppIdentity,
     window: WindowOptions,
+    /// In a Velopack package ([`AppOptions::package`]).
+    #[cfg(feature = "package")]
+    package: Option<crate::package::AppPackage>,
 }
 
 impl AppOptions {
@@ -62,7 +65,31 @@ impl AppOptions {
         AppOptions {
             app,
             window: WindowOptions::new(title),
+            #[cfg(feature = "package")]
+            package: None,
         }
+    }
+
+    /// The window's id and icon, and its entry in the OS's app menu (corundum's
+    /// `WindowOptions::launcher`): the package's, so the OS groups the window with the
+    /// installer's entry.
+    pub fn launcher(
+        mut self,
+        spec: corundum_framework_platform::launcher::LauncherSpec,
+    ) -> AppOptions {
+        self.window = self.window.launcher(spec);
+        self
+    }
+
+    /// Run as `package`, a Velopack package: [`run`] takes the window's single-instance lock
+    /// (a second start brings the open window to the front), starts the package's updater,
+    /// shows the first run before the app on its first start, and gives the app About's rows
+    /// ([`AppSetup::package_about`]). Outside a package (a cargo build) only the lock and
+    /// the first run's skip apply.
+    #[cfg(feature = "package")]
+    pub fn package(mut self, package: crate::package::AppPackage) -> AppOptions {
+        self.package = Some(package);
+        self
     }
 
     /// The window's size when it opens.
@@ -101,6 +128,16 @@ pub struct AppSetup<'a> {
     /// `SAPPHIRE_<APP>_DATA_DIR`), for what the window keeps between runs: its UI
     /// settings, not the workspace's.
     pub data_dir: PathBuf,
+    /// About's rows in a package ([`AppOptions::package`]): give them to
+    /// [`Settings::with_package_about`](crate::Settings::with_package_about).
+    #[cfg(feature = "package")]
+    pub package_about: Option<crate::package::PackageAbout>,
+}
+
+/// Install the window's console logging: [`run`] does; an app's `main` calls it first when it
+/// runs anything before (the package's start, whose hooks log), and then it changes nothing.
+pub fn install_logging(app: AppIdentity) {
+    install_console_with_filter(app.app_name, &desktop_log_filter(app.app_name));
 }
 
 /// Open the app's window and run it until it closes.
@@ -112,10 +149,34 @@ pub fn run(
     options: AppOptions,
     create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
 ) -> eframe::Result<()> {
-    let AppOptions { app, window } = options;
+    let AppOptions {
+        app,
+        window,
+        #[cfg(feature = "package")]
+        package,
+    } = options;
 
     // Before the context's own `install_console`, which then changes nothing.
-    install_console_with_filter(app.app_name, &desktop_log_filter(app.app_name));
+    install_logging(app);
+    #[cfg(feature = "package")]
+    let (window, package) = match package {
+        Some(package) => {
+            let lock = format!("{}-desktop", app.app_name);
+            let Some(instance) =
+                corundum_framework_platform::instance::acquire_or_activate_with(&lock, None)
+            else {
+                tracing::info!(
+                    "{}'s window is open already: brought it to the front",
+                    package.name
+                );
+                return Ok(());
+            };
+            // This start is the instance: only now may it apply an update.
+            let updater = package.start_updater();
+            (window.instance(instance), Some((package, updater)))
+        }
+        None => (window, None),
+    };
     let dirs = sapphire_workspace::AppContext::new(app.app_name);
     dirs.init(AppKind::Desktop);
     let data_dir = dirs.data_dir().to_owned();
@@ -130,7 +191,21 @@ pub fn run(
     // corundum-framework-gui installs the panic hook that explains a lost GPU device.
     let handle = runtime.handle().clone();
     let result = window::run(window, move |cc| {
-        build_app(cc, handle, config, data_dir, create)
+        #[cfg(feature = "package")]
+        if let Some((package, updater)) = package {
+            let about = crate::package::PackageAbout::for_app(&package, updater, app.version);
+            let app = build_app(cc, handle, config, data_dir, Some(about), create);
+            return crate::package::first_run_wrapper(cc, &package, app);
+        }
+        build_app(
+            cc,
+            handle,
+            config,
+            data_dir,
+            #[cfg(feature = "package")]
+            None,
+            create,
+        )
     });
     // The clients' tasks end with the runtime, after the window that used them.
     drop(runtime);
@@ -165,6 +240,7 @@ pub(crate) fn build_app(
     handle: tokio::runtime::Handle,
     config: ClientConfig,
     data_dir: PathBuf,
+    #[cfg(feature = "package")] package_about: Option<crate::package::PackageAbout>,
     create: impl FnOnce(AppSetup<'_>) -> Box<dyn eframe::App>,
 ) -> Box<dyn eframe::App> {
     let endpoints = config.endpoints.clone();
@@ -178,6 +254,8 @@ pub(crate) fn build_app(
         repaint,
         endpoints,
         data_dir,
+        #[cfg(feature = "package")]
+        package_about,
     })
 }
 
@@ -190,7 +268,7 @@ pub(crate) fn build_app(
 /// `RUST_LOG=wgpu_core=debug,wgpu_hal=debug` is the useful setting when one does.
 fn desktop_log_filter(app_name: &str) -> String {
     format!(
-        "warn,{},corundum_framework_gui=info",
+        "warn,{},corundum_framework_gui=info,velopack=error,corundum_framework_package=warn",
         default_log_filter(app_name)
     )
 }
@@ -216,7 +294,15 @@ mod tests {
         let filter = desktop_log_filter("sapphire-example");
         assert!(filter.starts_with("warn,"));
         assert!(filter.contains("sapphire_example=info"));
-        assert!(filter.ends_with(",corundum_framework_gui=info"));
+        assert!(filter.contains(",corundum_framework_gui=info"));
+    }
+
+    // In a package the window prints its renderer's warnings, but not the package runtime's.
+    #[test]
+    fn the_desktop_filter_quiets_the_package_runtime() {
+        let filter = desktop_log_filter("sapphire-example");
+        assert!(filter.contains("velopack=error"));
+        assert!(filter.contains("corundum_framework_package=warn"));
     }
 
     /// The window's size and fonts are corundum-framework-gui's `WindowOptions` (tested there);

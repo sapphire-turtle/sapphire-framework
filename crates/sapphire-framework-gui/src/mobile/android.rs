@@ -67,7 +67,15 @@ fn run_once(
     }
     let handle = runtime.handle().clone();
     let result = window::run_android(android_app, window_options, move |cc| {
-        build_app(cc, handle, config, data_dir, create)
+        build_app(
+            cc,
+            handle,
+            config,
+            data_dir,
+            #[cfg(feature = "package")]
+            None,
+            create,
+        )
     });
     // The bridge, the server and the clients end with the runtime.
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));

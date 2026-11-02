@@ -301,3 +301,5 @@ sapphire-bridge-welcome-title = Welcome to Sapphire Bridge
 sapphire-bridge-welcome-body = Sapphire Bridge syncs your apps' workspaces between your devices, and keeps the device's settings for them.
 sapphire-bridge-service-question = Keep Sapphire Bridge running in the background?
 sapphire-bridge-service-reason = Sync and the apps need it while their windows are closed.
+sapphire-app-service-question = Keep { $app } running in the background?
+sapphire-app-service-reason = Its MCP server, its HTTP clients and sync need it while the window is closed.

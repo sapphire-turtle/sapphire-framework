@@ -138,9 +138,9 @@ pub struct Settings {
     appearance: AppearancePage,
     /// The bridge's own window's pages, when this is it ([`Settings::for_bridge`]).
     bridge_window: Option<(StatusView, LogsView)>,
-    /// The bridge window's About rows in a package ([`Settings::with_package`]).
+    /// About's rows in a package ([`Settings::with_package_about`]).
     #[cfg(feature = "package")]
-    package_about: Option<crate::bridge_window::PackageAbout>,
+    package_about: Option<crate::package::PackageAbout>,
     /// The summary that links to Sapphire Bridge, made when first shown.
     bridge_summary: Option<BridgeSummary>,
     /// The page the last [`ui`](Self::ui) drew, for the tests.
@@ -248,9 +248,21 @@ impl Settings {
         cli: Option<corundum_framework_package::CliSpec>,
         version: &str,
     ) -> Settings {
-        self.package_about = Some(crate::bridge_window::PackageAbout::new(
+        self.package_about = Some(crate::package::PackageAbout::new(
             updater, service, cli, version,
         ));
+        self
+    }
+
+    /// An app's window in a Velopack package: About shows `about`'s rows — the app server's
+    /// service, the command line and the package's updates. [`app::run`](crate::app::run)
+    /// makes them ([`AppSetup::package_about`](crate::app::AppSetup::package_about)); `None`
+    /// changes nothing.
+    #[cfg(feature = "package")]
+    pub fn with_package_about(mut self, about: Option<crate::package::PackageAbout>) -> Settings {
+        if about.is_some() {
+            self.package_about = about;
+        }
         self
     }
 

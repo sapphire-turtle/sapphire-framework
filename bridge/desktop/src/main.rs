@@ -113,8 +113,8 @@ fn main() -> std::process::ExitCode {
     if let BridgeCommand::Update(args) = &command
         && corundum_framework_platform::package::current().is_some()
     {
-        return match package::updater() {
-            Some(updater) => std::process::ExitCode::from(package::package_update(
+        return match package::BRIDGE.updater() {
+            Some(updater) => std::process::ExitCode::from(package::BRIDGE.update(
                 &updater,
                 args.check,
                 &mut std::io::stdout(),

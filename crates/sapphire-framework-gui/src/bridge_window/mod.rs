@@ -3,8 +3,6 @@
 //! page a start or an activation asks for.
 
 #[cfg(feature = "package")]
-mod about;
-#[cfg(feature = "package")]
 mod first_run;
 mod logs;
 mod status;
@@ -12,7 +10,7 @@ mod status;
 mod window;
 
 #[cfg(feature = "package")]
-pub use about::PackageAbout;
+pub use crate::package::PackageAbout;
 #[cfg(feature = "package")]
 pub use first_run::{WelcomePage, first_run_pages};
 pub use logs::LogsView;

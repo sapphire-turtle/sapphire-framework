@@ -302,3 +302,5 @@ sapphire-bridge-welcome-title = Sapphire Bridge へようこそ
 sapphire-bridge-welcome-body = Sapphire Bridge は、アプリのワークスペースをデバイス間で同期し、このデバイスの設定を保ちます。
 sapphire-bridge-service-question = Sapphire Bridge をバックグラウンドで動かし続けますか？
 sapphire-bridge-service-reason = アプリのウィンドウを閉じている間も、同期とアプリが使います。
+sapphire-app-service-question = { $app } をバックグラウンドで動かし続けますか？
+sapphire-app-service-reason = ウィンドウを閉じている間も、MCP サーバー・HTTP のクライアント・同期が使います。

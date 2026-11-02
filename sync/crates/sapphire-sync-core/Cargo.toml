@@ -2,14 +2,24 @@
 name = "sapphire-sync-core"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "The core of sapphire-sync, the framework's reference app: its app context and workspace settings"
 license.workspace = true
 repository.workspace = true
 categories = ["filesystem", "data-structures"]
 keywords = ["sync", "p2p", "file-sync", "local-first"]
 
 [dependencies]
-sapphire-framework.workspace = true
+# The framework facade, the only framework crate the app's own code uses
+# (docs/ARCHITECTURE.md). A sync app needs the server/sync stack plus the bridge
+# module (the e2e harness runs real bridges through it). `retrieve` comes in
+# through `workspace` regardless, but only its full-text half: the embedding
+# stack (`fastembed-embed`) stays off, and CI guards that. The `server` feature
+# implies `backend` + `workspace`, which is where AppContext lives. `ipc` is the
+# transport: the CLI's own one-shot verbs connect over it and the tests probe it
+# while a server starts. `redb-store` must be enabled explicitly: with
+# default-features = false the persistent store silently falls back to
+# in-memory otherwise.
+sapphire-framework = { version = "0.25.0", path = "../../../crates/sapphire-framework", default-features = false, features = ["server", "sync", "bridge", "ipc", "redb-store"] }
 anyhow.workspace = true
 chrono.workspace = true
 grain-id.workspace = true

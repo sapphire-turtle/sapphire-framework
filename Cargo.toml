@@ -25,6 +25,42 @@ members = [
     "crates/sapphire-framework-backend",
     "crates/sapphire-framework-gui",
     "crates/sapphire-framework",
+    # sapphire-sync, the framework's reference app (#394): built and tested here, so a
+    # change that breaks it fails in the same PR. Only through the facade (docs/ARCHITECTURE.md).
+    "sync/headless",
+    "sync/desktop",
+    "sync/crates/sapphire-sync-cli",
+    "sync/crates/sapphire-sync-server",
+    "sync/crates/sapphire-sync-core",
+    "sync/crates/sapphire-sync-api",
+]
+# A plain `cargo build` or `cargo test` at the root stays the framework's; CI and
+# `--workspace` take sync too.
+default-members = [
+    "bridge/headless",
+    "bridge/desktop",
+    "crates/sapphire-framework-track",
+    "crates/sapphire-framework-sync",
+    "crates/sapphire-framework-session",
+    "crates/sapphire-framework-ipc",
+    "crates/sapphire-framework-bridge-api",
+    "crates/sapphire-framework-settings",
+    "crates/sapphire-framework-bridge-client",
+    "crates/sapphire-framework-bridge",
+    "crates/sapphire-framework-bridge-embed",
+    "crates/sapphire-framework-server-api",
+    "crates/sapphire-framework-server",
+    "crates/sapphire-framework-mcp",
+    "crates/sapphire-framework-frontmatter",
+    "crates/sapphire-framework-service",
+    "crates/sapphire-framework-update",
+    "crates/sapphire-framework-retrieve",
+    "crates/sapphire-framework-workspace",
+    "crates/sapphire-framework-keys",
+    "crates/sapphire-framework-registry",
+    "crates/sapphire-framework-backend",
+    "crates/sapphire-framework-gui",
+    "crates/sapphire-framework",
 ]
 
 [workspace.package]
@@ -73,6 +109,7 @@ redb = "4"
 walkdir = "2"
 tower = "0.5"
 grain-id = { version = "0.17", features = ["serde"] }
+tempfile = "3"
 
 [profile.dev.package."*"]
 opt-level = 1

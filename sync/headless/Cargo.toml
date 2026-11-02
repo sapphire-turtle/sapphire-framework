@@ -5,7 +5,7 @@
 name = "sapphire-sync-headless"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "A sync-only reference app for sapphire-framework - simple P2P file sync over iroh, CLI with embedded server"
 license.workspace = true
 repository.workspace = true
 categories = ["command-line-utilities"]
@@ -16,20 +16,25 @@ name = "sapphire-sync"
 path = "src/main.rs"
 
 [dependencies]
-sapphire-sync-cli.workspace = true
+sapphire-sync-cli = { version = "0.25.0", path = "../crates/sapphire-sync-cli" }
 clap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-sapphire-sync-core.workspace = true
-sapphire-sync-api.workspace = true
+sapphire-sync-core = { version = "0.25.0", path = "../crates/sapphire-sync-core" }
+sapphire-sync-api = { version = "1.0.1", path = "../crates/sapphire-sync-api" }
 # The serve tests run a real server in-process with the server crate's
 # `StubBridge` (the in-process bridge stand-in over a `Connection::pair`) from
 # its `test-util` feature, and `probe` the endpoint while it starts, then run
 # this binary against it.
-sapphire-framework-server.workspace = true
-sapphire-ipc.workspace = true
+# Test-only: the server crate's `StubBridge` rides behind `test-util`, which the
+# facade does not expose, so tests reach the crate directly.
+sapphire-framework-server = { version = "0.25.0", path = "../../crates/sapphire-framework-server", default-features = false, features = ["test-util"] }
+# Test-only: `probe` (is anything listening?) while a server starts, and the direct
+# client handshake (`ClientInfo`, `connect_or_absent`) the sync tests use to ride the
+# framework's `sync.enable` path the way `workspace init --sync` does.
+sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.25.0", path = "../../crates/sapphire-framework-ipc" }
 
 # `cargo binstall sapphire-sync-headless` downloads the release file instead of building it,
 # following sapphire-turtle/.github's README.md#conventions: the files are bare binaries named

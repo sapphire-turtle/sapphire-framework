@@ -86,7 +86,7 @@ state.delete_file(Path::new("notes/old.md"))?;
 
 ## ワークスペースのマーカー
 
-ワークスペースルートは`.{app_name}`マーカーディレクトリを持つディレクトリです。サーバーはワークスペースを一つだけ開くため、クライアントがカレントディレクトリからマーカーを探索することはありません（`Workspace::find`／`find_from`は非推奨）。ルートは`Workspace::from_root`で開きます。すべての構築メソッドに`AppContext`を渡して`app_name`を設定すると、マーカーディレクトリとXDGキャッシュがホストアプリケーションの名前空間を使うようになります。スタートアップで一度`init(AppKind::…)`を呼び出すと、キャッシュ／データ／設定ディレクトリを`<プラットフォームルート>/<app-name>/`（first-writer-wins）に解決し、一回限りのディレクトリ移行を適用します。Windows では 3 つのプラットフォームルートがどれも`%LOCALAPPDATA%`（corundum-framework-platform 0.4）になるため、キャッシュは`<app-name>\cache\`に置きます。以前の版のディレクトリは、最初の起動時に Roaming（`%APPDATA%`）から移します：
+ワークスペースルートは`.{app_name}`マーカーディレクトリを持つディレクトリです。サーバーはワークスペースを一つだけ開くため、クライアントがカレントディレクトリからマーカーを探索することはありません（`Workspace::find`／`find_from`は非推奨）。ルートは`Workspace::from_root`で開きます。場所の指定がないとき（ディレクトリを省略した`workspace init`／`select`、GUI の「ワークスペースを作成」、スマホ）は、アプリのデータディレクトリの`<データディレクトリ>/workspaces/default`に置きます（`AppContext::default_workspace_dir`、コンテキストがなければ`sapphire_workspace::default_workspace_dir(app_name)`）。すべての構築メソッドに`AppContext`を渡して`app_name`を設定すると、マーカーディレクトリとXDGキャッシュがホストアプリケーションの名前空間を使うようになります。スタートアップで一度`init(AppKind::…)`を呼び出すと、キャッシュ／データ／設定ディレクトリを`<プラットフォームルート>/<app-name>/`（first-writer-wins）に解決し、一回限りのディレクトリ移行を適用します。Windows では 3 つのプラットフォームルートがどれも`%LOCALAPPDATA%`（corundum-framework-platform 0.4）になるため、キャッシュは`<app-name>\cache\`に置きます。以前の版のディレクトリは、最初の起動時に Roaming（`%APPDATA%`）から移します：
 
 ```rust
 use sapphire_workspace::{AppContext, AppKind};

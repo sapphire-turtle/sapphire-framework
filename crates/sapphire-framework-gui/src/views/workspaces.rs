@@ -59,6 +59,9 @@ impl WorkspacePicker {
         match &server.current {
             None => {
                 ui.label(tr!(ui, "sapphire-workspaces-none"));
+                if let Some(c) = create_default_ui(ui, cx) {
+                    out = Some(c);
+                }
             }
             Some(current) => {
                 let b = badge(current);
@@ -344,6 +347,41 @@ impl WorkspacePicker {
     }
 }
 
+/// With no workspace yet, the one step that needs no folder: create the app's default
+/// workspace, `<data dir>/workspaces/default`, and sync it — or select it, when a removed
+/// one is still there.
+fn create_default_ui(ui: &mut egui::Ui, cx: &ViewCtx) -> Option<Command> {
+    let dir = sapphire_workspace::default_workspace_dir(cx.app_name);
+    let mut out = None;
+    ui.add_space(6.0);
+    if ui
+        .add_enabled(
+            !cx.busy,
+            egui::Button::new(tr!(ui, "sapphire-workspaces-create-default")),
+        )
+        .clicked()
+    {
+        out = Some(default_workspace_command(dir.clone(), cx.app_name));
+    }
+    ui.small(tr!(
+        ui,
+        "sapphire-workspaces-create-default-hint",
+        path = display_path(&dir).display().to_string()
+    ));
+    out
+}
+
+/// What "create a workspace" sends for the default workspace at `dir`: an init, which makes
+/// the folder, or a select when a workspace is there already (one removed without deleting
+/// its folder).
+fn default_workspace_command(dir: std::path::PathBuf, app_name: &str) -> Command {
+    if dir.join(format!(".{app_name}")).is_dir() {
+        Command::WorkspaceSelect { dir }
+    } else {
+        Command::WorkspaceInit { dir, sync: true }
+    }
+}
+
 /// Where to bring workspace `name`: a folder the user picks, or — without a folder dialog —
 /// the app's storage, where it gets a folder of its own.
 fn bring_into(ui: &egui::Ui, name: &str) -> Option<std::path::PathBuf> {
@@ -376,6 +414,21 @@ mod tests {
         picker.confirm.as_mut().unwrap().sent = true;
         picker.on_outcome(&Ok(CommandOutput::Done));
         assert!(picker.confirm.is_none(), "closes on success");
+    }
+
+    #[test]
+    fn the_default_workspace_is_created_or_selected_when_already_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("workspaces").join("default");
+        assert!(matches!(
+            default_workspace_command(dir.clone(), "sapphire-gui-test"),
+            Command::WorkspaceInit { sync: true, .. }
+        ));
+        std::fs::create_dir_all(dir.join(".sapphire-gui-test")).unwrap();
+        assert!(matches!(
+            default_workspace_command(dir, "sapphire-gui-test"),
+            Command::WorkspaceSelect { .. }
+        ));
     }
 
     #[test]

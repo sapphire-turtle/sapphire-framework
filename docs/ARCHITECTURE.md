@@ -300,7 +300,10 @@ ipc にも framework の他の crate にも依存しない（0.x の framework c
 選ぶと同時に、`workspace sync enable | disable | status` で後から切り替える（`sync.enable` /
 `sync.disable` / `sync.status`）。同期するのは現在のワークスペースだけで、bridge にもそれだけを
 登録する。CLI はカレントディレクトリに従わず、別のワークスペースの中で実行されたらエラーにする
-（`IpcBackend::check_cwd`）。`serve` は起動時に `workspace.toml` のワークスペースとその同期を
+（`IpcBackend::check_cwd`）。`workspace init` / `select` でディレクトリを省略したとき、GUI の
+「ワークスペースを作成」、スマホでは、既定のワークスペース `<data dir>/workspaces/default` を使う
+（`AppContext::default_workspace_dir`。カレントディレクトリを既定にしていたのは、サーバが常駐しない
+ワンショットのコマンドだった頃の名残 — #398）。`serve` は起動時に `workspace.toml` のワークスペースとその同期を
 復元する。詳細はプロセス構成仕様 §2, §4 と[1 サーバ 1 ワークスペース仕様](superpowers/specs/2026-10-11-single-workspace-server-design.md)。
 
 ### bridge はホスト常駐の交換台（`bridge/headless`、`bridge/desktop`）

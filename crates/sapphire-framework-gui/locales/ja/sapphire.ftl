@@ -113,6 +113,8 @@ sapphire-banner-by-hand = 手動でインストールするには:
 # ワークスペース画面。
 sapphire-workspaces-title = ワークスペース
 sapphire-workspaces-none = ワークスペースがまだありません。既存のフォルダーを開くか、新しく作成するか、ワークグループから取り込んでください。
+sapphire-workspaces-create-default = ワークスペースを作成
+sapphire-workspaces-create-default-hint = 場所: { $path }
 sapphire-workspaces-remove = 削除…
 sapphire-workspaces-move = 移動…
 sapphire-workspaces-move-title = { $name } の移動先を選んでください（フォルダー名は変わりません）

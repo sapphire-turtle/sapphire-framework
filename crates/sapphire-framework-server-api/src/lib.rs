@@ -142,7 +142,7 @@ pub const REINDEX: &str = "workspace.reindex";
 /// Start receiving [`EVENT`] notifications for the current workspace, and for whichever
 /// workspace is current after a switch.
 pub const SUBSCRIBE: &str = "workspace.subscribe";
-/// Create this app's workspace home in a directory — the marker and a registry entry —
+/// Create this app's workspace home in a directory — the folder when missing, and its marker —
 /// and make it the current workspace.
 pub const WORKSPACE_INIT: &str = "workspace.init";
 /// Make an existing workspace of this app the current one.

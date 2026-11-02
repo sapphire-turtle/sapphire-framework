@@ -93,7 +93,11 @@ state.delete_file(Path::new("notes/old.md"))?;
 A workspace root is a directory holding a `.{app_name}` marker directory.
 The server serves exactly one workspace, so a client never discovers one by
 walking up from its current directory (`Workspace::find` / `find_from` are
-deprecated); open the root with `Workspace::from_root`.  Pass an `AppContext` to every construction
+deprecated); open the root with `Workspace::from_root`.  Where nobody names
+a place for it — `workspace init` / `select` without a directory, the GUI's
+"Create a workspace", a phone — the workspace goes in the app's data directory,
+`<data-dir>/workspaces/default` (`AppContext::default_workspace_dir`, or
+`sapphire_workspace::default_workspace_dir(app_name)` without a context).  Pass an `AppContext` to every construction
 method to set the `app_name` so that marker directories and XDG caches
 use the host application's namespace.  Initialise the context once at
 startup with `init(AppKind::…)`; it resolves the cache / data / config

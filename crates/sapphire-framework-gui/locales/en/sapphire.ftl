@@ -109,6 +109,8 @@ sapphire-banner-by-hand = To install by hand:
 # The Workspace screen.
 sapphire-workspaces-title = Workspace
 sapphire-workspaces-none = No workspace yet. Open an existing folder, create a new one, or bring one from the workgroup.
+sapphire-workspaces-create-default = Create a workspace
+sapphire-workspaces-create-default-hint = In { $path }
 sapphire-workspaces-remove = Remove…
 sapphire-workspaces-move = Move…
 sapphire-workspaces-move-title = Choose where to move { $name } (it keeps its folder name)

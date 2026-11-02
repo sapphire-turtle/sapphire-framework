@@ -95,8 +95,8 @@ impl Current {
         self.describe().await.ok_or(Error::NoWorkspace)
     }
 
-    /// Create this app's workspace at `dir` — its marker, idempotently — and make it
-    /// current.
+    /// Create this app's workspace at `dir` — the folder when missing, and its marker,
+    /// idempotently — and make it current.
     pub async fn init(&self, dir: &Path) -> Result<proto::WorkspaceInitResult> {
         let result = init_workspace(self.ctx, dir)?;
         let sync = has_sync_id(self.ctx, &result.root);
@@ -550,7 +550,11 @@ pub(crate) fn current_methods(current: Arc<Current>, router: Router) -> Router {
 /// workspace, and a `config.toml` holding only it lost the application's settings on the
 /// first sync (#253).
 fn init_workspace(ctx: &'static AppContext, dir: &Path) -> Result<proto::WorkspaceInitResult> {
-    let root = resolve(dir)?;
+    // A new workspace's folder need not exist yet: the default one
+    // (`<data dir>/workspaces/default`) does not on a fresh install.
+    let absolute = std::env::current_dir().map_err(Error::Io)?.join(dir);
+    std::fs::create_dir_all(&absolute).map_err(Error::Io)?;
+    let root = resolve(&absolute)?;
     let marker = root.join(format!(".{}", ctx.app_name));
     let created = !marker.is_dir();
     if created {
@@ -696,5 +700,16 @@ mod tests {
         let workspace = Workspace::from_root(ctx, dir.path()).unwrap();
         assert!(workspace.marker_dir().is_dir());
         assert!(!workspace.config_path().exists());
+    }
+
+    #[test]
+    fn init_makes_a_missing_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("workspaces").join("default");
+        let ctx: &'static AppContext = Box::leak(Box::new(AppContext::new("sapphire-initapp2")));
+        let result = init_workspace(ctx, &dir).unwrap();
+        assert!(result.created);
+        assert_eq!(result.root, dir.canonicalize().unwrap());
+        assert!(dir.join(".sapphire-initapp2").is_dir());
     }
 }

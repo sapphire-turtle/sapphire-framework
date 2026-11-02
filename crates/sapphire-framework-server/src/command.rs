@@ -276,7 +276,8 @@ async fn run_bridge_update(
 pub enum WorkspaceCommand {
     /// Create this app's workspace home in the given directory, and switch the server to it.
     Init {
-        /// Where the workspace root goes. Defaults to the current directory.
+        /// Where the workspace root goes, created if missing. Defaults to the app's
+        /// default workspace, `<data dir>/workspaces/default`.
         dir: Option<PathBuf>,
         /// Also start syncing it, which publishes it into the workgroup ledger.
         #[arg(long)]
@@ -288,7 +289,8 @@ pub enum WorkspaceCommand {
     },
     /// Switch the server to an existing workspace of this app.
     Select {
-        /// The workspace's root. Defaults to the current directory.
+        /// The workspace's root. Defaults to the app's default workspace,
+        /// `<data dir>/workspaces/default`.
         dir: Option<PathBuf>,
         /// Also start syncing it, which publishes it into the workgroup ledger. A
         /// workspace that has synced before turns sync back on by itself.
@@ -426,9 +428,10 @@ async fn workspace_init(
         return Ok(1);
     };
 
-    // Resolved here: the server's cwd is not the user's.
-    let dir = std::env::current_dir()?.join(dir.unwrap_or_else(|| PathBuf::from(".")));
+    let dir = workspace_dir(app, dir)?;
     if let Some(selector) = remote_workspace {
+        // `sync.map` needs the folder; `workspace.init` makes its own.
+        std::fs::create_dir_all(&dir)?;
         let mapped: proto::SyncEnableResult = client
             .call(
                 proto::SYNC_MAP,
@@ -604,6 +607,18 @@ fn describe_state(ws: &proto::CurrentWorkspace) -> String {
     format!("{state}{star}{pending}")
 }
 
+/// Where a workspace command acts: `dir` made absolute against this process's cwd — the
+/// server's cwd is not the user's — or, when the user named none, the app's default
+/// workspace (`<data dir>/workspaces/default`). The cwd is no default: the server is
+/// resident and serves one workspace, so where the command happens to run says nothing
+/// about which one is meant.
+fn workspace_dir(app: &str, dir: Option<PathBuf>) -> std::io::Result<PathBuf> {
+    Ok(match dir {
+        Some(dir) => std::env::current_dir()?.join(dir),
+        None => sapphire_workspace::default_workspace_dir(app),
+    })
+}
+
 /// Connect to `app`'s server, or say none is running.
 async fn connect_app(app: &str, version: &str) -> Result<Option<sapphire_ipc::Client>> {
     let client = try_connect_app(app, version).await?;
@@ -637,8 +652,7 @@ async fn workspace_select(
     let Some(client) = connect_app(app, version).await? else {
         return Ok(1);
     };
-    // Resolved here: the server's cwd is not the user's.
-    let dir = std::env::current_dir()?.join(dir.unwrap_or_else(|| PathBuf::from(".")));
+    let dir = workspace_dir(app, dir)?;
     let ws: proto::CurrentWorkspace = client
         .call(
             proto::WORKSPACE_SELECT,

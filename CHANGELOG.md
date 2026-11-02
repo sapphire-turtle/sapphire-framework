@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-11-02
+
 ### Fixed
 
 - `sapphire-bridge`'s release files were named after the command (`sapphire-bridge-<os>-<arch>`) instead of the package, as `sapphire-bridge-desktop-*` and the apps' `<app>-headless-*` are. They are `sapphire-bridge-headless-<os>-<arch>` now; the command is still `sapphire-bridge`. `update`, `cargo binstall` and the install scripts look for that name, and the install scripts fall back to the old one for older releases. `update` on a bridge of 0.24.0 or earlier installed from the releases cannot find the new file: run the install script once more.

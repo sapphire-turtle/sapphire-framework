@@ -16,3 +16,34 @@ jobs:
         for f in workspace retrieve track sync session ipc server http mcp frontmatter bridge keys service registry backend eframe; do
           cargo check -p sapphire-framework --no-default-features --features "$f" --locked || exit 1
         done
+
+        # sapphire-sync (sync/) is the reference app: its own code reaches the framework
+        # through the facade alone, the way an app from crates.io does (docs/ARCHITECTURE.md).
+        # Its tests may use the other crates, so only normal and build dependencies count.
+        out=$(cargo metadata --format-version 1 --no-deps --locked | jq -r '
+          .packages[]
+          | select(.manifest_path | test("/sync/"))
+          | .name as $app
+          | .dependencies[]
+          | select(.kind != "dev")
+          | select(.name | startswith("sapphire-framework-"))
+          | "\($app) -> \(.name)"')
+        if [ -n "$out" ]; then
+          echo "::error::sapphire-sync depends on framework crates other than the facade:"
+          echo "$out"
+          exit 1
+        fi
+
+        # The dependency guard: sapphire-sync's default build must not pull in the
+        # embedding stack (fastembed and the ONNX Runtime behind it), the heavy part of
+        # search. `sapphire-framework-retrieve` itself is expected: the workspace layer
+        # depends on it in every app, and with `default-features = false` it brings only
+        # full-text search. The whole tree is grepped rather than asked with
+        # `cargo tree -i fastembed`, which fails outright when the crate is absent.
+        out=$(cargo tree -p sapphire-sync-headless --locked --prefix none --format '{p}' \
+          | grep -E '^(fastembed|ort|ort-sys) v' | sort -u || true)
+        if [ -n "$out" ]; then
+          echo "::error::the embedding stack leaked into sapphire-sync's default graph:"
+          echo "$out"
+          exit 1
+        fi

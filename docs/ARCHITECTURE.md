@@ -144,6 +144,25 @@ Cargo workspace（モノレポ）。削除済みの crate も削除線で残す 
 > 保証する 1 プロセスのみなので、ログは再起動をまたいで連続する。`sapphire-bridge status` は
 > 稼働中の bridge に問い合わせ、応答が無ければ `status.json` を読む。
 
+## The reference app: sapphire-sync (`sync/`)
+
+sapphire-sync, the app with nothing of its own but sync, lives in this repository (#394): a
+change to the framework that breaks it fails in the same PR, and a framework feature it needs
+(mobile first) lands with its first use. It is versioned and released with the framework
+(RELEASING.md), apart from `sapphire-sync-api`, whose major is its handshake's `API_VERSION`.
+
+Being in the workspace, it reaches the framework by path, which hides what an app from
+crates.io would hit: a crate left unpublished, a feature combination that does not build, a
+type the facade does not re-export. So its own code uses the framework through the facade
+alone:
+
+- **Outside `[dev-dependencies]`, sync's crates depend on no `sapphire-framework-*` crate but
+  the `sapphire-framework` facade.** CI checks it (`.github/workflows/ci.yml`). Tests may use
+  the others (the server's `test-util`, `-ipc`, the bridge client and its wire types).
+- What a path dependency cannot show is left to the apps in their own repositories (journal,
+  ledger, tally, timer, agent): they build against the published crates, and each framework
+  release reaches them as a dependency update.
+
 ## GUI 部品（`sapphire-framework-gui`）
 
 デスクトップの同期 GUI が共有する部品。2 層に分かれる。GUI は**サーバも bridge も自プロセス内で

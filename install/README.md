@@ -66,9 +66,9 @@ cargo binstall sapphire-bridge-headless sapphire-journal
 
 ## Adding an application
 
-Add a row to the table at the top of both scripts: the name, the repository, the release
-file name before `-<os>-<arch>`, and the tag prefix in the application's `release-plz.toml`.
-The release files must follow
+Add a row to the table at the top of both scripts: the name, the repository, the command,
+and the tag prefix in the application's `release-plz.toml`. The scripts download
+`<command>-headless-<os>-<arch>` and install it as `<command>`. The release files must follow
 [the shared naming](https://github.com/sapphire-turtle/.github#conventions).
 An application's README describes installation as
 [the shared template](https://github.com/sapphire-turtle/.github/blob/main/templates/README-install.md)

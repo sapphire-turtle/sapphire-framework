@@ -58,6 +58,6 @@ cargo binstall sapphire-bridge-headless sapphire-journal
 
 ## アプリを追加するには
 
-両方のスクリプト冒頭の表に、名前・リポジトリ・`-<os>-<arch>` より前のリリースファイル名・アプリの
-`release-plz.toml` のタグ接頭辞を 1 行追加します。リリースファイルは[共通の命名](https://github.com/sapphire-turtle/.github#conventions)に従う必要があります。
+両方のスクリプト冒頭の表に、名前・リポジトリ・コマンド名・アプリの `release-plz.toml` のタグ接頭辞を
+1 行追加します。スクリプトは `<command>-headless-<os>-<arch>` をダウンロードし、`<command>` として入れます。リリースファイルは[共通の命名](https://github.com/sapphire-turtle/.github#conventions)に従う必要があります。
 アプリの README のインストール手順は、[共通の雛形](https://github.com/sapphire-turtle/.github/blob/main/templates/README-install.ja.md)に合わせます。

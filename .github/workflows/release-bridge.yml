@@ -26,6 +26,9 @@ jobs:
       tag: ${{ inputs.tag }}
       package: sapphire-bridge-headless
       binary: sapphire-bridge
+      # The files are named after the package, beside sapphire-bridge-desktop's, as the
+      # apps' `<app>-headless`; the command keeps its name.
+      asset: sapphire-bridge-headless
       linux-packages: libssl-dev pkg-config
 
   # The window (#363): the same commands, and a bare start opens Sapphire Bridge's window.

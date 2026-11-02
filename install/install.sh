@@ -15,9 +15,10 @@
 # cargo or a package manager is left alone, as `update` would.
 set -eu
 
-# Every application this script knows: name, repository, release file name
-# before `-<os>-<arch>`, and the prefix of its release tags. Keep in step with
-# install.ps1 and with each application's release-plz.toml.
+# Every application this script knows: name, repository, command, and the
+# prefix of its release tags. The command's release file is
+# `<command>-headless-<os>-<arch>`. Keep in step with install.ps1 and with each
+# application's release-plz.toml.
 APPS="
 bridge          sapphire-framework  sapphire-bridge          v
 agent           sapphire-agent      sapphire-agent           v
@@ -201,8 +202,8 @@ install_app() {
     return 0
   fi
 
-  # The binary is installed under its release file name, which is also the
-  # name the application's own commands use for it.
+  # The binary is installed under its command's name, which is also the name
+  # the application's own commands use for it.
   existing=$(command -v "$base" 2>/dev/null || true)
   if [ -n "$existing" ]; then
     method=$(install_method "$existing")
@@ -218,8 +219,7 @@ install_app() {
     [ -n "$version" ] || err "$repo has no ${prefix}x.y.z release of $base yet"
   fi
   tag="${prefix}${version}"
-  asset="${base}-${OS}-${ARCH}"
-  url="https://github.com/${OWNER}/${repo}/releases/download/${tag}/${asset}"
+  release="https://github.com/${OWNER}/${repo}/releases/download/${tag}"
   dest="${INSTALL_DIR}/${base}"
 
   say "Installing $base $version ($OS-$ARCH) to $INSTALL_DIR"
@@ -228,7 +228,13 @@ install_app() {
   # atomic, so a running copy (the bridge, typically) keeps its old file and
   # nothing ever sees a half-written executable.
   TMP=$(mktemp "${INSTALL_DIR}/.${base}.XXXXXX")
-  curl -fsSL "$url" -o "$TMP" || err "could not download $url"
+  # Releases name the file after the headless package; older ones, after the
+  # command alone.
+  url="${release}/${base}-headless-${OS}-${ARCH}"
+  if ! curl -fsL "$url" -o "$TMP"; then
+    url="${release}/${base}-${OS}-${ARCH}"
+    curl -fsSL "$url" -o "$TMP" || err "could not download $url"
+  fi
   chmod 755 "$TMP"
   mv -f "$TMP" "$dest"
   TMP=""

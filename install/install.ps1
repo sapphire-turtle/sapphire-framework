@@ -30,9 +30,10 @@ $ProgressPreference = 'SilentlyContinue'
 
 $Owner = 'sapphire-turtle'
 
-# Every application this script knows: repository, release file name before
-# `-<os>-<arch>`, and the prefix of its release tags. Keep in step with
-# install.sh and with each application's release-plz.toml.
+# Every application this script knows: repository, command, and the prefix of
+# its release tags. The command's release file is
+# `<command>-headless-windows-x86_64.exe`. Keep in step with install.sh and with
+# each application's release-plz.toml.
 $Apps = [ordered]@{
     'bridge'          = @('sapphire-framework', 'sapphire-bridge', 'v')
     'agent'           = @('sapphire-agent', 'sapphire-agent', 'v')
@@ -144,17 +145,25 @@ function Install-App([string] $Name, [string] $Want) {
 
     $v = if ($Want) { $Want } else { Get-LatestVersion $repo $prefix }
     if (-not $v) { throw "$repo has no ${prefix}x.y.z release of $base yet" }
-    $url = "https://github.com/$Owner/$repo/releases/download/$prefix$v/$base-windows-x86_64.exe"
+    $release = "https://github.com/$Owner/$repo/releases/download/$prefix$v"
     $dest = Join-Path $Dir "$base.exe"
 
     Write-Host "Installing $base $v (windows-x86_64) to $Dir"
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
     $tmp = Join-Path $Dir ".$base.$([guid]::NewGuid().ToString('N')).exe"
+    # Releases name the file after the headless package; older ones, after the
+    # command alone.
+    $url = "$release/$base-headless-windows-x86_64.exe"
     try {
         Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
     } catch {
-        Remove-Item -Force -ErrorAction SilentlyContinue $tmp
-        throw "could not download ${url}: $_"
+        $url = "$release/$base-windows-x86_64.exe"
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+        } catch {
+            Remove-Item -Force -ErrorAction SilentlyContinue $tmp
+            throw "could not download ${url}: $_"
+        }
     }
     # A running executable cannot be overwritten on Windows, but it can be
     # renamed: move the old file aside, then put the new one in its place. The

@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- sapphire-sync, the framework's reference app, is now part of this repository, under `sync/` (#394), with its history. Its crates (`sapphire-sync-headless`, `-desktop`, `-cli`, `-server`, `-core`) are versioned and released with the framework, under the same `v{version}` tag; `sapphire-sync-api` keeps its own version. Its license is the framework's, `MIT OR Apache-2.0` (the desktop app was GPL-3.0-or-later with an App Store exception). Its own code uses the framework through the `sapphire-framework` facade alone, which CI checks.
+
 ## [0.25.0] - 2026-11-02
 
 The API crates are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.0).

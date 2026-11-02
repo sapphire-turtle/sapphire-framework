@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Moved
+
+- sapphire-sync now lives in sapphire-framework's repository, under `sync/` (sapphire-framework#394), and is released with the framework, at its version and under its `v{version}` tag: the next release jumps from 0.15 to the framework's. Releases and the update check come from https://github.com/sapphire-turtle/sapphire-framework/releases. The desktop app's license is now the framework's, `MIT OR Apache-2.0`.
+
 ### Changed
 
 - [**breaking**] sapphire-framework 0.24.0: Settings link to the Sapphire Bridge window for the workgroup, devices and embedding pages, and API keys are per workspace with a profile (existing keys become read-only). The CLI's `workgroup`, `device` and `embedding` commands are `sapphire-bridge`'s now. Needs `sapphire-sync` and `sapphire-bridge` of the same release.

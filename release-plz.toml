@@ -131,6 +131,31 @@ version_group = "framework"
 name = "sapphire-framework"
 version_group = "framework"
 
+# sapphire-sync, the reference app (sync/, #394), moves with the framework under the same
+# `v{version}` tag. `sapphire-sync-headless` being published is what builds its release files
+# (release-plz.yml). `sapphire-sync-desktop` is `publish = false` and follows
+# `workspace.package.version`, like the bridge's desktop app.
+[[package]]
+name = "sapphire-sync-headless"
+version_group = "framework"
+
+[[package]]
+name = "sapphire-sync-cli"
+version_group = "framework"
+
+[[package]]
+name = "sapphire-sync-server"
+version_group = "framework"
+
+[[package]]
+name = "sapphire-sync-core"
+version_group = "framework"
+
+# The sync server's own API: its major is the `app_api` of the IPC handshake (`API_VERSION`),
+# so, like the bridge and server APIs, it does not move with version_group "framework".
+[[package]]
+name = "sapphire-sync-api"
+
 [changelog]
 # 既存 CHANGELOG.md のヘッダーをそのまま維持し、新規エントリは
 # このヘッダーの下に挿入される（既存履歴は保持される）。

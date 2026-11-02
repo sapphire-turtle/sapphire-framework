@@ -1,8 +1,8 @@
-name: Release binaries
+name: Release sapphire-sync binaries
 
-# Builds the headless edition's and the desktop app's binaries for the four release
-# platforms and attaches them to an existing `v{version}` release, which the
-# two share. release-plz.yml calls it after a release; run it by hand to
+# Builds sapphire-sync's (sync/) headless edition's and desktop app's binaries for the
+# four release platforms and attaches them to an existing `v{version}` release, which they
+# share with the framework and the bridge. release-plz.yml calls it after a release; run it by hand to
 # (re)upload the files for an existing tag.
 on:
   workflow_call:
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to attach binaries to (e.g. v0.15.0).'
+        description: 'Existing release tag to attach binaries to (e.g. v0.25.1).'
         required: true
         type: string
 
@@ -41,12 +41,15 @@ jobs:
       linux-packages: libwayland-dev libxkbcommon-dev
 
   # Sapphire Sync as a Velopack package (#357): an installer per desktop OS, and the files
-  # the installed app updates itself from (desktop/src/package.rs reads this repository's
+  # the installed app updates itself from (sync/desktop/src/package.rs reads this repository's
   # latest release). The package holds the desktop binary only, which runs the CLI too; the
   # bare binaries above stay for servers, the install script and `cargo binstall`.
   # The macOS package is signed and notarized when the repository has the MACOS_CERTIFICATE
-  # and APPLE_API_KEY secrets, as sapphire-framework's release-bridge.yml; the others are not
+  # and APPLE_API_KEY secrets, as release-bridge.yml's; the others are not
   # signed yet.
+  # The channels are the app's own (`sync-*`): a channel names the feed file
+  # (`releases.<channel>.json`), and the bridge's package has `linux`, `osx` and `win` on
+  # the same release. The installed app reads the channel it was packed with.
   pack:
     strategy:
       fail-fast: false
@@ -54,7 +57,7 @@ jobs:
         include:
           # The oldest runner, so the AppImage runs on older glibc too.
           - os: ubuntu-22.04
-            channel: linux
+            channel: sync-linux
             exe: ''
             # The executable's name in the package (`--mainExe`): the command's, apart from
             # Windows, where the GUI keeps its cargo name and the console shim has the
@@ -63,13 +66,13 @@ jobs:
             icon: icon.png
             extra: --categories Network
           - os: macos-latest
-            channel: osx
+            channel: sync-osx
             exe: ''
             main: sapphire-sync
             icon: icon.icns
             extra: --bundleId org.sapphire-turtle.sapphire-sync
           - os: windows-latest
-            channel: win
+            channel: sync-win
             exe: '.exe'
             main: sapphire-sync-desktop.exe
             icon: icon.ico
@@ -237,7 +240,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: releases-${{ matrix.channel }}
+          name: sync-releases-${{ matrix.channel }}
           path: releases/
 
   # Uploads each channel's files to the release, merged with what is already there (the
@@ -254,7 +257,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: releases-*
+          pattern: sync-releases-*
           path: releases
 
       - uses: actions/setup-dotnet@v6
@@ -267,9 +270,9 @@ jobs:
       # One channel at a time: --merge reads the release's assets and adds to them.
       - name: Upload
         run: |
-          for channel in linux osx win; do
+          for channel in sync-linux sync-osx sync-win; do
             vpk upload github \
-              --outputDir "releases/releases-$channel" \
+              --outputDir "releases/sync-releases-$channel" \
               --channel "$channel" \
               --repoUrl "https://github.com/$GITHUB_REPOSITORY" \
               --token "$GITHUB_TOKEN" \

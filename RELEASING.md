@@ -8,6 +8,23 @@ Releases for this repository are automated with [release-plz](https://release-pl
 2. Review the release PR (version, `CHANGELOG.md`, `Cargo.toml`).
 3. Merging the PR creates the `v{version}` tag, the GitHub release, publishes to crates.io, and builds the `sapphire-bridge` binaries (Linux x86_64 / aarch64, macOS aarch64, Windows x86_64) and attaches them to the release. To (re)upload them for an existing tag, run the "Release sapphire-bridge binaries" workflow manually with that tag.
 
+## sapphire-sync
+
+sapphire-sync (`sync/`, #394) is released with the framework, under the same `v{version}` tag and GitHub release.
+
+| Crate | Version | Published |
+| --- | --- | --- |
+| `sapphire-sync-headless` (the `sapphire-sync` binary, no GUI) | framework | crates.io, release files |
+| `sapphire-sync-desktop` (the GUI, which runs the same commands) | framework | release files and Velopack package only (`publish = false`) |
+| `sapphire-sync-cli`, `-server`, `-core` | framework | crates.io |
+| `sapphire-sync-api` | its own | crates.io |
+
+When the release PR's merge publishes `sapphire-sync-headless`, "Release sapphire-sync binaries" (`release-sync.yml`) builds both editions' binaries (`sapphire-sync-headless-<os>-<arch>`, `sapphire-sync-desktop-<os>-<arch>`) and the desktop app's Velopack package and attaches them to the release, beside the bridge's. The package uses its own Velopack channels (`sync-linux`, `sync-osx`, `sync-win`): the channel names the feed file (`releases.<channel>.json`), and the bridge's package already has `linux`, `osx` and `win` on the same release. To (re)upload them for an existing tag, run the workflow manually with that tag.
+
+`sapphire-sync-api` is the sync server's own API, versioned the way `sapphire-framework-bridge-api` and `-server-api` are: its major is the `app_api` the server reports in the IPC handshake (`API_VERSION`).
+
+Releases up to 0.14.1 were made in the old sapphire-turtle/sapphire-sync repository, which keeps their tags and files. The crates.io name `sapphire-sync` was the app's binary from 0.13.0 to 0.14.1 (and sapphire-workspace's git sync library up to 0.12.1); the binary is `sapphire-sync-headless` since.
+
 ## Version bump rules
 
 release-plz infers the version from conventional commits (assuming pre-1.0 `0.x.y`).

@@ -9,6 +9,15 @@ jobs:
     with:
       # cmake for aws-lc-sys; Wayland and xkbcommon for the gui crate.
       linux-packages: cmake libwayland-dev libxkbcommon-dev
+      # With sapphire-sync (sync/) in the workspace, the test build outgrew the Linux runner's
+      # disk (the linker died of it): keep only line tables in the debug info, and on Linux
+      # make room by removing toolchains nothing here uses.
+      pre-build: |
+        echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+        if [ "$RUNNER_OS" = Linux ]; then
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+        fi
       # A facade feature can name a dependency that only compiles with its
       # neighbours enabled: a manifest test sees the text, a compile proves the
       # promise each feature makes on its own.

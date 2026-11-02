@@ -40,7 +40,10 @@ mod tests {
         assert_eq!(PACKAGE.app_name, "sapphire-sync");
         assert_eq!(APP_PACKAGE.command(), "sapphire-sync");
         assert_eq!(APP_PACKAGE.desktop_asset(), "sapphire-sync-desktop");
-        assert_eq!(APP_PACKAGE.github, ("sapphire-turtle", "sapphire-framework"));
+        assert_eq!(
+            APP_PACKAGE.github,
+            ("sapphire-turtle", "sapphire-framework")
+        );
         let service = app_service();
         assert_eq!(service.app_name, "sapphire-sync");
         assert_eq!(service.args, ["serve"]);

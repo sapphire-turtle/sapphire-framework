@@ -102,10 +102,10 @@ pub fn bridge_service_spec(version: &str) -> ServiceSpec {
 }
 
 /// Where `sapphire-bridge` is released: this repository's `v<version>` releases, as
-/// `sapphire-bridge-<os>-<arch>`.
+/// `sapphire-bridge-headless-<os>-<arch>`.
 pub fn bridge_release_source() -> sapphire_framework_update::ReleaseSource {
     sapphire_framework_update::ReleaseSource::github("sapphire-turtle", "sapphire-framework")
-        .asset("sapphire-bridge")
+        .asset("sapphire-bridge-headless")
         .cargo_crate("sapphire-bridge-headless")
 }
 

@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- `sapphire-bridge`'s release files were named after the command (`sapphire-bridge-<os>-<arch>`) instead of the package, as `sapphire-bridge-desktop-*` and the apps' `<app>-headless-*` are. They are `sapphire-bridge-headless-<os>-<arch>` now; the command is still `sapphire-bridge`. `update`, `cargo binstall` and the install scripts look for that name, and the install scripts fall back to the old one for older releases. `update` on a bridge of 0.24.0 or earlier installed from the releases cannot find the new file: run the install script once more.
+
 ## [0.24.0] - 2026-11-02
 
 The API crates are released with it: `sapphire-framework-bridge-api` 4.0.0 and `sapphire-framework-server-api` 6.0.0. 0.23.0 went out without a heading here; its changes are in the per-crate CHANGELOGs. **Update `sapphire-bridge` and the apps together:** an app on 0.23 checks HTTP tokens with `external_device.authenticate`, which a 0.24 bridge no longer answers, so its HTTP clients get 401 until the app is updated too.

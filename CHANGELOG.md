@@ -8,12 +8,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-02
+
+The API crates are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.0).
+
 ### Added
 
 - `gui::package` (the `package` feature of `sapphire-framework`, `sapphire-framework-gui`'s `package`): a desktop app as a Velopack package, as Sapphire Bridge is (#357). An `AppPackage` names the package, its GitHub releases and the app server's service. `AppOptions::package` makes `app::run` take the window's single-instance lock, start the package's updater, show the first run (whether to keep the app server running in the background, Yes by default) before the app on its first start, and hand About's rows to the app (`AppSetup::package_about` → `Settings::with_package_about`). `AppPackage::update` is `update` on the command line in the package.
 - `AppOptions::launcher`: the window's id, icon and app-menu entry (corundum's `LauncherSpec`).
 - `gui::app::install_logging`, for an app's `main` to log what it runs before the window (the package's start).
 - `server::app_service_spec` (what `AppServer::service_spec` returns, without an `AppServer`) and `server::update_bridge` (a package updates the bridge before its own update ends the process).
+
+### Changed (Breaking)
+
+- `gui::app::AppSetup` has a new public field, `package_about` (with the `package` feature): code that builds an `AppSetup` with a struct literal must add it. Apps only receive one from `app::run`, so they are unaffected.
 
 ### Changed
 

@@ -27,12 +27,12 @@ sapphire-sync は [sapphire-framework](https://github.com/sapphire-turtle/sapphi
 
 ### デスクトップ版：インストーラー
 
-[最新のリリース](https://github.com/sapphire-turtle/sapphire-sync/releases/latest)から、お使いの OS のインストーラーをダウンロードしてください。
-Windows は `sapphire-sync-desktop-win-Setup.exe`、macOS は `sapphire-sync-desktop-osx-Setup.pkg`、
+[sapphire-framework の最新のリリース](https://github.com/sapphire-turtle/sapphire-framework/releases/latest)から、お使いの OS のインストーラーをダウンロードしてください。
+Windows は `sapphire-sync-desktop-sync-win-Setup.exe`、macOS は `sapphire-sync-desktop-sync-osx-Setup.pkg`、
 Linux は `sapphire-sync-desktop.AppImage` です。PATH に `sapphire-sync` を置き、自分で最新版に更新します。
 初回の起動時に、ウィンドウを閉じている間も MCP サーバーや HTTP のクライアントが使えるよう、
 アプリサーバーをバックグラウンドで動かし続けるかを尋ねます。同期は Sapphire Bridge を通るので、
-[sapphire-framework の最新のリリース](https://github.com/sapphire-turtle/sapphire-framework/releases/latest)にある Sapphire Bridge のインストーラー
+同じリリースにある Sapphire Bridge のインストーラー
 （`sapphire-bridge-desktop-*`）も入れてください。
 
 ### ヘッドレス版：インストールスクリプト
@@ -80,7 +80,7 @@ README を参照してください。sapphire-framework 0.24 から、このア�
 
 ## 部品のつながり
 
-このリポジトリはひとつのコマンド `sapphire-sync` を、ヘッドレス版と、同じコマンドを実行できるデスクトップ版の2つの版で出します。アプリサーバー兼 CLI です。常時稼働のピアは
+sapphire-sync はひとつのコマンド `sapphire-sync` を、ヘッドレス版と、同じコマンドを実行できるデスクトップ版の2つの版で出します。アプリサーバー兼 CLI です。常時稼働のピアは
 `sapphire-bridge` アプリで、ホストごとに `sapphire-sync serve` をちょうどひとつ動かします。
 サーバーが扱うワークスペースは一度にひとつ（`workspace select` で切り替え）で、
 `SyncRuntime` はそのレプリカを持ち、ブリッジに登録します。レプリケーションエンジンそのものはアプリではなくフレームワークの実装です。
@@ -128,21 +128,8 @@ Windows では Vulkan で描画します。DX12 のデバイスはリモート�
 
 - [sapphire-framework](https://github.com/sapphire-turtle/sapphire-framework) — このアプリが
   基づくフレームワーク
-- [CONTRIBUTING.md](CONTRIBUTING.md) — このリポジトリへの貢献方法
+- [CONTRIBUTING.md](CONTRIBUTING.md) — sapphire-sync への貢献方法
 
 ## ライセンス
 
-このリポジトリは異なるライセンスのコンポーネントを含みます：
-
-| コンポーネント | ライセンス |
-|-----------|---------|
-| `sapphire-sync-headless`（`headless/`） | MIT OR Apache-2.0 |
-| `sapphire-sync-cli` | MIT OR Apache-2.0 |
-| `sapphire-sync-server` | MIT OR Apache-2.0 |
-| `sapphire-sync-core` | MIT OR Apache-2.0 |
-| `sapphire-sync-api` | MIT OR Apache-2.0 |
-| `sapphire-sync-desktop` | GPL-3.0-or-later、[App Storeマーケットプレイス例外](desktop/LICENSE.App-Store-Exception)付き |
-
-デスクトップ版のバイナリはコマンドラインとサーバーの MIT / Apache-2.0 のコードを含むため、バイナリ全体は GPL-3.0-or-later（同じ例外付き）で配布されます。
-
-各コンポーネントのディレクトリにある`LICENSE`（または`LICENSE-MIT` / `LICENSE-APACHE`）ファイルに完全なライセンス文書があります。
+framework と同じく、[MIT](../LICENSE-MIT)または[Apache-2.0](../LICENSE-APACHE)のうち、選択したいずれか1つでライセンスされます（sapphire-sync は framework のリポジトリの一部です。#394）。

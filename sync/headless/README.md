@@ -1,6 +1,6 @@
 # sapphire-sync-headless
 
-The headless edition of [sapphire-sync](https://github.com/sapphire-turtle/sapphire-sync) — peer-to-peer
+The headless edition of [sapphire-sync](https://github.com/sapphire-turtle/sapphire-framework/tree/main/sync) — peer-to-peer
 file sync over [sapphire-framework](https://github.com/sapphire-turtle/sapphire-framework) — for hosts
 without a GUI. Its one binary, `sapphire-sync`, is the app server (`sapphire-sync serve`) and the CLI
 that talks to it. The desktop app's binary runs the same commands and is put on PATH under the same
@@ -35,7 +35,7 @@ only one of the two.
 
 ## Usage
 
-See the [repository's README](https://github.com/sapphire-turtle/sapphire-sync#quick-start).
+See [sapphire-sync's README](https://github.com/sapphire-turtle/sapphire-framework/tree/main/sync#quick-start).
 
 ## License
 

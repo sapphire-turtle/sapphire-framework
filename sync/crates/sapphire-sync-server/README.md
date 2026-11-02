@@ -1,6 +1,6 @@
 # sapphire-sync-server
 
-The app server of [sapphire-sync](https://github.com/sapphire-turtle/sapphire-sync): the
+The app server of [sapphire-sync](https://github.com/sapphire-turtle/sapphire-framework/tree/main/sync): the
 one process per host that serves a workspace, syncs it through the host's
 `sapphire-bridge`, and reports a status row per synced workspace.
 

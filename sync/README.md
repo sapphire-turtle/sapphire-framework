@@ -29,13 +29,12 @@ when the one on PATH is not the one you ran.
 
 ### Desktop app: installer
 
-Download the installer for your platform from the [latest release](https://github.com/sapphire-turtle/sapphire-sync/releases/latest):
-`sapphire-sync-desktop-win-Setup.exe` (Windows), `sapphire-sync-desktop-osx-Setup.pkg` (macOS) or
+Download the installer for your platform from [sapphire-framework's latest release](https://github.com/sapphire-turtle/sapphire-framework/releases/latest):
+`sapphire-sync-desktop-sync-win-Setup.exe` (Windows), `sapphire-sync-desktop-sync-osx-Setup.pkg` (macOS) or
 `sapphire-sync-desktop.AppImage` (Linux). It puts `sapphire-sync` on your `PATH` and keeps itself up to
 date; its first start asks to keep the app server running in the background, for the MCP
 server and HTTP clients while the window is closed. Sync goes through Sapphire Bridge,
-which has an installer of its own on
-[sapphire-framework's latest release](https://github.com/sapphire-turtle/sapphire-framework/releases/latest) (`sapphire-bridge-desktop-*`).
+which has an installer of its own on the same release (`sapphire-bridge-desktop-*`).
 
 ### Headless: install script
 
@@ -137,23 +136,9 @@ Vulkan overlay layer can do that), run it with `WGPU_BACKEND=dx12`.
 
 - [sapphire-framework](https://github.com/sapphire-turtle/sapphire-framework) — the
   framework this app builds on
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute to this repository
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute to sapphire-sync
 
 ## License
 
-This repository contains components under different licenses:
-
-| Component | License |
-|-----------|---------|
-| `sapphire-sync-headless` (`headless/`) | MIT OR Apache-2.0 |
-| `sapphire-sync-cli` | MIT OR Apache-2.0 |
-| `sapphire-sync-server` | MIT OR Apache-2.0 |
-| `sapphire-sync-core` | MIT OR Apache-2.0 |
-| `sapphire-sync-api` | MIT OR Apache-2.0 |
-| `sapphire-sync-desktop` | GPL-3.0-or-later, with [App Store marketplace exception](desktop/LICENSE.App-Store-Exception) |
-
-The desktop app's binary includes the MIT/Apache-2.0 code of the command line and the
-server, so the binary as a whole is distributed under GPL-3.0-or-later (with the same
-exception).
-
-See the `LICENSE` (or `LICENSE-MIT` / `LICENSE-APACHE`) file in each component's directory for the full license text.
+Licensed under either of [MIT](../LICENSE-MIT) or [Apache-2.0](../LICENSE-APACHE) at your option, like the framework
+(sapphire-sync is part of its repository, #394).

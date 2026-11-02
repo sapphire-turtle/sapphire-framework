@@ -67,7 +67,7 @@ mod update;
 pub use command::{
     AppConfigCommand, AppScopeFlags, AppUpdateArgs, FrameworkCommand, LegacyExternalDevice,
     StatusReport, StatusRow, WorkspaceCommand, WorkspaceSyncCommand, render_workspace,
-    render_workspace_show,
+    render_workspace_show, update_bridge,
 };
 pub use config::{
     HttpConfig, HttpMcpConfig, HttpMetricsConfig, SERVER_CONFIG_FILE, ServerConfig, UpdateConfig,
@@ -529,15 +529,7 @@ impl AppServer {
     /// [`ServiceCommand`](corundum_framework_service::ServiceCommand), which registers the
     /// running executable (the AppImage, inside one).
     pub fn service_spec(&self) -> ServiceSpec {
-        ServiceSpec {
-            app_name: self.ctx.app_name,
-            description: format!("{} server {}", self.ctx.app_name, self.version),
-            args: vec!["serve".to_owned()],
-            // The first label sapphire registered on macOS; corundum retires its own
-            // earlier one (net.sapphire-turtle.<app>) by itself (#385).
-            legacy_labels: vec![format!("net.fireturtle.sapphire.{}", self.ctx.app_name)],
-            post_install: None,
-        }
+        app_service_spec(self.ctx.app_name, self.version)
     }
 
     /// Add the application's own methods.
@@ -1079,6 +1071,21 @@ fn undeclared_endpoints(
             "the HTTP endpoint `{name}` is not one the application's settings declare"
         ))),
         None => Ok(()),
+    }
+}
+
+/// The app server's service for `app_name` at `version`: what [`AppServer::service_spec`]
+/// returns, for a desktop package to name its service without an `AppServer` (#357).
+///
+/// `["serve"]`, under the label sapphire first registered on macOS; corundum retires its own
+/// earlier one (net.sapphire-turtle.<app>) by itself (#385).
+pub fn app_service_spec(app_name: &'static str, version: &str) -> ServiceSpec {
+    ServiceSpec {
+        app_name,
+        description: format!("{app_name} server {version}"),
+        args: vec!["serve".to_owned()],
+        legacy_labels: vec![format!("net.fireturtle.sapphire.{app_name}")],
+        post_install: None,
     }
 }
 

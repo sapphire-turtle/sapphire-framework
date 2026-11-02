@@ -217,8 +217,9 @@ fn find_on_path(name: &str, path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
 }
 
 /// Run the bridge on `PATH`'s own `update` with `args`; returns its exit code. No bridge on
-/// `PATH` is nothing to update.
-async fn update_bridge(args: &sapphire_framework_update::UpdateArgs) -> Result<i32> {
+/// `PATH` is nothing to update. `update` does it after the application; a desktop package,
+/// whose own update ends the process, does it first (#357).
+pub async fn update_bridge(args: &sapphire_framework_update::UpdateArgs) -> Result<i32> {
     match find_on_path(BRIDGE_BINARY, std::env::var_os("PATH").as_deref()) {
         Some(exe) => run_bridge_update(&exe, args).await,
         None => {

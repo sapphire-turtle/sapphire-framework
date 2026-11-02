@@ -42,6 +42,8 @@ pub mod client;
 mod health;
 #[cfg(feature = "mobile")]
 pub mod mobile;
+#[cfg(feature = "package")]
+pub mod package;
 pub mod platform;
 mod settings;
 mod shell;

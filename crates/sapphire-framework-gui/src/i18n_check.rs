@@ -14,10 +14,12 @@ const NOT_IDS: &[&str] = &[
     "sapphire-config-secret",
     "sapphire-ed-x",
     "sapphire-example",
+    "sapphire-example-desktop",
     "sapphire-framework",
     "sapphire-framework-gui",
     "sapphire-gui-test",
     "sapphire-mobiletest",
+    "sapphire-sync",
     "sapphire-timer",
     "sapphire-turtle",
 ];

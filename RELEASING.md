@@ -19,7 +19,9 @@ sapphire-sync (`sync/`, #394) is released with the framework, under the same `v{
 | `sapphire-sync-cli`, `-server`, `-core` | framework | crates.io |
 | `sapphire-sync-api` | its own | crates.io |
 
-When the release PR's merge publishes `sapphire-sync-headless`, "Release sapphire-sync binaries" (`release-sync.yml`) builds both editions' binaries (`sapphire-sync-headless-<os>-<arch>`, `sapphire-sync-desktop-<os>-<arch>`) and the desktop app's Velopack package and attaches them to the release, beside the bridge's. The package uses its own Velopack channels (`sync-linux`, `sync-osx`, `sync-win`): the channel names the feed file (`releases.<channel>.json`), and the bridge's package already has `linux`, `osx` and `win` on the same release. To (re)upload them for an existing tag, run the workflow manually with that tag.
+When the release PR's merge publishes `sapphire-sync-headless`, "Release sapphire-sync binaries" (`release-sync.yml`) builds both editions' binaries (`sapphire-sync-headless-<os>-<arch>`, `sapphire-sync-desktop-<os>-<arch>`) and the desktop app's Velopack package and attaches them to the release, beside the bridge's. To (re)upload them for an existing tag, run the workflow manually with that tag.
+
+Both Velopack packages are made by sapphire-turtle/.github's `release-velopack.yml`. As the release carries two apps, each has channels of its own (`bridge-linux`, `-osx`, `-win`; `sync-linux`, `-osx`, `-win`): Velopack names the feed file after the channel alone (`releases.<channel>.json`), and an installed app reads the feed of the channel it was packed with. The installers keep the one-app names (`sapphire-bridge-desktop-win-Setup.exe`, `sapphire-sync-desktop.AppImage`).
 
 `sapphire-sync-api` is the sync server's own API, versioned the way `sapphire-framework-bridge-api` and `-server-api` are: its major is the `app_api` the server reports in the IPC handshake (`API_VERSION`).
 

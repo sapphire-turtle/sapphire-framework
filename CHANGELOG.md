@@ -11,6 +11,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 
 - sapphire-sync, the framework's reference app, is now part of this repository, under `sync/` (#394), with its history. Its crates (`sapphire-sync-headless`, `-desktop`, `-cli`, `-server`, `-core`) are versioned and released with the framework, under the same `v{version}` tag; `sapphire-sync-api` keeps its own version. Its license is the framework's, `MIT OR Apache-2.0` (the desktop app was GPL-3.0-or-later with an App Store exception). Its own code uses the framework through the `sapphire-framework` facade alone, which CI checks.
+- Sapphire Bridge's Velopack package moves to channels of its own, `bridge-linux`, `bridge-osx` and `bridge-win` (from `linux`, `osx` and `win`), as the release now carries sapphire-sync's package too, on `sync-*`. An installed bridge follows the channel it was installed from, so a bridge installed from 0.25.0 or earlier does not see this release's update: install it once more from the installer (`sapphire-bridge-desktop-win-Setup.exe`, `-osx-Setup.pkg`, `.AppImage`, same names as before); its settings and identity stay.
 
 ## [0.25.0] - 2026-11-02
 

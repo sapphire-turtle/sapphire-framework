@@ -62,10 +62,10 @@ pub enum Edition {
 impl Edition {
     /// Where the edition's releases are published: what `update` installs
     /// from, and where the server looks once a day for a newer one. Both are
-    /// in the shared `v{version}` release (release-binaries.yml), as
+    /// in the framework's shared `v{version}` release (release-sync.yml), as
     /// `<crate>-<os>-<arch>`; only the headless edition is on crates.io.
     pub fn releases(self) -> ReleaseSource {
-        let source = ReleaseSource::github("sapphire-turtle", "sapphire-sync");
+        let source = ReleaseSource::github("sapphire-turtle", "sapphire-framework");
         match self {
             Edition::Headless => source
                 .asset("sapphire-sync-headless")

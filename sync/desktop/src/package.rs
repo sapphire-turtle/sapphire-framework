@@ -17,11 +17,11 @@ pub static PACKAGE: PackageSpec = PackageSpec {
     services: Services::new(&[app_service]),
 };
 
-/// The package as the framework runs it: released with this repository's `v<version>`
+/// The package as the framework runs it: released with the framework's `v<version>`
 /// releases.
 pub const APP_PACKAGE: AppPackage = AppPackage {
     name: "Sapphire Sync",
-    github: ("sapphire-turtle", "sapphire-sync"),
+    github: ("sapphire-turtle", "sapphire-framework"),
     spec: &PACKAGE,
     service: app_service,
 };
@@ -40,6 +40,7 @@ mod tests {
         assert_eq!(PACKAGE.app_name, "sapphire-sync");
         assert_eq!(APP_PACKAGE.command(), "sapphire-sync");
         assert_eq!(APP_PACKAGE.desktop_asset(), "sapphire-sync-desktop");
+        assert_eq!(APP_PACKAGE.github, ("sapphire-turtle", "sapphire-framework"));
         let service = app_service();
         assert_eq!(service.app_name, "sapphire-sync");
         assert_eq!(service.args, ["serve"]);

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.26.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.26.0...sapphire-framework-gui-v0.26.1) - 2026-11-03
+
+### Fixed
+
+- *(gui)* verify updates with the organization's new minisign key ([#406](https://github.com/sapphire-turtle/sapphire-framework/pull/406))
+
 ## [0.26.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.25.0...sapphire-framework-gui-v0.26.0) - 2026-11-03
 
 ### Added

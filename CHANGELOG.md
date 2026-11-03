@@ -8,6 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.26.1] - 2026-11-03
+
+### Fixed
+
+- Desktop apps verify updates with sapphire-turtle's new minisign key (`gui::package::UPDATE_PUBKEY`, key ID F4A73F39AA17C8EB) (#406). The first key could not sign, so 0.26.0 shipped no installers or update feeds for Sapphire Bridge and Sapphire Sync; 0.26.1 is the first release that carries them.
+
 ## [0.26.0] - 2026-11-03
 
 The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2).

@@ -125,10 +125,11 @@ jobs:
               ;;
             Windows)
               setup=$(ls target/release/*-setup.exe)
-              # Silent, as the current user: no administrator.
-              "$setup" /S
-              sleep 5
-              installed=$(find "$LOCALAPPDATA" -name packager-demo.exe 2>/dev/null | head -n 1)
+              # Silent, as the current user: no administrator. Git Bash would turn `/S` into a
+              # path (S:/), leaving the installer waiting at its window.
+              MSYS_NO_PATHCONV=1 timeout 300 "$setup" /S
+              ls -la "$LOCALAPPDATA/Packager Demo" || true
+              installed=$(find "$LOCALAPPDATA/Packager Demo" "$LOCALAPPDATA/Programs" -maxdepth 3 -name packager-demo.exe 2>/dev/null | head -n 1)
               echo "installed at: $installed"
               test -n "$installed"
               ;;
@@ -159,7 +160,7 @@ jobs:
           (cd serve && python3 -m http.server 8765 --bind 127.0.0.1 > ../server.log 2>&1 &)
           sleep 3
           "$INSTALLED" --version
-          "$INSTALLED" update http://127.0.0.1:8765/latest.json || echo "update exited with $?"
+          timeout 300 "$INSTALLED" update http://127.0.0.1:8765/latest.json || echo "update exited with $?"
           # The NSIS update runs the installer and exits; give it time.
           if [ "$RUNNER_OS" = Windows ]; then
             for i in $(seq 1 30); do

@@ -11,10 +11,10 @@ categories = ["command-line-utilities"]
 keywords = ["sync", "p2p", "file-sync", "local-first"]
 
 [dependencies]
-sapphire-sync-core = { version = "0.26.0", path = "../sapphire-sync-core" }
+sapphire-sync-core = { version = "0.26.1", path = "../sapphire-sync-core" }
 # The app's own API version, which `sync disable` names.
 sapphire-sync-api = { version = "1.0.2", path = "../sapphire-sync-api" }
-sapphire-sync-server = { version = "0.26.0", path = "../sapphire-sync-server" }
+sapphire-sync-server = { version = "0.26.1", path = "../sapphire-sync-server" }
 anyhow.workspace = true
 serde_json.workspace = true
 clap.workspace = true
@@ -28,8 +28,8 @@ tempfile.workspace = true
 # facade's `ipc` module, like the CLI's own code.
 # Test-only: the server crate's `StubBridge` rides behind `test-util`, which the
 # facade does not expose, so tests reach the crate directly.
-sapphire-framework-server = { version = "0.26.0", path = "../../../crates/sapphire-framework-server", default-features = false, features = ["test-util"] }
+sapphire-framework-server = { version = "0.26.1", path = "../../../crates/sapphire-framework-server", default-features = false, features = ["test-util"] }
 # Test-only: `probe` (is anything listening?) while a server starts, and the direct
 # client handshake (`ClientInfo`, `connect_or_absent`) the sync tests use to ride the
 # framework's `sync.enable` path the way `workspace init --sync` does.
-sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.26.0", path = "../../../crates/sapphire-framework-ipc" }
+sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.26.1", path = "../../../crates/sapphire-framework-ipc" }

@@ -117,11 +117,11 @@ jobs:
             Linux)
               cp target/release/*.AppImage "$RUNNER_TEMP/install/demo.AppImage"
               chmod +x "$RUNNER_TEMP/install/demo.AppImage"
-              echo "INSTALLED=$RUNNER_TEMP/install/demo.AppImage" >> "$GITHUB_ENV"
+              installed="$RUNNER_TEMP/install/demo.AppImage"
               ;;
             macOS)
               cp -R "target/release/Packager Demo.app" "$RUNNER_TEMP/install/"
-              echo "INSTALLED=$RUNNER_TEMP/install/Packager Demo.app/Contents/MacOS/packager-demo" >> "$GITHUB_ENV"
+              installed="$RUNNER_TEMP/install/Packager Demo.app/Contents/MacOS/packager-demo"
               ;;
             Windows)
               setup=$(ls target/release/*-setup.exe)
@@ -131,10 +131,11 @@ jobs:
               installed=$(find "$LOCALAPPDATA" -name packager-demo.exe 2>/dev/null | head -n 1)
               echo "installed at: $installed"
               test -n "$installed"
-              echo "INSTALLED=$installed" >> "$GITHUB_ENV"
               ;;
           esac
-          "$INSTALLED" --version || "${INSTALLED}" --version
+          # GITHUB_ENV reaches the next steps only.
+          echo "INSTALLED=$installed" >> "$GITHUB_ENV"
+          "$installed" --version
 
       - name: Serve latest.json and update
         env:

@@ -129,9 +129,9 @@ jobs:
               # path (S:/), leaving the installer waiting at its window.
               MSYS_NO_PATHCONV=1 timeout 300 "$setup" /S
               ls -la "$LOCALAPPDATA/Packager Demo" || true
-              installed=$(find "$LOCALAPPDATA/Packager Demo" "$LOCALAPPDATA/Programs" -maxdepth 3 -name packager-demo.exe 2>/dev/null | head -n 1)
+              installed="$LOCALAPPDATA/Packager Demo/packager-demo.exe"
               echo "installed at: $installed"
-              test -n "$installed"
+              test -f "$installed"
               ;;
           esac
           # GITHUB_ENV reaches the next steps only.
@@ -160,7 +160,12 @@ jobs:
           (cd serve && python3 -m http.server 8765 --bind 127.0.0.1 > ../server.log 2>&1 &)
           sleep 3
           "$INSTALLED" --version
-          timeout 300 "$INSTALLED" update http://127.0.0.1:8765/latest.json || echo "update exited with $?"
+          # macOS has no `timeout`.
+          limit=()
+          if command -v timeout > /dev/null; then
+            limit=(timeout 300)
+          fi
+          ${limit[@]+"${limit[@]}"} "$INSTALLED" update http://127.0.0.1:8765/latest.json || echo "update exited with $?"
           # The NSIS update runs the installer and exits; give it time.
           if [ "$RUNNER_OS" = Windows ]; then
             for i in $(seq 1 30); do

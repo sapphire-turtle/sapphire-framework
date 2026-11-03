@@ -13,7 +13,7 @@ fn main() {
             let endpoint = args.get(2).expect("usage: packager-demo update <endpoint>");
             let config = Config {
                 endpoints: vec![Url::parse(endpoint).expect("endpoint URL")],
-                pubkey: env!("PACKAGER_DEMO_PUBKEY").to_owned(),
+                pubkey: option_env!("PACKAGER_DEMO_PUBKEY").unwrap_or("").to_owned(),
                 windows: None,
             };
             match check_update(Version::parse(version).unwrap(), config) {

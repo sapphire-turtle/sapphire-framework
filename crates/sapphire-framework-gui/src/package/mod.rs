@@ -30,7 +30,7 @@ pub use first_run::app_first_run_pages;
 /// (sapphire-turtle/.github's `release-packager.yml`, with the organization's
 /// `PACKAGER_SIGN_PRIVATE_KEY`): a package's `PackageSpec::update_pubkey`. An update signed
 /// otherwise is not installed.
-pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4OEU0RkFENkI2M0UyQTYKUldTbTRtTnJyVStPT0pxNm82T2FZODg3M1FWNGJyQTZ3Nzd6Mjg4L2t0VURGR091dHp0Z1d6N0EK";
+pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0QTczRjM5QUExN0M4RUIKUldUcnlCZXFPVCtuOUJ6Zld0MkIzaW5wUXlsdlBBSll2U3k1dEJtT0VBYXV6ZHFtYlVNcWF5aHEK";
 
 /// How often a running window looks for an update.
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);

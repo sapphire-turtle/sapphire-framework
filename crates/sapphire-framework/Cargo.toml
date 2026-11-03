@@ -32,7 +32,7 @@ backend = ["dep:sapphire-framework-backend", "workspace"]
 gui = ["dep:sapphire-framework-gui", "backend"]
 # `gui::app::run`: a desktop app's window on eframe + wgpu, started the same way for every app.
 eframe = ["gui", "sapphire-framework-gui/eframe"]
-# `gui::package`: a desktop app as a Velopack package — its updater, first run and About
+# `gui::package`: a desktop app as a cargo-packager package — its updater, first run and About
 # rows, through `gui::app::AppOptions::package` (#357).
 package = ["eframe", "sapphire-framework-gui/package"]
 # `gui::mobile`: an app on a phone, hosting its bridge and server in-process over the

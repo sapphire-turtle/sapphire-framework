@@ -23,7 +23,7 @@ eframe = [
 ]
 # `mobile::run_android` (and later iOS): the window, with the bridge and the app server
 # hosted in this process over the in-process IPC carrier.
-# Sapphire Bridge's window in a Velopack package: its first run (welcome, keep running in the
+# Sapphire Bridge's window in a cargo-packager package: its first run (welcome, keep running in the
 # background) and About's service row and updates.
 package = [
     "eframe",
@@ -56,8 +56,8 @@ corundum-framework-platform.workspace = true
 # The program the bridge's service starts, beside which Sapphire Bridge's window is.
 corundum-framework-service.workspace = true
 # The package's updater and the binary's release, for the bridge window's About (`package`).
-corundum-framework-package = { version = "0.7.0", features = ["service"], optional = true }
-corundum-framework-update = { version = "0.7.0", default-features = false, optional = true }
+corundum-framework-package = { version = "0.8.0", features = ["service"], optional = true }
+corundum-framework-update = { version = "0.8.0", default-features = false, optional = true }
 # The served workspace's API keys: where they are (Settings › API keys).
 sapphire-framework-keys = { version = "0.25.0", path = "../sapphire-framework-keys" }
 egui = "0.37"
@@ -73,7 +73,7 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process
 tracing.workspace = true
 
 [dev-dependencies]
-corundum-framework-package = { version = "0.7.0", features = ["service", "test-support"] }
+corundum-framework-package = { version = "0.8.0", features = ["service", "test-support"] }
 sapphire-framework-bridge = { path = "../sapphire-framework-bridge", features = ["test-util"] }
 sapphire-framework-server = { path = "../sapphire-framework-server", features = ["test-util"] }
 sapphire-workspace = { package = "sapphire-framework-workspace", path = "../sapphire-framework-workspace", default-features = false }

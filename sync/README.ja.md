@@ -28,8 +28,8 @@ sapphire-sync は [sapphire-framework](https://github.com/sapphire-turtle/sapphi
 ### デスクトップ版：インストーラー
 
 [sapphire-framework の最新のリリース](https://github.com/sapphire-turtle/sapphire-framework/releases/latest)から、お使いの OS のインストーラーをダウンロードしてください。
-Windows は `sapphire-sync-desktop-win-Setup.exe`、macOS は `sapphire-sync-desktop-osx-Setup.pkg`、
-Linux は `sapphire-sync-desktop.AppImage` です。PATH に `sapphire-sync` を置き、自分で最新版に更新します。
+Windows は `sapphire-sync-desktop_<version>_x64-setup.exe`、macOS は `sapphire-sync-desktop_<version>_aarch64.dmg`、
+Linux は `sapphire-sync-desktop_<version>_x86_64.AppImage` です。PATH に `sapphire-sync` を置き、自分で最新版に更新します。
 初回の起動時に、ウィンドウを閉じている間も MCP サーバーや HTTP のクライアントが使えるよう、
 アプリサーバーをバックグラウンドで動かし続けるかを尋ねます。同期は Sapphire Bridge を通るので、
 同じリリースにある Sapphire Bridge のインストーラー

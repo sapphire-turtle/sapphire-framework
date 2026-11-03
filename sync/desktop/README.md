@@ -6,7 +6,7 @@ Its binary is also the CLI: run bare it opens the window, and with a subcommand 
 
 ## Installation
 
-The desktop app is distributed as an installer for Windows, macOS and Linux on sapphire-framework's [Releases](https://github.com/sapphire-turtle/sapphire-framework/releases) page (`sapphire-sync-desktop-win-Setup.exe`, `-osx-Setup.pkg`, `.AppImage`), which puts its binary on PATH as `sapphire-sync` and keeps it up to date. It is a superset of the CLI, so install it instead of the headless edition (`sapphire-sync-headless`), not beside it. The bare binaries (`sapphire-sync-desktop-<os>-<arch>`) can still be run directly. The release workflow builds the package with the `velopack` feature (`cargo build -p sapphire-sync-desktop --features velopack`).
+The desktop app is distributed as an installer for Windows, macOS and Linux on sapphire-framework's [Releases](https://github.com/sapphire-turtle/sapphire-framework/releases) page (`sapphire-sync-desktop_<version>_x64-setup.exe`, `_aarch64.dmg`, `_x86_64.AppImage`, each with its minisign signature), which puts its binary on PATH as `sapphire-sync` and keeps it up to date. It is a superset of the CLI, so install it instead of the headless edition (`sapphire-sync-headless`), not beside it. The bare binaries (`sapphire-sync-desktop-<os>-<arch>`) can still be run directly. The release workflow builds the package with the `package` feature (`cargo build -p sapphire-sync-desktop --features package`), and packages it with cargo-packager.
 
 ## License
 

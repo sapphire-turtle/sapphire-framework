@@ -28,6 +28,18 @@ pub(super) fn package_update(
         }
         std::thread::sleep(Duration::from_millis(200));
     };
+    report(name, command, updater, status, check_only, out)
+}
+
+/// What `update` says and does for `status`, the updater's answer: the exit code.
+fn report(
+    name: &str,
+    command: &str,
+    updater: &Updater,
+    status: corundum_framework_update::PackageStatus,
+    check_only: bool,
+    out: &mut dyn std::io::Write,
+) -> i32 {
     let current = status.current.map_or_else(String::new, |v| format!(" {v}"));
     let said = match status.state {
         PackageState::UpToDate => writeln!(out, "{name}{current} is the newest"),
@@ -120,9 +132,25 @@ mod tests {
         assert_eq!(run(ready, false).0, 0);
     }
 
+    // On `report` itself: through `package_update` the inert updater's check may answer
+    // before the state is read, and it answers up to date (#405).
     #[test]
     fn failed_is_an_error() {
-        let (code, out) = run(PackageState::Failed("no network".into()), true);
+        let updater = Updater::for_tests(PackageState::Idle);
+        let status = corundum_framework_update::PackageStatus {
+            current: None,
+            state: PackageState::Failed("no network".into()),
+        };
+        let mut out = Vec::new();
+        let code = report(
+            "Sapphire Example",
+            "sapphire-example",
+            &updater,
+            status,
+            true,
+            &mut out,
+        );
+        let out = String::from_utf8(out).unwrap();
         assert_eq!(code, 1);
         assert!(out.contains("no network"), "{out}");
     }

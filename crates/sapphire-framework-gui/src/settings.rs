@@ -237,7 +237,7 @@ impl Settings {
         }
     }
 
-    /// The bridge's window in a Velopack package: About shows the bridge's service row, its
+    /// The bridge's window in a cargo-packager package: About shows the bridge's service row, its
     /// command line `cli`, and the package's updates (`updater`; none: the binary's release
     /// row).
     #[cfg(feature = "package")]
@@ -254,7 +254,7 @@ impl Settings {
         self
     }
 
-    /// An app's window in a Velopack package: About shows `about`'s rows — the app server's
+    /// An app's window in a cargo-packager package: About shows `about`'s rows — the app server's
     /// service, the command line and the package's updates. [`app::run`](crate::app::run)
     /// makes them ([`AppSetup::package_about`](crate::app::AppSetup::package_about)); `None`
     /// changes nothing.

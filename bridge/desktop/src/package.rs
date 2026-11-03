@@ -1,4 +1,4 @@
-//! Sapphire Bridge as a Velopack package (#363 part C), on corundum-framework-package:
+//! Sapphire Bridge as a cargo-packager package (#363 part C), on corundum-framework-package:
 //! [`PACKAGE`] is what `main` hands to `package::start`, its one service is the bridge's
 //! `serve`, and its command goes on `PATH` as `sapphire-bridge`. The updater and `update`
 //! are the framework's, shared with the apps' packages ([`BRIDGE`]).
@@ -6,11 +6,13 @@
 use corundum_framework_package::CliSpec;
 use corundum_framework_package::{PackageSpec, Services, Updater};
 use sapphire_bridge::{ServiceSpec, bridge_service_spec};
-use sapphire_framework_gui::package::AppPackage;
+use sapphire_framework_gui::package::{AppPackage, UPDATE_PUBKEY};
 
 /// The package: its command, and the bridge's service, which an update stops and starts.
 pub static PACKAGE: PackageSpec = PackageSpec {
     app_name: "sapphire-bridge",
+    version: env!("CARGO_PKG_VERSION"),
+    update_pubkey: UPDATE_PUBKEY,
     on_installed: None,
     on_uninstalling: None,
     before_apply: None,

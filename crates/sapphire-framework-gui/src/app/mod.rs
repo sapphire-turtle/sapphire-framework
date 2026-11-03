@@ -54,7 +54,7 @@ pub(crate) type InstallFonts = window::InstallFonts;
 pub struct AppOptions {
     app: AppIdentity,
     window: WindowOptions,
-    /// In a Velopack package ([`AppOptions::package`]).
+    /// In a cargo-packager package ([`AppOptions::package`]).
     #[cfg(feature = "package")]
     package: Option<crate::package::AppPackage>,
 }
@@ -81,7 +81,7 @@ impl AppOptions {
         self
     }
 
-    /// Run as `package`, a Velopack package: [`run`] takes the window's single-instance lock
+    /// Run as `package`, a cargo-packager package: [`run`] takes the window's single-instance lock
     /// (a second start brings the open window to the front), starts the package's updater,
     /// shows the first run before the app on its first start, and gives the app About's rows
     /// ([`AppSetup::package_about`]). Outside a package (a cargo build) only the lock and
@@ -268,7 +268,7 @@ pub(crate) fn build_app(
 /// `RUST_LOG=wgpu_core=debug,wgpu_hal=debug` is the useful setting when one does.
 fn desktop_log_filter(app_name: &str) -> String {
     format!(
-        "warn,{},corundum_framework_gui=info,velopack=error,corundum_framework_package=warn",
+        "warn,{},corundum_framework_gui=info,corundum_framework_package=warn",
         default_log_filter(app_name)
     )
 }
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn the_desktop_filter_quiets_the_package_runtime() {
         let filter = desktop_log_filter("sapphire-example");
-        assert!(filter.contains("velopack=error"));
+        assert!(filter.contains("corundum_framework_package=warn"));
         assert!(filter.contains("corundum_framework_package=warn"));
     }
 

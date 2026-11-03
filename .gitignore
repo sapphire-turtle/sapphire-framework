@@ -29,3 +29,7 @@ tmp
 
 # Model weights fastembed caches in the working directory by default
 .fastembed_cache/
+
+# The desktop apps' icons, rendered for their packages (release-packager.yml).
+/bridge/desktop/icons/
+/sync/desktop/icons/

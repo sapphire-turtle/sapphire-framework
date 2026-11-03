@@ -43,33 +43,27 @@ jobs:
       binary: sapphire-bridge-desktop
       linux-packages: libssl-dev pkg-config cmake libwayland-dev libxkbcommon-dev
 
-  # Sapphire Bridge as a Velopack package (#363): an installer per desktop OS, and the files
-  # the installed bridge updates itself from (bridge/desktop/src/package.rs reads this
-  # repository's latest release). The package holds the desktop binary only; the bare
-  # binaries above stay for servers, the install script and `cargo binstall`.
-  # The release carries sapphire-sync's package too (release-sync.yml), so the bridge's has
-  # channels of its own, `bridge-linux`, `-osx`, `-win`; the installers keep their names
-  # (`sapphire-bridge-desktop-win-Setup.exe`, `sapphire-bridge-desktop.AppImage`).
+  # Sapphire Bridge as a package (#363, #403), with sapphire-turtle/.github's
+  # release-packager.yml: an installer per desktop OS, each signed with the organization's
+  # minisign key, and the feed `sapphire-bridge-latest.json` the installed bridge updates
+  # itself from (bridge/desktop/src/package.rs reads this repository's latest release). The
+  # package holds the desktop binary only; the bare binaries above stay for servers, the
+  # install script and `cargo binstall`. The release carries sapphire-sync's package too:
+  # each app has its own feed.
   package:
     permissions:
       contents: write
-    uses: sapphire-turtle/.github/.github/workflows/release-velopack.yml@v1
-    # The macOS signing secrets.
+    uses: sapphire-turtle/.github/.github/workflows/release-packager.yml@v1
+    # The signing key, and the macOS signing secrets.
     secrets: inherit
     with:
       tag: ${{ inputs.tag }}
       package: sapphire-bridge-desktop
-      features: velopack
+      app-name: sapphire-bridge
+      features: package
       console-bin: sapphire-bridge-console
       # One binary: the resident sync is its `serve` subcommand.
       command: sapphire-bridge
-      # On Windows the package is installed in %LocalAppData%\<package id>, which its
-      # uninstall deletes: never the data directory's name (`sapphire-bridge`, which holds
-      # the device's identity), so the package's (corundum-framework#57).
-      pack-id: sapphire-bridge-desktop
-      title: Sapphire Bridge
-      channel-prefix: bridge
-      icons-example: icons
-      linux-categories: Network
-      macos-bundle-id: org.sapphire-turtle.sapphire-bridge
       linux-packages: libssl-dev pkg-config cmake
+      # The icons [package.metadata.packager] names, rendered from the app's SVG.
+      pre-package: cargo run --release --locked -p sapphire-bridge-desktop --example icons -- "$CRATE_DIR/icons"

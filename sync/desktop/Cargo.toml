@@ -18,12 +18,12 @@ path = "src/main.rs"
 [[bin]]
 name = "sapphire-sync-console"
 path = "src/bin/console.rs"
-required-features = ["velopack"]
+required-features = ["package"]
 
 [features]
-# The release workflow's build: the Velopack package's start, its updater, its first run
+# The release workflow's build: the package's start, its updater, its first run
 # and its service (src/package.rs). `cargo build` makes the plain binary.
-velopack = ["sapphire-framework/package", "dep:tokio"]
+package = ["sapphire-framework/package", "dep:tokio"]
 
 [dependencies]
 # Every command but the window — `serve`, `status`, `sync`, `workspace`, … —
@@ -35,9 +35,21 @@ clap.workspace = true
 sapphire-framework = { version = "0.25.0", path = "../../crates/sapphire-framework", default-features = false, features = ["eframe", "server"] }
 # The window's icon and app-menu entry (`LauncherSpec`'s icon), and whether this runs in a
 # package; the framework's version of it.
-corundum-framework-platform = "0.7.0"
+corundum-framework-platform = "0.8.0"
 # `update` in the package runs `sapphire-bridge update` first.
 tokio = { workspace = true, features = ["rt"], optional = true }
+
+# The package (sapphire-turtle/.github's release-packager.yml, corundum-framework#103): the
+# window's binary, built with the `package` feature; the release workflow adds the Windows
+# console shim as `sapphire-sync.exe`. The product name is the launcher's (`LauncherSpec::name`), so
+# the installer's shortcut and the launcher's entry coincide. The icons are rendered into
+# `icons/` by the `icons` example before packaging.
+[package.metadata.packager]
+productName = "Sapphire Sync"
+identifier = "org.sapphire-turtle.sapphire-sync"
+category = "Utility"
+binaries = [{ path = "sapphire-sync-desktop", main = true }]
+icons = ["icons/icon.png", "icons/icon.icns", "icons/icon.ico"]
 
 # `cargo binstall --git https://github.com/sapphire-turtle/sapphire-framework sapphire-sync-desktop`
 # downloads the release file instead of building it (this crate is not on crates.io), following

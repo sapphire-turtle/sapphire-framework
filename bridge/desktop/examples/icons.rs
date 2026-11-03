@@ -1,5 +1,5 @@
 //! Writes Sapphire Bridge's icon as `icon.ico`, `icon.icns` and `icon.png` (512 px) into the
-//! directory given, for `vpk pack --icon` in the release workflow (`release-bridge.yml`).
+//! directory given, for the package's icons in the release workflow (`release-bridge.yml`).
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 fn main() -> std::io::Result<()> {

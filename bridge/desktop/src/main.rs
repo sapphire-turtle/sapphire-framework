@@ -7,9 +7,9 @@
 
 // In the package, a GUI binary on Windows: no console window behind the window or the
 // service. The command line goes through the console shim (src/bin/console.rs).
-#![cfg_attr(all(windows, feature = "velopack"), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, feature = "package"), windows_subsystem = "windows")]
 
-#[cfg(feature = "velopack")]
+#[cfg(feature = "package")]
 mod package;
 
 use clap::Parser;
@@ -47,7 +47,7 @@ fn window_options(page: BridgePage) -> sapphire_framework_gui::bridge_window::Br
         version: env!("CARGO_PKG_VERSION"),
         page,
         launcher: Some(LAUNCHER),
-        #[cfg(feature = "velopack")]
+        #[cfg(feature = "package")]
         package: Some(sapphire_framework_gui::bridge_window::PackageWindow {
             start_updater: package::start_updater,
             service: package::bridge_service,
@@ -65,9 +65,9 @@ fn parse_page(s: &str) -> Result<BridgePage, String> {
 
 /// Whether this start goes through the package's start: every start but `serve`, the
 /// package's service (the start starts the services an update stopped, and that is this
-/// process). Velopack's hooks pass arguments clap rejects, so this is decided before clap
+/// process). The installer's hooks (`--corundum-package <hook>`) pass arguments clap rejects, so this is decided before clap
 /// may exit on them.
-#[cfg_attr(not(feature = "velopack"), allow(dead_code))]
+#[cfg_attr(not(feature = "package"), allow(dead_code))]
 fn runs_package_start(parsed: &Result<Desktop, clap::Error>) -> bool {
     !matches!(
         parsed,
@@ -87,8 +87,8 @@ fn main() -> std::process::ExitCode {
     } else {
         sapphire_bridge::install_console();
     }
-    // Velopack's start: a hook runs and exits here.
-    #[cfg(feature = "velopack")]
+    // The package's start: an install hook runs and exits here.
+    #[cfg(feature = "package")]
     if runs_package_start(&parsed) {
         let start = corundum_framework_package::start(&package::PACKAGE);
         tracing::debug!("package start: {start:?}");
@@ -109,7 +109,7 @@ fn main() -> std::process::ExitCode {
     // has no window: the desktop app is updated from its own release file instead, until it
     // is packaged (#363 part C).
     // In the package, the package's updater does it.
-    #[cfg(feature = "velopack")]
+    #[cfg(feature = "package")]
     if let BridgeCommand::Update(args) = &command
         && corundum_framework_platform::package::current().is_some()
     {
@@ -172,7 +172,7 @@ mod tests {
         assert!(Desktop::try_parse_from(["x", "--page", "nope"]).is_err());
     }
 
-    // Velopack's hooks start the binary with arguments clap does not know; the package's
+    // The installer's hooks start the binary with arguments clap does not know; the package's
     // start must see them before clap exits on them.
     #[test]
     fn package_start_runs_before_clap_rejects() {

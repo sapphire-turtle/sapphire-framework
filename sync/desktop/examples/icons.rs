@@ -1,5 +1,5 @@
 //! Writes Sapphire Sync's icon as `icon.ico`, `icon.icns` and `icon.png` (512 px) into the
-//! directory given, for `vpk pack --icon` in the release workflow (`release-binaries.yml`).
+//! directory given, for the package's icons in the release workflow (`release-binaries.yml`).
 
 fn main() -> std::io::Result<()> {
     use corundum_framework_platform::icon;

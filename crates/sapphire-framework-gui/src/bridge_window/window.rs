@@ -25,12 +25,12 @@ pub struct BridgeWindowOptions {
     /// The window's id and icon, and its entry in the OS's app menu
     /// (corundum's `WindowOptions::launcher`); `None` leaves the window without them.
     pub launcher: Option<corundum_framework_platform::launcher::LauncherSpec>,
-    /// In a Velopack package: its updater and its service.
+    /// In a cargo-packager package: its updater and its service.
     #[cfg(feature = "package")]
     pub package: Option<PackageWindow>,
 }
 
-/// What the window does in a Velopack package.
+/// What the window does in a cargo-packager package.
 #[cfg(feature = "package")]
 pub struct PackageWindow {
     /// Make the package's updater; called once this start holds the window's lock, so a
@@ -44,7 +44,8 @@ pub struct PackageWindow {
 
 /// What the window prints when `RUST_LOG` asks for nothing: its renderer's warnings, its
 /// own and the gui's info, and the package runtime's failures only.
-const WINDOW_LOG_FILTER: &str = "warn,sapphire_bridge_desktop=info,sapphire_framework_gui=info,velopack=error,corundum_framework_package=warn";
+const WINDOW_LOG_FILTER: &str =
+    "warn,sapphire_bridge_desktop=info,sapphire_framework_gui=info,corundum_framework_package=warn";
 
 /// Install the window's console logging. [`run_bridge`] does; a binary calls it first when it
 /// runs anything before (the package's start, whose hooks log), and then it changes nothing.
@@ -160,7 +161,7 @@ mod log_tests {
     // The window prints its renderer's warnings, but not the package runtime's (#366).
     #[test]
     fn the_window_filter_quiets_the_package_runtime() {
-        assert!(super::WINDOW_LOG_FILTER.contains("velopack=error"));
+        assert!(super::WINDOW_LOG_FILTER.contains("corundum_framework_package=warn"));
         assert!(super::WINDOW_LOG_FILTER.contains("corundum_framework_package=warn"));
     }
 }

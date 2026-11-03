@@ -61,9 +61,9 @@ pub const FRAMEWORK_TARGETS: [&str; 3] = [
 /// How often a following log reader looks for more lines.
 const FOLLOW_POLL: Duration = Duration::from_millis(250);
 
-/// What a packaged app's start (corundum-framework-package, through Velopack) may print:
-/// its failures, not Velopack's info lines on every start (#366).
-pub const PACKAGE_LOG_FILTER: &str = "velopack=error,corundum_framework_package=warn";
+/// What a packaged app's start (corundum-framework-package) may print:
+/// its failures, not its info lines on every start (#366).
+pub const PACKAGE_LOG_FILTER: &str = "corundum_framework_package=warn";
 
 /// The log filter a process applies when the environment asks for nothing specific:
 /// the framework's targets and the app's own, at info, and [`PACKAGE_LOG_FILTER`].
@@ -485,12 +485,11 @@ impl Write for Rotating {
 mod tests {
     use super::*;
 
-    // A packaged app's start runs Velopack's code, which logs at info on every start: on a
+    // A packaged app's start runs the package's code, which logs at info on every start: on a
     // command line that is noise, and on stdio MCP a confusing extra output (#366).
     #[test]
     fn the_package_runtime_is_quiet_by_default() {
         let filter = default_log_filter("sapphire-quiettest");
-        assert!(filter.contains("velopack=error"), "{filter}");
         assert!(
             filter.contains("corundum_framework_package=warn"),
             "{filter}"

@@ -11,15 +11,15 @@
 //! stop sync. The Files screen is a placeholder for the synced folder's browser (the
 //! mobile app needs one); until then Settings, at the rail's foot, is what the app does.
 //!
-//! With the `velopack` feature (the release workflow's build) it is a Velopack package
+//! With the `package` feature (the release workflow's build) it is a cargo-packager package
 //! (src/package.rs): it updates itself, and its first start asks to keep the app server
 //! running.
 
 // In the package, a GUI binary on Windows: no console window behind the window or the
 // service. The command line goes through the console shim (src/bin/console.rs).
-#![cfg_attr(all(windows, feature = "velopack"), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, feature = "package"), windows_subsystem = "windows")]
 
-#[cfg(feature = "velopack")]
+#[cfg(feature = "package")]
 mod package;
 
 use clap::Parser;
@@ -112,9 +112,9 @@ struct DesktopCli {
 
 /// Whether this start goes through the package's start: every start but `serve`, the
 /// package's service (the start starts the services an update stopped, and that is this
-/// process). Velopack's hooks pass arguments clap rejects, so this is decided before clap
+/// process). The installer's hooks (`--corundum-package <hook>`) pass arguments clap rejects, so this is decided before clap
 /// may exit on them.
-#[cfg_attr(not(feature = "velopack"), allow(dead_code))]
+#[cfg_attr(not(feature = "package"), allow(dead_code))]
 fn runs_package_start(parsed: &Result<DesktopCli, clap::Error>) -> bool {
     !matches!(
         parsed,
@@ -126,9 +126,9 @@ fn runs_package_start(parsed: &Result<DesktopCli, clap::Error>) -> bool {
 
 fn main() -> eframe::Result<()> {
     let parsed = DesktopCli::try_parse();
-    // Velopack's start: a hook runs and exits here. The window's console first, so the
+    // The package's start: an install hook runs and exits here. The window's console first, so the
     // hooks log; a command installs its own.
-    #[cfg(feature = "velopack")]
+    #[cfg(feature = "package")]
     if runs_package_start(&parsed) {
         if !matches!(parsed, Ok(DesktopCli { command: Some(_) })) {
             sapphire_framework::gui::app::install_logging(APP);
@@ -137,7 +137,7 @@ fn main() -> eframe::Result<()> {
     }
     match parsed.unwrap_or_else(|e| e.exit()).command {
         // In the package, the package's updater replaces it, not the desktop release file.
-        #[cfg(feature = "velopack")]
+        #[cfg(feature = "package")]
         Some(AppCommand::Framework(FrameworkCommand::Update(args)))
             if corundum_framework_platform::package::current().is_some() =>
         {
@@ -154,7 +154,7 @@ fn main() -> eframe::Result<()> {
 
 /// `update` in the package: `sapphire-bridge` first (unless `--no-bridge`), as the package's
 /// own update ends this process, then the package through its updater. The exit code.
-#[cfg(feature = "velopack")]
+#[cfg(feature = "package")]
 fn package_update(args: &sapphire_framework::server::AppUpdateArgs) -> i32 {
     let bridge = if args.no_bridge {
         0
@@ -192,7 +192,7 @@ fn window() -> eframe::Result<()> {
         i18n::register(&setup.cc.egui_ctx, RESOURCES);
         let settings = Settings::new(setup.framework);
         // About's service row and updates, in the package.
-        #[cfg(feature = "velopack")]
+        #[cfg(feature = "package")]
         let settings = settings.with_package_about(setup.package_about);
         let mut shell = Shell::new(
             vec![Destination::new(
@@ -216,7 +216,7 @@ fn app_options() -> AppOptions {
     let options = AppOptions::new(APP, "Sapphire Sync")
         .min_inner_size([640.0, 420.0])
         .launcher(LAUNCHER);
-    #[cfg(feature = "velopack")]
+    #[cfg(feature = "package")]
     let options = options.package(package::APP_PACKAGE);
     options
 }
@@ -225,7 +225,7 @@ fn app_options() -> AppOptions {
 mod tests {
     use super::*;
 
-    // Velopack's hooks start the binary with arguments clap does not know; the package's
+    // The installer's hooks start the binary with arguments clap does not know; the package's
     // start must see them before clap exits on them.
     #[test]
     fn package_start_runs_before_clap_rejects() {

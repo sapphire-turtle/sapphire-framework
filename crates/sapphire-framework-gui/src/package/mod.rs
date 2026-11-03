@@ -1,5 +1,5 @@
-//! A desktop app as a Velopack package (#357): what its `main`, its window and its `update`
-//! share with Sapphire Bridge's (#363).
+//! A desktop app as a cargo-packager package (#357, #403): what its `main`, its window and
+//! its `update` share with Sapphire Bridge's (#363).
 //!
 //! An [`AppPackage`] names the package (corundum's [`PackageSpec`]), where it is released and
 //! the service its first run offers to keep running. With it:
@@ -26,10 +26,16 @@ pub use corundum_framework_package as runtime;
 pub use corundum_framework_platform::launcher::LauncherSpec;
 pub use first_run::app_first_run_pages;
 
+/// sapphire-turtle's minisign public key, which every desktop app's updates are signed for
+/// (sapphire-turtle/.github's `release-packager.yml`, with the organization's
+/// `PACKAGER_SIGN_PRIVATE_KEY`): a package's `PackageSpec::update_pubkey`. An update signed
+/// otherwise is not installed.
+pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4OEU0RkFENkI2M0UyQTYKUldTbTRtTnJyVStPT0pxNm82T2FZODg3M1FWNGJyQTZ3Nzd6Mjg4L2t0VURGR091dHp0Z1d6N0EK";
+
 /// How often a running window looks for an update.
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
-/// A desktop app's Velopack package.
+/// A desktop app's cargo-packager package.
 #[derive(Clone, Copy)]
 pub struct AppPackage {
     /// The app's name as people see it: "Sapphire Sync".
@@ -95,7 +101,7 @@ impl AppPackage {
 
     /// `update` in the package, through `updater`: look (and download what is found), wait up
     /// to `timeout`, then report on `out`; without `check_only`, apply what is ready (the
-    /// process exits for Velopack to replace it). The exit code.
+    /// process exits for the update's install). The exit code.
     pub fn update(
         &self,
         updater: &Updater,
@@ -180,6 +186,8 @@ pub(crate) mod tests {
 
     pub(crate) static SPEC: PackageSpec = PackageSpec {
         app_name: "sapphire-example",
+        version: "1.0.0",
+        update_pubkey: super::UPDATE_PUBKEY,
         on_installed: None,
         on_uninstalling: None,
         before_apply: None,

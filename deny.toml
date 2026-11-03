@@ -32,12 +32,6 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip 8's ZipArchive::extract follows symlink targets outside the destination. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
     { id = "RUSTSEC-2026-0369", reason = "zip 8's extract applies permissions through symlinks. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
     { id = "RUSTSEC-2026-0429", reason = "zip 8's extract sizes a symlink-target buffer from the declared ZIP64 size. Same path and reason as RUSTSEC-2026-0367: candle never calls extract." },
-    # velopack 1.2.161 (corundum-framework-package: the packages of the bridge and of
-    # sapphire-sync, bridge/desktop, sync/desktop and the gui's `package` feature) pins zip 8
-    # too and depends on derivative. Its updater does extract, but only packages fetched over
-    # HTTPS from this repository's releases. Drop with corundum-framework#64 (velopack's next
-    # stable release, on zip 9).
-    { id = "RUSTSEC-2024-0388", reason = "derivative is unmaintained, with no vulnerability; velopack 1.2.161 (corundum-framework-package) depends on it. Re-check with corundum-framework#64." },
 ]
 
 [licenses]

@@ -15,8 +15,5 @@ cargo-packager-updater = "0.2.3"
 [package.metadata.packager]
 productName = "Packager Demo"
 identifier = "org.sapphire-turtle.packager-demo"
-beforePackagingCommand = "cargo build --release"
 binaries = [{ path = "packager-demo", main = true }]
 icons = ["icons/32x32.png", "icons/128x128.png", "icons/256x256.png", "icons/512x512.png"]
-# Matches the Developer ID Application identity the CI imports (codesign takes a prefix).
-macos = { signingIdentity = "Developer ID Application" }

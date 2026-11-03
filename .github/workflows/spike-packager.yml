@@ -4,8 +4,7 @@ name: Spike cargo-packager
 # (and on macOS notarizes) it, and updates an installed 0.1.0 to 0.2.0 through a static
 # latest.json served locally, as GitHub Releases would serve it.
 on:
-  push:
-    branches: [spike/cargo-packager]
+  workflow_dispatch:
 
 defaults:
   run:

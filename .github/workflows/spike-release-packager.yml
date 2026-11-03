@@ -1,0 +1,20 @@
+name: Spike release-packager.yml
+
+# Spike (not for merging): sapphire-turtle/.github's release-packager.yml on the demo, as a
+# dry run (no upload).
+on:
+  push:
+    branches: [spike/cargo-packager]
+
+jobs:
+  package:
+    permissions:
+      contents: write
+    uses: sapphire-turtle/.github/.github/workflows/release-packager.yml@feat/release-packager
+    secrets: inherit
+    with:
+      tag: spike/cargo-packager
+      workspace: spike/packager-demo
+      package: packager-demo
+      app-name: packager-demo
+      upload: false

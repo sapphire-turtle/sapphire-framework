@@ -10,9 +10,9 @@ categories = ["filesystem"]
 keywords = ["sync", "p2p", "file-sync", "local-first"]
 
 [dependencies]
-sapphire-sync-core = { version = "0.25.0", path = "../sapphire-sync-core" }
+sapphire-sync-core = { version = "0.26.0", path = "../sapphire-sync-core" }
 # The app's own API version, which the server reports.
-sapphire-sync-api = { version = "1.0.1", path = "../sapphire-sync-api" }
+sapphire-sync-api = { version = "1.0.2", path = "../sapphire-sync-api" }
 # `block_in_place` in the status rows needs the multi-thread runtime.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
@@ -25,7 +25,7 @@ serde_json.workspace = true
 # Test-only: the bridge control-plane client (`BridgeClient`) the e2e harness connects
 # to each host's bridge with. The facade does not re-export it (its `bridge` module is
 # the daemon side); the app leaves the connection to the framework's `SyncRuntime`.
-sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version = "0.25.0", path = "../../../crates/sapphire-framework-bridge-client" }
+sapphire-bridge-client = { package = "sapphire-framework-bridge-client", version = "0.26.0", path = "../../../crates/sapphire-framework-bridge-client" }
 # The e2e harness's bridge registrations (`GrainId`, the bridge's `ManagedBy`).
 # Test-only: the bridge's wire types the e2e harness registers app servers with.
 sapphire-bridge-api = { package = "sapphire-framework-bridge-api", version = "4.0.0", path = "../../../crates/sapphire-framework-bridge-api" }
@@ -36,7 +36,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # The e2e harness builds real bridges: `LoopbackNetwork`, `NetConfig` and the
 # endpoint-taking constructors ride behind the bridge crate's `test-util`
 # feature (the facade does not expose it).
-sapphire-framework-bridge = { version = "0.25.0", path = "../../../crates/sapphire-framework-bridge", features = ["test-util"] }
+sapphire-framework-bridge = { version = "0.26.0", path = "../../../crates/sapphire-framework-bridge", features = ["test-util"] }
 # The harness parses and rewrites one device-record field (`introduce`'s
 # `~`-prefixed ledger copies).
 toml.workspace = true

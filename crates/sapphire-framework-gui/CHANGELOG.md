@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.26.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.25.0...sapphire-framework-gui-v0.26.0) - 2026-11-03
+
+### Added
+
+- [**breaking**] corundum 0.8, the desktop packages on cargo-packager ([#403](https://github.com/sapphire-turtle/sapphire-framework/pull/403))
+- *(workspace)* [**breaking**] default the workspace to <data dir>/workspaces/default, not the cwd
+
+### Other
+
+- *(gui)* failed_is_an_error on what update reports, not through a check
+
 ## [0.25.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.24.1...sapphire-framework-gui-v0.25.0) - 2026-11-02
 
 ### Added

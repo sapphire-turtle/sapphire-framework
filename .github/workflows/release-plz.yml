@@ -34,3 +34,36 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ fromJSON(needs.release-plz.outputs.tags)['sapphire-framework-workspace'] }}
+
+  # sapphire-sync (sync/): both editions and the desktop app's package, on the same release.
+  # Its tag is the framework's: the one sapphire-framework-workspace made, or, when a release
+  # bumped only sync's crates (they share the framework's version), the existing tag of that
+  # version.
+  sync-tag:
+    needs: release-plz
+    if: contains(fromJSON(needs.release-plz.outputs.packages), 'sapphire-sync-headless')
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: tag
+        env:
+          MADE: ${{ fromJSON(needs.release-plz.outputs.tags)['sapphire-framework-workspace'] }}
+        run: |
+          tag=$MADE
+          if [ -z "$tag" ]; then
+            version=$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+            tag="v$version"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build-sync:
+    needs: sync-tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-sync.yml
+    # The macOS signing secrets, for the package (release-sync.yml, job `pack`).
+    secrets: inherit
+    with:
+      tag: ${{ needs.sync-tag.outputs.tag }}

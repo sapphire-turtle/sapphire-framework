@@ -1,0 +1,71 @@
+name: Release sapphire-sync binaries
+
+# Builds sapphire-sync's (sync/) headless edition's and desktop app's binaries for the
+# four release platforms and attaches them to an existing `v{version}` release, which they
+# share with the framework and the bridge. release-plz.yml calls it after a release; run it by hand to
+# (re)upload the files for an existing tag.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to attach binaries to (e.g. v0.25.1).'
+        required: true
+        type: string
+
+jobs:
+  # Both binaries are `sapphire-sync` on PATH; the files are named by crate
+  # to tell them apart.
+  headless:
+    permissions:
+      contents: write
+    uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
+    with:
+      tag: ${{ inputs.tag }}
+      package: sapphire-sync-headless
+      binary: sapphire-sync
+      asset: sapphire-sync-headless
+
+  desktop:
+    permissions:
+      contents: write
+    uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
+    with:
+      tag: ${{ inputs.tag }}
+      package: sapphire-sync-desktop
+      binary: sapphire-sync-desktop
+      linux-packages: libwayland-dev libxkbcommon-dev
+
+  # Sapphire Sync as a Velopack package (#357): an installer per desktop OS, and the files
+  # the installed app updates itself from (sync/desktop/src/package.rs reads this
+  # repository's latest release). The package holds the desktop binary only, which runs the
+  # CLI too; the bare binaries above stay for servers, the install script and
+  # `cargo binstall`. The release carries the bridge's package too (release-bridge.yml), so
+  # sync's has channels of its own, `sync-linux`, `-osx`, `-win`; the installers keep their
+  # names (`sapphire-sync-desktop-win-Setup.exe`, `sapphire-sync-desktop.AppImage`).
+  package:
+    permissions:
+      contents: write
+    uses: sapphire-turtle/.github/.github/workflows/release-velopack.yml@v1
+    # The macOS signing secrets.
+    secrets: inherit
+    with:
+      tag: ${{ inputs.tag }}
+      package: sapphire-sync-desktop
+      features: velopack
+      console-bin: sapphire-sync-console
+      # One binary: the app server is its `serve` subcommand.
+      command: sapphire-sync
+      # On Windows the package is installed in %LocalAppData%\<package id>, which its
+      # uninstall deletes: never the data directory's name (`sapphire-sync`, which holds the
+      # workspace's settings), so the package's (corundum-framework#57).
+      pack-id: sapphire-sync-desktop
+      title: Sapphire Sync
+      channel-prefix: sync
+      icons-example: icons
+      linux-categories: Network
+      macos-bundle-id: org.sapphire-turtle.sapphire-sync

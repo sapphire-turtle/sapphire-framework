@@ -10,8 +10,9 @@ Thank you for helping with sapphire-framework. A couple of conventions keep the 
 ## Repository layout
 
 - **Binary crates that ship as part of the framework** live in a directory named after the
-  short name, directly under the repo root (`bridge/` for `sapphire-bridge`). An application
-  with its own repository stays in that repository.
+  short name, directly under the repo root (`bridge/` for `sapphire-bridge`). So does
+  `sync/`, sapphire-sync, the framework's reference app (its own [CONTRIBUTING.md](sync/CONTRIBUTING.md)).
+  Every other application stays in its own repository.
 - **Library crates** live under `crates/`, in a directory named after the full crate name.
 - Non-crate directories (docs, editor extensions, etc.) stay at the repo root.
 
@@ -27,6 +28,6 @@ Thank you for helping with sapphire-framework. A couple of conventions keep the 
 
 ## リポジトリ構成
 
-- **フレームワークの一部として配布するバイナリ用クレート**は、短い名前のディレクトリをリポジトリ直下に置きます（`sapphire-bridge` なら `bridge/`）。独自リポジトリを持つアプリケーションはそちらに留まります。
+- **フレームワークの一部として配布するバイナリ用クレート**は、短い名前のディレクトリをリポジトリ直下に置きます（`sapphire-bridge` なら `bridge/`）。framework の参照実装である sapphire-sync の `sync/` も同様です（独自の [CONTRIBUTING.md](sync/CONTRIBUTING.md) があります）。それ以外のアプリケーションは独自リポジトリに留まります。
 - **ライブラリ用クレート**は `crates/` 直下に、正式なクレート名のディレクトリで置きます。
 - クレートではないディレクトリ（docs やエディタ拡張など）はリポジトリ直下のままにします。

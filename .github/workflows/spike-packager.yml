@@ -1,0 +1,184 @@
+name: Spike cargo-packager
+
+# Spike (not for merging): packages spike/packager-demo with cargo-packager on each OS, signs
+# (and on macOS notarizes) it, and updates an installed 0.1.0 to 0.2.0 through a static
+# latest.json served locally, as GitHub Releases would serve it.
+on:
+  push:
+    branches: [spike/cargo-packager]
+
+defaults:
+  run:
+    shell: bash
+    working-directory: spike/packager-demo
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+            formats: appimage
+          - os: macos-latest
+            target: macos-aarch64
+            formats: app,dmg
+          - os: windows-latest
+            target: windows-x86_64
+            formats: nsis
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: spike
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spike/packager-demo
+
+      - uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-packager
+        run: cargo binstall -y cargo-packager@0.11.8
+
+      # A key of the run's own: the spike checks the mechanism, not a release key.
+      - name: Signing key
+        run: |
+          cargo packager signer generate --ci --password spike --path "$RUNNER_TEMP/demo.key" -f
+          {
+            echo "PACKAGER_DEMO_PUBKEY=$(cat "$RUNNER_TEMP/demo.key.pub")"
+            echo "CARGO_PACKAGER_SIGN_PRIVATE_KEY=$(cat "$RUNNER_TEMP/demo.key")"
+          } >> "$GITHUB_ENV"
+
+      # The packager imports the .p12 into a keychain of its own (APPLE_CERTIFICATE) and
+      # notarizes with an App Store Connect key: APPLE_API_KEY is the key's ID there, and
+      # the .p8 is read from APPLE_API_KEY_PATH.
+      - name: Apple credentials (macOS)
+        if: runner.os == 'macOS'
+        env:
+          P8: ${{ secrets.APPLE_API_KEY }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          printf '%s\n' "$P8" > "$RUNNER_TEMP/api-key.p8"
+          {
+            echo "APPLE_CERTIFICATE=$CERT"
+            echo "APPLE_CERTIFICATE_PASSWORD=$CERT_PASSWORD"
+            echo "APPLE_API_KEY=$KEY_ID"
+            echo "APPLE_API_ISSUER=$ISSUER"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/api-key.p8"
+          } >> "$GITHUB_ENV"
+
+      - name: Package 0.2.0
+        env:
+          FORMATS: ${{ matrix.formats }}
+        run: |
+          sed -i.bak 's/^version = ".*"/version = "0.2.0"/' Cargo.toml
+          time cargo packager --release -f "$FORMATS" -v
+          mkdir -p serve
+          ls -la target/release
+          for f in target/release/*.AppImage target/release/*.AppImage.sig \
+                   target/release/*.app.tar.gz target/release/*.app.tar.gz.sig \
+                   target/release/*.dmg target/release/*.dmg.sig \
+                   target/release/*-setup.exe target/release/*-setup.exe.sig; do
+            [ -e "$f" ] && mv "$f" serve/
+          done
+          ls -la serve
+
+      - name: Check the signatures (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app="target/release/Packager Demo.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+          xcrun stapler validate "$app"
+          dmg=$(ls serve/*.dmg)
+          codesign --verify --verbose=2 "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg" || echo "::warning::the DMG is not accepted by spctl"
+          xcrun stapler validate "$dmg" || echo "::warning::the DMG is not notarized"
+
+      # 0.1.0 needs no notarization: it is only the update's starting point.
+      - name: Package 0.1.0 and install it
+        run: |
+          mv Cargo.toml.bak Cargo.toml
+          if [ "$RUNNER_OS" = macOS ]; then
+            unset APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+          fi
+          formats=${{ matrix.formats }}
+          cargo packager --release -f "${formats%%,*}"
+          mkdir -p "$RUNNER_TEMP/install"
+          case $RUNNER_OS in
+            Linux)
+              cp target/release/*.AppImage "$RUNNER_TEMP/install/demo.AppImage"
+              chmod +x "$RUNNER_TEMP/install/demo.AppImage"
+              echo "INSTALLED=$RUNNER_TEMP/install/demo.AppImage" >> "$GITHUB_ENV"
+              ;;
+            macOS)
+              cp -R "target/release/Packager Demo.app" "$RUNNER_TEMP/install/"
+              echo "INSTALLED=$RUNNER_TEMP/install/Packager Demo.app/Contents/MacOS/packager-demo" >> "$GITHUB_ENV"
+              ;;
+            Windows)
+              setup=$(ls target/release/*-setup.exe)
+              # Silent, as the current user: no administrator.
+              "$setup" /S
+              sleep 5
+              installed=$(find "$LOCALAPPDATA" -name packager-demo.exe 2>/dev/null | head -n 1)
+              echo "installed at: $installed"
+              test -n "$installed"
+              echo "INSTALLED=$installed" >> "$GITHUB_ENV"
+              ;;
+          esac
+          "$INSTALLED" --version || "${INSTALLED}" --version
+
+      - name: Serve latest.json and update
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          case $RUNNER_OS in
+            Linux) file=$(cd serve && ls *.AppImage); format=appimage ;;
+            macOS) file=$(cd serve && ls *.app.tar.gz); format=app ;;
+            Windows) file=$(cd serve && ls *-setup.exe); format=nsis ;;
+          esac
+          python3 - "$file" "$format" "$TARGET" <<'EOF'
+          import json, sys, urllib.parse
+          file, fmt, target = sys.argv[1:]
+          sig = open(f"serve/{file}.sig").read()
+          url = "http://127.0.0.1:8765/" + urllib.parse.quote(file)
+          json.dump({"version": "0.2.0", "pub_date": "2026-11-03T00:00:00Z",
+                     "platforms": {target: {"url": url, "signature": sig, "format": fmt}}},
+                    open("serve/latest.json", "w"))
+          EOF
+          cat serve/latest.json
+          (cd serve && python3 -m http.server 8765 --bind 127.0.0.1 > ../server.log 2>&1 &)
+          sleep 3
+          "$INSTALLED" --version
+          "$INSTALLED" update http://127.0.0.1:8765/latest.json || echo "update exited with $?"
+          # The NSIS update runs the installer and exits; give it time.
+          if [ "$RUNNER_OS" = Windows ]; then
+            for i in $(seq 1 30); do
+              sleep 2
+              v=$("$INSTALLED" --version 2>/dev/null || true)
+              echo "$v"
+              case $v in *0.2.0*) break ;; esac
+            done
+          fi
+          version=$("$INSTALLED" --version)
+          echo "after the update: $version"
+          case $version in *0.2.0*) ;; *) echo "::error::not updated"; exit 1 ;; esac
+          if [ "$RUNNER_OS" = macOS ]; then
+            app="$RUNNER_TEMP/install/Packager Demo.app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: spike-${{ matrix.target }}
+          path: spike/packager-demo/serve/

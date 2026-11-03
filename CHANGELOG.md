@@ -8,6 +8,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-03
+
+The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2).
+
+### Changed (Breaking)
+
+- `workspace init` and `select` without a directory use the app's default workspace, `<data dir>/workspaces/default`, not the current directory; pass `.` for the old behaviour. `workspace.init` creates a missing folder, the Workspace screen offers "Create a workspace" when there is none, and on a phone new workspaces go under `<data dir>/workspaces` (`mobile::workspaces_dir` is deprecated) (#398).
+
 ### Changed
 
 - sapphire-sync, the framework's reference app, is now part of this repository, under `sync/` (#394), with its history. Its crates (`sapphire-sync-headless`, `-desktop`, `-cli`, `-server`, `-core`) are versioned and released with the framework, under the same `v{version}` tag; `sapphire-sync-api` keeps its own version. Its license is the framework's, `MIT OR Apache-2.0` (the desktop app was GPL-3.0-or-later with an App Store exception). Its own code uses the framework through the `sapphire-framework` facade alone, which CI checks.

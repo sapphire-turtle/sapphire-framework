@@ -30,9 +30,9 @@ package = [
 ]
 
 [dependencies]
-sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.25.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
-sapphire-framework-bridge-embed = { version = "0.25.0", path = "../../crates/sapphire-framework-bridge-embed", features = ["factory"] }
-sapphire-framework-gui = { version = "0.25.0", path = "../../crates/sapphire-framework-gui", features = ["eframe"] }
+sapphire-bridge = { package = "sapphire-framework-bridge", version = "0.26.0", path = "../../crates/sapphire-framework-bridge", features = ["node"] }
+sapphire-framework-bridge-embed = { version = "0.26.0", path = "../../crates/sapphire-framework-bridge-embed", features = ["factory"] }
+sapphire-framework-gui = { version = "0.26.0", path = "../../crates/sapphire-framework-gui", features = ["eframe"] }
 corundum-framework-package = { version = "0.8.0", features = ["service"], optional = true }
 # The window's icon and app-menu entry (`LauncherSpec`); the package's layout.
 corundum-framework-platform.workspace = true

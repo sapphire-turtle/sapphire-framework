@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.26.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.25.0...v0.26.0) - 2026-11-03
+
+### Added
+
+- [**breaking**] corundum 0.8, the desktop packages on cargo-packager ([#403](https://github.com/sapphire-turtle/sapphire-framework/pull/403))
+- *(workspace)* [**breaking**] default the workspace to <data dir>/workspaces/default, not the cwd
+
 ## [0.23.0](https://github.com/sapphire-turtle/sapphire-framework/compare/v0.22.0...v0.23.0) - 2026-10-28
 
 ### Other

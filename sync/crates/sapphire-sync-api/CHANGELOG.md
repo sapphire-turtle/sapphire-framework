@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-sync-api-v1.0.1...sapphire-sync-api-v1.0.2) - 2026-11-03
+
+### Other
+
+- *(sync)* build sapphire-sync in the framework's workspace
+
 ## [1.0.1](https://github.com/sapphire-turtle/sapphire-sync/compare/sapphire-sync-api-v1.0.0...sapphire-sync-api-v1.0.1) - 2026-10-15
 
 ### Other

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-sync-headless-v0.25.0...sapphire-sync-headless-v0.26.0) - 2026-11-03
+
+### Other
+
+- update Cargo.lock dependencies
+
 ### Moved
 
 - sapphire-sync now lives in sapphire-framework's repository, under `sync/` (sapphire-framework#394), and is released with the framework, at its version and under its `v{version}` tag: the next release jumps from 0.15 to the framework's. Releases and the update check come from https://github.com/sapphire-turtle/sapphire-framework/releases. The desktop app's license is now the framework's, `MIT OR Apache-2.0`.

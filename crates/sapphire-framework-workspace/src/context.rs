@@ -10,6 +10,50 @@ use crate::workspace::path_uuid;
 /// (Windows), as corundum-framework-platform's `AppDirs::cache` has it.
 const WINDOWS_CACHE_DIR: &str = "cache";
 
+/// The folder in the app's data directory that holds its workspaces on this host
+/// (`<data_dir>/workspaces`).
+pub const WORKSPACES_DIR: &str = "workspaces";
+
+/// The folder name, under [`WORKSPACES_DIR`], of the workspace a fresh install creates
+/// when nobody names a place for it.
+pub const DEFAULT_WORKSPACE_NAME: &str = "default";
+
+/// Where `app_name`'s workspace goes when nobody names a place for it:
+/// `<data_dir>/workspaces/default`, the data directory resolved the way
+/// [`AppContext::init`] resolves it (the `SAPPHIRE_<APP>_DATA_DIR` override, else the
+/// platform's).
+///
+/// For a process that never initialises an [`AppContext`] of its own — a CLI command that
+/// only talks to the app's server; an initialised context has
+/// [`AppContext::default_workspace_dir`]. It reads the environment and creates nothing.
+pub fn default_workspace_dir(app_name: &str) -> PathBuf {
+    workspaces_dir(app_name).join(DEFAULT_WORKSPACE_NAME)
+}
+
+/// The folder that holds `app_name`'s workspaces on this host, `<data_dir>/workspaces`,
+/// resolved without a context as [`default_workspace_dir`] is. An initialised context has
+/// [`AppContext::workspaces_dir`].
+pub fn workspaces_dir(app_name: &str) -> PathBuf {
+    category_root(app_name, "data", dirs::data_dir())
+        .join(app_name)
+        .join(WORKSPACES_DIR)
+}
+
+/// Resolve one category's platform root for `app_name`: the category's env override
+/// (`SAPPHIRE_<APP-UPPER>_<CATEGORY>_DIR`, which replaces the platform root only) or
+/// `platform_root`, falling back to [`std::env::temp_dir`] when neither is available.
+fn category_root(app_name: &str, category: &str, platform_root: Option<PathBuf>) -> PathBuf {
+    std::env::var(app_dir_env_var(app_name, category))
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            let p = PathBuf::from(v);
+            p.clone().canonicalize().unwrap_or(p)
+        })
+        .or(platform_root)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 /// Application-wide context shared across all [`Workspace`](crate::Workspace) instances.
 ///
 /// Holds the `app_name` (used for the marker directory) and the cache / data /
@@ -198,15 +242,7 @@ impl AppContext {
     /// root only) or the platform default, falling back to
     /// [`std::env::temp_dir`] when neither is available.
     fn category_root(&self, category: &str, platform_root: Option<PathBuf>) -> PathBuf {
-        std::env::var(app_dir_env_var(self.app_name, category))
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(|v| {
-                let p = PathBuf::from(v);
-                p.clone().canonicalize().unwrap_or(p)
-            })
-            .or(platform_root)
-            .unwrap_or_else(std::env::temp_dir)
+        category_root(self.app_name, category, platform_root)
     }
 
     /// Allow file operations on paths outside the workspace root.
@@ -275,6 +311,27 @@ impl AppContext {
             .get()
             .map(|p| p.as_path())
             .expect("AppContext data dir not initialised: init() failed for this category or was never called")
+    }
+
+    /// Return the directory that holds the app's workspaces on this host
+    /// (`{data_dir}/workspaces`).
+    ///
+    /// # Panics
+    /// Panics if neither [`init`](Self::init) nor [`set_data_dir`](Self::set_data_dir)
+    /// has been called.
+    pub fn workspaces_dir(&self) -> PathBuf {
+        self.data_dir().join(WORKSPACES_DIR)
+    }
+
+    /// Return where the app's workspace goes when nobody names a place for it
+    /// (`{data_dir}/workspaces/default`). See [`default_workspace_dir`] for a process
+    /// without an initialised context.
+    ///
+    /// # Panics
+    /// Panics if neither [`init`](Self::init) nor [`set_data_dir`](Self::set_data_dir)
+    /// has been called.
+    pub fn default_workspace_dir(&self) -> PathBuf {
+        self.workspaces_dir().join(DEFAULT_WORKSPACE_NAME)
     }
 
     /// Return the directory the app's log file lives in (`{data_dir}/logs`).
@@ -352,6 +409,34 @@ mod tests {
             .join("sapphire-testjournal5");
         assert_eq!(ctx.data_dir(), app);
         assert_eq!(ctx.cache_dir(), app.join("cache"));
+    }
+
+    /// A CLI that never initialises a context finds the same default workspace the server's
+    /// initialised context does: `<data_dir>/workspaces/default`.
+    #[test]
+    fn the_default_workspace_is_under_the_data_dir_with_or_without_a_context() {
+        let _env = TestEnv::lock();
+        let (cache, data, config) = (tempdir().unwrap(), tempdir().unwrap(), tempdir().unwrap());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL6_CACHE_DIR", cache.path());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL6_DATA_DIR", data.path());
+        TestEnv::set("SAPPHIRE_TESTJOURNAL6_CONFIG_DIR", config.path());
+        let ctx: &'static AppContext =
+            Box::leak(Box::new(AppContext::new("sapphire-testjournal6")));
+        ctx.try_init(AppKind::Server).unwrap();
+        let expected = data
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("sapphire-testjournal6")
+            .join("workspaces")
+            .join("default");
+        assert_eq!(ctx.default_workspace_dir(), expected);
+        assert_eq!(default_workspace_dir("sapphire-testjournal6"), expected);
+        assert_eq!(
+            ctx.workspaces_dir(),
+            workspaces_dir("sapphire-testjournal6")
+        );
+        assert!(!expected.exists(), "resolving creates nothing");
     }
 
     #[test]

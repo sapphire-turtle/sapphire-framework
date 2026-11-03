@@ -29,7 +29,9 @@ pub use serde;
 
 pub use bridge_embedder::BridgeEmbedder;
 pub use config::{HybridConfig, RetrieveConfig, VectorDb};
-pub use context::AppContext;
+pub use context::{
+    AppContext, DEFAULT_WORKSPACE_NAME, WORKSPACES_DIR, default_workspace_dir, workspaces_dir,
+};
 pub use indexer::{
     IndexHook, SyncReport, SyncWithHookError, path_to_doc_id, sync_workspace,
     sync_workspace_full_with_hook, sync_workspace_incremental, sync_workspace_with_hook,

@@ -80,7 +80,10 @@ impl EntryGuard {
     }
 }
 
-/// The directory new workspaces go in, under the app's storage `base`.
+/// The directory new workspaces went in before they moved under the app's data directory.
+#[deprecated(
+    note = "new workspaces go in the app's data directory, `sapphire_workspace::workspaces_dir`; a workspace made here before is still served from where it is"
+)]
 pub fn workspaces_dir(base: &Path) -> PathBuf {
     base.join("workspaces")
 }
@@ -89,7 +92,9 @@ pub fn workspaces_dir(base: &Path) -> PathBuf {
 ///
 /// `dirs` finds nothing on Android or iOS (it reads only `$HOME`), so the framework's
 /// overrides are set instead: the IPC runtime directory, the bridge's directory, and the
-/// app's data, cache and config roots. Each is created.
+/// app's data, cache and config roots. Each is created, and so is the folder new workspaces
+/// go in — `<data dir>/workspaces`, as on a desktop, where the default one is
+/// `<data dir>/workspaces/default`.
 ///
 /// Call it before anything reads them, and before this process starts threads of its own.
 pub fn prepare_dirs(base: &Path, app_name: &str) -> io::Result<()> {
@@ -109,8 +114,9 @@ pub fn prepare_dirs(base: &Path, app_name: &str) -> io::Result<()> {
         // platform's threads (a JVM's, say) do not read Rust's environment.
         unsafe { std::env::set_var(var, dir) };
     }
-    std::fs::create_dir_all(workspaces_dir(base))?;
-    crate::platform::set_app_storage(workspaces_dir(base));
+    let workspaces = sapphire_workspace::workspaces_dir(app_name);
+    std::fs::create_dir_all(&workspaces)?;
+    crate::platform::set_app_storage(workspaces);
     Ok(())
 }
 
@@ -201,10 +207,18 @@ mod tests {
             assert_eq!(value, tmp.path().join(sub), "{var}");
             assert!(value.is_dir(), "{var} is created");
         }
-        assert!(workspaces_dir(tmp.path()).is_dir());
+        let workspaces = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("data")
+            .join("sapphire-mobiletest")
+            .join("workspaces");
+        assert!(workspaces.is_dir());
+        assert_eq!(crate::platform::app_storage(), Some(workspaces.as_path()));
         assert_eq!(
-            crate::platform::app_storage(),
-            Some(workspaces_dir(tmp.path()).as_path())
+            sapphire_workspace::default_workspace_dir("sapphire-mobiletest"),
+            workspaces.join("default")
         );
     }
 }

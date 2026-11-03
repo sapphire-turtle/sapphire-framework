@@ -12,13 +12,17 @@ stops nothing.
 ## Installing
 
 Each framework release carries Sapphire Bridge's installers, made with
-[Velopack](https://velopack.io) by `.github/workflows/release-bridge.yml`:
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager) by
+`.github/workflows/release-bridge.yml` (sapphire-turtle/.github's `release-packager.yml`):
 
 | OS | File |
 |---|---|
-| Windows | `sapphire-bridge-desktop-win-Setup.exe` (not signed yet: SmartScreen warns) |
-| macOS | `sapphire-bridge-desktop-osx-Setup.pkg` (signed and notarized when the release had the keys) |
-| Linux | `sapphire-bridge-desktop.AppImage` |
+| Windows | `sapphire-bridge-desktop_<version>_x64-setup.exe`, for you alone, no administrator (not code-signed yet: SmartScreen warns) |
+| macOS | `sapphire-bridge-desktop_<version>_aarch64.dmg` (the app signed and notarized when the release had the keys) |
+| Linux | `sapphire-bridge-desktop_<version>_x86_64.AppImage` |
+
+Each file has a minisign signature beside it (`.sig`), against sapphire-turtle's key; the
+updates are checked against it before they are installed.
 
 The package holds this binary, as the command `sapphire-bridge`. On Windows the install puts
 it on `PATH` (a small console program of that name runs it, so the command line works while
@@ -31,11 +35,12 @@ Sapphire Bridge running in the background — Yes registers `sapphire-bridge ser
 service manager (systemd user unit, LaunchAgent, Task Scheduler). About › Service shows it
 afterwards, to stop, start, remove or repair.
 
-**Updates.** The window checks this repository's latest release at start and once a day,
+**Updates.** The window checks this repository's latest release (its
+`sapphire-bridge-latest.json`) at start and once a day,
 downloads a newer one, and About › Updates offers to restart into it; the service is stopped
 before the update and started after. `sapphire-bridge update [--check]` does the same from
 the command line, and so does an app's `<app> update`, which runs it.
 
-Built without the `velopack` feature (`cargo build`), it is the plain binary, also released
+Built without the `package` feature (`cargo build`), it is the plain binary, also released
 as `sapphire-bridge-desktop-<os>-<arch>`; `update` then refuses and says how to update. The
 command line alone, for servers, is [`sapphire-bridge`](../headless/README.md).

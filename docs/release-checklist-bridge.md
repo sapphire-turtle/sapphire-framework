@@ -7,8 +7,8 @@ changes (spec: `docs/superpowers/specs/2026-11-01-bridge-package-design.md`).
 
 On each of Windows, macOS and Linux:
 
-1. **Install** from the release's installer (`sapphire-bridge-desktop-win-Setup.exe`,
-   `sapphire-bridge-desktop-osx-Setup.pkg`, `sapphire-bridge-desktop.AppImage`).
+1. **Install** from the release's installer (`sapphire-bridge-desktop_<version>_x64-setup.exe`,
+   `_aarch64.dmg`, `_x86_64.AppImage`).
 2. **First run:** the window opens on the welcome page, then asks to keep Sapphire Bridge
    running in the background; Yes registers the service, and About › Service shows it
    running.

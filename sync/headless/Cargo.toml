@@ -16,13 +16,13 @@ name = "sapphire-sync"
 path = "src/main.rs"
 
 [dependencies]
-sapphire-sync-cli = { version = "0.26.1", path = "../crates/sapphire-sync-cli" }
+sapphire-sync-cli = { version = "0.27.0", path = "../crates/sapphire-sync-cli" }
 clap.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
-sapphire-sync-core = { version = "0.26.1", path = "../crates/sapphire-sync-core" }
+sapphire-sync-core = { version = "0.27.0", path = "../crates/sapphire-sync-core" }
 sapphire-sync-api = { version = "1.0.2", path = "../crates/sapphire-sync-api" }
 # The serve tests run a real server in-process with the server crate's
 # `StubBridge` (the in-process bridge stand-in over a `Connection::pair`) from
@@ -30,11 +30,11 @@ sapphire-sync-api = { version = "1.0.2", path = "../crates/sapphire-sync-api" }
 # this binary against it.
 # Test-only: the server crate's `StubBridge` rides behind `test-util`, which the
 # facade does not expose, so tests reach the crate directly.
-sapphire-framework-server = { version = "0.26.1", path = "../../crates/sapphire-framework-server", default-features = false, features = ["test-util"] }
+sapphire-framework-server = { version = "0.27.0", path = "../../crates/sapphire-framework-server", default-features = false, features = ["test-util"] }
 # Test-only: `probe` (is anything listening?) while a server starts, and the direct
 # client handshake (`ClientInfo`, `connect_or_absent`) the sync tests use to ride the
 # framework's `sync.enable` path the way `workspace init --sync` does.
-sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.26.1", path = "../../crates/sapphire-framework-ipc" }
+sapphire-ipc = { package = "sapphire-framework-ipc", version = "0.27.0", path = "../../crates/sapphire-framework-ipc" }
 
 # `cargo binstall sapphire-sync-headless` downloads the release file instead of building it,
 # following sapphire-turtle/.github's README.md#conventions: the files are bare binaries named

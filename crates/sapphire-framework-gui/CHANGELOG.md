@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.27.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.26.1...sapphire-framework-gui-v0.27.0) - 2026-11-04
+
+### Fixed
+
+- *(deps)* [**breaking**] corundum 0.9, whose Windows service needs no administrator ([#408](https://github.com/sapphire-turtle/sapphire-framework/pull/408))
+
 ## [0.26.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.26.0...sapphire-framework-gui-v0.26.1) - 2026-11-03
 
 ### Fixed

@@ -7387,7 +7387,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge-desktop"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "clap",
  "corundum-framework-package",
@@ -7402,7 +7402,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge-headless"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "clap",
  "sapphire-framework-bridge",
@@ -7416,7 +7416,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "corundum-framework-service",
  "sapphire-framework-backend",
@@ -7438,7 +7438,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-backend"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7459,7 +7459,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7513,7 +7513,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-client"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
@@ -7525,7 +7525,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-embed"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "candle-core",
@@ -7547,7 +7547,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-frontmatter"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "chrono",
  "indexmap",
@@ -7559,7 +7559,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-gui"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "corundum-framework-gui",
  "corundum-framework-package",
@@ -7585,7 +7585,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-ipc"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "corundum-framework-platform",
  "libc",
@@ -7602,7 +7602,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-keys"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7617,7 +7617,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-mcp"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "axum",
  "rmcp",
@@ -7636,7 +7636,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-registry"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -7651,7 +7651,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-retrieve"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "instant-distance",
  "redb",
@@ -7666,7 +7666,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-server"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -7720,14 +7720,14 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-service"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "corundum-framework-service",
 ]
 
 [[package]]
 name = "sapphire-framework-session"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "grain-id",
  "sapphire-framework-sync",
@@ -7741,7 +7741,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-settings"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "sapphire-framework-bridge-api",
  "serde",
@@ -7753,7 +7753,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-sync"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "grain-id",
  "ignore",
@@ -7772,7 +7772,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-track"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "redb",
  "tempfile",
@@ -7782,7 +7782,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-update"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "clap",
  "reqwest 0.13.5",
@@ -7798,7 +7798,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-workspace"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "chrono",
  "clap",
@@ -7831,7 +7831,7 @@ version = "1.0.2"
 
 [[package]]
 name = "sapphire-sync-cli"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -7847,7 +7847,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-core"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7862,7 +7862,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-desktop"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -7873,7 +7873,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-headless"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "clap",
  "sapphire-framework-ipc",
@@ -7887,7 +7887,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-server"
-version = "0.26.1"
+version = "0.27.0"
 dependencies = [
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",
@@ -8041,9 +8041,9 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a253edfdea34032da21af84e16fcc94f4c7a6ba237f9f3bc2dbf43cea8535c44"
+checksum = "3f4dc2714fc5632417a6e979602d7044bad8f2880c63fc7217087180acec31b6"
 dependencies = [
  "annotate-snippets",
  "base64 0.23.1",

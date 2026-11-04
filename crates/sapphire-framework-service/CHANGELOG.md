@@ -8,9 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.27.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-service-v0.26.1...sapphire-framework-service-v0.27.0) - 2026-11-04
 
-### Other
+### Changed
 
-- update Cargo.toml dependencies
+- *(deps)* [**breaking**] corundum 0.9, whose Windows service needs no administrator ([#408](https://github.com/sapphire-turtle/sapphire-framework/pull/408))
 
 ## [0.26.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-service-v0.25.0...sapphire-framework-service-v0.26.0) - 2026-11-03
 

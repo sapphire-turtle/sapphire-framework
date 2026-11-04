@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-04
+
+The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2).
+
 ### Changed
 
 - **Breaking:** corundum-framework 0.9 (from 0.8), whose types the framework hands to apps (`gui::package::LauncherSpec`, `PackageSpec`, …): an app that depends on a corundum crate itself moves to 0.9 with the framework.

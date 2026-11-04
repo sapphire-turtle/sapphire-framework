@@ -8,6 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-11-04
+
+### Fixed
+
+- On Windows, updating Sapphire Bridge or Sapphire Sync from its window (the "Restart" button) installs the update and starts the app again; the app only closed, it did not come back and was not updated. corundum-framework 0.9.1 starts the PowerShell that runs the installer with a console of its own (sapphire-turtle/corundum-framework#109). An app at 0.27.0 or earlier still hits the bug when it applies this update: install 0.27.1 by hand once, from its `_x64-setup.exe`.
+
 ## [0.27.0] - 2026-11-04
 
 The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2).

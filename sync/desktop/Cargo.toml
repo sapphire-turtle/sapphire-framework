@@ -39,6 +39,9 @@ corundum-framework-platform = "0.9.1"
 # `update` in the package runs `sapphire-bridge update` first.
 tokio = { workspace = true, features = ["rt"], optional = true }
 
+[build-dependencies]
+corundum-framework-build.workspace = true
+
 # The package (sapphire-turtle/.github's release-packager.yml, corundum-framework#103): the
 # window's binary, built with the `package` feature; the release workflow adds the Windows
 # console shim as `sapphire-sync.exe`. The product name is the launcher's (`LauncherSpec::name`), so

@@ -36,7 +36,7 @@ const LAUNCHER: LauncherSpec = LauncherSpec {
     name: "Sapphire Bridge",
     description: "Sync and embedding for Sapphire apps",
     category: "Network",
-    icon_svg: include_bytes!("../assets/app-icon.svg"),
+    icon_svg: include_bytes!("../../headless/docs/icon.svg"),
     bundle_prefix: "org.sapphire-turtle",
 };
 
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(launcher.bundle_prefix, "org.sapphire-turtle");
         assert_eq!(
             launcher.icon_svg,
-            include_bytes!("../assets/app-icon.svg").as_slice()
+            include_bytes!("../../headless/docs/icon.svg").as_slice()
         );
         assert!(corundum_framework_platform::icon::render_rgba(launcher.icon_svg, 64).is_ok());
     }

@@ -8,6 +8,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** corundum-framework 0.9 (from 0.8), whose types the framework hands to apps (`gui::package::LauncherSpec`, `PackageSpec`, …): an app that depends on a corundum crate itself moves to 0.9 with the framework.
+
+### Fixed
+
+- On Windows, installing an app's service (the first start's "keep the app server running", or `service install`) no longer fails with "access is denied" for an app installed for the current user: the logon task is now for the installing user's own logon, which needs no administrator (sapphire-turtle/corundum-framework#105).
+
 ## [0.26.1] - 2026-11-03
 
 ### Fixed

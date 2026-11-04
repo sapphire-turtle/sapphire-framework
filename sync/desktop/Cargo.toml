@@ -35,7 +35,7 @@ clap.workspace = true
 sapphire-framework = { version = "0.26.1", path = "../../crates/sapphire-framework", default-features = false, features = ["eframe", "server"] }
 # The window's icon and app-menu entry (`LauncherSpec`'s icon), and whether this runs in a
 # package; the framework's version of it.
-corundum-framework-platform = "0.8.0"
+corundum-framework-platform = "0.9.0"
 # `update` in the package runs `sapphire-bridge update` first.
 tokio = { workspace = true, features = ["rt"], optional = true }
 

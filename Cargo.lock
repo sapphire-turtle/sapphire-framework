@@ -1488,9 +1488,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd85033545220316fa6cd28adafe6cfaac9c9d09e9b2ff7b1f5a793f8fd01a67"
+checksum = "0877f8a5b5d1b3a7fe7ad1fc683ecfbbae2af8b554cdfd605e8c951ee8551a1a"
 dependencies = [
  "android-activity",
  "android_log-sys",
@@ -1525,9 +1525,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-keys"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f11994d2c396293194d48eedbd2c1487bf0e7305b00e8bf5f4bdac81567a9f3"
+checksum = "63e3e40e43c471b7e441bcfbbdade68d47521396aa972331396108bea2863fba"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1544,9 +1544,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-package"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65ef8ceee3bec4aa262ac3c6c4bad5dc366ae8005be61d4497920f30a4c9bf5f"
+checksum = "c1fd958ecb002be202bb1698188e6cca14e55c99b5947b9536b859bd83eb710e"
 dependencies = [
  "cargo-packager-updater",
  "corundum-framework-platform",
@@ -1563,9 +1563,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "808a68b2be911cfa2059c13314820203b68197afde37182fef585a8abdc85df0"
+checksum = "0f3614bad3c1a38847fe45a6e3e738a6dcefe73410257a27c4286e8eafe3f214"
 dependencies = [
  "dirs 7.0.0",
  "interprocess",
@@ -1581,9 +1581,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-service"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40706cf5300fdc583f27cbc1a9a482f8d045b201c7861d131b129728d98637df"
+checksum = "faf8e0758c5fc6024937e0aea5d5175499d612bdb03432c1917981ef25d24606"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -1594,9 +1594,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-update"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6727e53aa5d52f8222c569fe7b46abf874ac21f48a1153a623ff267d8994d8c0"
+checksum = "567c0c3c12c296d05b7b9d5fe28e3314fa71d873961e744cfd25e5875003fb6f"
 dependencies = [
  "corundum-framework-platform",
  "reqwest 0.13.5",

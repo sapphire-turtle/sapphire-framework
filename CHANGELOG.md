@@ -8,6 +8,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `update` installs only a release file signed with sapphire-turtle's minisign key, and corundum-framework 0.10 (from 0.9) is the updater (#402). `sapphire-framework-update` is now corundum-framework-update, re-exported, with the key (`UPDATE_PUBKEY`, also `gui::package::UPDATE_PUBKEY`). Before it replaces the binary, `update` downloads `<file>.sig` from the same release and checks that the signature is the key's and is for that file name; a release without one, or with a signature that does not match, is not installed. It also checks the download against the SHA-256 GitHub reports for the file.
+  - `AppServer::releases` gives an application's `ReleaseSource` the key, unless it names its own (`ReleaseSource::pubkey`). An application's release workflow must sign its files: sapphire-turtle/.github's `release-binary.yml` with `sign: true` and `secrets: inherit` (v1.3.0). Until it does, its `update` refuses the new releases.
+  - The bridge's and sapphire-sync's bare binaries (`-headless-` and `-desktop-`) are signed from this release on. A bridge or sapphire-sync at 0.27.x or earlier does not check signatures, so it updates to this release as before.
+  - corundum's `update` also tells a binary inside a desktop package (`InstallMethod::Package`) or a store package that the package updates it, rather than replacing the file.
+
 ## [0.27.1] - 2026-11-04
 
 ### Fixed

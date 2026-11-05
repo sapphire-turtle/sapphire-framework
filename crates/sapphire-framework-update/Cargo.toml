@@ -2,22 +2,18 @@
 name = "sapphire-framework-update"
 version.workspace = true
 edition.workspace = true
-description = "Find newer GitHub releases of a sapphire-framework binary, and replace it with one"
+description = "Find newer GitHub releases of a sapphire binary, and replace it with one signed with sapphire-turtle's key"
 license.workspace = true
 repository.workspace = true
 keywords = ["update", "self-update", "release", "github"]
 categories = ["command-line-utilities"]
 
-[dependencies]
-clap.workspace = true
-reqwest.workspace = true
-self-replace = "1.5"
-semver = "1"
-serde.workspace = true
-serde_json.workspace = true
-tempfile = "3"
-thiserror.workspace = true
-tracing.workspace = true
+# corundum-framework-update's features: `self-update` downloads, verifies and replaces, `cli`
+# is the `update` subcommand. Without them, the releases are only looked up.
+[features]
+default = ["self-update", "cli"]
+self-update = ["corundum-framework-update/self-update"]
+cli = ["corundum-framework-update/cli"]
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util"] }
+[dependencies]
+corundum-framework-update = { workspace = true, default-features = false }

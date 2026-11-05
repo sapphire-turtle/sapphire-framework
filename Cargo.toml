@@ -94,6 +94,8 @@ corundum-framework-platform = "0.9.1"
 corundum-framework-gui = { version = "0.9.1", default-features = false }
 corundum-framework-keys = "0.9.1"
 corundum-framework-service = "0.9.1"
+# Finding and installing releases (sapphire-framework-update re-exports it).
+corundum-framework-update = { version = "0.9.1", default-features = false }
 # A desktop app's build.rs: its icon in the Windows executable.
 corundum-framework-build = "0.9.1"
 getrandom = "0.4"

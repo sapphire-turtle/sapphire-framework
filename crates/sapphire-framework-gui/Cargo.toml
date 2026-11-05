@@ -32,6 +32,7 @@ package = [
     "corundum-framework-gui/update",
     "dep:corundum-framework-package",
     "dep:corundum-framework-update",
+    "dep:sapphire-framework-update",
 ]
 mobile = [
     "eframe",
@@ -58,6 +59,8 @@ corundum-framework-service.workspace = true
 # The package's updater and the binary's release, for the bridge window's About (`package`).
 corundum-framework-package = { version = "0.9.1", features = ["service"], optional = true }
 corundum-framework-update = { version = "0.9.1", default-features = false, optional = true }
+# The organization's update key, `package::UPDATE_PUBKEY`.
+sapphire-framework-update = { version = "0.27.1", path = "../sapphire-framework-update", default-features = false, optional = true }
 # The served workspace's API keys: where they are (Settings › API keys).
 sapphire-framework-keys = { version = "0.27.1", path = "../sapphire-framework-keys" }
 egui = "0.37"

@@ -4,9 +4,11 @@
 //! node id" and "accept a stream and learn who called", so replacing this file would not
 //! touch anything else.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -127,12 +129,79 @@ pub struct NodeAddr {
     pub relay_urls: Vec<String>,
 }
 
+/// The data plane's ALPN on a connection that carries many streams.
+///
+/// The protocol on each stream is [`ALPN`]'s, unchanged; what this name adds is the promise
+/// that the acceptor keeps taking streams on the connection, so the dialer may keep it and
+/// open the next stream on it. A peer from before this name accepted one stream per
+/// connection and then let it go: a second stream there would never be read. So a dialer
+/// offers both names, the acceptor lists this one first, and a connection only goes into
+/// [`IrohTransport`]'s cache when this is the name the two agreed on.
+const SHARED_ALPN: &[u8] = b"sapphire/ws/2";
+
+/// [`HELLO_ALPN`] on a connection that carries many streams; see [`SHARED_ALPN`].
+const SHARED_HELLO_ALPN: &[u8] = b"sapphire/hello/2";
+
+/// How long a dial waits for this host to have an address before calling it offline.
+///
+/// A host with no address and no relay — asleep a moment ago, its interfaces not up yet —
+/// can reach nobody, and every dial it started anyway would begin an address lookup whose
+/// DNS queries wait out their timeouts. Waiting here instead costs nothing. Ten seconds is
+/// what iroh itself gives a connection with no reachable address.
+const OFFLINE_WAIT: Duration = Duration::from_secs(10);
+
+/// How many accepted streams may wait for [`IrohTransport::accept`] before the connections
+/// they arrive on are made to wait.
+const INBOUND_QUEUE: usize = 64;
+
+/// One dial to a peer on one ALPN, shared by every open that asked while it ran.
+///
+/// The cell is filled once, by the first open; the others wait on it. That is what makes a
+/// burst of opens to the same peer — three app servers retrying at once, a sync sweep and
+/// a Hello tick — one connection attempt and one address lookup rather than one each.
+type Attempt = tokio::sync::OnceCell<Dialed>;
+
+/// Which dial an [`Attempt`] is: the peer, and the ALPN offered first.
+type DialKey = (EndpointId, &'static [u8]);
+
+/// What one [`Attempt`] came to.
+#[derive(Clone)]
+enum Dialed {
+    /// A connection both sides agreed to share, kept for the next open while it lives.
+    Shared(::iroh::endpoint::Connection),
+    /// A connection to a peer that only takes one stream per connection. It went to the
+    /// open that dialed it; every other open dials its own, as before.
+    Single,
+    /// The dial failed, and every open that waited on it fails the same way.
+    Failed(String),
+}
+
 /// This host's endpoint on the network.
 pub struct IrohTransport {
     endpoint: Endpoint,
     node_id: String,
     /// Addresses learned out of band, so a peer can be dialed without a discovery service.
     known: MemoryLookup,
+    /// The latest dial to each peer on each ALPN: the shared connection to open the next
+    /// stream on, or the attempt still running. Keyed by the ALPN offered first.
+    attempts: std::sync::Mutex<HashMap<DialKey, Arc<Attempt>>>,
+    /// How many connections this transport has dialed. Logged with each new one, so a log
+    /// shows whether the bridge is reusing them.
+    connects: AtomicUsize,
+    /// Streams the accept task has taken, in the order they became readable.
+    inbound: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Inbound>>,
+    /// The task taking connections and streams off the endpoint; stopped with the transport.
+    acceptor: tokio::task::AbortHandle,
+    /// [`OFFLINE_WAIT`], shortened by the tests that wait it out.
+    offline_wait: Duration,
+}
+
+impl Drop for IrohTransport {
+    fn drop(&mut self) {
+        // The task holds a handle on the endpoint; left running, it would keep the endpoint
+        // bound after the transport that owns it is gone.
+        self.acceptor.abort();
+    }
 }
 
 impl IrohTransport {
@@ -198,7 +267,15 @@ impl IrohTransport {
         // Three protocols on one endpoint: the data plane and, each on its own ALPN, pairing and hello.
         // They are listed together because iroh accepts per endpoint; which one a
         // connection spoke is reported by `accept`, and the two are gated differently.
-        let alpns = vec![ALPN.to_vec(), PAIR_ALPN.to_vec(), HELLO_ALPN.to_vec()];
+        // The acceptor's order decides which name a connection speaks, so each shared name
+        // comes before the one-stream name it extends (see `SHARED_ALPN`).
+        let alpns = vec![
+            SHARED_ALPN.to_vec(),
+            ALPN.to_vec(),
+            PAIR_ALPN.to_vec(),
+            SHARED_HELLO_ALPN.to_vec(),
+            HELLO_ALPN.to_vec(),
+        ];
         let mut builder = Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(alpns)
@@ -221,11 +298,19 @@ impl IrohTransport {
             .await
             .map_err(|e| Error::Peer(format!("could not bind the endpoint: {e}")))?;
         let node_id = endpoint.id().to_string();
+        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(INBOUND_QUEUE);
+        let acceptor =
+            tokio::spawn(accept_connections(endpoint.clone(), inbound_tx)).abort_handle();
 
         Ok(IrohTransport {
             endpoint,
             node_id,
             known,
+            attempts: std::sync::Mutex::default(),
+            connects: AtomicUsize::new(0),
+            inbound: tokio::sync::Mutex::new(inbound_rx),
+            acceptor,
+            offline_wait: OFFLINE_WAIT,
         })
     }
 
@@ -277,18 +362,8 @@ impl IrohTransport {
 #[async_trait::async_trait]
 impl PeerTransport for IrohTransport {
     async fn open(&self, node_id: &str, workspace_id: GrainId) -> Result<BoxedStream> {
-        let id: EndpointId = node_id
-            .parse()
-            .map_err(|e| Error::Peer(format!("{node_id}: not a node id: {e}")))?;
-        let conn = self
-            .endpoint
-            .connect(id, ALPN)
-            .await
-            .map_err(|e| Error::Peer(format!("could not reach {node_id}: {e}")))?;
-        let (mut send, recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| Error::Peer(format!("could not open a stream to {node_id}: {e}")))?;
+        let id = self.endpoint_id(node_id)?;
+        let (mut send, recv) = self.open_bi(id, SHARED_ALPN, ALPN).await?;
 
         // The request travels ahead of the payload, so the far side knows what was asked for
         // without looking inside the stream. Same framing as the data plane's header: one
@@ -325,112 +400,21 @@ impl PeerTransport for IrohTransport {
     }
 
     async fn open_hello(&self, node_id: &str) -> Result<BoxedStream> {
-        let id: EndpointId = node_id
-            .parse()
-            .map_err(|e| Error::Peer(format!("{node_id}: not a node id: {e}")))?;
-        let conn = self
-            .endpoint
-            .connect(id, HELLO_ALPN)
-            .await
-            .map_err(|e| Error::Peer(format!("could not reach {node_id}: {e}")))?;
-        let (send, recv) = conn
-            .open_bi()
-            .await
-            .map_err(|e| Error::Peer(format!("could not open a hello stream to {node_id}: {e}")))?;
+        let id = self.endpoint_id(node_id)?;
+        let (send, recv) = self.open_bi(id, SHARED_HELLO_ALPN, HELLO_ALPN).await?;
         Ok(Box::new(tokio::io::join(recv, send)))
     }
 
     async fn accept(&self) -> Result<Inbound> {
-        loop {
-            let Some(incoming) = self.endpoint.accept().await else {
-                return Err(Error::Peer("the endpoint is closed".to_owned()));
-            };
-            // Any host on the network may send a packet here, so a failed handshake or a
-            // stream that never arrives must not end the loop: it is one caller going away,
-            // not this bridge stopping.
-            let mut accepting = match incoming.accept() {
-                Ok(accepting) => accepting,
-                Err(err) => {
-                    tracing::debug!("a peer could not be accepted: {err}");
-                    continue;
-                }
-            };
-            // Which ALPN the caller dialed decides what may arrive on the stream: a
-            // workspace request on the pairing ALPN, or a pairing exchange on the data
-            // ALPN, is a peer that is not speaking this protocol. Reading the ALPN first is
-            // also what keeps a pairing connection out of the code that reads a workspace
-            // request line.
-            let alpn = match accepting.alpn().await {
-                Ok(alpn) => alpn,
-                Err(err) => {
-                    tracing::debug!("a peer's protocol could not be read: {err}");
-                    continue;
-                }
-            };
-            let conn = match accepting.await {
-                Ok(conn) => conn,
-                Err(err) => {
-                    tracing::debug!("a peer's handshake failed: {err}");
-                    continue;
-                }
-            };
-            let from = conn.remote_id();
-            let (send, recv) = match conn.accept_bi().await {
-                Ok(halves) => halves,
-                Err(err) => {
-                    tracing::debug!(peer = %from, "a peer opened no stream: {err}");
-                    continue;
-                }
-            };
-            if alpn == PAIR_ALPN {
-                // The pairing gate is the invite secret, not the ledger, and the ledger
-                // lookup `authorize` runs would fail every joiner by definition. This is
-                // the one connection that arrives before membership exists.
-                return Ok(Inbound::Pairing(
-                    from.to_string(),
-                    Box::new(AcceptedStream {
-                        io: tokio::io::join(recv, send),
-                        conn,
-                    }),
-                ));
-            }
-            if alpn == HELLO_ALPN {
-                return Ok(Inbound::Hello(
-                    from.to_string(),
-                    Box::new(AcceptedStream {
-                        io: tokio::io::join(recv, send),
-                        conn,
-                    }),
-                ));
-            }
-            let (request, recv) = match read_request(recv).await {
-                Ok(read) => read,
-                Err(err) => {
-                    tracing::debug!(peer = %from, "a peer sent an unreadable request: {err}");
-                    continue;
-                }
-            };
-            if request.node_id != from.to_string() {
-                // Reported, not enforced: this transport reports who called, and the bridge
-                // decides what a disagreement means. The name below is the authenticated one,
-                // because that is the identity the far side cannot forge.
-                tracing::debug!(
-                    authenticated = %from,
-                    claimed = %request.node_id,
-                    "a peer's request named a different node id than the one that called"
-                );
-            }
-            return Ok(Inbound::Workspace(
-                from.to_string(),
-                request.workspace_id,
-                // `read_request` split the request line off `recv`; put the halves back
-                // together for the caller, which sees one stream starting at the payload.
-                Box::new(AcceptedStream {
-                    io: tokio::io::join(recv, send),
-                    conn,
-                }),
-            ));
-        }
+        // The accept task takes connections and streams as they come, each on its own task,
+        // so one slow handshake or one request line that never arrives holds up nobody else.
+        // What is left here is the queue between that task and the bridge's loop.
+        self.inbound
+            .lock()
+            .await
+            .recv()
+            .await
+            .ok_or_else(|| Error::Peer("the endpoint is closed".to_owned()))
     }
 
     fn node_id(&self) -> String {
@@ -481,6 +465,180 @@ impl PeerTransport for IrohTransport {
 }
 
 impl IrohTransport {
+    /// Open a stream to `id` on `shared_alpn`, or on `single_alpn` with a peer that only
+    /// knows that one.
+    ///
+    /// The stream goes on the connection already open to `id` when there is one. A stream
+    /// that cannot be opened on it means the connection died without this host hearing yet,
+    /// so the connection is forgotten and the stream tried once more on a fresh one.
+    async fn open_bi(
+        &self,
+        id: EndpointId,
+        shared_alpn: &'static [u8],
+        single_alpn: &'static [u8],
+    ) -> Result<(::iroh::endpoint::SendStream, ::iroh::endpoint::RecvStream)> {
+        let mut retried = false;
+        loop {
+            let (conn, reused) = self.connection(id, shared_alpn, single_alpn).await?;
+            match conn.open_bi().await {
+                Ok(halves) => return Ok(halves),
+                Err(err) if reused && !retried => {
+                    tracing::debug!(peer = %id, "a kept connection could not open a stream: {err}");
+                    self.forget(id, shared_alpn, &conn);
+                    retried = true;
+                }
+                Err(err) => {
+                    return Err(Error::Peer(format!(
+                        "could not open a stream to {id}: {err}"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// A connection to `id`, and whether it is one an earlier open made.
+    ///
+    /// The shared connection when there is a live one; otherwise the current attempt, joined
+    /// when another open has started it, started here when none has.
+    async fn connection(
+        &self,
+        id: EndpointId,
+        shared_alpn: &'static [u8],
+        single_alpn: &'static [u8],
+    ) -> Result<(::iroh::endpoint::Connection, bool)> {
+        let key = (id, shared_alpn);
+        let attempt = {
+            let mut attempts = self.attempts.lock().expect("dial attempts");
+            match attempts.get(&key) {
+                // Still running, or a connection that is still up: join it.
+                Some(attempt)
+                    if match attempt.get() {
+                        None => true,
+                        Some(Dialed::Shared(conn)) => conn.close_reason().is_none(),
+                        Some(Dialed::Single | Dialed::Failed(_)) => false,
+                    } =>
+                {
+                    Arc::clone(attempt)
+                }
+                // Nothing yet, or an attempt that is over: start the next one.
+                _ => {
+                    let attempt = Arc::new(Attempt::new());
+                    attempts.insert(key, Arc::clone(&attempt));
+                    attempt
+                }
+            }
+        };
+
+        // The connection this open dialed itself, when the peer would not share it.
+        let mut mine = None;
+        let mut started_here = false;
+        let dialed = attempt
+            .get_or_init(|| async {
+                started_here = true;
+                match self.dial(id, shared_alpn, single_alpn).await {
+                    Ok(conn) if conn.alpn() == shared_alpn => Dialed::Shared(conn),
+                    Ok(conn) => {
+                        mine = Some(conn);
+                        Dialed::Single
+                    }
+                    Err(err) => Dialed::Failed(err.to_string()),
+                }
+            })
+            .await
+            .clone();
+        match dialed {
+            Dialed::Shared(conn) => Ok((conn, !started_here)),
+            Dialed::Failed(message) => Err(Error::Peer(message)),
+            // A peer that takes one stream per connection gets a connection per open, as
+            // it always did.
+            Dialed::Single => match mine {
+                Some(conn) => Ok((conn, false)),
+                None => Ok((self.dial(id, shared_alpn, single_alpn).await?, false)),
+            },
+        }
+    }
+
+    /// Drop `conn` from the cache, if it is still the one kept for `id`.
+    fn forget(
+        &self,
+        id: EndpointId,
+        shared_alpn: &'static [u8],
+        conn: &::iroh::endpoint::Connection,
+    ) {
+        let mut attempts = self.attempts.lock().expect("dial attempts");
+        let key = (id, shared_alpn);
+        if let Some(attempt) = attempts.get(&key)
+            && let Some(Dialed::Shared(kept)) = attempt.get()
+            && kept.stable_id() == conn.stable_id()
+        {
+            attempts.remove(&key);
+        }
+    }
+
+    /// Dial `id`, offering `shared_alpn` and falling back to `single_alpn`.
+    async fn dial(
+        &self,
+        id: EndpointId,
+        shared_alpn: &'static [u8],
+        single_alpn: &'static [u8],
+    ) -> Result<::iroh::endpoint::Connection> {
+        self.wait_until_reachable().await?;
+        let options = ::iroh::endpoint::ConnectOptions::new()
+            .with_additional_alpns(vec![single_alpn.to_vec()]);
+        let conn = async {
+            self.endpoint
+                .connect_with_opts(id, shared_alpn, options)
+                .await
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())
+        }
+        .await
+        .map_err(|e| Error::Peer(format!("could not reach {id}: {e}")))?;
+        let count = self.connects.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::debug!(
+            peer = %id,
+            alpn = %String::from_utf8_lossy(conn.alpn()),
+            connects = count,
+            "dialed a peer"
+        );
+        Ok(conn)
+    }
+
+    /// Wait, up to [`OFFLINE_WAIT`], for this host to have an address or a relay.
+    ///
+    /// iroh's own view of the host's addresses is what decides: with no interface address
+    /// and no relay connection there is no path to anybody, and a dial started anyway would
+    /// only spend an address lookup — and the DNS queries behind it — on finding that out.
+    /// The wait itself sends nothing.
+    async fn wait_until_reachable(&self) -> Result<()> {
+        use ::iroh::Watcher as _;
+
+        if !self.endpoint.addr().is_empty() {
+            return Ok(());
+        }
+        let mut addr = self.endpoint.watch_addr();
+        let reachable = tokio::time::timeout(self.offline_wait, async {
+            loop {
+                match addr.updated().await {
+                    Ok(now) if !now.is_empty() => return true,
+                    Ok(_) => continue,
+                    // The endpoint closed: nothing will change any more.
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if reachable {
+            Ok(())
+        } else {
+            Err(Error::Peer(
+                "this host is offline: it has no network address and no relay".to_owned(),
+            ))
+        }
+    }
+
     /// The endpoint id behind `node_id`, if it is one.
     fn endpoint_id(&self, node_id: &str) -> Result<::iroh::EndpointId> {
         node_id
@@ -518,6 +676,153 @@ impl IrohTransport {
                     .ok()?;
                 rt.block_on(ask)
             }
+        }
+    }
+}
+
+/// Take every connection that arrives at `endpoint`, until it closes, each on its own task.
+///
+/// Any host on the network may send a packet here, so a failed handshake must not end the
+/// loop: it is one caller going away, not this bridge stopping.
+async fn accept_connections(endpoint: Endpoint, inbound: tokio::sync::mpsc::Sender<Inbound>) {
+    while let Some(incoming) = endpoint.accept().await {
+        let inbound = inbound.clone();
+        tokio::spawn(async move {
+            let accepting = match incoming.accept() {
+                Ok(accepting) => accepting,
+                Err(err) => {
+                    tracing::debug!("a peer could not be accepted: {err}");
+                    return;
+                }
+            };
+            accept_streams(accepting, inbound).await;
+        });
+    }
+}
+
+/// Finish one connection's handshake, then take every stream the peer opens on it.
+///
+/// A peer that dialed one of the shared names keeps its connection and opens the next
+/// stream on it; one that dialed a one-stream name opens a single stream and lets the
+/// connection go, which ends this loop the same way. Each stream is read on its own task,
+/// so a request line that is slow to come does not hold up the streams behind it.
+async fn accept_streams(
+    mut accepting: ::iroh::endpoint::Accepting,
+    inbound: tokio::sync::mpsc::Sender<Inbound>,
+) {
+    // Which ALPN the caller dialed decides what may arrive on the stream: a workspace
+    // request on the pairing ALPN, or a pairing exchange on the data ALPN, is a peer that is
+    // not speaking this protocol. Reading the ALPN first is also what keeps a pairing
+    // connection out of the code that reads a workspace request line.
+    let alpn = match accepting.alpn().await {
+        Ok(alpn) => alpn,
+        Err(err) => {
+            tracing::debug!("a peer's protocol could not be read: {err}");
+            return;
+        }
+    };
+    let protocol = match alpn.as_slice() {
+        a if a == SHARED_ALPN || a == ALPN => Protocol::Workspace,
+        a if a == SHARED_HELLO_ALPN || a == HELLO_ALPN => Protocol::Hello,
+        a if a == PAIR_ALPN => Protocol::Pairing,
+        _ => {
+            tracing::debug!("a peer dialed a protocol this host does not speak");
+            return;
+        }
+    };
+    let conn = match accepting.await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::debug!("a peer's handshake failed: {err}");
+            return;
+        }
+    };
+    let from = conn.remote_id();
+    loop {
+        let (send, recv) = match conn.accept_bi().await {
+            Ok(halves) => halves,
+            // The peer closed the connection, or it timed out: either way there is nothing
+            // more to take from it.
+            Err(err) => {
+                tracing::debug!(peer = %from, "a peer's connection ended: {err}");
+                return;
+            }
+        };
+        let conn = conn.clone();
+        let inbound = inbound.clone();
+        tokio::spawn(async move {
+            if let Some(stream) = accept_stream(protocol, from, conn, send, recv).await {
+                // The receiver is gone only when the transport is, and then so is the
+                // bridge that would have answered.
+                let _ = inbound.send(stream).await;
+            }
+        });
+    }
+}
+
+/// The protocol a connection was accepted for, from the ALPN it negotiated.
+#[derive(Clone, Copy)]
+enum Protocol {
+    Workspace,
+    Hello,
+    Pairing,
+}
+
+/// Turn one accepted stream into what [`IrohTransport::accept`] reports, or `None` for a
+/// stream that is not speaking the protocol.
+async fn accept_stream(
+    protocol: Protocol,
+    from: EndpointId,
+    conn: ::iroh::endpoint::Connection,
+    send: ::iroh::endpoint::SendStream,
+    recv: ::iroh::endpoint::RecvStream,
+) -> Option<Inbound> {
+    match protocol {
+        // The pairing gate is the invite secret, not the ledger, and the ledger lookup
+        // `authorize` runs would fail every joiner by definition. This is the one
+        // connection that arrives before membership exists.
+        Protocol::Pairing => Some(Inbound::Pairing(
+            from.to_string(),
+            Box::new(AcceptedStream {
+                io: tokio::io::join(recv, send),
+                conn,
+            }),
+        )),
+        Protocol::Hello => Some(Inbound::Hello(
+            from.to_string(),
+            Box::new(AcceptedStream {
+                io: tokio::io::join(recv, send),
+                conn,
+            }),
+        )),
+        Protocol::Workspace => {
+            let (request, recv) = match read_request(recv).await {
+                Ok(read) => read,
+                Err(err) => {
+                    tracing::debug!(peer = %from, "a peer sent an unreadable request: {err}");
+                    return None;
+                }
+            };
+            if request.node_id != from.to_string() {
+                // Reported, not enforced: this transport reports who called, and the bridge
+                // decides what a disagreement means. The name below is the authenticated one,
+                // because that is the identity the far side cannot forge.
+                tracing::debug!(
+                    authenticated = %from,
+                    claimed = %request.node_id,
+                    "a peer's request named a different node id than the one that called"
+                );
+            }
+            Some(Inbound::Workspace(
+                from.to_string(),
+                request.workspace_id,
+                // `read_request` split the request line off `recv`; put the halves back
+                // together for the caller, which sees one stream starting at the payload.
+                Box::new(AcceptedStream {
+                    io: tokio::io::join(recv, send),
+                    conn,
+                }),
+            ))
         }
     }
 }
@@ -676,6 +981,218 @@ fn create_private(path: &Path, bytes: &[u8; 32]) -> Result<Created> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A host that neither discovers peers nor uses a relay: local addresses only.
+    fn offline() -> NetConfig {
+        NetConfig {
+            wake_on_sync: false,
+            discovery: false,
+            relays: vec![],
+            use_default_relays: false,
+            ..NetConfig::default()
+        }
+    }
+
+    async fn transport(tmp: &tempfile::TempDir, name: &str) -> IrohTransport {
+        let net = offline();
+        IrohTransport::new(
+            &tmp.path().join(name),
+            &net,
+            &crate::relays(&net, None).unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A dials B: two transports that know each other's local address.
+    async fn pair(tmp: &tempfile::TempDir) -> (IrohTransport, Arc<IrohTransport>) {
+        let a = transport(tmp, "a.key").await;
+        let b = transport(tmp, "b.key").await;
+        a.add_known_address(&b.node_addr().await.unwrap()).unwrap();
+        (a, Arc::new(b))
+    }
+
+    /// Take `n` workspace streams at `b`, and read `len` bytes from each.
+    fn receive(
+        b: &Arc<IrohTransport>,
+        n: usize,
+        len: usize,
+    ) -> tokio::task::JoinHandle<Vec<Vec<u8>>> {
+        let b = Arc::clone(b);
+        tokio::spawn(async move {
+            let mut got = Vec::new();
+            for _ in 0..n {
+                let inbound = tokio::time::timeout(Duration::from_secs(10), b.accept())
+                    .await
+                    .expect("a stream in time")
+                    .unwrap();
+                let Inbound::Workspace(_, _, mut stream) = inbound else {
+                    panic!("expected a workspace stream");
+                };
+                let mut buf = vec![0; len];
+                stream.read_exact(&mut buf).await.unwrap();
+                got.push(buf);
+            }
+            got
+        })
+    }
+
+    async fn send(stream: &mut BoxedStream, bytes: &[u8]) {
+        stream.write_all(bytes).await.unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_opens_to_a_peer_share_one_connection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = pair(&tmp).await;
+        let received = receive(&b, 2, 3);
+
+        let mut first = a.open(&b.node_id(), GrainId::random()).await.unwrap();
+        send(&mut first, b"one").await;
+        let mut second = a.open(&b.node_id(), GrainId::random()).await.unwrap();
+        send(&mut second, b"two").await;
+
+        // Both streams arrive, each read on its own: the far side takes more than the
+        // first stream on a connection.
+        let mut got = received.await.unwrap();
+        got.sort();
+        assert_eq!(got, [b"one".to_vec(), b"two".to_vec()]);
+        assert_eq!(
+            a.connects.load(Ordering::Relaxed),
+            1,
+            "one connection, reused"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_opens_share_one_dial() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = pair(&tmp).await;
+        let a = Arc::new(a);
+        const OPENS: usize = 8;
+        let received = receive(&b, OPENS, 1);
+
+        let mut opens = tokio::task::JoinSet::new();
+        for n in 0..OPENS {
+            let (a, to) = (Arc::clone(&a), b.node_id());
+            opens.spawn(async move {
+                let mut stream = a.open(&to, GrainId::random()).await.unwrap();
+                send(&mut stream, &[n as u8]).await;
+                stream
+            });
+        }
+        // Held until every byte is read, so no stream closes ahead of the read.
+        let streams = opens.join_all().await;
+
+        let mut got: Vec<u8> = received.await.unwrap().concat();
+        got.sort();
+        assert_eq!(got, (0..OPENS as u8).collect::<Vec<_>>());
+        assert_eq!(
+            a.connects.load(Ordering::Relaxed),
+            1,
+            "opens that arrive together wait on one dial"
+        );
+        drop(streams);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_connection_is_replaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = pair(&tmp).await;
+        let received = receive(&b, 2, 1);
+
+        let mut first = a.open(&b.node_id(), GrainId::random()).await.unwrap();
+        send(&mut first, b"1").await;
+        let kept = {
+            let attempts = a.attempts.lock().unwrap();
+            let attempt = attempts.values().next().expect("an attempt");
+            let Some(Dialed::Shared(conn)) = attempt.get() else {
+                panic!("expected a shared connection");
+            };
+            conn.clone()
+        };
+        // Read before closing, so the close cannot overtake the byte.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        kept.close(0u32.into(), b"test");
+        kept.closed().await;
+
+        let mut second = a.open(&b.node_id(), GrainId::random()).await.unwrap();
+        send(&mut second, b"2").await;
+        assert_eq!(received.await.unwrap().concat(), b"12");
+        assert_eq!(
+            a.connects.load(Ordering::Relaxed),
+            2,
+            "a connection that closed is dialed again"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_that_takes_one_stream_gets_a_connection_per_open() {
+        // A bridge from before the shared names: one stream per connection, then it lets
+        // the connection go. Reusing a connection with it would send a stream nobody reads.
+        let tmp = tempfile::tempdir().unwrap();
+        let a = transport(&tmp, "a.key").await;
+        let old = Endpoint::builder(presets::Minimal)
+            .alpns(vec![ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        a.known.add_endpoint_info(old.addr());
+        let serving = tokio::spawn({
+            let old = old.clone();
+            async move {
+                let mut lines = Vec::new();
+                for _ in 0..2 {
+                    let conn = old.accept().await.unwrap().await.unwrap();
+                    assert_eq!(conn.alpn(), ALPN, "the old name is the one agreed on");
+                    let (_send, recv) = conn.accept_bi().await.unwrap();
+                    let (request, _) = read_request(recv).await.unwrap();
+                    lines.push(request.workspace_id);
+                }
+                lines
+            }
+        });
+
+        let (one, two) = (GrainId::random(), GrainId::random());
+        let first = a.open(&old.id().to_string(), one).await.unwrap();
+        let second = a.open(&old.id().to_string(), two).await.unwrap();
+        let served = tokio::time::timeout(Duration::from_secs(10), serving)
+            .await
+            .expect("both requests in time")
+            .unwrap();
+        assert_eq!(served, [one, two]);
+        assert_eq!(a.connects.load(Ordering::Relaxed), 2);
+        drop((first, second));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_host_with_no_address_is_offline() {
+        // No IP transport, and a relay that never answers (the discard port on this host):
+        // iroh has no address for this host at all, as after a wake with nothing up yet.
+        let tmp = tempfile::tempdir().unwrap();
+        let silent = crate::relay::RelayConfig {
+            urls: vec!["http://127.0.0.1:9/".to_owned()],
+            use_default: false,
+        };
+        let mut a = IrohTransport::new_relay_only(&tmp.path().join("a.key"), &offline(), &silent)
+            .await
+            .unwrap();
+        a.offline_wait = Duration::from_millis(200);
+        let b = transport(&tmp, "b.key").await;
+
+        let err = match a.open(&b.node_id(), GrainId::random()).await {
+            Ok(_) => panic!("an offline host must not reach anybody"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("offline"), "{err}");
+        assert_eq!(
+            a.connects.load(Ordering::Relaxed),
+            0,
+            "nothing is dialed while offline"
+        );
+    }
 
     #[test]
     fn no_relays_means_no_relay_transport() {

@@ -19,6 +19,7 @@ mod election;
 mod embed;
 pub mod embed_settings;
 mod error;
+mod fd_limit;
 mod hello;
 mod invite;
 #[cfg(feature = "node")]

@@ -485,6 +485,7 @@ async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Resul
         "sapphire-bridge {version} starting (pid {})",
         std::process::id()
     );
+    log_open_file_limit(crate::fd_limit::raise());
     // The lock and the log stay across restarts: the pid, the lock file and the log file
     // are the same before and after one. Each build reads the settings again.
     crate::serve_restarting(|| {
@@ -520,6 +521,7 @@ pub async fn serve_in_process(
         target: crate::logging::BRIDGE_TARGET,
         "sapphire-bridge {version} starting in-process"
     );
+    log_open_file_limit(crate::fd_limit::raise());
     // The first bridge is built here, so a configuration that cannot start is the caller's
     // error now rather than the task's later; a restart builds the next ones in the task.
     let mut first = Some(build_bridge(dir.clone(), version).await?);
@@ -537,6 +539,20 @@ pub async fn serve_in_process(
         })
         .await
     }))
+}
+
+/// Record the open-file limit the bridge runs with, or that it could not be read.
+fn log_open_file_limit(limit: Option<impl std::fmt::Display>) {
+    match limit {
+        Some(limit) => tracing::debug!(
+            target: crate::logging::BRIDGE_TARGET,
+            "open files are limited to {limit}"
+        ),
+        None => tracing::warn!(
+            target: crate::logging::BRIDGE_TARGET,
+            "could not read the open-file limit"
+        ),
+    }
 }
 
 /// The bridge this host should run: the iroh transport, over the directory's configuration.

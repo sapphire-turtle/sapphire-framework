@@ -40,6 +40,9 @@ tracing = { workspace = true, optional = true }
 clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
+[build-dependencies]
+corundum-framework-build.workspace = true
+
 [dev-dependencies]
 corundum-framework-package = { version = "0.9.1", features = ["service", "test-support"] }
 tempfile = "3"

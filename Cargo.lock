@@ -1487,6 +1487,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
+name = "corundum-framework-build"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f57fe601340e4aaf8c00cc63cbb2cf998f071810a2f6af8f55489557a801d9fd"
+dependencies = [
+ "corundum-framework-platform",
+ "winresource",
+]
+
+[[package]]
 name = "corundum-framework-gui"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7390,6 +7400,7 @@ name = "sapphire-bridge-desktop"
 version = "0.27.1"
 dependencies = [
  "clap",
+ "corundum-framework-build",
  "corundum-framework-package",
  "corundum-framework-platform",
  "sapphire-framework-bridge",
@@ -7865,6 +7876,7 @@ name = "sapphire-sync-desktop"
 version = "0.27.1"
 dependencies = [
  "clap",
+ "corundum-framework-build",
  "corundum-framework-platform",
  "sapphire-framework",
  "sapphire-sync-cli",
@@ -10689,6 +10701,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "toml",
+ "version_check",
 ]
 
 [[package]]

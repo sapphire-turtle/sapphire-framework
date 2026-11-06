@@ -108,7 +108,7 @@ pub fn run_bridge(options: BridgeWindowOptions) -> eframe::Result<()> {
         let mut first_run = None;
         #[cfg(feature = "package")]
         if let Some((service, cli, updater)) = package {
-            settings = settings.with_package(updater, service, cli, version);
+            settings = settings.with_package(&cc.egui_ctx, updater, service, cli, version);
             if !corundum_framework_gui::first_run::FirstRun::done(&cc.egui_ctx) {
                 first_run = Some(corundum_framework_gui::first_run::FirstRun::new(
                     "Sapphire Bridge",

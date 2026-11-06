@@ -19,7 +19,7 @@ keywords = ["sync", "p2p", "file-sync", "local-first"]
 # while a server starts. `redb-store` must be enabled explicitly: with
 # default-features = false the persistent store silently falls back to
 # in-memory otherwise.
-sapphire-framework = { version = "0.27.1", path = "../../../crates/sapphire-framework", default-features = false, features = ["server", "sync", "bridge", "ipc", "redb-store"] }
+sapphire-framework = { version = "0.28.0", path = "../../../crates/sapphire-framework", default-features = false, features = ["server", "sync", "bridge", "ipc", "redb-store"] }
 anyhow.workspace = true
 chrono.workspace = true
 grain-id.workspace = true

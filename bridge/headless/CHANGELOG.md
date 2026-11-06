@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.28.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-headless-v0.27.1...sapphire-bridge-headless-v0.28.0) - 2026-11-06
+
+### Added
+
+- *(desktop)* the macOS icon on the brand's tile
+
+### Other
+
+- faceted README icons for bridge and sync
+
 ## [0.27.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-bridge-headless-v0.27.0...sapphire-bridge-headless-v0.27.1) - 2026-11-04
 
 ### Other

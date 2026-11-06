@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.28.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.27.1...sapphire-framework-bridge-v0.28.0) - 2026-11-06
+
+### Added
+
+- *(update)* [**breaking**] install only releases signed with sapphire-turtle's key
+
+### Fixed
+
+- *(sapphire-framework-bridge)* raise the open-file limit at start
+
+### Other
+
+- Merge pull request #419 from sapphire-turtle/fix/bridge-open-file-limit
+- *(sapphire-framework-bridge)* raise the limit with corundum's raise_open_files
+
 ## [0.27.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-bridge-v0.27.0...sapphire-framework-bridge-v0.27.1) - 2026-11-04
 
 ### Other

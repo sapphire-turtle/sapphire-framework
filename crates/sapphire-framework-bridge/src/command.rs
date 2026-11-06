@@ -486,6 +486,7 @@ async fn run(version: &'static str, embed: Option<crate::EmbedFactory>) -> Resul
         "sapphire-bridge {version} starting (pid {})",
         std::process::id()
     );
+    raise_open_file_limit();
     // The lock and the log stay across restarts: the pid, the lock file and the log file
     // are the same before and after one. Each build reads the settings again.
     crate::serve_restarting(|| {
@@ -521,6 +522,7 @@ pub async fn serve_in_process(
         target: crate::logging::BRIDGE_TARGET,
         "sapphire-bridge {version} starting in-process"
     );
+    raise_open_file_limit();
     // The first bridge is built here, so a configuration that cannot start is the caller's
     // error now rather than the task's later; a restart builds the next ones in the task.
     let mut first = Some(build_bridge(dir.clone(), version).await?);
@@ -538,6 +540,27 @@ pub async fn serve_in_process(
         })
         .await
     }))
+}
+
+/// Raise the soft limit on open files to the hard one (capped at `kern.maxfilesperproc` on
+/// macOS), and record it. macOS starts the bridge from launchd with 256 descriptors; a
+/// network change spends many at once, and with none left iroh's interface watcher
+/// (`netdev`) falls back to a system call that crashes the process (#419).
+fn raise_open_file_limit() {
+    match corundum_framework_platform::limits::raise_open_files() {
+        Ok(Some(limit)) => tracing::debug!(
+            target: crate::logging::BRIDGE_TARGET,
+            "open files are limited to {} (from {})",
+            limit.now,
+            limit.before
+        ),
+        // No such limit on this OS.
+        Ok(None) => {}
+        Err(e) => tracing::warn!(
+            target: crate::logging::BRIDGE_TARGET,
+            "could not raise the open-file limit: {e}"
+        ),
+    }
 }
 
 /// The bridge this host should run: the iroh transport, over the directory's configuration.

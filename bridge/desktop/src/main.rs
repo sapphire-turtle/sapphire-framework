@@ -37,6 +37,8 @@ const LAUNCHER: LauncherSpec = LauncherSpec {
     description: "Sync and embedding for Sapphire apps",
     category: "Network",
     icon_svg: include_bytes!("../../headless/docs/icon.svg"),
+    // The mark on the brand's tile, on the macOS icon grid, as the package's icns.
+    macos_icon_svg: Some(include_bytes!("../../headless/docs/icon-macos.svg")),
     bundle_prefix: "org.sapphire-turtle",
 };
 
@@ -203,5 +205,12 @@ mod tests {
             include_bytes!("../../headless/docs/icon.svg").as_slice()
         );
         assert!(corundum_framework_platform::icon::render_rgba(launcher.icon_svg, 64).is_ok());
+        // The app bundle's icon on macOS: the mark on the brand's tile, as the icns.
+        let macos = launcher.macos_icon_svg.expect("a macOS icon");
+        assert_eq!(
+            macos,
+            include_bytes!("../../headless/docs/icon-macos.svg").as_slice()
+        );
+        assert!(corundum_framework_platform::icon::render_rgba(macos, 64).is_ok());
     }
 }

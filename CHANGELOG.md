@@ -8,13 +8,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking
+
+- corundum-framework 0.11.0, whose `LauncherSpec` (re-exported as `sapphire_framework_gui::package::LauncherSpec`) has a new field, `macos_icon_svg`: the macOS app bundle's icon, `None` to keep `icon_svg`. An app that writes a `LauncherSpec` adds it.
+
+### Added
+
+- On macOS, the app bundle Sapphire Bridge and Sapphire Sync put in `~/Applications` when added to the app menu has the mark on the brand's tile, as the packages' icns, rather than the bare mark on the system's plate.
+
 ### Fixed
 
 - An app run from its AppImage shows its icon in GNOME's dock and taskbar once it is added to the app menu from Settings › About, which now has the row that adds the entry or takes it out (Sapphire Bridge's window too). The window writes no app-menu entry of its own in an AppImage, and without one GNOME has nothing to match the window to, but no About page offered the row.
 
 ### Changed
 
-- corundum-framework 0.10.0. About's install rows are corundum's `settings::AboutRows`, so the package's updates are drawn first, then the service, the command line and the app-menu entry.
+- corundum-framework 0.10.0 (then 0.11.0, above). About's install rows are corundum's `settings::AboutRows`, so the package's updates are drawn first, then the service, the command line and the app-menu entry.
 - `PackageAbout::new`, `PackageAbout::for_app` and `Settings::with_package` take the window's `egui::Context` first: the app-menu row reads the spec the window was given there (`AppOptions::launcher`).
 
 ## [0.27.1] - 2026-11-04

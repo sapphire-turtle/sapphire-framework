@@ -1216,6 +1216,24 @@ mod status_tests {
         assert!(describe_update("app", "0.19.0", Some("0.19.0"), Some(&off)).is_empty());
     }
 
+    #[test]
+    fn an_app_s_releases_are_checked_with_the_organization_s_key_unless_it_names_one() {
+        let key = |source: crate::ReleaseSource| {
+            AppServer::new(&CTX, "0.19.0")
+                .releases(source)
+                .release_source()
+                .and_then(|s| s.update_pubkey().map(str::to_owned))
+        };
+        assert_eq!(
+            key(crate::ReleaseSource::github("o", "r")).as_deref(),
+            Some(sapphire_framework_update::UPDATE_PUBKEY)
+        );
+        assert_eq!(
+            key(crate::ReleaseSource::github("o", "r").pubkey("own")).as_deref(),
+            Some("own")
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn status_shows_a_newer_release_the_server_found() {
         let tmp = tempfile::tempdir().unwrap();

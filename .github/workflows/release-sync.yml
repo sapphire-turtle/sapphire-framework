@@ -24,7 +24,10 @@ jobs:
     permissions:
       contents: write
     uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
+    # The signing key: each file with its `<file>.sig`, which `update` checks (#402).
+    secrets: inherit
     with:
+      sign: true
       tag: ${{ inputs.tag }}
       package: sapphire-sync-headless
       binary: sapphire-sync
@@ -34,7 +37,10 @@ jobs:
     permissions:
       contents: write
     uses: sapphire-turtle/.github/.github/workflows/release-binary.yml@v1
+    # The signing key: each file with its `<file>.sig`, which `update` checks (#402).
+    secrets: inherit
     with:
+      sign: true
       tag: ${{ inputs.tag }}
       package: sapphire-sync-desktop
       binary: sapphire-sync-desktop

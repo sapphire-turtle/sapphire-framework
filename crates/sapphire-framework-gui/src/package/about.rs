@@ -33,7 +33,8 @@ impl PackageAbout {
             "sapphire-turtle",
             "sapphire-framework",
         )
-        .asset("sapphire-bridge-desktop");
+        .asset("sapphire-bridge-desktop")
+        .pubkey(super::UPDATE_PUBKEY);
         PackageAbout::with_release(
             ctx,
             "Sapphire Bridge",
@@ -56,7 +57,9 @@ impl PackageAbout {
     ) -> PackageAbout {
         let (owner, repo) = package.github;
         let asset = package.desktop_asset();
-        let release = corundum_framework_update::ReleaseSource::github(owner, repo).asset(&asset);
+        let release = corundum_framework_update::ReleaseSource::github(owner, repo)
+            .asset(&asset)
+            .pubkey(super::UPDATE_PUBKEY);
         PackageAbout::with_release(
             ctx,
             package.name,

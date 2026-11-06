@@ -29,8 +29,8 @@ pub use first_run::app_first_run_pages;
 /// sapphire-turtle's minisign public key, which every desktop app's updates are signed for
 /// (sapphire-turtle/.github's `release-packager.yml`, with the organization's
 /// `PACKAGER_SIGN_PRIVATE_KEY`): a package's `PackageSpec::update_pubkey`. An update signed
-/// otherwise is not installed.
-pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY0QTczRjM5QUExN0M4RUIKUldUcnlCZXFPVCtuOUJ6Zld0MkIzaW5wUXlsdlBBSll2U3k1dEJtT0VBYXV6ZHFtYlVNcWF5aHEK";
+/// otherwise is not installed. The bare binaries are signed with it too (#402).
+pub use sapphire_framework_update::UPDATE_PUBKEY;
 
 /// How often a running window looks for an update.
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);

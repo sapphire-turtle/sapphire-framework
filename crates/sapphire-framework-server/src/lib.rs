@@ -509,9 +509,15 @@ impl AppServer {
     /// The server looks there for newer ones once at start and once a day after, unless
     /// `config.toml` says `[update] check = false`; `status` and the GUI show what it found.
     /// The `update` command installs from there, when `source` names the release's
-    /// [asset](ReleaseSource::asset).
+    /// [asset](ReleaseSource::asset), and only a file signed with sapphire-turtle's key
+    /// ([`UPDATE_PUBKEY`](sapphire_framework_update::UPDATE_PUBKEY)), unless `source` names
+    /// another ([`ReleaseSource::pubkey`]) (#402). The release must carry `<file>.sig`:
+    /// sapphire-turtle/.github's `release-binary.yml` with `sign: true`.
     pub fn releases(mut self, source: ReleaseSource) -> AppServer {
-        self.releases = Some(source);
+        self.releases = Some(match source.update_pubkey() {
+            Some(_) => source,
+            None => source.pubkey(sapphire_framework_update::UPDATE_PUBKEY),
+        });
         self
     }
 

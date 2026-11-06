@@ -1611,11 +1611,17 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "839ed51902952b1cb65e08f03a5fa6f479b05af77ae61151024b94e24d9e187a"
 dependencies = [
+ "base64 0.22.1",
+ "clap",
  "corundum-framework-platform",
+ "minisign-verify",
  "reqwest 0.13.5",
+ "self-replace",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "windows",
@@ -7590,6 +7596,7 @@ dependencies = [
  "sapphire-framework-ipc",
  "sapphire-framework-keys",
  "sapphire-framework-server",
+ "sapphire-framework-update",
  "sapphire-framework-workspace",
  "serde_json",
  "tempfile",
@@ -7798,16 +7805,7 @@ dependencies = [
 name = "sapphire-framework-update"
 version = "0.27.1"
 dependencies = [
- "clap",
- "reqwest 0.13.5",
- "self-replace",
- "semver",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
+ "corundum-framework-update",
 ]
 
 [[package]]

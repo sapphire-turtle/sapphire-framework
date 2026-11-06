@@ -8,18 +8,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking
+
+- corundum-framework 0.11.0, whose `LauncherSpec` (re-exported as `sapphire_framework_gui::package::LauncherSpec`) has a new field, `macos_icon_svg`: the macOS app bundle's icon, `None` to keep `icon_svg`. An app that writes a `LauncherSpec` adds it.
+- `update` installs only a release file signed with sapphire-turtle's minisign key, and corundum-framework-update is the updater (#402). `sapphire-framework-update` is now corundum-framework-update, re-exported, with the key (`UPDATE_PUBKEY`, also `gui::package::UPDATE_PUBKEY`). Before it replaces the binary, `update` downloads `<file>.sig` from the same release and checks that the signature is the key's and is for that file name; a release without one, or with a signature that does not match, is not installed. It also checks the download against the SHA-256 GitHub reports for the file.
+  - `AppServer::releases` gives an application's `ReleaseSource` the key, unless it names its own (`ReleaseSource::pubkey`). An application's release workflow must sign its files: sapphire-turtle/.github's `release-binary.yml` with `sign: true` and `secrets: inherit` (v1.3.0). Until it does, its `update` refuses the new releases.
+  - The bridge's and sapphire-sync's bare binaries (`-headless-` and `-desktop-`) are signed from this release on. A bridge or sapphire-sync at 0.27.x or earlier does not check signatures, so it updates to this release as before.
+  - corundum's `update` also tells a binary inside a desktop package (`InstallMethod::Package`) or a store package that the package updates it, rather than replacing the file.
+
+### Added
+
+- On macOS, the app bundle Sapphire Bridge and Sapphire Sync put in `~/Applications` when added to the app menu has the mark on the brand's tile, as the packages' icns, rather than the bare mark on the system's plate.
+
 ### Fixed
 
 - An app run from its AppImage shows its icon in GNOME's dock and taskbar once it is added to the app menu from Settings › About, which now has the row that adds the entry or takes it out (Sapphire Bridge's window too). The window writes no app-menu entry of its own in an AppImage, and without one GNOME has nothing to match the window to, but no About page offered the row.
 
 ### Changed
 
-- **Breaking:** `update` installs only a release file signed with sapphire-turtle's minisign key, and corundum-framework 0.11 (from 0.10) is the updater (#402). `sapphire-framework-update` is now corundum-framework-update, re-exported, with the key (`UPDATE_PUBKEY`, also `gui::package::UPDATE_PUBKEY`). Before it replaces the binary, `update` downloads `<file>.sig` from the same release and checks that the signature is the key's and is for that file name; a release without one, or with a signature that does not match, is not installed. It also checks the download against the SHA-256 GitHub reports for the file.
-  - `AppServer::releases` gives an application's `ReleaseSource` the key, unless it names its own (`ReleaseSource::pubkey`). An application's release workflow must sign its files: sapphire-turtle/.github's `release-binary.yml` with `sign: true` and `secrets: inherit` (v1.3.0). Until it does, its `update` refuses the new releases.
-  - The bridge's and sapphire-sync's bare binaries (`-headless-` and `-desktop-`) are signed from this release on. A bridge or sapphire-sync at 0.27.x or earlier does not check signatures, so it updates to this release as before.
-  - corundum's `update` also tells a binary inside a desktop package (`InstallMethod::Package`) or a store package that the package updates it, rather than replacing the file.
-  - corundum-framework 0.11's `LauncherSpec` has a new field, `macos_icon_svg` (the macOS bundle's icon; `None` keeps `icon_svg`): an application that writes a `LauncherSpec` adds it when it moves to this release. The bridge's and sapphire-sync's launchers set it to their `icon-macos.svg`, the mark on the brand's tile, as their packages' icns already is.
-- corundum-framework 0.11.0 (see above). About's install rows are corundum's `settings::AboutRows`, so the package's updates are drawn first, then the service, the command line and the app-menu entry.
+- corundum-framework 0.10.0 (then 0.11.0, above). About's install rows are corundum's `settings::AboutRows`, so the package's updates are drawn first, then the service, the command line and the app-menu entry.
 - `PackageAbout::new`, `PackageAbout::for_app` and `Settings::with_package` take the window's `egui::Context` first: the app-menu row reads the spec the window was given there (`AppOptions::launcher`).
 
 ## [0.27.1] - 2026-11-04

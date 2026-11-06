@@ -237,25 +237,26 @@ impl Settings {
         }
     }
 
-    /// The bridge's window in a cargo-packager package: About shows the bridge's service row, its
-    /// command line `cli`, and the package's updates (`updater`; none: the binary's release
-    /// row).
+    /// The bridge's window in a cargo-packager package, `ctx` its context: About shows the
+    /// package's updates (`updater`; none: the binary's release row), the bridge's service
+    /// row, its command line `cli`, and the window's entry in the app menu.
     #[cfg(feature = "package")]
     pub fn with_package(
         mut self,
+        ctx: &egui::Context,
         updater: Option<corundum_framework_package::Updater>,
         service: fn() -> corundum_framework_service::ServiceSpec,
         cli: Option<corundum_framework_package::CliSpec>,
         version: &str,
     ) -> Settings {
         self.package_about = Some(crate::package::PackageAbout::new(
-            updater, service, cli, version,
+            ctx, updater, service, cli, version,
         ));
         self
     }
 
-    /// An app's window in a cargo-packager package: About shows `about`'s rows — the app server's
-    /// service, the command line and the package's updates. [`app::run`](crate::app::run)
+    /// An app's window in a cargo-packager package: About shows `about`'s rows — the package's
+    /// updates, the app server's service, the command line and the app-menu entry. [`app::run`](crate::app::run)
     /// makes them ([`AppSetup::package_about`](crate::app::AppSetup::package_about)); `None`
     /// changes nothing.
     #[cfg(feature = "package")]
@@ -1272,6 +1273,7 @@ mod tests {
             crate::client::BridgePages::InApp,
         );
         let mut settings = Settings::for_bridge(client).with_package(
+            &egui::Context::default(),
             Some(Updater::for_tests(PackageState::UpToDate)),
             svc,
             None,

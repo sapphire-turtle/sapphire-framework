@@ -72,7 +72,8 @@ impl AppOptions {
 
     /// The window's id and icon, and its entry in the OS's app menu (corundum's
     /// `WindowOptions::launcher`): the package's, so the OS groups the window with the
-    /// installer's entry.
+    /// installer's entry. In a package, About has the row that adds the entry or takes it
+    /// out: an AppImage's window does not write one of its own.
     pub fn launcher(
         mut self,
         spec: corundum_framework_platform::launcher::LauncherSpec,
@@ -193,7 +194,8 @@ pub fn run(
     let result = window::run(window, move |cc| {
         #[cfg(feature = "package")]
         if let Some((package, updater)) = package {
-            let about = crate::package::PackageAbout::for_app(&package, updater, app.version);
+            let about =
+                crate::package::PackageAbout::for_app(&cc.egui_ctx, &package, updater, app.version);
             let app = build_app(cc, handle, config, data_dir, Some(about), create);
             return crate::package::first_run_wrapper(cc, &package, app);
         }

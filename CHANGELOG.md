@@ -8,6 +8,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- An app run from its AppImage shows its icon in GNOME's dock and taskbar once it is added to the app menu from Settings › About, which now has the row that adds the entry or takes it out (Sapphire Bridge's window too). The window writes no app-menu entry of its own in an AppImage, and without one GNOME has nothing to match the window to, but no About page offered the row.
+
+### Changed
+
+- corundum-framework 0.10.0. About's install rows are corundum's `settings::AboutRows`, so the package's updates are drawn first, then the service, the command line and the app-menu entry.
+- `PackageAbout::new`, `PackageAbout::for_app` and `Settings::with_package` take the window's `egui::Context` first: the app-menu row reads the spec the window was given there (`AppOptions::launcher`).
+
 ## [0.27.1] - 2026-11-04
 
 ### Fixed

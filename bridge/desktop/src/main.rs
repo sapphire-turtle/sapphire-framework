@@ -37,6 +37,7 @@ const LAUNCHER: LauncherSpec = LauncherSpec {
     description: "Sync and embedding for Sapphire apps",
     category: "Network",
     icon_svg: include_bytes!("../../headless/docs/icon.svg"),
+    macos_icon_svg: None,
     bundle_prefix: "org.sapphire-turtle",
 };
 

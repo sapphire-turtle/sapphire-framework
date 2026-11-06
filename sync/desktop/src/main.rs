@@ -46,6 +46,7 @@ const LAUNCHER: LauncherSpec = LauncherSpec {
     description: "Peer-to-peer file sync for Sapphire workspaces",
     category: "Network",
     icon_svg: include_bytes!("../../docs/icon.svg"),
+    macos_icon_svg: None,
     bundle_prefix: "org.sapphire-turtle",
 };
 

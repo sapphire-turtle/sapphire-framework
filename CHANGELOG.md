@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-06
+
+The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2). **Sign the apps' releases before moving them to this one:** `update` refuses a release file without a `<file>.sig` from sapphire-turtle's key (sapphire-turtle/.github `release-binary.yml` with `sign: true`, v1.3.0).
+
 ### Breaking
 
 - corundum-framework 0.11.0, whose `LauncherSpec` (re-exported as `sapphire_framework_gui::package::LauncherSpec`) has a new field, `macos_icon_svg`: the macOS app bundle's icon, `None` to keep `icon_svg`. An app that writes a `LauncherSpec` adds it.

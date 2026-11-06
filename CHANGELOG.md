@@ -18,6 +18,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- The bridge raises its soft limit on open files to the hard one at start (corundum's `limits::raise_open_files`, capped at `kern.maxfilesperproc` on macOS). Started by launchd it had 256, which a network change after waking from sleep used up, and with none left iroh's interface watcher crashed the process (#419).
 - An app run from its AppImage shows its icon in GNOME's dock and taskbar once it is added to the app menu from Settings › About, which now has the row that adds the entry or takes it out (Sapphire Bridge's window too). The window writes no app-menu entry of its own in an AppImage, and without one GNOME has nothing to match the window to, but no About page offered the row.
 
 ### Changed

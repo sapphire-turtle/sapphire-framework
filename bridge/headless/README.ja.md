@@ -22,7 +22,7 @@ bridge はワークスペースの中身を一切見ません。所有してい�
 
 ## インストール
 
-sapphire の各アプリのインストールスクリプトは、bridge も一緒に入れます。bridge だけを入れるには:
+サーバーなどウィンドウのない環境では、このリポジトリのスクリプトで入れます（各アプリのスクリプトは bridge を入れません）:
 
 ```sh
 # Linux, macOS
@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 ```
 
 `~/.local/bin` に入り、あとから `sapphire-bridge update` で更新できます。続けて
-`sapphire-bridge service install` でサービスとして動かしてください。オプションや他のアプリについては
+`sapphire-bridge service install` でサービスとして動かしてください。オプションは
 [`install/`](../../install/README.ja.md) を参照してください。
 
 ## 動かす

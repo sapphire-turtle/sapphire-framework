@@ -29,8 +29,8 @@ install on Windows, from About › Command line on macOS and Linux),
 asks on its first start to keep the bridge running in the background, and updates itself.
 See [`sapphire-bridge-desktop`](../desktop/README.md).
 
-On a server, or without a window: every sapphire application's install script installs the
-bridge along with it. For the bridge alone:
+On a server, or without a window, install it with this repository's script (the
+applications' own scripts do not install it):
 
 ```sh
 # Linux, macOS
@@ -44,7 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/
 
 It goes to `~/.local/bin`, where `sapphire-bridge update` can replace it later. Then run it as
 a service with `sapphire-bridge service install`. See [`install/`](../../install/README.md) for
-the options and the other applications.
+the options.
 
 ## Running it
 

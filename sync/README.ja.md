@@ -39,15 +39,15 @@ Linux は `sapphire-sync-desktop_<version>_x86_64.AppImage` です。PATH に `s
 
 ```sh
 # Linux, macOS
-curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- sync
+curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge sync
 ```
 
 ```powershell
 # Windows
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) sync
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) bridge sync
 ```
 
-`sapphire-sync` と、同期に使う `sapphire-bridge` が一緒に `~/.local/bin` へ入ります。オプションは
+`sapphire-sync` と、同期に使う `sapphire-bridge` が `~/.local/bin` へ入ります（ダウンロードごとに SHA-256 と署名を確認します）。オプションは
 [インストールスクリプトの README](https://github.com/sapphire-turtle/sapphire-framework/tree/main/install)
 を参照してください。
 

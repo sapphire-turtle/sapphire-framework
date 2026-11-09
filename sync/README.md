@@ -40,16 +40,16 @@ which has an installer of its own on the same release (`sapphire-bridge-desktop-
 
 ```sh
 # Linux, macOS
-curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- sync
+curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge sync
 ```
 
 ```powershell
 # Windows
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) sync
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) bridge sync
 ```
 
-This installs `sapphire-sync` together with `sapphire-bridge`, which it syncs
-through, into `~/.local/bin`. See the
+This installs `sapphire-sync` and `sapphire-bridge`, which it syncs through, into
+`~/.local/bin`, checking each download's SHA-256 and signature first. See the
 [install script's README](https://github.com/sapphire-turtle/sapphire-framework/tree/main/install)
 for the options.
 

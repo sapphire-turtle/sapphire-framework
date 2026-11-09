@@ -1,93 +1,108 @@
 #!/bin/sh
-# Install the CLI of sapphire applications (the CLI, the app server and the MCP
-# server, for headless machines) from their GitHub releases, together with
-# sapphire-bridge, the host-wide daemon every one of them syncs through. The
-# desktop apps are not installed here: they ship as installers on each
-# application's releases, which carry the CLI as well.
+# Install the headless edition of sapphire-bridge and sapphire-sync (the CLI and
+# the server in one binary, for servers and other machines without a GUI) from
+# this repository's GitHub releases. Each application has a script like this in
+# its own repository; the desktop apps ship as installers on their releases.
 #
-#   curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- journal
+#   curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge
 #
 # Run with --help for the options. Linux (x86_64, aarch64) and macOS (aarch64);
 # Windows has install.ps1.
 #
-# Files go to ~/.local/bin, where the `update` command of each binary
-# recognises a release install and can replace it later. A binary installed by
-# cargo or a package manager is left alone, as `update` would.
+# Each download is checked against the SHA-256 GitHub records for it and, when
+# minisign is on PATH, against the organization's signature before it is
+# installed. Files go to ~/.local/bin, where the `update` command of each
+# binary recognises a release install and can replace it later. A binary
+# installed by cargo or a package manager is left alone, as `update` would.
+#
+# Made from sapphire-turtle/.github's templates/install/install.sh: keep the
+# two in step, and change only the comment above and the tables below.
 set -eu
 
-# Every application this script knows: name, repository, command, and the
+# Every application this script installs: name, repository, command, and the
 # prefix of its release tags. The command's release file is
-# `<command>-headless-<os>-<arch>`. Keep in step with install.ps1 and with each
-# application's release-plz.toml.
+# `<command>-headless-<os>-<arch>`. Keep in step with install.ps1 and with the
+# repository's release-plz.toml. With one row, the name may be left out.
 APPS="
 bridge          sapphire-framework  sapphire-bridge          v
-agent           sapphire-agent      sapphire-agent           v
-journal         sapphire-journal    sapphire-journal         v
-ledger          sapphire-ledger     sapphire-ledger          v
-sync            sapphire-sync       sapphire-sync            v
-tally           sapphire-tally      sapphire-tally           v
-timer           sapphire-timer      sapphire-timer           v
+sync            sapphire-framework  sapphire-sync            v
 "
-# Names an application no longer has: name, and the app that replaces it.
-RETIRED="
-agent-cli       agent
+# Applications installed by another repository's script: name, and that
+# repository.
+MOVED="
+agent           sapphire-agent
+agent-cli       sapphire-agent
+journal         sapphire-journal
+ledger          sapphire-ledger
+tally           sapphire-tally
+timer           sapphire-timer
 "
 OWNER="sapphire-turtle"
 
+# The organization's minisign public key (sapphire_framework_update::UPDATE_PUBKEY),
+# which signs every release file.
+PUBKEY="RWTryBeqOT+n9BzfWt2B3inpQylvPAJYvSy5tBmOEAauzdqmbUMqayhq"
+PUBKEY_ID="F4A73F39AA17C8EB"
+
 usage() {
   cat <<EOF
-Usage: install.sh [options] <app>...
+Usage: install.sh [options] [<app>...]
 
-Installs each <app>'s CLI from its latest release, and sapphire-bridge with
-them. For the desktop app, download its installer from the application's
-releases instead.
+Installs each <app>'s headless edition from its latest release. For the
+desktop app, download its installer from the releases instead.
 
 Apps:
 $(printf '%s\n' "$APPS" | awk 'NF { printf "  %s\n", $1 }')
 
 Options:
-  --dir <dir>          Install into <dir> (default: ~/.local/bin)
-  --version <x.y.z>    Install this version instead of the latest (one app only)
-  --no-bridge          Do not install or update sapphire-bridge
-  -h, --help           Show this help
+  --dir <dir>            Install into <dir> (default: ~/.local/bin)
+  --require-signature    Fail, rather than warn, when minisign is not on PATH to
+                         check the signature
+  -h, --help             Show this help
 EOF
 }
 
 say() { printf '%s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 INSTALL_DIR="${HOME}/.local/bin"
-VERSION=""
-WITH_BRIDGE=1
+REQUIRE_SIGNATURE=0
 REQUESTED=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) [ $# -ge 2 ] || err "--dir needs a directory"; INSTALL_DIR="$2"; shift 2 ;;
-    --version) [ $# -ge 2 ] || err "--version needs a version"; VERSION="${2#v}"; shift 2 ;;
-    --no-bridge) WITH_BRIDGE=0; shift ;;
+    --require-signature) REQUIRE_SIGNATURE=1; shift ;;
+    # The bridge is no longer installed with the applications; the option is
+    # accepted so that older command lines still run.
+    --no-bridge) shift ;;
     -h|--help) usage; exit 0 ;;
     -*) err "unknown option: $1 (see --help)" ;;
     *) REQUESTED="$REQUESTED $1"; shift ;;
   esac
 done
 
-[ -n "$REQUESTED" ] || { usage >&2; exit 2; }
-# Unquoted on purpose: REQUESTED is a list of app names.
-# shellcheck disable=SC2086
-set -- $REQUESTED
-if [ -n "$VERSION" ] && [ $# -gt 1 ]; then
-  err "--version applies to one app at a time"
+if [ -z "$REQUESTED" ]; then
+  if [ "$(printf '%s\n' "$APPS" | awk 'NF' | wc -l)" -eq 1 ]; then
+    REQUESTED=$(printf '%s\n' "$APPS" | awk 'NF { print $1 }')
+  else
+    usage >&2
+    exit 2
+  fi
 fi
 for app in $REQUESTED; do
+  repo=$(printf '%s\n' "$MOVED" | awk -v app="$app" '$1 == app { print $2 }')
+  if [ -n "$repo" ]; then
+    err "$app is installed by its own repository's script now:
+  curl -fsSL https://raw.githubusercontent.com/${OWNER}/${repo}/main/install/install.sh | sh"
+  fi
   case "$app" in
     *-desktop)
       repo=$(printf '%s\n' "$APPS" | awk -v app="${app%-desktop}" '$1 == app { print $2 }')
       [ -z "$repo" ] || err "$app is not installed by this script: download the desktop app's installer from https://github.com/${OWNER}/${repo}/releases/latest"
       ;;
   esac
-  now=$(printf '%s\n' "$RETIRED" | awk -v app="$app" '$1 == app { print $2 }')
-  [ -z "$now" ] || err "$app is now part of $now: install $now instead"
   printf '%s\n' "$APPS" | awk -v app="$app" '$1 == app { found = 1 } END { exit !found }' \
     || err "unknown app: $app (see --help)"
 done
@@ -106,6 +121,21 @@ case "$(uname -m)" in
 esac
 if [ "$OS" = "macos" ] && [ "$ARCH" = "x86_64" ]; then
   err "no release is built for Intel macOS; build from source with cargo"
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | awk '{ print $1 }'; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+else
+  err "sha256sum or shasum is required"
+fi
+MINISIGN=$(command -v minisign 2>/dev/null || true)
+if [ -z "$MINISIGN" ]; then
+  if [ "$REQUIRE_SIGNATURE" -eq 1 ]; then
+    err "minisign is required to check the signature (--require-signature): install it from https://jedisct1.github.io/minisign/"
+  fi
+  warn "minisign is not on PATH: downloads are checked against their SHA-256 only. Install minisign (https://jedisct1.github.io/minisign/) to check the signature as well."
 fi
 
 # app_field <app> <column>: one column of the app's row in APPS.
@@ -143,6 +173,51 @@ latest_version() {
     | tail -n 1
 }
 
+# asset_digest <release JSON> <file>: the SHA-256 GitHub recorded for the
+# release's <file>, empty if it has none, or `missing` if there is no such file.
+# The API's JSON has one field per line, and an asset's "digest" follows its
+# "name" (the uploader between them has neither).
+asset_digest() {
+  printf '%s\n' "$1" | awk -v name="$2" '
+    /^ *"name": / {
+      current = $0
+      sub(/^ *"name": *"/, "", current); sub(/",? *$/, "", current)
+      if (current == name) found = 1
+    }
+    current == name && /^ *"digest": *"sha256:/ {
+      digest = $0
+      sub(/^ *"digest": *"sha256:/, "", digest); sub(/",? *$/, "", digest)
+    }
+    END { if (!found) print "missing"; else print digest }'
+}
+
+# verify <file> <asset name> <release URL> <release JSON>: check the download
+# against its SHA-256 and the organization's signature, or exit.
+verify() {
+  want=$(asset_digest "$4" "$2")
+  [ -n "$want" ] || err "$2 has no SHA-256 recorded on GitHub: not installed"
+  got=$(sha256 "$1")
+  [ "$got" = "$want" ] || err "$2 does not match its SHA-256 (expected $want, got $got): not installed"
+
+  [ "$(asset_digest "$4" "$2.sig")" != missing ] || err "$2 is not signed: not installed"
+  [ -n "$MINISIGN" ] || return 0
+
+  # The .sig file is a minisign signature, base64-encoded as cargo-packager
+  # writes it.
+  SIG=$(mktemp "${TMPDIR:-/tmp}/sapphire-install.XXXXXX")
+  sig=$(curl -fsSL "$3/$2.sig") || err "could not download $3/$2.sig"
+  printf '%s' "$sig" | base64 -d > "$SIG" 2>/dev/null || err "$2.sig is not a signature cargo-packager writes"
+  # -Q prints the trusted comment alone: timestamp:<n>\tfile:<name>.
+  if ! comment=$("$MINISIGN" -V -Q -P "$PUBKEY" -m "$1" -x "$SIG" 2>&1); then
+    err "$2 does not carry a valid signature from the organization's key ($PUBKEY_ID): not installed"
+  fi
+  rm -f "$SIG"
+  SIG=""
+  signed=$(printf '%s\n' "$comment" | tr '\t' '\n' | sed -n 's/^file://p')
+  [ "$signed" = "$2" ] || err "the signature on $2 was made for ${signed:-another file}: not installed"
+  say "  Signature verified ($PUBKEY_ID)."
+}
+
 # install_method <path>: how the binary at <path> was installed, judged by
 # where it is, as sapphire-framework-update's `install_method` does: cargo,
 # package-manager or release. Only a release install may be replaced.
@@ -157,8 +232,8 @@ install_method() {
 }
 
 # desktop_install <binary>: where the application's desktop package is
-# installed, or nothing. The package (Velopack) carries the same CLI and app
-# server and updates them itself: a second copy here would run a second server.
+# installed, or nothing. The package carries the same CLI and app server and
+# updates them itself: a second copy here would run a second server.
 desktop_install() {
   case "$OS" in
     macos)
@@ -184,13 +259,14 @@ desktop_install() {
 
 INSTALLED=""
 
-# The download in flight, removed if the script stops before it is renamed
-# into place.
+# The download in flight and its signature, removed if the script stops before
+# the download is renamed into place.
 TMP=""
-trap 'rm -f "$TMP"' EXIT
+SIG=""
+trap 'rm -f "$TMP" "$SIG"' EXIT
 trap 'exit 130' INT TERM
 
-# install_app <app> <version or empty>
+# install_app <app>
 install_app() {
   repo=$(app_field "$1" 2)
   base=$(app_field "$1" 3)
@@ -213,13 +289,15 @@ install_app() {
     fi
   fi
 
-  version="$2"
-  if [ -z "$version" ]; then
-    version=$(latest_version "$repo" "$prefix")
-    [ -n "$version" ] || err "$repo has no ${prefix}x.y.z release of $base yet"
-  fi
+  version=$(latest_version "$repo" "$prefix")
+  [ -n "$version" ] || err "$repo has no ${prefix}x.y.z release of $base yet"
   tag="${prefix}${version}"
+  release_json=$(github_api "repos/${OWNER}/${repo}/releases/tags/${tag}") \
+    || err "could not read the release $tag of ${OWNER}/$repo (rate-limited? set GITHUB_TOKEN)"
   release="https://github.com/${OWNER}/${repo}/releases/download/${tag}"
+  asset="${base}-headless-${OS}-${ARCH}"
+  [ "$(asset_digest "$release_json" "$asset")" != missing ] \
+    || err "$repo $tag has no $base for $OS-$ARCH"
   dest="${INSTALL_DIR}/${base}"
 
   say "Installing $base $version ($OS-$ARCH) to $INSTALL_DIR"
@@ -228,13 +306,8 @@ install_app() {
   # atomic, so a running copy (the bridge, typically) keeps its old file and
   # nothing ever sees a half-written executable.
   TMP=$(mktemp "${INSTALL_DIR}/.${base}.XXXXXX")
-  # Releases name the file after the headless package; older ones, after the
-  # command alone.
-  url="${release}/${base}-headless-${OS}-${ARCH}"
-  if ! curl -fsL "$url" -o "$TMP"; then
-    url="${release}/${base}-${OS}-${ARCH}"
-    curl -fsSL "$url" -o "$TMP" || err "could not download $url"
-  fi
+  curl -fsSL "${release}/${asset}" -o "$TMP" || err "could not download ${release}/${asset}"
+  verify "$TMP" "$asset" "$release" "$release_json"
   chmod 755 "$TMP"
   mv -f "$TMP" "$dest"
   TMP=""
@@ -246,16 +319,8 @@ install_app() {
   INSTALLED="$INSTALLED $base"
 }
 
-# The bridge first, so an application started right after finds it. It is
-# installed at its latest version unless it is the one app asked for.
-case " $REQUESTED " in
-  *" bridge "*) WITH_BRIDGE=0 ;;
-esac
-if [ "$WITH_BRIDGE" -eq 1 ]; then
-  install_app bridge ""
-fi
 for app in $REQUESTED; do
-  install_app "$app" "$VERSION"
+  install_app "$app"
 done
 
 [ -n "$INSTALLED" ] || exit 0
@@ -277,5 +342,14 @@ case "$INSTALLED" in
     say "Run the bridge as a service, so it starts with your session:"
     say "  sapphire-bridge service install"
     say "If the service was already running, restart it to run the new version."
+    ;;
+  *)
+    # The applications sync through the host's bridge, which is installed on
+    # its own.
+    if ! command -v sapphire-bridge >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/sapphire-bridge" ]; then
+      say ""
+      say "To sync, install sapphire-bridge on this host as well:"
+      say "  curl -fsSL https://raw.githubusercontent.com/${OWNER}/sapphire-framework/main/install/install.sh | sh -s -- bridge"
+    fi
     ;;
 esac

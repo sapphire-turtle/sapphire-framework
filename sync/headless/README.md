@@ -12,16 +12,16 @@ name.
 
 ```sh
 # Linux, macOS
-curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- sync
+curl -fsSL https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.sh | sh -s -- bridge sync
 ```
 
 ```powershell
 # Windows
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) sync
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/sapphire-turtle/sapphire-framework/main/install/install.ps1))) bridge sync
 ```
 
-This installs `sapphire-sync` together with `sapphire-bridge`, which it syncs through, into
-`~/.local/bin`.
+This installs `sapphire-sync` and `sapphire-bridge`, which it syncs through, into
+`~/.local/bin`, checking each download's SHA-256 and signature first.
 
 ### From crates.io
 

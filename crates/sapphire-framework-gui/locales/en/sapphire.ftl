@@ -198,6 +198,7 @@ sapphire-embedding-on-this-device = On this device
 
 # The file browser.
 sapphire-files-title = Files
+sapphire-history-title = History
 sapphire-files-no-workspace = No workspace yet — choose one in Settings → Workspace.
 sapphire-files-back = ← Files
 sapphire-files-select = Select a file to preview it.

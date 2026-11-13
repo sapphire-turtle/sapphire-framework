@@ -202,6 +202,7 @@ sapphire-embedding-on-this-device = このデバイスでは
 
 # ファイルブラウザー。
 sapphire-files-title = ファイル
+sapphire-history-title = 履歴
 sapphire-files-no-workspace = ワークスペースがまだありません。「設定」→「ワークスペース」で選んでください。
 sapphire-files-back = ← ファイル
 sapphire-files-select = ファイルを選ぶとプレビューを表示します。

@@ -50,6 +50,7 @@ mod error;
 mod events;
 #[cfg(feature = "metrics")]
 mod exporter;
+mod fs_methods;
 mod handlers;
 mod host;
 #[cfg(feature = "http")]
@@ -75,6 +76,7 @@ pub use config::{
 pub use current::Current;
 pub use error::{Error, Result};
 pub use events::subscribe_method;
+pub use fs_methods::{LOCAL_PRINCIPAL, OWN_FOLDER, SapphireApp, actor_for};
 pub use handlers::workspace_router;
 pub use host::WorkspaceHost;
 pub use restart::serve_restarting;
@@ -724,7 +726,14 @@ impl AppServer {
 
         let mut router = subscribe_method(
             Arc::clone(&host),
-            current::current_methods(Arc::clone(&current), workspace_router(Arc::clone(&current))),
+            current::current_methods(
+                Arc::clone(&current),
+                // `fs.*` and `journal.*`: the explorer's methods, beside `workspace.*`.
+                fs_methods::fs_methods(
+                    Arc::clone(&current),
+                    workspace_router(Arc::clone(&current)),
+                ),
+            ),
         );
         if sync.is_some() {
             // `sync_router` is applied *under* the application's own methods so a later

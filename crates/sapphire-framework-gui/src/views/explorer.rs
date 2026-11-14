@@ -287,7 +287,9 @@ mod tests {
 
     /// Serves `fs.version` and a method that always fails at `endpoint`, in this process.
     async fn serve_at(endpoint: Endpoint) {
-        let listener = sapphire_ipc::bind_with(Carrier::InProcess, &endpoint)
+        // Windows' listener accepts through `&mut self`, unix's through `&self`.
+        #[cfg_attr(unix, allow(unused_mut))]
+        let mut listener = sapphire_ipc::bind_with(Carrier::InProcess, &endpoint)
             .await
             .unwrap();
         let router = Arc::new(

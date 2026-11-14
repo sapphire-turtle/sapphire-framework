@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.29.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.28.0...sapphire-framework-gui-v0.29.0) - 2026-11-14
+
+### Added
+
+- *(sapphire-framework-gui)* WorkspaceExplorer and Settings › History, over the app server's IPC
+
+### Fixed
+
+- *(gui)* the explorer test's listener is mut on Windows
+
 ## [0.28.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.27.1...sapphire-framework-gui-v0.28.0) - 2026-11-06
 
 ### Added

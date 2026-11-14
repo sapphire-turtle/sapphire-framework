@@ -30,7 +30,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["sync", "rt"] }
-sapphire-framework-bridge = { version = "0.28.0", path = "../sapphire-framework-bridge", optional = true }
+sapphire-framework-bridge = { version = "0.29.0", path = "../sapphire-framework-bridge", optional = true }
 async-trait = { workspace = true, optional = true }
 corundum-framework-platform = { workspace = true, optional = true }
 

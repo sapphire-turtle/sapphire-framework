@@ -62,6 +62,18 @@ fn ok<T: serde::Serialize>(value: T) -> std::result::Result<Value, RpcError> {
     serde_json::to_value(value).map_err(|e| RpcError::internal(e.to_string()))
 }
 
+/// Scan `root` after a write, if this server syncs. A failed scan is logged, not
+/// returned: the caller's write succeeded, and reporting a sync problem as a write
+/// failure would make an unrelated outage look like the caller's.
+pub(crate) async fn scanned(sync: Option<&Arc<SyncRuntime>>, root: &std::path::Path, what: &str) {
+    if let Some(runtime) = sync {
+        if let Err(err) = runtime.scan(root).await {
+            tracing::warn!(root = %root.display(), "scan after {what} failed: {err}");
+        }
+        runtime.request_embed(root);
+    }
+}
+
 /// The file methods of `workspace.*`, on the current workspace (#215).
 ///
 /// The three methods that change a file take the exact path: after the write succeeds, the
@@ -79,18 +91,6 @@ pub fn workspace_router(current: Arc<Current>) -> Router {
     let list = Arc::clone(&current);
     let search = Arc::clone(&current);
     let reindex = current;
-
-    /// Scan `root` after a write, if this server syncs. A failed scan is logged, not
-    /// returned: the caller's write succeeded, and reporting a sync problem as a write
-    /// failure would make an unrelated outage look like the caller's.
-    async fn scanned(sync: Option<&Arc<SyncRuntime>>, root: &std::path::Path, what: &str) {
-        if let Some(runtime) = sync {
-            if let Err(err) = runtime.scan(root).await {
-                tracing::warn!(root = %root.display(), "scan after {what} failed: {err}");
-            }
-            runtime.request_embed(root);
-        }
-    }
 
     Router::new()
         .method(proto::READ_FILE, move |ctx| {
@@ -269,6 +269,7 @@ mod tests {
         _env: EnvGuard,
         ws: PathBuf,
         client: Client,
+        current: Arc<Current>,
     }
 
     /// A server over an in-process connection, plus a workspace root to use.
@@ -297,7 +298,11 @@ mod tests {
         if select {
             current.select(&ws).await.unwrap();
         }
-        let router = Arc::new(workspace_router(current));
+        // `fs.*` and `journal.*` beside `workspace.*`, as the server mounts them.
+        let router = Arc::new(crate::fs_methods::fs_methods(
+            Arc::clone(&current),
+            workspace_router(Arc::clone(&current)),
+        ));
         let (client_conn, server_conn) = Connection::pair();
         tokio::spawn(async move {
             let info = ServerInfo {
@@ -324,6 +329,7 @@ mod tests {
             _env,
             ws,
             client,
+            current,
         }
     }
 
@@ -567,5 +573,132 @@ mod tests {
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    /// The names `fs.list` answers at `path`.
+    async fn listed(client: &Client, path: &str) -> Vec<String> {
+        let listing: Value = client
+            .call("fs.list", serde_json::json!({ "path": path }))
+            .await
+            .unwrap();
+        listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// Applies `ops` as one batch of `origin`, answering its done and skipped counts.
+    async fn apply(client: &Client, origin: &str, ops: Value) -> (u64, u64) {
+        let records: Value = client
+            .call(
+                "fs.apply",
+                serde_json::json!({ "ops": ops, "origin": origin, "label": "test" }),
+            )
+            .await
+            .unwrap();
+        let summary = &records["summary"];
+        (
+            summary["done"].as_u64().unwrap(),
+            summary["skipped"].as_u64().unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_explorer_lists_the_workspace_without_its_dot_names() {
+        let f = fixture().await;
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        std::fs::create_dir(f.ws.join("notes")).unwrap();
+        let version: Value = f
+            .client
+            .call("fs.version", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(version["api"], corundum_framework_fs::api::API_VERSION);
+        assert_eq!(listed(&f.client, "").await, ["a.md", "notes"]);
+    }
+
+    #[tokio::test]
+    async fn a_move_is_undone_by_its_origin() {
+        let f = fixture().await;
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        std::fs::create_dir(f.ws.join("notes")).unwrap();
+        let moved = apply(
+            &f.client,
+            "gui:1",
+            serde_json::json!([{ "kind": "fs.move", "from": "a.md", "to": "notes/a.md" }]),
+        )
+        .await;
+        assert_eq!(moved, (1, 0));
+        assert!(f.ws.join("notes/a.md").exists());
+
+        let _: Value = f
+            .client
+            .call("journal.undo", serde_json::json!({ "origin": "gui:1" }))
+            .await
+            .unwrap();
+        assert!(f.ws.join("a.md").exists());
+        assert!(!f.ws.join("notes/a.md").exists());
+    }
+
+    #[tokio::test]
+    async fn the_trash_is_kept_in_the_unsynced_folder() {
+        let f = fixture().await;
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        let trashed = apply(
+            &f.client,
+            "gui:1",
+            serde_json::json!([{ "kind": "fs.trash", "path": "a.md" }]),
+        )
+        .await;
+        assert_eq!(trashed, (1, 0));
+        assert!(!f.ws.join("a.md").exists());
+        let trash = f.ws.join(crate::fs_methods::OWN_FOLDER).join("trash");
+        let ids: Vec<_> = std::fs::read_dir(&trash).unwrap().collect();
+        assert_eq!(ids.len(), 1);
+        assert!(ids[0].as_ref().unwrap().path().join("a.md").exists());
+        // Hidden from the explorer, as every dot-name is.
+        assert!(listed(&f.client, "").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn another_workspace_is_served_with_an_empty_history() {
+        let f = fixture().await;
+        std::fs::write(f.ws.join("a.md"), "a").unwrap();
+        apply(
+            &f.client,
+            "gui:1",
+            serde_json::json!([{ "kind": "fs.move", "from": "a.md", "to": "b.md" }]),
+        )
+        .await;
+
+        let other = f.ws.parent().unwrap().join("other");
+        std::fs::create_dir_all(other.join(".sapphire-handlertest")).unwrap();
+        std::fs::write(other.join("c.md"), "c").unwrap();
+        f.current.select(&other).await.unwrap();
+
+        assert_eq!(listed(&f.client, "").await, ["c.md"]);
+        let err = f
+            .client
+            .call::<_, Value>("journal.undo", serde_json::json!({ "origin": "gui:1" }))
+            .await
+            .unwrap_err();
+        let sapphire_ipc::Error::Rpc(err) = err else {
+            panic!("not an RPC error: {err}");
+        };
+        assert_eq!(err.code, corundum_framework_fs::api::codes::NOTHING_TO_UNDO);
+        assert!(f.ws.join("b.md").exists());
+    }
+
+    #[tokio::test]
+    async fn without_a_workspace_the_explorer_is_refused() {
+        let f = fixture_selecting(false).await;
+        let err = f
+            .client
+            .call::<_, Value>("fs.list", serde_json::json!({ "path": "" }))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, sapphire_ipc::Error::Rpc(_)), "{err}");
     }
 }

@@ -10,6 +10,8 @@ pub mod bridge_summary;
 pub(crate) mod config;
 mod devices;
 mod embedding;
+#[cfg(feature = "explorer")]
+pub mod explorer;
 pub mod files;
 mod workgroup;
 mod workspaces;
@@ -18,6 +20,8 @@ pub use api_keys::ApiKeysView;
 pub use banner::ServiceStatusBanner;
 pub use devices::{DeviceList, InviteDialog};
 pub use embedding::EmbeddingView;
+#[cfg(feature = "explorer")]
+pub use explorer::{HistorySection, IpcFsTransport, WorkspaceExplorer, WorkspaceFiles};
 pub use files::FileBrowser;
 pub use workgroup::{JoinDialog, WorkgroupView};
 pub use workspaces::WorkspacePicker;

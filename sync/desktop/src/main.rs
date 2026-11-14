@@ -8,8 +8,9 @@
 //!
 //! The window is a pure client: it talks to the service-managed `sapphire-sync serve` and
 //! `sapphire-bridge` over IPC and never starts either itself. Closing the window does not
-//! stop sync. The Files screen is a placeholder for the synced folder's browser (the
-//! mobile app needs one); until then Settings, at the rail's foot, is what the app does.
+//! stop sync. The Files screen is the synced folder in an explorer: moves, renames and
+//! trashing, undone with Ctrl+Z, and the picked file's preview in the side pane; Settings ›
+//! History undoes a change from the list.
 //!
 //! With the `package` feature (the release workflow's build) it is a cargo-packager package
 //! (src/package.rs): it updates itself, and its first start asks to keep the app server
@@ -26,9 +27,8 @@ use clap::Parser;
 use corundum_framework_platform::launcher::LauncherSpec;
 use sapphire_framework::gui::app::{AppOptions, AppSetup};
 use sapphire_framework::gui::client::AppIdentity;
-use sapphire_framework::gui::{
-    Destination, Settings, Shell, ShellApp, Side, eframe, egui, i18n, tr,
-};
+use sapphire_framework::gui::views::{IpcFsTransport, WorkspaceExplorer, WorkspaceFiles};
+use sapphire_framework::gui::{Destination, Settings, Shell, ShellApp, Side, eframe, egui, i18n};
 use sapphire_framework::server::FrameworkCommand;
 use sapphire_sync_cli::cli::AppCommand;
 
@@ -51,7 +51,7 @@ const LAUNCHER: LauncherSpec = LauncherSpec {
     bundle_prefix: "org.sapphire-turtle",
 };
 
-/// The app's own strings, beside the framework's: the rail's label and the Files screen.
+/// The app's own strings, beside the framework's: the rail's label.
 const RESOURCES: i18n::Resources = i18n::Resources {
     name: "sapphire-sync-desktop",
     files: &[
@@ -68,36 +68,49 @@ enum Screen {
 
 struct App {
     shell: Shell<Screen>,
+    files: WorkspaceFiles,
     screens: Screens,
 }
 
-/// What the shell draws: the screens. The side pane keeps the shell's default (empty)
-/// until the Files screen has items to open in it.
-struct Screens;
+/// What the shell draws: the screens, and the picked file's preview in the side pane.
+struct Screens {
+    explorer: WorkspaceExplorer,
+}
 
 impl ShellApp<Screen> for Screens {
-    fn screen_ui(&mut self, ui: &mut egui::Ui, screen: Screen, _side: &mut Side) {
+    fn screen_ui(&mut self, ui: &mut egui::Ui, screen: Screen, side: &mut Side) {
         match screen {
-            Screen::Files => files_ui(ui),
+            Screen::Files => {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    if self.explorer.ui(ui) {
+                        side.open();
+                    }
+                });
+            }
+        }
+    }
+
+    fn side_ui(&mut self, ui: &mut egui::Ui, screen: Option<Screen>, _side: &mut Side) {
+        if screen == Some(Screen::Files) {
+            self.explorer.detail_ui(ui);
         }
     }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // The workspace the server serves now: the explorer and History follow it.
+        let root = self
+            .shell
+            .settings()
+            .client()
+            .snapshot()
+            .server
+            .up()
+            .and_then(|server| server.current.as_ref().map(|current| current.root.clone()));
+        self.files.set_root(root.as_deref());
         self.shell.show(ui, &mut self.screens);
     }
-}
-
-/// The Files screen, until it browses the synced folder.
-fn files_ui(ui: &mut egui::Ui) {
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space(ui.available_height() / 3.0);
-            ui.heading(tr!(ui, "sync-files"));
-            ui.label(tr!(ui, "sync-files-placeholder"));
-        });
-    });
 }
 
 /// The CLI's command line, with the subcommand optional: none opens the window.
@@ -192,11 +205,18 @@ fn package_update(args: &sapphire_framework::server::AppUpdateArgs) -> i32 {
 fn window() -> eframe::Result<()> {
     sapphire_framework::gui::app::run(app_options(), |setup: AppSetup<'_>| {
         i18n::register(&setup.cc.egui_ctx, RESOURCES);
-        let settings = Settings::new(setup.framework);
+        let files = WorkspaceFiles::new(IpcFsTransport::new(
+            setup.runtime.clone(),
+            setup.endpoints.app.clone(),
+            APP,
+            setup.repaint.clone(),
+        ));
+        let settings = Settings::new(setup.framework)
+            .with_app_sections("Sapphire Sync", vec![Box::new(files.history())]);
         // About's service row and updates, in the package.
         #[cfg(feature = "package")]
         let settings = settings.with_package_about(setup.package_about);
-        let mut shell = Shell::new(
+        let shell = Shell::new(
             vec![Destination::new(
                 Screen::Files,
                 egui::include_image!("../assets/icons/folder.svg"),
@@ -204,11 +224,12 @@ fn window() -> eframe::Result<()> {
             )],
             settings,
         );
-        // Settings is all the app does until Files browses the folder.
-        shell.open_settings();
         Box::new(App {
             shell,
-            screens: Screens,
+            screens: Screens {
+                explorer: files.explorer(),
+            },
+            files,
         })
     })
 }

@@ -15,6 +15,7 @@ const NOT_IDS: &[&str] = &[
     "sapphire-ed-x",
     "sapphire-example",
     "sapphire-example-desktop",
+    "sapphire-explorertest",
     "sapphire-framework",
     "sapphire-framework-gui",
     "sapphire-gui-test",

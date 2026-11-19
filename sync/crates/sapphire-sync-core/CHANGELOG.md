@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.29.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-sync-core-v0.28.0...sapphire-sync-core-v0.29.0) - 2026-11-19
+
+### Other
+
+- [**breaking**] timestamps are jiff's, not chrono's
+
 ## [0.14.1](https://github.com/sapphire-turtle/sapphire-sync/compare/sapphire-sync-core-v0.14.0...sapphire-sync-core-v0.14.1) - 2026-10-25
 
 ### Other

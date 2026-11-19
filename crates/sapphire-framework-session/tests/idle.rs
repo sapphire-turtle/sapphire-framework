@@ -56,6 +56,7 @@ fn hello(ws: grain_id::GrainId) -> Message {
         replica_id: ReplicaId::new(),
         vv: VersionVector::new(),
         max_file_size: sapphire_sync::DEFAULT_MAX_FILE_SIZE,
+        acks: false,
     }
 }
 

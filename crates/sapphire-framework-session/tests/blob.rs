@@ -86,6 +86,7 @@ fn hello(ws: grain_id::GrainId, format: u32, vv: VersionVector) -> Message {
         replica_id: ReplicaId::new(),
         vv,
         max_file_size: DEFAULT_MAX_FILE_SIZE,
+        acks: false,
     }
 }
 

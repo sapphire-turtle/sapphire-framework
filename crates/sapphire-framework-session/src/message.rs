@@ -20,6 +20,11 @@ pub enum Message {
         /// The largest file the sender writes, in bytes. The peer sends nothing larger
         /// unasked: content over it would be refused as a protocol error.
         max_file_size: u64,
+        /// Whether the sender answers a [`Message::Live`] push with [`Message::Ack`], and
+        /// reads one. Absent from a peer older than acknowledgements: `false`, and no `Ack`
+        /// is ever sent to it.
+        #[serde(default)]
+        acks: bool,
     },
     /// A page of path states the peer's version vector does not cover.
     Updates(Vec<PathUpdate>),
@@ -45,6 +50,13 @@ pub enum Message {
     Live(Vec<PathUpdate>),
     /// The sender will not continue, and why.
     Refused(String),
+    /// The sender has everything this version vector covers: the path states, and the
+    /// content behind them on disk (or answered `Missing` by whoever was asked).
+    ///
+    /// Sent in the live phase, after the `Live` batches it answers have been applied, and
+    /// only to a peer whose `Hello` said `acks`. It is what lets the pushing side know a
+    /// local edit has left the device, rather than only that it was queued.
+    Ack(VersionVector),
 }
 
 #[cfg(test)]
@@ -69,6 +81,7 @@ mod tests {
             replica_id: ReplicaId::new(),
             vv,
             max_file_size: 1024,
+            acks: true,
         };
         assert_eq!(format!("{:?}", round_trip(&msg)), format!("{msg:?}"));
     }
@@ -100,6 +113,35 @@ mod tests {
         let hash = ContentHash::of_bytes(b"content");
         match round_trip(&Message::Aborted(hash)) {
             Message::Aborted(back) => assert_eq!(back, hash),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_hello_without_acks_reads_as_not_acknowledging() {
+        // What a peer from before acknowledgements sends.
+        let json = serde_json::json!({ "Hello": {
+            "format": crate::SESSION_FORMAT_VERSION,
+            "workspace_id": GrainId::random(),
+            "replica_id": ReplicaId::new(),
+            "vv": VersionVector::new(),
+            "max_file_size": 1024,
+        }});
+        match serde_json::from_value::<Message>(json).unwrap() {
+            Message::Hello { acks, .. } => assert!(!acks),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_ack_round_trips() {
+        let mut vv = VersionVector::new();
+        vv.add_dot(&sapphire_sync::Dot {
+            replica: ReplicaId::new(),
+            counter: 7,
+        });
+        match round_trip(&Message::Ack(vv.clone())) {
+            Message::Ack(back) => assert!(back.covers(&vv) && vv.covers(&back)),
             other => panic!("got {other:?}"),
         }
     }

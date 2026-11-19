@@ -205,6 +205,7 @@ mod tests {
             replica_id: sapphire_sync::ReplicaId::new(),
             vv: VersionVector::new(),
             max_file_size: sapphire_sync::DEFAULT_MAX_FILE_SIZE,
+            acks: false,
         }
     }
 

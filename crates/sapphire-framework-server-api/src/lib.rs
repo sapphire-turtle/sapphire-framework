@@ -119,6 +119,20 @@ pub enum BackendEvent {
         /// Failure description.
         message: String,
     },
+    /// Every edit this device made to the synced workspace has reached at least one peer:
+    /// the peer applied it and wrote its content, so it survives this device going to sleep
+    /// or away.
+    ///
+    /// Sent once per batch of edits, when the last of them lands, not once per peer: a second
+    /// peer catching up later says nothing new. Edits made before sync started on this
+    /// server are not waited for. [`SyncStatusResult::pending_delivery`] says the same thing
+    /// to a client that asks instead.
+    SyncDelivered {
+        /// The peer that confirmed them.
+        device_id: grain_id::GrainId,
+        /// That peer's name, as the workgroup lists it; its id when the name is not known.
+        device_name: String,
+    },
 }
 
 /// Search the workspace.
@@ -385,6 +399,10 @@ mod tests {
             BackendEvent::Error {
                 message: "boom".into(),
             },
+            BackendEvent::SyncDelivered {
+                device_id: grain_id::GrainId::random(),
+                device_name: "laptop".into(),
+            },
         ] {
             assert_eq!(round_trip(&event), event);
         }
@@ -549,6 +567,15 @@ pub struct SyncStatusResult {
     /// How far embedding has got, when this host embeds (#188).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingProgress>,
+    /// Some edit this device made since sync started on this server has not reached any
+    /// peer yet. [`BackendEvent::SyncDelivered`] is sent when it has.
+    #[serde(default)]
+    pub pending_delivery: bool,
+    /// How many peers have a live session open that confirms what it is sent. With none, a
+    /// pending edit is confirmed only by the next session's exchange — a peer from before
+    /// confirmations never confirms a live push.
+    #[serde(default)]
+    pub acknowledging_peers: usize,
 }
 
 /// How far a workspace's embedding has got on this host.
@@ -574,6 +601,8 @@ impl SyncStatusResult {
             bridge_available: false,
             topology: Topology::Mesh,
             embedding: None,
+            pending_delivery: false,
+            acknowledging_peers: 0,
         }
     }
 }

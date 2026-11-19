@@ -161,6 +161,13 @@ impl WorkspaceHost {
         self.events.subscribe()
     }
 
+    /// Publish `event` of the workspace at `root` to every subscriber, as the open backend's
+    /// own events are. For what happens outside the backend — replication. Nobody listening
+    /// is not an error.
+    pub(crate) fn emit(&self, root: &Path, event: BackendEvent) {
+        let _ = self.events.send((root.to_owned(), event));
+    }
+
     /// Open `root`'s state and forward its events to the host's channel.
     async fn open_state(&self, root: &Path) -> Result<Arc<LocalBackend>> {
         let ctx = self.ctx;

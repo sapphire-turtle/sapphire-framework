@@ -153,6 +153,8 @@ pub(crate) struct Exchange<S> {
     pub(crate) progress: Progress,
     /// Everything the peer said it has, as of its `Hello`.
     pub(crate) peer_vv: VersionVector,
+    /// Whether the peer's `Hello` said it answers a live push with `Ack`.
+    pub(crate) peer_acks: bool,
     /// Everything this side had when it worked out what to send: the peer has all of it
     /// once the exchange completes.
     pub(crate) sent_vv: VersionVector,
@@ -275,6 +277,7 @@ where
             replica_id,
             vv,
             max_file_size,
+            acks: true,
         }),
     )?;
 
@@ -296,12 +299,13 @@ where
         }
     };
 
-    let (peer_vv, peer_max) = match hello? {
+    let (peer_vv, peer_max, peer_acks) = match hello? {
         Some(Frame::Control(Message::Hello {
             format,
             workspace_id: theirs,
             vv,
             max_file_size,
+            acks,
             ..
         })) => {
             if format != SESSION_FORMAT_VERSION {
@@ -338,7 +342,7 @@ where
                 )
                 .await;
             }
-            (vv, max_file_size)
+            (vv, max_file_size, acks)
         }
         Some(Frame::Control(Message::Refused(why))) => {
             return refuse(out_tx, writer_task, Error::Refused(why)).await;
@@ -472,6 +476,10 @@ where
                         "a Live push before the initial exchange finished".to_owned(),
                     );
                 }
+                Frame::Control(Message::Ack(_)) => {
+                    // An `Ack` answers a `Live` push, so it cannot come before one either.
+                    break Stop::Protocol("an Ack before the initial exchange finished".to_owned());
+                }
                 Frame::Control(Message::Refused(why)) => {
                     break Stop::Refused(why);
                 }
@@ -524,6 +532,7 @@ where
         writer: writer_task,
         progress,
         peer_vv,
+        peer_acks,
         incoming,
         outcome: SessionOutcome {
             sent,

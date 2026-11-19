@@ -171,6 +171,16 @@ impl LivePeers {
             .collect()
     }
 
+    /// How many open sessions have a peer that acknowledges what it is pushed.
+    pub(crate) async fn acknowledging(&self) -> usize {
+        self.sessions
+            .lock()
+            .await
+            .values()
+            .filter(|session| session.is_open() && session.peer_acknowledges())
+            .count()
+    }
+
     /// Whether `device` has an open session.
     pub(crate) async fn has(&self, device: &GrainId) -> bool {
         self.sessions

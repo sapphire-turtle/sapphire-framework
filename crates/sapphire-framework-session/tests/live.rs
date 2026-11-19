@@ -336,3 +336,94 @@ async fn an_exchange_gives_up_on_a_peer_that_never_says_hello() {
         "the replica's lock must be released when the exchange gives up"
     );
 }
+
+/// Wait until `live`'s view of the peer covers `vv`, or fail.
+async fn await_acknowledged(
+    live: &sapphire_framework_session::LiveSession,
+    vv: &sapphire_sync::VersionVector,
+) {
+    let mut acked = live.acknowledged();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        acked.wait_for(|known| known.covers(vv)),
+    )
+    .await
+    .expect("an acknowledgement within twenty seconds")
+    .expect("the session stayed open");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_is_acknowledged_once_the_peer_has_it() {
+    let ws = grain_id::GrainId::random();
+    let a = side("a");
+    let b = side("b");
+
+    let (left, right) = tokio::io::duplex(64 * 1024);
+    let (x, y) = tokio::join!(
+        open_live_session(left, Arc::clone(&a.replica), ws),
+        open_live_session(right, Arc::clone(&b.replica), ws)
+    );
+    let (_, live_a) = x.unwrap();
+    let (_, _live_b) = y.unwrap();
+    assert!(live_a.peer_acknowledges());
+
+    std::fs::write(a.root.join("note.md"), "hello").unwrap();
+    let updates = scan(&a).await;
+    let mine = a.replica.lock().await.vv().clone();
+    assert!(
+        !live_a.peer_vv().covers(&mine),
+        "nothing has been pushed yet"
+    );
+    live_a.push(updates).await.unwrap();
+
+    await_acknowledged(&live_a, &mine).await;
+    // An acknowledgement means the file is on the peer's disk, not merely queued.
+    assert_eq!(
+        std::fs::read_to_string(b.root.join("note.md")).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_fetched_by_hash_is_acknowledged_after_its_content() {
+    let ws = grain_id::GrainId::random();
+    let a = side("a");
+    let b = side("b");
+
+    let (left, right) = tokio::io::duplex(64 * 1024);
+    let (x, y) = tokio::join!(
+        open_live_session(left, Arc::clone(&a.replica), ws),
+        open_live_session(right, Arc::clone(&b.replica), ws)
+    );
+    let (_, live_a) = x.unwrap();
+    let (_, _live_b) = y.unwrap();
+
+    let big = "z".repeat(2 * sapphire_framework_session::CHUNK + 1);
+    std::fs::write(a.root.join("big.md"), &big).unwrap();
+    let updates = scan(&a).await;
+    let mine = a.replica.lock().await.vv().clone();
+    live_a.push(updates).await.unwrap();
+
+    await_acknowledged(&live_a, &mine).await;
+    assert_eq!(std::fs::read_to_string(b.root.join("big.md")).unwrap(), big);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_exchange_sent_counts_as_acknowledged() {
+    let ws = grain_id::GrainId::random();
+    let a = side("a");
+    let b = side("b");
+    std::fs::write(a.root.join("before.md"), "x").unwrap();
+    scan(&a).await;
+    let mine = a.replica.lock().await.vv().clone();
+
+    let (left, right) = tokio::io::duplex(64 * 1024);
+    let (x, y) = tokio::join!(
+        open_live_session(left, Arc::clone(&a.replica), ws),
+        open_live_session(right, Arc::clone(&b.replica), ws)
+    );
+    let (_, live_a) = x.unwrap();
+    let (_, _live_b) = y.unwrap();
+
+    assert!(live_a.acknowledged().borrow().covers(&mine));
+}

@@ -201,6 +201,7 @@ async fn a_replica_is_not_locked_while_a_blob_is_being_received() {
                 replica_id: ReplicaId::new(),
                 vv: VersionVector::new(),
                 max_file_size: sapphire_sync::DEFAULT_MAX_FILE_SIZE,
+                acks: false,
             },
         )
         .await

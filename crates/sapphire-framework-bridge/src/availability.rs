@@ -16,7 +16,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Days, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp, ToSpan};
 use serde::{Deserialize, Serialize};
 
 use crate::{Bridge, Error, Result};
@@ -28,7 +30,7 @@ pub(crate) const TICK: Duration = Duration::from_secs(60);
 pub(crate) const WINDOW_DAYS: u64 = 7;
 
 /// How little history yields no tier at all: an hour says nothing about a week.
-const MIN_HISTORY: chrono::TimeDelta = chrono::TimeDelta::hours(1);
+const MIN_HISTORY: SignedDuration = SignedDuration::from_hours(1);
 
 /// The tier of a share of time up: `≥ 99 %` → 3, `≥ 95 %` → 2, `≥ 80 %` → 1, below → 0.
 ///
@@ -51,8 +53,8 @@ pub(crate) fn tier_of(up: f64) -> u8 {
 /// On Linux and macOS the monotonic clock stops while the host sleeps, so the cap by the
 /// wall clock is what keeps a clock stepped back from crediting time twice. Where it does
 /// not stop, a tick that comes far later than due — the host slept through it — is capped.
-pub(crate) fn credit(monotonic: Duration, wall: chrono::TimeDelta) -> Duration {
-    let wall = wall.to_std().unwrap_or(Duration::ZERO);
+pub(crate) fn credit(monotonic: Duration, wall: SignedDuration) -> Duration {
+    let wall = Duration::try_from(wall).unwrap_or(Duration::ZERO);
     monotonic.min(wall).min(TICK * 2)
 }
 
@@ -60,10 +62,10 @@ pub(crate) fn credit(monotonic: Duration, wall: chrono::TimeDelta) -> Duration {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct Record {
     /// When this host started recording: the start of its history.
-    since: DateTime<Utc>,
+    since: Timestamp,
     /// Minutes up, per UTC day, for the last [`WINDOW_DAYS`] days.
     #[serde(default)]
-    minutes: BTreeMap<NaiveDate, u32>,
+    minutes: BTreeMap<Date, u32>,
     /// Seconds credited but not yet a whole minute. Not written: losing under a minute on
     /// a restart is nothing.
     #[serde(skip)]
@@ -72,7 +74,7 @@ pub(crate) struct Record {
 
 impl Record {
     /// An empty history starting at `now`.
-    pub(crate) fn new(now: DateTime<Utc>) -> Record {
+    pub(crate) fn new(now: Timestamp) -> Record {
         Record {
             since: now,
             minutes: BTreeMap::new(),
@@ -101,18 +103,23 @@ impl Record {
         )
     }
 
+    /// The UTC day `now` is in.
+    fn day_of(now: Timestamp) -> Date {
+        TimeZone::UTC.to_datetime(now).date()
+    }
+
     /// The first day of the window ending on `now`'s day.
-    fn window_start(now: DateTime<Utc>) -> NaiveDate {
-        now.date_naive() - Days::new(WINDOW_DAYS - 1)
+    fn window_start(now: Timestamp) -> Date {
+        Record::day_of(now) - (WINDOW_DAYS as i64 - 1).days()
     }
 
     /// Credit `up` to `now`'s day, and drop the days the window has passed.
-    pub(crate) fn add(&mut self, now: DateTime<Utc>, up: Duration) {
+    pub(crate) fn add(&mut self, now: Timestamp, up: Duration) {
         self.carry += up;
         let whole = self.carry.as_secs() / 60;
         self.carry -= Duration::from_secs(whole * 60);
         if whole > 0 {
-            let day = self.minutes.entry(now.date_naive()).or_default();
+            let day = self.minutes.entry(Record::day_of(now)).or_default();
             // A day has 1440 minutes; anything above is a clock gone wrong.
             *day = day.saturating_add(whole as u32).min(24 * 60);
         }
@@ -124,13 +131,12 @@ impl Record {
     ///
     /// The window is the last [`WINDOW_DAYS`] UTC days up to `now`, starting no earlier
     /// than the history does.
-    fn share(&self, now: DateTime<Utc>) -> Option<(f64, chrono::TimeDelta)> {
-        let day_start = Record::window_start(now)
-            .and_hms_opt(0, 0, 0)
-            .expect("midnight")
-            .and_utc();
+    fn share(&self, now: Timestamp) -> Option<(f64, SignedDuration)> {
+        let day_start = TimeZone::UTC
+            .to_timestamp(Record::window_start(now).to_datetime(jiff::civil::Time::midnight()))
+            .expect("a recent day's midnight");
         let from = day_start.max(self.since);
-        let span = now - from;
+        let span = now.duration_since(from);
         if span < MIN_HISTORY {
             return None;
         }
@@ -139,18 +145,18 @@ impl Record {
             .range(Record::window_start(now)..)
             .map(|(_, m)| *m)
             .sum();
-        let share = f64::from(up) / span.num_minutes() as f64;
-        Some((share.min(1.0), now - self.since))
+        let share = f64::from(up) / span.as_mins() as f64;
+        Some((share.min(1.0), now.duration_since(self.since)))
     }
 
     /// The tier to announce at `now`, or `None` with too little history.
     ///
     /// A host with less than a full window of history reports one tier below its
     /// measurement, so a fresh install does not outrank a device with a long record.
-    pub(crate) fn tier(&self, now: DateTime<Utc>) -> Option<u8> {
+    pub(crate) fn tier(&self, now: Timestamp) -> Option<u8> {
         let (share, history) = self.share(now)?;
         let tier = tier_of(share);
-        let full = chrono::TimeDelta::days(WINDOW_DAYS as i64);
+        let full = SignedDuration::from_hours(24 * WINDOW_DAYS as i64);
         Some(if history < full {
             tier.saturating_sub(1)
         } else {
@@ -165,28 +171,28 @@ pub(crate) async fn run(bridge: Arc<Bridge>) -> Result<()> {
     let path = bridge.dir.availability_toml();
     let mut record = match Record::load(&path) {
         Ok(Some(record)) => record,
-        Ok(None) => Record::new(Utc::now()),
+        Ok(None) => Record::new(Timestamp::now()),
         Err(err) => {
             // A history that cannot be read starts over: a lower tier for a week is the
             // whole cost.
             tracing::warn!("{err}; starting the availability record over");
-            Record::new(Utc::now())
+            Record::new(Timestamp::now())
         }
     };
-    bridge.set_availability(record.tier(Utc::now()));
+    bridge.set_availability(record.tier(Timestamp::now()));
 
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick.tick().await;
-    let mut last = (Instant::now(), Utc::now());
+    let mut last = (Instant::now(), Timestamp::now());
     loop {
         tick.tick().await;
-        let now = (Instant::now(), Utc::now());
+        let now = (Instant::now(), Timestamp::now());
         let monotonic = now.0 - last.0;
-        let wall = now.1 - last.1;
+        let wall = now.1.duration_since(last.1);
         let up = credit(monotonic, wall);
-        if wall.to_std().unwrap_or(Duration::ZERO) > monotonic + TICK {
-            tracing::debug!("the host slept for about {}s", (wall.num_seconds()));
+        if Duration::try_from(wall).unwrap_or(Duration::ZERO) > monotonic + TICK {
+            tracing::debug!("the host slept for about {}s", wall.as_secs());
         }
         record.add(now.1, up);
         if let Err(err) = record.save(&path) {
@@ -201,15 +207,15 @@ pub(crate) async fn run(bridge: Arc<Bridge>) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        s.parse().unwrap()
     }
 
     /// Run `record` up for `minutes`, a tick a minute, from `start`.
-    fn up_for(record: &mut Record, start: DateTime<Utc>, minutes: i64) -> DateTime<Utc> {
+    fn up_for(record: &mut Record, start: Timestamp, minutes: i64) -> Timestamp {
         let mut now = start;
         for _ in 0..minutes {
-            now += chrono::TimeDelta::minutes(1);
+            now += SignedDuration::from_mins(1);
             record.add(now, TICK);
         }
         now
@@ -231,8 +237,8 @@ mod tests {
         let start = at("2026-10-11T23:57:00Z");
         let mut r = Record::new(start);
         up_for(&mut r, start, 4);
-        let today = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
-        let tomorrow = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let today = jiff::civil::date(2026, 10, 11);
+        let tomorrow = jiff::civil::date(2026, 10, 12);
         assert_eq!(r.minutes.get(&today), Some(&2));
         assert_eq!(r.minutes.get(&tomorrow), Some(&2));
     }
@@ -251,18 +257,15 @@ mod tests {
     #[test]
     fn sleep_is_not_credited() {
         // Linux: the monotonic clock stopped, the wall clock ran on for an hour.
-        assert_eq!(credit(TICK, chrono::TimeDelta::hours(1)), TICK);
+        assert_eq!(credit(TICK, SignedDuration::from_hours(1)), TICK);
         // Elsewhere: both ran on, and the tick came an hour late.
         assert_eq!(
-            credit(Duration::from_secs(3600), chrono::TimeDelta::hours(1)),
+            credit(Duration::from_secs(3600), SignedDuration::from_hours(1)),
             TICK * 2
         );
         // The wall clock was stepped back.
-        assert_eq!(
-            credit(TICK, chrono::TimeDelta::seconds(-30)),
-            Duration::ZERO
-        );
-        assert_eq!(credit(TICK, chrono::TimeDelta::seconds(61)), TICK);
+        assert_eq!(credit(TICK, SignedDuration::from_secs(-30)), Duration::ZERO);
+        assert_eq!(credit(TICK, SignedDuration::from_secs(61)), TICK);
     }
 
     #[test]
@@ -292,7 +295,7 @@ mod tests {
         let mut now = start;
         for _ in 0..2 {
             now = up_for(&mut r, now, 12 * 60);
-            now += chrono::TimeDelta::hours(12); // down
+            now += SignedDuration::from_hours(12); // down
         }
         assert_eq!(r.tier(now), Some(0));
     }
@@ -304,7 +307,7 @@ mod tests {
         // Up for a week, then down for three days: the window holds four up days of seven.
         let mut now = up_for(&mut r, start, 7 * 24 * 60);
         assert_eq!(r.tier(now), Some(3));
-        now += chrono::TimeDelta::days(3);
+        now += SignedDuration::from_hours(3 * 24);
         let now = up_for(&mut r, now, 1);
         assert_eq!(
             r.minutes.len(),
@@ -326,6 +329,21 @@ mod tests {
         r.carry = Duration::ZERO;
         r.save(&path).unwrap();
         assert_eq!(Record::load(&path).unwrap(), Some(r));
+    }
+
+    #[test]
+    fn a_record_written_with_chrono_still_reads() {
+        // Bridges before the move to jiff wrote `since` as chrono's RFC 3339, in UTC.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("availability.toml");
+        std::fs::write(
+            &path,
+            "since = \"2026-10-11T12:00:00.123456789Z\"\n\n[minutes]\n2026-10-11 = 90\n",
+        )
+        .unwrap();
+        let r = Record::load(&path).unwrap().unwrap();
+        assert_eq!(r.since, at("2026-10-11T12:00:00.123456789Z"));
+        assert_eq!(r.minutes.get(&jiff::civil::date(2026, 10, 11)), Some(&90));
     }
 
     #[test]

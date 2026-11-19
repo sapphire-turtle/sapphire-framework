@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use data_encoding::BASE32_NOPAD;
 use grain_id::GrainId;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -27,7 +27,7 @@ pub struct Ticket {
     /// The single-use secret.
     pub secret: [u8; 32],
     /// When the invite stops working.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 impl Ticket {
@@ -63,16 +63,16 @@ pub struct Invite {
     /// What the joining device will be called.
     pub device_name: String,
     /// When it stops working.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// When it was used, if it was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub used_at: Option<DateTime<Utc>>,
+    pub used_at: Option<Timestamp>,
 }
 
 impl Invite {
     /// Is this invite still usable?
     pub fn is_live(&self) -> bool {
-        self.used_at.is_none() && self.expires_at > Utc::now()
+        self.used_at.is_none() && self.expires_at > Timestamp::now()
     }
 }
 
@@ -122,8 +122,8 @@ impl Invites {
             id: GrainId::random(),
             secret_hex: secret.iter().map(|b| format!("{b:02x}")).collect(),
             device_name: device_name.to_owned(),
-            expires_at: Utc::now()
-                + chrono::Duration::from_std(ttl).unwrap_or_else(|_| chrono::Duration::zero()),
+            expires_at: Timestamp::now()
+                + SignedDuration::try_from(ttl).unwrap_or(SignedDuration::ZERO),
             used_at: None,
         };
         self.reload()?;
@@ -179,7 +179,7 @@ impl Invites {
                 "this invite was already used".to_owned(),
             ));
         }
-        if self.entries[i].expires_at <= Utc::now() {
+        if self.entries[i].expires_at <= Timestamp::now() {
             return Err(Error::Unauthorized("this invite has expired".to_owned()));
         }
         if let Some(name) = device_name
@@ -192,7 +192,7 @@ impl Invites {
         }
 
         let mut next = self.entries.clone();
-        next[i].used_at = Some(Utc::now());
+        next[i].used_at = Some(Timestamp::now());
         let used = next[i].clone();
         // Marked used before returning, so a concurrent second attempt loses.
         self.save(next)?;
@@ -251,7 +251,7 @@ mod tests {
             workgroup_id: grain_id::GrainId::random(),
             node_addr: vec![1, 2, 3, 4],
             secret: [7u8; 32],
-            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            expires_at: jiff::Timestamp::now() + jiff::SignedDuration::from_mins(10),
         };
         let text = ticket.encode();
         assert!(text.starts_with(TICKET_PREFIX), "{text}");
@@ -266,7 +266,7 @@ mod tests {
             workgroup_id: grain_id::GrainId::random(),
             node_addr: vec![],
             secret: [1u8; 32],
-            expires_at: chrono::Utc::now(),
+            expires_at: jiff::Timestamp::now(),
         };
         let text = format!("  {}\n", ticket.encode());
         assert!(Ticket::decode(&text).is_ok());

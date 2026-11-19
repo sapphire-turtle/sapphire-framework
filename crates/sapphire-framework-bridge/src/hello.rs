@@ -362,8 +362,8 @@ mod tests {
             node_id: None,
             description: None,
             priority: 1,
-            created_at: chrono::Utc::now(),
-            retired_at: retired.then(chrono::Utc::now),
+            created_at: jiff::Timestamp::now(),
+            retired_at: retired.then(jiff::Timestamp::now),
         }
     }
 

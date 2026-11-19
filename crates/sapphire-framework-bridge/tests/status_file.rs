@@ -145,7 +145,7 @@ async fn the_writer_writes_to_the_bridge_directory_it_is_handed() {
     let snapshot = StatusFile {
         version: "9.9.9".into(),
         pid: 42,
-        started_at: chrono::Utc::now(),
+        started_at: jiff::Timestamp::now(),
         node_id: "abc".repeat(21),
         workgroup: None,
         peers: vec![],

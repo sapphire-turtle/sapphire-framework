@@ -1295,10 +1295,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
- "js-sys",
  "num-traits",
  "serde",
- "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -1592,9 +1590,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-build"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d2a20a91748db36b0a0d05b03a1705caaf658fe9792cfd41c37e899dfb04581"
+checksum = "c3d7ed97540a6944ad834dd66275b5dc7fd955d264fb4ffa254cef878579258f"
 dependencies = [
  "corundum-framework-platform",
  "png 0.18.1",
@@ -1603,9 +1601,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-fs"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a1a9f09b0e537448b4fdd44895246043bd8d9ead33d03a7cdf6ae01b33495d0"
+checksum = "aa3bc08297a17056ecfe943bf5dd0a504956dd6a1e826d576266673c14853684"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1613,7 +1611,7 @@ dependencies = [
  "cap-std",
  "corundum-framework-fs-api",
  "corundum-framework-journal",
- "grain-id 0.15.0",
+ "grain-id",
  "libc",
  "rustix 1.1.6",
  "serde",
@@ -1626,9 +1624,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-fs-api"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cf4bb327ea6b11587e7253e5909f3dacea35aae0fd6cbec53754fe9aae9a2aa"
+checksum = "2216e447c8c23ba260df94aef35046a649333b57c46f8502f086072c5982c415"
 dependencies = [
  "serde",
  "serde_json",
@@ -1636,9 +1634,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1069c66645e0ddddd48979512967cc9e9f35c08a59936529b1916ae3d167f1f5"
+checksum = "9998a1134663d6051869c08358b1724f71da81e730f6242bb8189f1e8da75e24"
 dependencies = [
  "alumina-code",
  "alumina-markdown",
@@ -1660,7 +1658,7 @@ dependencies = [
  "fluent-langneg 0.14.2",
  "fluent-syntax",
  "fontdb",
- "grain-id 0.15.0",
+ "grain-id",
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-core-text",
@@ -1681,9 +1679,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-image"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b337ce6f6cdb09042b9c9f16b71269fc06e2a3dcc4b6e27788fa39f80947ebcf"
+checksum = "09b839c9679a49e6f9108394cf5306a7d5b0f90c8ea7636e2ef71234d31be35e"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -1694,11 +1692,11 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-journal"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f22ed8629c5b83aa4d94af80767e39482a16001631105ec41df37358679cad9"
+checksum = "5d90e77680d91f770ba0784ba385b951da2aa1838d93f6a7c44326425145f832"
 dependencies = [
- "grain-id 0.15.0",
+ "grain-id",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1707,15 +1705,15 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-keys"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1a28569b5657f63869471b9fb11f0f39cd6c4d5052fd8d392350f6cb1d18b8c"
+checksum = "ae1a9fad365cf3c5ff09140f75a7ebf7bdeee9ec4135a6c717adc4facce12b92"
 dependencies = [
  "base64 0.23.1",
  "blake3",
- "chrono",
  "clap",
  "getrandom 0.4.3",
+ "jiff",
  "serde",
  "sha2",
  "thiserror 2.0.21",
@@ -1726,9 +1724,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-package"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1ebe35633be1ed99d2a5e0e1591f153a62afeb1ea9d40eca16d8a0265a23d0c"
+checksum = "bd9ce6bae0881a6dc75de801af7b2d9bcd0ea7cb82c199d49842b4576f6d01d8"
 dependencies = [
  "cargo-packager-updater",
  "corundum-framework-platform",
@@ -1745,9 +1743,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-pdf"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cee4e262c960838f0614e28cf53204a658a7abd189494c91d3b0fa231533219e"
+checksum = "720754697a20c2c55420da4c1f3fef568214ea6cdf8a7e6c96ecf5bd91681be1"
 dependencies = [
  "hayro",
  "thiserror 2.0.21",
@@ -1755,9 +1753,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f856c775cb906c9c33ba8264007b85fce07c1150282786e36eedfc73fc7a2d5"
+checksum = "6dbc2315fbdaf667d6969e34b7ac01edd7fb0e51d61275899897b2b2c12801e0"
 dependencies = [
  "dirs 7.0.0",
  "interprocess",
@@ -1775,9 +1773,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-service"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89a78f3b299321bab5cfbf0001d1eb3f875b7ad9a931454c7c0975a6898442d"
+checksum = "e88b4623ff1a4ae31cc55b04708bcd7d76f8f8179fbfbc4b8b625b05dff47ae7"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -1788,9 +1786,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-update"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85eab5bad8271b674d3a3261590f025b66c363004e3a9aa566f721c6474c55c7"
+checksum = "29ba39b47a4696e75236550a2349cff9d2768517d68d79b4ef5d21ab7b495bef"
 dependencies = [
  "base64 0.23.1",
  "clap",
@@ -2428,7 +2426,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "pollster 1.0.1",
+ "pollster",
  "profiling",
  "raw-window-handle",
  "send_wrapper",
@@ -3623,18 +3621,6 @@ dependencies = [
 
 [[package]]
 name = "grain-id"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df5e26a703bae8b14765dca3daa2716411cbce6037cc59df15f95df8ae14e858"
-dependencies = [
- "prost-build",
- "rand 0.10.3",
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "grain-id"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e76a93cea412cba134bf74683ba296d2505b67db519d869e9f2b0fc17e08d636"
@@ -4664,6 +4650,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jiff"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5d126d72eb017f10b302e73bdeca446bea405ee449af4d9e7866d6b082d83e"
+dependencies = [
+ "jiff-core",
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0127e9bde3c6130d6169e7d8d68676e4be69c4bf7573c308b6f960a5089c428"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5219,12 +5240,6 @@ dependencies = [
  "num-traits",
  "pxfm",
 ]
-
-[[package]]
-name = "multimap"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "multiversion_no_op"
@@ -5837,6 +5852,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
 ]
 
 [[package]]
@@ -6127,7 +6143,7 @@ dependencies = [
  "objc2-link-presentation",
  "objc2-quartz-core 0.2.2",
  "objc2-symbols",
- "objc2-uniform-type-identifiers",
+ "objc2-uniform-type-identifiers 0.2.2",
  "objc2-user-notifications",
 ]
 
@@ -6152,6 +6168,16 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-uniform-type-identifiers"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+dependencies = [
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -6688,12 +6714,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
-
-[[package]]
-name = "pollster"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
@@ -6894,57 +6914,6 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
-]
-
-[[package]]
-name = "prost"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
-dependencies = [
- "bytes",
- "prost-derive",
-]
-
-[[package]]
-name = "prost-build"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6e4d69d0fa3e7f6f9cf6b53a0e83e4fc99ba3586f65ce166cff30bd13bb4ad2"
-dependencies = [
- "heck",
- "itertools 0.15.0",
- "log",
- "multimap",
- "petgraph",
- "prettyplease",
- "prost",
- "prost-types",
- "regex",
- "syn 3.0.9",
- "tempfile",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
-dependencies = [
- "anyhow",
- "itertools 0.15.0",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "prost-types"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f29a7c4c7a84cef41a53d338a2d10d4f1b043ea5c3dde26db22ee2c9c1b1c75b"
-dependencies = [
- "prost",
 ]
 
 [[package]]
@@ -7595,9 +7564,9 @@ dependencies = [
 
 [[package]]
 name = "rfd"
-version = "0.17.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+checksum = "c4b9d4857b10297ffb0f64cae711e983a7aeaee561848d56d429d3858bd8ed93"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -7608,8 +7577,9 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
  "percent-encoding",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -8002,8 +7972,7 @@ name = "sapphire-framework-backend"
 version = "0.28.0"
 dependencies = [
  "async-trait",
- "chrono",
- "grain-id 0.17.0",
+ "grain-id",
  "indexmap",
  "sapphire-framework-ipc",
  "sapphire-framework-server",
@@ -8023,15 +7992,15 @@ name = "sapphire-framework-bridge"
 version = "0.28.0"
 dependencies = [
  "async-trait",
- "chrono",
  "clap",
  "corundum-framework-platform",
  "corundum-framework-service",
  "data-encoding",
  "getrandom 0.4.3",
- "grain-id 0.17.0",
+ "grain-id",
  "iroh",
  "iroh-relay",
+ "jiff",
  "libc",
  "notify",
  "postcard",
@@ -8066,7 +8035,7 @@ version = "4.0.0"
 dependencies = [
  "base64 0.23.1",
  "clap",
- "grain-id 0.17.0",
+ "grain-id",
  "rpassword",
  "serde",
  "serde_json",
@@ -8110,8 +8079,8 @@ dependencies = [
 name = "sapphire-framework-frontmatter"
 version = "0.28.0"
 dependencies = [
- "chrono",
  "indexmap",
+ "jiff",
  "serde",
  "serde-saphyr",
  "serde_json",
@@ -8129,7 +8098,7 @@ dependencies = [
  "corundum-framework-update",
  "eframe",
  "egui",
- "grain-id 0.17.0",
+ "grain-id",
  "sapphire-framework-backend",
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",
@@ -8201,9 +8170,9 @@ name = "sapphire-framework-registry"
 version = "0.28.0"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "getrandom 0.4.3",
- "grain-id 0.17.0",
+ "grain-id",
+ "jiff",
  "serde",
  "sha2",
  "tempfile",
@@ -8236,7 +8205,7 @@ dependencies = [
  "corundum-framework-fs",
  "corundum-framework-keys",
  "corundum-framework-service",
- "grain-id 0.17.0",
+ "grain-id",
  "indexmap",
  "libc",
  "metrics",
@@ -8275,7 +8244,7 @@ dependencies = [
 name = "sapphire-framework-server-api"
 version = "6.0.1"
 dependencies = [
- "grain-id 0.17.0",
+ "grain-id",
  "sapphire-framework-bridge-api",
  "serde",
  "serde_json",
@@ -8292,7 +8261,7 @@ dependencies = [
 name = "sapphire-framework-session"
 version = "0.28.0"
 dependencies = [
- "grain-id 0.17.0",
+ "grain-id",
  "sapphire-framework-sync",
  "serde",
  "serde_json",
@@ -8318,7 +8287,7 @@ dependencies = [
 name = "sapphire-framework-sync"
 version = "0.28.0"
 dependencies = [
- "grain-id 0.17.0",
+ "grain-id",
  "ignore",
  "proptest",
  "redb",
@@ -8354,7 +8323,6 @@ dependencies = [
 name = "sapphire-framework-workspace"
 version = "0.28.0"
 dependencies = [
- "chrono",
  "clap",
  "corundum-framework-platform",
  "half",
@@ -8404,8 +8372,7 @@ name = "sapphire-sync-core"
 version = "0.28.0"
 dependencies = [
  "anyhow",
- "chrono",
- "grain-id 0.17.0",
+ "grain-id",
  "sapphire-framework",
  "serde",
  "tempfile",

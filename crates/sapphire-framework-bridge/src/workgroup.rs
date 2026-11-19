@@ -687,7 +687,7 @@ mod tests {
             workgroup_id: wg.id,
             node_addr: NODE_A.as_bytes().to_vec(),
             secret,
-            expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            expires_at: jiff::Timestamp::now() + jiff::SignedDuration::from_mins(10),
         };
 
         // Answer one pairing connection in the background, as `Bridge::run` would.

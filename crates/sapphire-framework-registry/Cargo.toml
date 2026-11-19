@@ -10,7 +10,7 @@ categories = ["filesystem"]
 
 [dependencies]
 grain-id.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

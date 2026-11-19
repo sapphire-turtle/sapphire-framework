@@ -14,8 +14,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
 use grain_id::GrainId;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -98,11 +98,11 @@ pub struct ExternalDevice {
     /// The SHA-256 of its token.
     pub token_sha256: String,
     /// When it was added.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When its token was last replaced.
-    pub rotated_at: Option<DateTime<Utc>>,
+    pub rotated_at: Option<Timestamp>,
     /// When it was retired, if it is.
-    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_at: Option<Timestamp>,
 }
 
 impl ExternalDevice {
@@ -131,11 +131,11 @@ struct RawExternalDevice {
     #[serde(default)]
     apps: Vec<String>,
     token_sha256: String,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    rotated_at: Option<DateTime<Utc>>,
+    rotated_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    retired_at: Option<DateTime<Utc>>,
+    retired_at: Option<Timestamp>,
 }
 
 /// The ledger directory, as read when it was opened. Every mutation rewrites one record.
@@ -242,7 +242,7 @@ impl ExternalDevices {
             description,
             apps,
             token_sha256: token_hash(token.expose()),
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             rotated_at: None,
             retired_at: None,
         };
@@ -263,7 +263,7 @@ impl ExternalDevices {
             if d.retired_at.is_some() {
                 return false;
             }
-            d.retired_at = Some(Utc::now());
+            d.retired_at = Some(Timestamp::now());
             true
         })
     }
@@ -279,7 +279,7 @@ impl ExternalDevices {
         let hash = token_hash(token.expose());
         let updated = self.update(selector, |d| {
             d.token_sha256 = hash.clone();
-            d.rotated_at = Some(Utc::now());
+            d.rotated_at = Some(Timestamp::now());
             true
         })?;
         Ok((updated, token))

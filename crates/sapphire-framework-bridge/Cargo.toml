@@ -30,7 +30,7 @@ sapphire-framework-settings = { version = "0.28.0", path = "../sapphire-framewor
 sapphire-framework-update = { version = "0.28.0", path = "../sapphire-framework-update" }
 sapphire-sync = { package = "sapphire-framework-sync", version = "0.28.0", path = "../sapphire-framework-sync" }
 async-trait.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 clap.workspace = true
 data-encoding = "2"
 corundum-framework-platform.workspace = true

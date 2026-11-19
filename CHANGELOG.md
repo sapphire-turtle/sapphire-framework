@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-19
+
+`sapphire-framework-server-api` moves to 7.0.0 (the IPC handshake's API version 7); `sapphire-framework-bridge-api` 4.0.0 and `sapphire-sync-api` 1.0.2 are unchanged. Apps move to jiff with this release: the framework's timestamps are `jiff::Timestamp`, and corundum-framework is 0.13.0.
+
 ### Breaking
 
 - `sapphire-framework-server-api`: a new `BackendEvent` variant, `SyncDelivered`, and new `SyncStatusResult` fields, `pending_delivery` and `acknowledging_peers` (see below). An app that matches `BackendEvent` exhaustively or writes a `SyncStatusResult` literal adds them. Its major (the IPC handshake's API version) moves to 7 with the release.

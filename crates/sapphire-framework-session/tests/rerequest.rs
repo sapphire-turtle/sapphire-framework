@@ -90,6 +90,7 @@ async fn session_without_content(a: &Fixture, b: &Fixture, ws: grain_id::GrainId
             replica_id: ReplicaId::new(),
             vv: a_vv,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
+            acks: false,
         };
         write_control(&mut w, &hello).await.unwrap();
         write_control(&mut w, &Message::Updates(updates))

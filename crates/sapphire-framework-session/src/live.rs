@@ -14,6 +14,14 @@
 //! hash it was waiting on has been answered, so a host that forwards what it receives never
 //! announces an entry it cannot serve.
 //!
+//! # Acknowledgements
+//!
+//! A `Live` push returns once it is queued, which says nothing about whether it arrived. So
+//! a peer that said `acks` in its `Hello` answers every batch it has applied — content
+//! included — with [`Message::Ack`], and [`LiveSession::acknowledged`] follows what the peer
+//! is known to have. A peer from before acknowledgements never sends one; its session still
+//! works, and only the exchange and its own pushes advance what it is known to have.
+//!
 //! # A dead peer must not stall the others
 //!
 //! The write half belongs to one task fed by unbounded queues (see `writer.rs` for why), so
@@ -22,13 +30,13 @@
 //! the next one instead of waiting on one that went away.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use grain_id::GrainId;
 use sapphire_sync::{ContentHash, PathUpdate, Replica, VersionVector};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
@@ -47,7 +55,8 @@ const LIVE_QUEUE: usize = 64;
 pub struct LiveSession {
     out: Outbox,
     updates: broadcast::Sender<Vec<PathUpdate>>,
-    peer_vv: Arc<Mutex<VersionVector>>,
+    peer_vv: Arc<watch::Sender<VersionVector>>,
+    peer_acks: bool,
     open: Arc<AtomicBool>,
     reader: JoinHandle<()>,
 }
@@ -80,8 +89,27 @@ impl LiveSession {
     /// Consulted before forwarding: an entry the peer already covers must not be sent again,
     /// or three connected hosts will pass one edit round in a circle. It advances as the
     /// peer's batches arrive, because each one carries what the peer had when it sent it.
+    ///
+    /// It also advances when the peer acknowledges a push (see the module docs), so it
+    /// covers this side's own entries once they have reached the peer.
     pub fn peer_vv(&self) -> VersionVector {
-        self.peer_vv.lock().expect("peer vv").clone()
+        self.peer_vv.borrow().clone()
+    }
+
+    /// [`peer_vv`](Self::peer_vv) as it changes: marked changed whenever an arriving batch or
+    /// an acknowledgement advances it. Closed once the session is.
+    ///
+    /// Starts at what the initial exchange left: what the peer said it had, plus everything
+    /// this side sent it then — the exchange completes only once the peer has all of that.
+    pub fn acknowledged(&self) -> watch::Receiver<VersionVector> {
+        self.peer_vv.subscribe()
+    }
+
+    /// Whether the peer acknowledges pushes. `false` for a peer from before
+    /// acknowledgements: what this side pushes to it never shows in
+    /// [`peer_vv`](Self::peer_vv) until a later exchange.
+    pub fn peer_acknowledges(&self) -> bool {
+        self.peer_acks
     }
 
     /// Is the session still usable?
@@ -158,6 +186,7 @@ where
         writer: _,
         progress: _,
         peer_vv,
+        peer_acks,
         sent_vv,
         mut incoming,
         outcome,
@@ -176,7 +205,7 @@ where
     // committed after the exchange — nothing it already sent.
     let mut peer_vv = peer_vv;
     peer_vv.merge(&sent_vv);
-    let peer_vv = Arc::new(Mutex::new(peer_vv));
+    let peer_vv = Arc::new(watch::Sender::new(peer_vv));
     let open = Arc::new(AtomicBool::new(true));
     let (updates, _) = broadcast::channel(LIVE_QUEUE);
 
@@ -202,12 +231,11 @@ where
                         // The peer had all of this when it sent the batch, so its own
                         // version vector covers it. Merging now is what keeps a forwarder
                         // from sending the same entries back for ever.
-                        {
-                            let mut known = peer_vv.lock().expect("peer vv");
+                        peer_vv.send_modify(|known| {
                             for update in &batch {
                                 known.merge(&update.seen);
                             }
-                        }
+                        });
                         let missing = {
                             let mut locked = replica.lock().await;
                             // The join is idempotent, so a repeated batch costs nothing.
@@ -235,6 +263,10 @@ where
                             outstanding.insert(hash);
                         }
                         pending.push(Pending { batch, outstanding });
+                    }
+                    // The peer has what this side pushed, content and all.
+                    Ok(Some(Frame::Control(Message::Ack(vv)))) => {
+                        peer_vv.send_modify(|known| known.merge(&vv));
                     }
                     Ok(Some(Frame::Control(Message::Want(hash)))) => {
                         let answer = session::answer(&*replica.lock().await, hash);
@@ -305,14 +337,27 @@ where
                 }
                 // Announce every batch that is no longer waiting on anything. Failing only
                 // means nobody is listening.
+                let mut applied: Option<VersionVector> = None;
                 pending.retain(|entry| {
                     if entry.outstanding.is_empty() {
                         let _ = updates.send(entry.batch.clone());
+                        let applied = applied.get_or_insert_with(VersionVector::new);
+                        for update in &entry.batch {
+                            applied.merge(&update.seen);
+                        }
                         false
                     } else {
                         true
                     }
                 });
+                // Tell the peer what has landed — only now, with the content on disk, so an
+                // `Ack` means the edit survives the pushing device going away.
+                if peer_acks
+                    && let Some(applied) = applied
+                    && send(&out, Out::Control(Message::Ack(applied))).is_err()
+                {
+                    break;
+                }
             }
             open.store(false, Ordering::Relaxed);
         })
@@ -322,6 +367,7 @@ where
         out,
         updates,
         peer_vv,
+        peer_acks,
         open,
         reader: reader_task,
     };

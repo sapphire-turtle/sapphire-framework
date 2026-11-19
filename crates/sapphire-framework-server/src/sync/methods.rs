@@ -69,6 +69,8 @@ impl From<crate::sync::SyncStatus> for proto::SyncStatusResult {
             bridge_available: status.bridge_available,
             topology: status.topology,
             embedding: status.embedding,
+            pending_delivery: status.pending_delivery,
+            acknowledging_peers: status.acknowledging_peers,
         }
     }
 }

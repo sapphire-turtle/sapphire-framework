@@ -8,6 +8,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking
+
+- `sapphire-framework-server-api`: a new `BackendEvent` variant, `SyncDelivered`, and new `SyncStatusResult` fields, `pending_delivery` and `acknowledging_peers` (see below). An app that matches `BackendEvent` exhaustively or writes a `SyncStatusResult` literal adds them. Its major (the IPC handshake's API version) moves to 7 with the release.
+
+### Added
+
+- An app can tell the user when an edit has left the device, so they know it is safe to put the computer to sleep. Once every edit this device made to a synced workspace has reached at least one peer — applied there and its content written — the app server publishes `BackendEvent::SyncDelivered`, naming that peer, to its subscribers; `sync.status` says whether an edit is still pending (`pending_delivery`) and how many connected peers can confirm one (`acknowledging_peers`).
+  - Live sessions acknowledge what they are pushed: the session `Hello` says `acks`, and a peer that does answers each applied `Live` batch with `Ack` (`LiveSession::acknowledged`, `LiveSession::peer_acknowledges`). A peer from an earlier release confirms an edit only at its next session's exchange. The session format stays 2, so older and newer peers still sync.
+
 ## [0.28.0] - 2026-11-06
 
 The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 6.0.1, `sapphire-sync-api` 1.0.2). **Sign the apps' releases before moving them to this one:** `update` refuses a release file without a `<file>.sig` from sapphire-turtle's key (sapphire-turtle/.github `release-binary.yml` with `sign: true`, v1.3.0).

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use grain_id::GrainId;
+use sapphire_backend::BackendEvent;
 use sapphire_backend::protocol as proto;
 use sapphire_bridge_api::{
     IncomingParams, RegisterParams, WorkspaceRegistration, WorkspacesResult,
@@ -61,6 +62,10 @@ pub struct SyncStatus {
     pub topology: proto::Topology,
     /// How far embedding has got, when this host embeds (#188).
     pub embedding: Option<proto::EmbeddingProgress>,
+    /// Some edit this device made since the workspace was enabled has not reached a peer.
+    pub pending_delivery: bool,
+    /// How many open live sessions have a peer that confirms what it is pushed.
+    pub acknowledging_peers: usize,
 }
 
 /// One workspace this runtime syncs.
@@ -73,6 +78,11 @@ struct Synced {
     paused: Option<PauseReason>,
     /// The last failure, if any.
     last_error: Option<String>,
+    /// This device's own counter as far as a peer has confirmed having it: every local edit
+    /// up to here is known to have left the device. Starts at the counter the replica had
+    /// when it was enabled — what came before is not waited for — and moves only when a peer
+    /// covers *all* of this device's edits, so that `SyncDelivered` means "everything".
+    delivered_through: u64,
 }
 
 /// How old a vector file no live content needs must be before the primary device removes
@@ -524,6 +534,9 @@ impl SyncRuntime {
                     Arc::new(Mutex::new(replica))
                 }
             };
+            // Before the first scan below, so an edit made while the server was down is
+            // waited for like any other.
+            let delivered_through = own_counter(&*replica.lock().await);
             synced.insert(
                 key.clone(),
                 Synced {
@@ -531,6 +544,7 @@ impl SyncRuntime {
                     replica,
                     paused: None,
                     last_error: None,
+                    delivered_through,
                 },
             );
         }
@@ -787,24 +801,46 @@ impl SyncRuntime {
                 bridge_available,
                 topology: proto::Topology::Mesh,
                 embedding: None,
+                pending_delivery: false,
+                acknowledging_peers: 0,
             };
         };
         let synced = self.synced.lock().await;
         match synced.get(&key) {
-            Some(entry) => SyncStatus {
-                enabled: true,
-                workspace_id: Some(entry.workspace_id),
-                peers,
-                paused: entry.paused.map(|r| format!("{r:?}")),
-                last_error: entry.last_error.clone(),
-                bridge_available,
-                topology: topology::topology(
-                    answer
-                        .as_ref()
-                        .and_then(|p| p.roles_for(entry.workspace_id)),
-                ),
-                embedding: self.embedding_progress(&key).await,
-            },
+            Some(entry) => {
+                let replica = Arc::clone(&entry.replica);
+                let delivered_through = entry.delivered_through;
+                let base = SyncStatus {
+                    enabled: true,
+                    workspace_id: Some(entry.workspace_id),
+                    peers,
+                    paused: entry.paused.map(|r| format!("{r:?}")),
+                    last_error: entry.last_error.clone(),
+                    bridge_available,
+                    topology: topology::topology(
+                        answer
+                            .as_ref()
+                            .and_then(|p| p.roles_for(entry.workspace_id)),
+                    ),
+                    embedding: None,
+                    pending_delivery: false,
+                    acknowledging_peers: 0,
+                };
+                drop(synced);
+                // The map is unlocked first: the replica's lock may be waiting on a session
+                // step that takes the map.
+                let own = own_counter(&*replica.lock().await);
+                let acknowledging_peers = match self.live_peers(&key).await {
+                    Some(table) => table.acknowledging().await,
+                    None => 0,
+                };
+                SyncStatus {
+                    embedding: self.embedding_progress(&key).await,
+                    pending_delivery: own > delivered_through,
+                    acknowledging_peers,
+                    ..base
+                }
+            }
             None => {
                 drop(synced);
                 // Asked to sync while the bridge was away: it is enabled, waiting for the
@@ -819,6 +855,8 @@ impl SyncRuntime {
                     bridge_available,
                     topology: proto::Topology::Mesh,
                     embedding: None,
+                    pending_delivery: false,
+                    acknowledging_peers: 0,
                 }
             }
         }
@@ -1290,12 +1328,14 @@ impl SyncRuntime {
                 let Some((key, table)) = driver.live_peers_or_create(&root).await else {
                     return;
                 };
+                let acknowledged = session.acknowledged();
                 // The peer dialled: this stream survives only if the *peer* has the lower
                 // device id. A stream that loses is dropped, which closes it, and the
                 // connection ends tidily rather than being left half-read.
                 let Some(updates) = table.insert(peer, session, false).await else {
                     return;
                 };
+                driver.watch_delivery(key.clone(), peer, acknowledged);
                 table.catch_up(peer, &replica).await;
                 crate::instrument::sync_session(true);
                 // This is the receiving side: the files are on disk now and nobody else will
@@ -1710,6 +1750,7 @@ impl SyncRuntime {
         let Some((key, table)) = self.live_peers_or_create(root).await else {
             return Ok(());
         };
+        let acknowledged = session.acknowledged();
         // This stream was dialled by us, so it is the one the pair keeps if this host's
         // device id is the lower of the two. If it lost the tie-break the session is
         // dropped here, which closes the stream, and the surviving one is already in the
@@ -1717,6 +1758,7 @@ impl SyncRuntime {
         let Some(updates) = table.insert(device, session, true).await else {
             return Ok(());
         };
+        self.watch_delivery(key.clone(), device, acknowledged);
         table.catch_up(device, &replica).await;
         crate::instrument::sync_session(true);
         // The session wrote files during the exchange; the index has to catch up before the
@@ -1770,6 +1812,84 @@ impl SyncRuntime {
                 }
             }
         });
+    }
+
+    /// Follow what `device`'s session for `key` is known to have, and announce a delivery
+    /// when it comes to cover every edit this device made.
+    ///
+    /// Checked at once too: the initial exchange may already have carried everything. Ends
+    /// with the session, which closes the watch.
+    fn watch_delivery(
+        self: &Arc<Self>,
+        key: PathBuf,
+        device: GrainId,
+        mut acknowledged: tokio::sync::watch::Receiver<sapphire_sync::VersionVector>,
+    ) {
+        let driver = Arc::clone(self);
+        self.spawn_background(async move {
+            loop {
+                let known = acknowledged.borrow_and_update().clone();
+                driver.check_delivered(&key, device, &known).await;
+                if acknowledged.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Announce [`BackendEvent::SyncDelivered`] for `key` if `known` — what `device` is known to have —
+    /// covers every edit this device has made and that was not announced yet.
+    async fn check_delivered(
+        &self,
+        key: &Path,
+        device: GrainId,
+        known: &sapphire_sync::VersionVector,
+    ) {
+        let Some(replica) = self
+            .synced
+            .lock()
+            .await
+            .get(key)
+            .map(|entry| Arc::clone(&entry.replica))
+        else {
+            return;
+        };
+        let (me, own) = {
+            let replica = replica.lock().await;
+            (replica.replica_id(), own_counter(&replica))
+        };
+        if known.get(&me) < own {
+            return;
+        }
+        {
+            let mut synced = self.synced.lock().await;
+            let Some(entry) = synced.get_mut(key) else {
+                return;
+            };
+            // Already announced, by this peer or another: a second peer catching up says
+            // nothing new.
+            if own <= entry.delivered_through {
+                return;
+            }
+            entry.delivered_through = own;
+        }
+        let device_name = self
+            .last_peers
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|answer| answer.peers.iter().find(|p| p.device_id == device))
+            .map_or_else(|| device.to_string(), |peer| peer.name.clone());
+        tracing::info!(root = %key.display(), peer = %device_name, "local edits delivered");
+        if let Some(host) = self.host.get() {
+            host.emit(
+                key,
+                BackendEvent::SyncDelivered {
+                    device_id: device,
+                    device_name,
+                },
+            );
+        }
     }
 
     /// The replica [`disable`](Self::disable) let go of for `key`, if something still holds it
@@ -1943,6 +2063,11 @@ impl SyncRuntime {
 type Dial<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
 
 /// Run `dials` concurrently on the calling task, until every one has finished.
+/// The counter of the last edit `replica` recorded itself.
+fn own_counter(replica: &Replica) -> u64 {
+    replica.vv().get(&replica.replica_id())
+}
+
 async fn join_all(mut dials: Vec<Dial<'_>>) {
     std::future::poll_fn(|cx| {
         dials.retain_mut(|dial| dial.as_mut().poll(cx).is_pending());

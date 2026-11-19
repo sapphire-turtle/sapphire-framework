@@ -11,6 +11,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Breaking
 
 - `sapphire-framework-server-api`: a new `BackendEvent` variant, `SyncDelivered`, and new `SyncStatusResult` fields, `pending_delivery` and `acknowledging_peers` (see below). An app that matches `BackendEvent` exhaustively or writes a `SyncStatusResult` literal adds them. Its major (the IPC handshake's API version) moves to 7 with the release.
+- Timestamps are jiff's, not chrono's, which is unmaintained (RUSTSEC-2026-0543). `sapphire-framework-registry`'s `Device` and `ExternalDevice` (`created_at`, `rotated_at`, `retired_at`) and `sapphire-framework-bridge`'s `Ticket`, `Invite` (`expires_at`, `used_at`), `StatusFile` (`started_at`) and `PeerStatus` (`last_seen`) hold a `jiff::Timestamp` where they held a `chrono::DateTime<Utc>`. Files and tickets written before read as they did, and an older device reads the new ones: both write RFC 3339 in UTC.
+- corundum-framework 0.13.0, on jiff too: `corundum_framework_keys::Key` and `KeyInfo` hold `jiff::Timestamp`s, and `corundum_framework_gui::datetime` is alumina-datetime 0.3.
 
 ### Added
 

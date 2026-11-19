@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use grain_id::GrainId;
+use jiff::Timestamp;
 use sapphire_bridge_api::{EmbedInfoResult, RouteStatus, WorkgroupStatus};
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,7 @@ pub struct StatusFile {
     /// The bridge process's id.
     pub pid: u32,
     /// When this bridge started.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// This host's iroh node id.
     pub node_id: String,
     /// The workgroup this host belongs to, if any.
@@ -92,7 +92,7 @@ pub struct PeerStatus {
     /// When the bridge last heard from it.
     ///
     /// The bridge does not track that yet; the field is there for when it does.
-    pub last_seen: Option<DateTime<Utc>>,
+    pub last_seen: Option<Timestamp>,
     /// What the last exchange with it failed with.
     ///
     /// The bridge does not track that yet; the field is there for when it does.
@@ -116,7 +116,7 @@ pub trait StatusSource: Send + Sync + 'static {
 pub(crate) struct BridgeSource {
     bridge: std::sync::Arc<crate::Bridge>,
     net: NetConfig,
-    started_at: DateTime<Utc>,
+    started_at: Timestamp,
 }
 
 impl BridgeSource {
@@ -124,7 +124,7 @@ impl BridgeSource {
     pub(crate) fn new(
         bridge: std::sync::Arc<crate::Bridge>,
         net: NetConfig,
-        started_at: DateTime<Utc>,
+        started_at: Timestamp,
     ) -> BridgeSource {
         BridgeSource {
             bridge,
@@ -285,7 +285,7 @@ mod tests {
         StatusFile {
             version: "0.0.0".into(),
             pid: std::process::id(),
-            started_at: chrono::Utc::now(),
+            started_at: jiff::Timestamp::now(),
             node_id: "abc".into(),
             workgroup: None,
             peers: vec![],
@@ -337,7 +337,7 @@ mod tests {
             .embed_provider(Arc::new(FakeProvider)),
         );
 
-        let source = BridgeSource::new(bridge, NetConfig::default(), chrono::Utc::now());
+        let source = BridgeSource::new(bridge, NetConfig::default(), jiff::Timestamp::now());
         let snapshot = source.snapshot();
 
         let embedding = snapshot.embedding.expect("an embedding line");
@@ -363,7 +363,7 @@ mod tests {
             .net(NetConfig::default()),
         );
 
-        let source = BridgeSource::new(bridge, NetConfig::default(), chrono::Utc::now());
+        let source = BridgeSource::new(bridge, NetConfig::default(), jiff::Timestamp::now());
         let snapshot = source.snapshot();
 
         let embedding = snapshot.embedding.expect("an embedding line");
@@ -402,7 +402,7 @@ mod tests {
                 name: format!("device-{n}"),
                 node_id: "x".repeat(64),
                 connected: true,
-                last_seen: Some(chrono::Utc::now()),
+                last_seen: Some(jiff::Timestamp::now()),
                 last_error: None,
             })
             .collect();

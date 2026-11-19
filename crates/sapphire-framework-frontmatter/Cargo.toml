@@ -17,5 +17,5 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
+jiff.workspace = true
 indexmap.workspace = true

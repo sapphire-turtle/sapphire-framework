@@ -11,8 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use grain_id::GrainId;
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -66,9 +66,9 @@ pub struct Device {
     pub priority: u8,
     /// When the record was created. A hand-written record without it is stamped
     /// with the moment it was first loaded.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When the device was retired, if it was.
-    pub retired_at: Option<DateTime<Utc>>,
+    pub retired_at: Option<Timestamp>,
 }
 
 impl Device {
@@ -97,9 +97,9 @@ struct RawDevice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     priority: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    created_at: Option<DateTime<Utc>>,
+    created_at: Option<Timestamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    retired_at: Option<DateTime<Utc>>,
+    retired_at: Option<Timestamp>,
 }
 
 /// A ledger directory and the snapshot of it taken when it was opened.
@@ -157,7 +157,7 @@ impl Devices {
                         node_id: raw.node_id,
                         description: raw.description,
                         priority: raw.priority.unwrap_or(DEFAULT_PRIORITY),
-                        created_at: raw.created_at.unwrap_or_else(Utc::now),
+                        created_at: raw.created_at.unwrap_or_else(Timestamp::now),
                         retired_at: raw.retired_at,
                     });
                 }
@@ -225,7 +225,7 @@ impl Devices {
             node_id,
             description,
             priority: DEFAULT_PRIORITY,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             retired_at: None,
         };
         self.save_one(&entry)?;
@@ -311,7 +311,7 @@ impl Devices {
             return Ok(self.entries[i].clone());
         }
         let mut updated = self.entries[i].clone();
-        updated.retired_at = Some(Utc::now());
+        updated.retired_at = Some(Timestamp::now());
         self.save_one(&updated)?;
         self.entries[i] = updated.clone();
         Ok(updated)
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(devices.entries().len(), 1);
         assert_eq!(devices.entries()[0].name, "pendant");
         // created_at was not in the file; the ledger fills it in.
-        assert!(devices.entries()[0].created_at.timestamp() > 0);
+        assert!(devices.entries()[0].created_at.as_second() > 0);
     }
 
     #[test]
@@ -647,7 +647,7 @@ created_at = "2026-01-01T00:00:00Z"
             node_id: raw.node_id,
             description: raw.description,
             priority: raw.priority.unwrap_or(DEFAULT_PRIORITY),
-            created_at: raw.created_at.unwrap_or_else(Utc::now),
+            created_at: raw.created_at.unwrap_or_else(Timestamp::now),
             retired_at: raw.retired_at,
         };
 
@@ -670,7 +670,7 @@ created_at = "2026-01-01T00:00:00Z"
             node_id: None,
             description: None,
             priority: 3,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
             retired_at: None,
         };
 

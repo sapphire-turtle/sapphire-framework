@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
 use grain_id::GrainId;
+use jiff::Timestamp;
 use serde::Deserialize;
 
 use crate::devices::Devices;
@@ -33,9 +33,9 @@ struct OldDevice {
     #[serde(default)]
     node_id: Option<String>,
     #[serde(default)]
-    created_at: Option<DateTime<Utc>>,
+    created_at: Option<Timestamp>,
     #[serde(default)]
-    retired_at: Option<DateTime<Utc>>,
+    retired_at: Option<Timestamp>,
     #[serde(default, rename = "user_id")]
     _user_id: Option<String>,
 }
@@ -74,7 +74,7 @@ pub fn migrate_single_file(file: &Path, dir: &Path) -> Result<MigrationReport> {
             node_id: entry.node_id,
             description: entry.description,
             priority: crate::DEFAULT_PRIORITY,
-            created_at: entry.created_at.unwrap_or_else(Utc::now),
+            created_at: entry.created_at.unwrap_or_else(Timestamp::now),
             retired_at: entry.retired_at,
         };
         Devices::write_record(dir, &device)?;

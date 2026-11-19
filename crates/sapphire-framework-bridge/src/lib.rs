@@ -435,7 +435,7 @@ impl Bridge {
             Arc::new(status::BridgeSource::new(
                 Arc::clone(&bridge),
                 net.clone(),
-                chrono::Utc::now(),
+                jiff::Timestamp::now(),
             )),
         );
 

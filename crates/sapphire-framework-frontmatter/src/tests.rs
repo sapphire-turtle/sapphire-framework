@@ -23,7 +23,7 @@ struct Entry {
 struct Task {
     status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    due: Option<chrono::NaiveDateTime>,
+    due: Option<jiff::civil::DateTime>,
 }
 
 // ── split ────────────────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ note: |\n  line one\n  line two\n\
     assert_eq!(
         task.due,
         Some("2026-03-10T00:00:00".parse().unwrap()),
-        "a date reads into chrono"
+        "a date reads into jiff"
     );
     assert_eq!(
         entry.extra["created_at"],

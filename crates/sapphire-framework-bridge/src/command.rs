@@ -1266,8 +1266,8 @@ mod tests {
 mod status_fallback_tests {
     use super::*;
     use crate::status::PeerStatus;
-    use chrono::Utc;
     use grain_id::GrainId;
+    use jiff::Timestamp;
 
     #[tokio::test]
     async fn priority_set_without_a_bridge_edits_the_ledger() {
@@ -1307,7 +1307,7 @@ mod status_fallback_tests {
             let stopped = crate::status::StatusFile {
                 version: "0.14.0".into(),
                 pid: std::process::id(),
-                started_at: Utc::now(),
+                started_at: Timestamp::now(),
                 node_id: "aaaa".into(),
                 workgroup: Some(sapphire_bridge_api::WorkgroupStatus {
                     workgroup_id: GrainId::random(),

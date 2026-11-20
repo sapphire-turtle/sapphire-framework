@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-20
+
+The API crates' wire versions are unchanged (`sapphire-framework-bridge-api` 4.0.0, `sapphire-framework-server-api` 7.0.0, `sapphire-sync-api` 1.0.2).
+
 ### Added
 
 - The window's status bar says whether this device's edits have reached another device, so it is clear when the computer can be closed: "Syncing…" while an edit is on its way, "Not sent — no peer connected" when no device can take it (or sync is paused), and "Synced to *device* · HH:MM" once every edit has arrived. Narrow, with no status bar, the health dot carries a ring while an edit has not left. Shown only for a synced workspace. `Settings::delivery` and `FrameworkClient::last_delivered` give apps the same state (`Delivery`, `Delivered`); the client follows the app server's `workspace.event`s for `SyncDelivered`.

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.29.1](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.29.0...sapphire-framework-gui-v0.29.1) - 2026-11-20
+
+### Added
+
+- *(gui)* show on the status bar whether edits have reached a peer
+- *(gui)* the framework client hears when edits reach a peer
+- *(gui)* a model of whether this device's edits have reached a peer
+
+### Fixed
+
+- *(gui)* subscribe to the server's events at every refresh
+
 ## [0.29.0](https://github.com/sapphire-turtle/sapphire-framework/compare/sapphire-framework-gui-v0.28.0...sapphire-framework-gui-v0.29.0) - 2026-11-19
 
 ### Added

@@ -32,8 +32,14 @@ impl Listener {
         }
     }
 
-    /// Follow `client`, the app connection as of this refresh: subscribe when it is not the
-    /// one already followed. A server without `workspace.subscribe` is let be.
+    /// Follow `client`, the app connection as of this refresh, and subscribe it.
+    ///
+    /// Subscribed again at every refresh, not once per connection: the server keeps one
+    /// event stream per process and frees it only when that stream's next event fails, so
+    /// a subscribe sent just after a reconnect may be acknowledged without one. Asking again
+    /// is harmless — the server never doubles a stream — and takes the stream back within a
+    /// refresh. A server without `workspace.subscribe` is let be: the poll still says
+    /// whether an edit is pending.
     pub(crate) async fn follow(&mut self, client: Option<Arc<Client>>) {
         let Some(client) = client else {
             // No connection now; the next one is new, whichever it is.
@@ -42,26 +48,31 @@ impl Listener {
             }
             return;
         };
-        if self
+        let followed = self
             .following
             .as_ref()
-            .is_some_and(|(followed, _)| Arc::ptr_eq(followed, &client))
-        {
-            return;
+            .is_some_and(|(followed, _)| Arc::ptr_eq(followed, &client));
+        if !followed {
+            if let Some((_, task)) = self.following.take() {
+                task.abort();
+            }
+            // Taken before subscribing, so an event sent at once is not missed.
+            let task = self.read(client.notifications());
+            self.following = Some((Arc::clone(&client), task));
         }
-        if let Some((_, task)) = self.following.take() {
-            task.abort();
-        }
-        // Taken before subscribing, so an event sent at once is not missed.
-        let mut notifications = client.notifications();
-        // An older server does not know the method: nothing is heard, the poll still says
-        // whether an edit is pending. Remembered all the same, so it is not asked again.
         let _ = client
             .call::<_, proto::Ack>(proto::SUBSCRIBE, serde_json::json!({}))
             .await;
+    }
+
+    /// Read `notifications`, keeping each `SyncDelivered`, until the connection closes.
+    fn read(
+        &self,
+        mut notifications: tokio::sync::broadcast::Receiver<sapphire_ipc::Notification>,
+    ) -> tokio::task::JoinHandle<()> {
         let last = Arc::clone(&self.last);
         let wake = self.wake.clone();
-        let task = tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 let notification = match notifications.recv().await {
                     Ok(n) => n,
@@ -85,8 +96,7 @@ impl Listener {
                     let _ = wake.send(());
                 }
             }
-        });
-        self.following = Some((client, task));
+        })
     }
 }
 
@@ -129,6 +139,11 @@ mod tests {
                 Ok(serde_json::to_value(Ack {}).unwrap())
             });
         }
+        connect(router).await
+    }
+
+    /// A client of `router`, served over an in-process connection.
+    async fn connect(router: Router) -> Arc<Client> {
         let (client_conn, server_conn) = Connection::pair();
         tokio::spawn(async move {
             let info = ServerInfo {
@@ -189,11 +204,53 @@ mod tests {
         let first = server(true, "laptop").await;
         listener.follow(Some(Arc::clone(&first))).await;
         assert!(heard(&last, "laptop").await);
-        // The same connection again: no second subscription.
+        // The same connection again: subscribed again, still one reader.
         listener.follow(Some(first)).await;
         listener.follow(None).await;
         listener.follow(Some(server(true, "phone").await)).await;
         assert!(heard(&last, "phone").await);
+    }
+
+    /// A client of an app server that, as the real one does while a dropped connection of
+    /// the same process still holds its slot, acknowledges the first `workspace.subscribe`
+    /// without starting a pump; a later one is pumped, with one `SyncDelivered` from `peer`.
+    async fn server_with_a_held_slot(peer: &'static str) -> Arc<Client> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let router = Router::new().method(proto::SUBSCRIBE, move |ctx| {
+            let calls = Arc::clone(&calls);
+            async move {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                    let params = EventParams {
+                        ws: "/ws".into(),
+                        event: BackendEvent::SyncDelivered {
+                            device_id: grain_id::GrainId::random(),
+                            device_name: peer.into(),
+                        },
+                    };
+                    let peer = ctx.peer.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        let _ = peer
+                            .notify(proto::EVENT, serde_json::to_value(params).unwrap())
+                            .await;
+                    });
+                }
+                Ok(serde_json::to_value(Ack {}).unwrap())
+            }
+        });
+        connect(router).await
+    }
+
+    #[tokio::test]
+    async fn subscribes_again_on_the_same_connection() {
+        let last = Arc::new(Mutex::new(None));
+        let (wake, _woken) = mpsc::unbounded_channel();
+        let mut listener = Listener::new(Arc::clone(&last), wake);
+        let client = server_with_a_held_slot("laptop").await;
+        listener.follow(Some(Arc::clone(&client))).await;
+        // The next refresh, on the same connection, once the server has freed the slot.
+        listener.follow(Some(client)).await;
+        assert!(heard(&last, "laptop").await);
     }
 
     #[tokio::test]

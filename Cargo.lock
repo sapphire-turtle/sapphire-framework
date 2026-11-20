@@ -1313,9 +1313,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.8"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac230478587d0269d8d6998b82ae69ea51509d55df66d9e92edd1f986904cd4a"
+checksum = "844c5c0b65be192cb68d570cca1b21a6444431d24e39c084dc0336177015337c"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -1335,9 +1335,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.6.8"
+version = "4.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "895c9d8d2ac2dd8b8a29f3724a14e72aaaa6debcf8c38c82f97305c6a172767a"
+checksum = "b4c174f11f949b9ca8c60580925e282b9cbd5454750e506f08648b2038080cd7"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -6524,29 +6524,29 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
 name = "pin-project"
-version = "1.1.13"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
+checksum = "a6c2123f4708bbd422630a6dae7c03f678b1ce1f1c99e4c4b3beac69c8174cc9"
 dependencies = [
  "pin-project-internal",
 ]
 
 [[package]]
 name = "pin-project-internal"
-version = "1.1.13"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
+checksum = "358938fd6df944c1e44bb328b60fb275f13c804aac47ba26a1165d45a3f87756"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.17"
+version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+checksum = "c938015719552d665fd0553b90d96cd7ff58e83e4c061ca99e6bb78865a72752"
 
 [[package]]
 name = "piper"
@@ -7849,7 +7849,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge-desktop"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "clap",
  "corundum-framework-build",
@@ -7865,7 +7865,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-bridge-headless"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "clap",
  "sapphire-framework-bridge",
@@ -7879,7 +7879,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "corundum-framework-service",
  "sapphire-framework-backend",
@@ -7901,7 +7901,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-backend"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "async-trait",
  "grain-id",
@@ -7921,7 +7921,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -7975,7 +7975,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-client"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "sapphire-framework-bridge-api",
  "sapphire-framework-ipc",
@@ -7987,7 +7987,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-bridge-embed"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "async-trait",
  "candle-core",
@@ -8009,7 +8009,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-frontmatter"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "indexmap",
  "jiff",
@@ -8021,7 +8021,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-gui"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "corundum-framework-gui",
  "corundum-framework-package",
@@ -8049,7 +8049,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-ipc"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "corundum-framework-platform",
  "libc",
@@ -8066,7 +8066,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-keys"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8081,7 +8081,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-mcp"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "axum",
  "rmcp",
@@ -8100,7 +8100,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-registry"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
@@ -8115,7 +8115,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-retrieve"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "instant-distance",
  "redb",
@@ -8130,7 +8130,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-server"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -8185,14 +8185,14 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-service"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "corundum-framework-service",
 ]
 
 [[package]]
 name = "sapphire-framework-session"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "grain-id",
  "sapphire-framework-sync",
@@ -8206,7 +8206,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-settings"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "sapphire-framework-bridge-api",
  "serde",
@@ -8218,7 +8218,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-sync"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "grain-id",
  "ignore",
@@ -8237,7 +8237,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-track"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "redb",
  "tempfile",
@@ -8247,14 +8247,14 @@ dependencies = [
 
 [[package]]
 name = "sapphire-framework-update"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "corundum-framework-update",
 ]
 
 [[package]]
 name = "sapphire-framework-workspace"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -8286,7 +8286,7 @@ version = "1.0.2"
 
 [[package]]
 name = "sapphire-sync-cli"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -8302,7 +8302,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-core"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "anyhow",
  "grain-id",
@@ -8316,7 +8316,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-desktop"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "clap",
  "corundum-framework-build",
@@ -8328,7 +8328,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-headless"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "clap",
  "sapphire-framework-ipc",
@@ -8342,7 +8342,7 @@ dependencies = [
 
 [[package]]
 name = "sapphire-sync-server"
-version = "0.29.0"
+version = "0.29.1"
 dependencies = [
  "sapphire-framework-bridge",
  "sapphire-framework-bridge-api",
@@ -11674,9 +11674,9 @@ dependencies = [
 
 [[package]]
 name = "zcheapstr"
-version = "1.2.0"
+version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "939f186d9ecebe044315a5cb6d6f78568bbc21152adc954d5a0c2f58bdbc9920"
+checksum = "2347b6f50c4f669a282af57bf950debeacb9ce86de21b5b12932178dda691315"
 dependencies = [
  "serde",
 ]
@@ -11778,9 +11778,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "9.7.3"
+version = "9.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63e50f7b2212e4635244be3c363b53273d159f2523eb7db3096c1d2861c1b603"
+checksum = "721c8158b9503b2660291ad3056a20f722deaeed21bb908a9a363d7e17b34f0e"
 dependencies = [
  "constant_time_eq 0.6.1",
  "crc32fast",

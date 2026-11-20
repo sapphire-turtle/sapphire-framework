@@ -151,7 +151,10 @@ pub struct Settings {
     sent: Vec<Command>,
     /// The snapshot the tests show instead of the client's.
     #[cfg(test)]
-    test_snapshot: Option<Snapshot>,
+    pub(crate) test_snapshot: Option<Snapshot>,
+    /// The delivery the tests say was heard, instead of the client's.
+    #[cfg(test)]
+    pub(crate) test_delivered: Option<crate::Delivered>,
 }
 
 impl Settings {
@@ -190,6 +193,8 @@ impl Settings {
             sent: Vec::new(),
             #[cfg(test)]
             test_snapshot: None,
+            #[cfg(test)]
+            test_delivered: None,
         }
     }
 
@@ -892,6 +897,16 @@ impl Settings {
         self.sent.push(command.clone());
         let id = self.client.send(command);
         self.pending.insert(id, origin);
+    }
+
+    /// Whether this device's edits to the current workspace have reached a peer; `None`
+    /// when it is not synced (or the app server is not up).
+    pub fn delivery(&self) -> Option<crate::Delivery> {
+        #[cfg(test)]
+        let last = self.test_delivered.clone();
+        #[cfg(not(test))]
+        let last = self.client.last_delivered();
+        crate::Delivery::of(&self.snapshot(), last.as_ref())
     }
 
     /// The latest snapshot (in the tests, the one they set).

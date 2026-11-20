@@ -118,3 +118,44 @@ pub(crate) fn english_ctx() -> egui::Context {
     );
     ctx
 }
+
+/// A snapshot whose app server serves `/ws` with `sync` as its replication state.
+pub(crate) fn snapshot_with_sync(
+    sync: sapphire_backend::protocol::SyncStatusResult,
+) -> crate::client::Snapshot {
+    use crate::client::{Conn, ServerState, Snapshot};
+    use sapphire_backend::protocol::{CurrentWorkspace, StatusReport};
+    Snapshot {
+        fetched: true,
+        bridge: Conn::Absent,
+        server: Conn::Up(ServerState {
+            info: StatusReport {
+                running: true,
+                version: Some("1".into()),
+                pid: Some(1),
+                managed_by: None,
+                app: vec![],
+            },
+            current: Some(CurrentWorkspace {
+                root: "/ws".into(),
+                reachable: true,
+                workspace_id: None,
+                sync,
+            }),
+            update: None,
+        }),
+    }
+}
+
+/// A synced workspace's state: `pending_delivery`, with `acknowledging_peers` peers.
+pub(crate) fn sync_state(
+    pending_delivery: bool,
+    acknowledging_peers: usize,
+) -> sapphire_backend::protocol::SyncStatusResult {
+    sapphire_backend::protocol::SyncStatusResult {
+        enabled: true,
+        pending_delivery,
+        acknowledging_peers,
+        ..sapphire_backend::protocol::SyncStatusResult::not_synced()
+    }
+}

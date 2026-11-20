@@ -94,6 +94,16 @@ sapphire-shell-healthy = Services running
 sapphire-shell-update = An update is available
 sapphire-shell-problem = A service needs attention
 
+# Whether this device's edits have reached another device, on the status bar.
+sapphire-sync-syncing = Syncing…
+sapphire-sync-syncing-tooltip = Sending your latest edits to a connected device. Keep the app open until it says synced.
+sapphire-sync-stuck = Not sent — no peer connected
+sapphire-sync-stuck-tooltip = Your latest edits are only on this device. They are sent when another device in the workgroup is online.
+sapphire-sync-synced = Synced
+sapphire-sync-synced-tooltip = Nothing waits to be sent.
+sapphire-sync-synced-to = Synced to { $peer } · { $time }
+sapphire-sync-delivered-tooltip = Every edit made here has reached another device: it is safe to close.
+
 # The services' status line.
 sapphire-banner-connecting = Connecting…
 sapphire-banner-not-running = not running

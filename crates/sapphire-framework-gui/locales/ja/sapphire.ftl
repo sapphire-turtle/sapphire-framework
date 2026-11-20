@@ -98,6 +98,16 @@ sapphire-shell-healthy = サービスは稼働中です
 sapphire-shell-update = アップデートがあります
 sapphire-shell-problem = 確認が必要なサービスがあります
 
+# この端末の編集がほかの端末に届いたか（ステータスバー）。
+sapphire-sync-syncing = 同期中…
+sapphire-sync-syncing-tooltip = 最新の編集を接続中の端末へ送っています。「同期済み」になるまでアプリを開いたままにしてください。
+sapphire-sync-stuck = 未送信 — 接続中のピアなし
+sapphire-sync-stuck-tooltip = 最新の編集はまだこの端末にしかありません。ワークグループのほかの端末がオンラインになると送られます。
+sapphire-sync-synced = 同期済み
+sapphire-sync-synced-tooltip = 送信待ちの編集はありません。
+sapphire-sync-synced-to = { $peer } に同期済み · { $time }
+sapphire-sync-delivered-tooltip = ここでの編集はすべてほかの端末に届いています。閉じても大丈夫です。
+
 # サービスの状態行。
 sapphire-banner-connecting = 接続中…
 sapphire-banner-not-running = 停止中

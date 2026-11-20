@@ -2,6 +2,7 @@
 //! server current, and carries out [`Command`]s one at a time.
 
 mod conn;
+mod events;
 mod exec;
 mod types;
 
@@ -20,6 +21,8 @@ pub struct FrameworkClient {
     snapshot: watch::Receiver<Snapshot>,
     commands: mpsc::UnboundedSender<(CommandId, Command)>,
     outcomes: Arc<Mutex<Vec<Outcome>>>,
+    /// The latest `SyncDelivered` the app server announced.
+    delivered: Arc<Mutex<Option<crate::delivery::Delivered>>>,
     next_id: AtomicU64,
     task: tokio::task::JoinHandle<()>,
 }
@@ -35,15 +38,24 @@ impl FrameworkClient {
         let (snap_tx, snapshot) = watch::channel(Snapshot::default());
         let (commands, cmd_rx) = mpsc::unbounded_channel();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
+        let delivered = Arc::new(Mutex::new(None));
         let app = config.app;
         let bridge_pages = config.bridge_pages;
-        let task = runtime.spawn(run(config, snap_tx, cmd_rx, Arc::clone(&outcomes), repaint));
+        let task = runtime.spawn(run(
+            config,
+            snap_tx,
+            cmd_rx,
+            Arc::clone(&outcomes),
+            Arc::clone(&delivered),
+            repaint,
+        ));
         FrameworkClient {
             app,
             bridge_pages,
             snapshot,
             commands,
             outcomes,
+            delivered,
             next_id: AtomicU64::new(1),
             task,
         }
@@ -72,6 +84,15 @@ impl FrameworkClient {
         id
     }
 
+    /// The last time the app server said every edit this device made had reached a peer:
+    /// `None` until it has, since this client started.
+    pub fn last_delivered(&self) -> Option<crate::delivery::Delivered> {
+        self.delivered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Every outcome since the last call.
     pub fn drain_outcomes(&self) -> Vec<Outcome> {
         std::mem::take(&mut *self.outcomes.lock().unwrap_or_else(|e| e.into_inner()))
@@ -93,14 +114,19 @@ async fn run(
     snapshot: watch::Sender<Snapshot>,
     mut commands: mpsc::UnboundedReceiver<(CommandId, Command)>,
     outcomes: Arc<Mutex<Vec<Outcome>>>,
+    delivered: Arc<Mutex<Option<crate::delivery::Delivered>>>,
     repaint: Arc<dyn Fn() + Send + Sync>,
 ) {
     let mut conns = conn::Connections::default();
+    let (wake, mut woken) = mpsc::unbounded_channel();
+    let mut listener = events::Listener::new(delivered, wake);
     let mut tick = tokio::time::interval(config.refresh);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = tick.tick() => {}
+            // A delivery was announced: refresh now, so the status bar says so at once.
+            _ = woken.recv() => {}
             received = commands.recv() => {
                 let Some((id, command)) = received else { return };
                 let result = exec::execute(&config, &mut conns, command).await;
@@ -109,6 +135,9 @@ async fn run(
         }
         let bridge = conns.fetch_bridge(&config).await;
         let server = conns.fetch_server(&config).await;
+        // Out of time, it is asked again on the next refresh.
+        let _ =
+            tokio::time::timeout(config.fetch_timeout, listener.follow(conns.app_client())).await;
         snapshot.send_replace(Snapshot {
             bridge,
             server,

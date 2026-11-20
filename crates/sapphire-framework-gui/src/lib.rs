@@ -39,6 +39,7 @@ pub mod app;
 
 pub mod bridge_window;
 pub mod client;
+mod delivery;
 mod health;
 #[cfg(feature = "mobile")]
 pub mod mobile;
@@ -71,6 +72,7 @@ pub use corundum_framework_gui::tr;
 pub use corundum_framework_gui::{Action, COMPACT_WIDTH, Destination, Side};
 /// The system CJK fallback font and the Lucide icons, from corundum-framework-gui (shared with asteria).
 pub use corundum_framework_gui::{fonts, icons, theme};
+pub use delivery::{Delivered, Delivery};
 pub use health::{Health, bridge_needed};
 pub use settings::{Settings, SettingsSection};
 pub use shell::{Shell, ShellApp};

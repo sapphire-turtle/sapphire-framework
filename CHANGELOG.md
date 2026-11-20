@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- The window's status bar says whether this device's edits have reached another device, so it is clear when the computer can be closed: "Syncing…" while an edit is on its way, "Not sent — no peer connected" when no device can take it (or sync is paused), and "Synced to *device* · HH:MM" once every edit has arrived. Narrow, with no status bar, the health dot carries a ring while an edit has not left. Shown only for a synced workspace. `Settings::delivery` and `FrameworkClient::last_delivered` give apps the same state (`Delivery`, `Delivered`); the client follows the app server's `workspace.event`s for `SyncDelivered`.
+
 ## [0.29.0] - 2026-11-19
 
 `sapphire-framework-server-api` moves to 7.0.0 (the IPC handshake's API version 7); `sapphire-framework-bridge-api` 4.0.0 and `sapphire-sync-api` 1.0.2 are unchanged. Apps move to jiff with this release: the framework's timestamps are `jiff::Timestamp`, and corundum-framework is 0.13.0.

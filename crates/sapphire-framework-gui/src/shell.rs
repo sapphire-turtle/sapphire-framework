@@ -10,7 +10,7 @@ use std::cell::Cell;
 
 use corundum_framework_gui::{Action, Destination, Side};
 
-use crate::{Health, Settings};
+use crate::{Delivery, Health, Settings};
 
 /// What the frame has open: one of the app's screens, or Settings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -233,6 +233,7 @@ impl<D: Copy + PartialEq> Shell<D> {
         self.settings.follow_theme(ui.ctx());
         let mut frame = Frame {
             health: self.settings.health(),
+            delivery: self.settings.delivery(),
             app,
             settings: &mut self.settings,
             about: &mut self.about,
@@ -248,6 +249,8 @@ struct Frame<'a, A> {
     app: &'a mut A,
     settings: &'a mut Settings,
     health: Health,
+    /// Whether this device's edits have reached a peer, read once a frame.
+    delivery: Option<Delivery>,
     about: &'a mut bool,
     #[cfg(test)]
     dot_rect: &'a mut egui::Rect,
@@ -279,6 +282,20 @@ impl<D, A: ShellApp<D>> corundum_framework_gui::ShellApp<Open<D>> for Frame<'_, 
 
     fn foot_ui(&mut self, ui: &mut egui::Ui) -> Option<Open<D>> {
         let response = status_dot(ui, self.health);
+        // Narrow there is no status bar: the ring says an edit has not left yet.
+        let response = match &self.delivery {
+            Some(delivery @ (Delivery::Syncing | Delivery::Stuck)) => {
+                let color = delivery_color(ui, delivery);
+                ui.painter().circle_stroke(
+                    response.rect.center(),
+                    6.0,
+                    egui::Stroke::new(1.5, color),
+                );
+                let text = delivery_text(ui, delivery);
+                response.on_hover_text(text)
+            }
+            _ => response,
+        };
         #[cfg(test)]
         {
             *self.dot_rect = response.rect;
@@ -291,10 +308,76 @@ impl<D, A: ShellApp<D>> corundum_framework_gui::ShellApp<Open<D>> for Frame<'_, 
 
     fn status_ui(&mut self, ui: &mut egui::Ui) {
         self.app.status_ui(ui);
+        if let Some(delivery) = &self.delivery {
+            // At the right of what the app left: beside the dot and the refresh button.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                delivery_ui(ui, delivery);
+            });
+        }
     }
 
     fn action(&mut self, id: &'static str, side: &mut Side) {
         self.app.action(id, side);
+    }
+}
+
+/// The delivery's line on the status bar: an icon and a word, the detail on hover.
+fn delivery_ui(ui: &mut egui::Ui, delivery: &Delivery) {
+    let color = delivery_color(ui, delivery);
+    let icon = match delivery {
+        Delivery::Syncing => crate::icons::refresh_cw(),
+        Delivery::Stuck => crate::icons::cloud_off(),
+        Delivery::Synced(_) => crate::icons::circle_check(),
+    };
+    let text = delivery_text(ui, delivery);
+    let hover = match delivery {
+        Delivery::Synced(None) => corundum_framework_gui::tr!(ui, "sapphire-sync-synced-tooltip"),
+        Delivery::Synced(Some(_)) => {
+            corundum_framework_gui::tr!(ui, "sapphire-sync-delivered-tooltip")
+        }
+        Delivery::Syncing => corundum_framework_gui::tr!(ui, "sapphire-sync-syncing-tooltip"),
+        Delivery::Stuck => corundum_framework_gui::tr!(ui, "sapphire-sync-stuck-tooltip"),
+    };
+    // Right to left: the word, then its icon before it.
+    let label = ui.label(egui::RichText::new(text).color(color).small());
+    let image = ui.add(
+        egui::Image::new(icon)
+            .fit_to_exact_size(egui::vec2(14.0, 14.0))
+            .tint(color),
+    );
+    label.union(image).on_hover_text(hover);
+}
+
+/// What the delivery says, in a few words.
+fn delivery_text(ui: &egui::Ui, delivery: &Delivery) -> String {
+    use corundum_framework_gui::tr;
+    match delivery {
+        Delivery::Syncing => tr!(ui, "sapphire-sync-syncing"),
+        Delivery::Stuck => tr!(ui, "sapphire-sync-stuck"),
+        Delivery::Synced(None) => tr!(ui, "sapphire-sync-synced"),
+        Delivery::Synced(Some(delivered)) => {
+            let time = delivered
+                .at
+                .to_zoned_datetime(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
+                .to_string();
+            tr!(
+                ui,
+                "sapphire-sync-synced-to",
+                peer = delivered.device_name.as_str(),
+                time = time.as_str()
+            )
+        }
+    }
+}
+
+/// The delivery's tone: neutral while it goes, a warning when it cannot, success once done.
+fn delivery_color(ui: &egui::Ui, delivery: &Delivery) -> egui::Color32 {
+    let theme = crate::theme::current(ui.ctx());
+    match delivery {
+        Delivery::Syncing | Delivery::Synced(None) => ui.visuals().weak_text_color(),
+        Delivery::Stuck => theme.text(crate::theme::Swatch::WARNING),
+        Delivery::Synced(Some(_)) => theme.text(crate::theme::Swatch::SUCCESS),
     }
 }
 
@@ -497,6 +580,77 @@ mod tests {
             app.sides
         );
         assert!(!app.sides.is_empty());
+    }
+
+    /// The texts a `size` frame of a shell over `sync` draws, with `last` heard.
+    fn delivery_texts(
+        size: [f32; 2],
+        sync: sapphire_backend::protocol::SyncStatusResult,
+        last: Option<crate::Delivered>,
+    ) -> Vec<String> {
+        let (mut shell, _rt) = shell();
+        shell.settings.test_snapshot = Some(crate::test_support::snapshot_with_sync(sync));
+        shell.settings.test_delivered = last;
+        let mut app = App::default();
+        crate::test_support::render_in(&crate::test_support::english_ctx(), size, |ui| {
+            shell.show(ui, &mut app)
+        })
+    }
+
+    const WIDE: [f32; 2] = [1200.0, 800.0];
+
+    #[test]
+    fn status_bar_says_syncing() {
+        let texts = delivery_texts(WIDE, crate::test_support::sync_state(true, 1), None);
+        assert!(texts.iter().any(|t| t == "Syncing…"), "{texts:?}");
+    }
+
+    #[test]
+    fn status_bar_says_not_sent() {
+        let texts = delivery_texts(WIDE, crate::test_support::sync_state(true, 0), None);
+        assert!(
+            texts.iter().any(|t| t == "Not sent — no peer connected"),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn status_bar_names_the_peer() {
+        let last = crate::Delivered {
+            root: "/ws".into(),
+            device_name: "laptop".into(),
+            at: jiff::Timestamp::now(),
+        };
+        let texts = delivery_texts(WIDE, crate::test_support::sync_state(false, 1), Some(last));
+        assert!(
+            texts.iter().any(|t| t.starts_with("Synced to laptop · ")),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn nothing_when_not_synced() {
+        let texts = delivery_texts(
+            WIDE,
+            sapphire_backend::protocol::SyncStatusResult::not_synced(),
+            None,
+        );
+        assert!(
+            !texts
+                .iter()
+                .any(|t| t.starts_with("Sync") || t.starts_with("Not sent")),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn narrow_shows_ring_not_text() {
+        let texts = delivery_texts(
+            [400.0, 800.0],
+            crate::test_support::sync_state(true, 1),
+            None,
+        );
+        assert!(!texts.iter().any(|t| t == "Syncing…"), "{texts:?}");
     }
 
     #[test]

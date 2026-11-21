@@ -1589,9 +1589,9 @@ checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
 name = "corundum-framework-build"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d7ed97540a6944ad834dd66275b5dc7fd955d264fb4ffa254cef878579258f"
+checksum = "374a5c83cf69c6dd29ec96a6b4ae18510ee209cd3b5b236f6591e3e1c6ca7854"
 dependencies = [
  "corundum-framework-platform",
  "png 0.18.1",
@@ -1600,9 +1600,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-fs"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa3bc08297a17056ecfe943bf5dd0a504956dd6a1e826d576266673c14853684"
+checksum = "79c6588b1ddba9a33fb162929f7ed29a34fa00559c6e1502005e67879bd5cd24"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1623,9 +1623,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-fs-api"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2216e447c8c23ba260df94aef35046a649333b57c46f8502f086072c5982c415"
+checksum = "3f2e2a86e3aee9ad988070a7c8b528088b0f028a1f9dcf03c4e2580b090d61f2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1633,9 +1633,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-gui"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9998a1134663d6051869c08358b1724f71da81e730f6242bb8189f1e8da75e24"
+checksum = "6a89aa58e1bc71644f6becd7d147f050587348070306a018a57f651d3757c7b8"
 dependencies = [
  "alumina-code",
  "alumina-markdown",
@@ -1678,9 +1678,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-image"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09b839c9679a49e6f9108394cf5306a7d5b0f90c8ea7636e2ef71234d31be35e"
+checksum = "427f9ba006b1771548ad489c287037581433a44e4721dae7fb2e995bdce100e7"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -1691,9 +1691,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-journal"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d90e77680d91f770ba0784ba385b951da2aa1838d93f6a7c44326425145f832"
+checksum = "33b3c9354e58032c2be3bcf4c3e8b736f260c123cf7d2678d3ec343f04095ced"
 dependencies = [
  "grain-id",
  "serde",
@@ -1704,9 +1704,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-keys"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae1a9fad365cf3c5ff09140f75a7ebf7bdeee9ec4135a6c717adc4facce12b92"
+checksum = "456d86381bc41956c179ad59366a71f3de4f34aea9907f6687ad98467bc0aed6"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -1723,9 +1723,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-package"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd9ce6bae0881a6dc75de801af7b2d9bcd0ea7cb82c199d49842b4576f6d01d8"
+checksum = "76f132e8a1f87790ac8aee9b1e73972e0c7177bc140af617d19735f5fa28e243"
 dependencies = [
  "cargo-packager-updater",
  "corundum-framework-platform",
@@ -1742,9 +1742,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-pdf"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "720754697a20c2c55420da4c1f3fef568214ea6cdf8a7e6c96ecf5bd91681be1"
+checksum = "36196001fffe9ded223018ac21d0a5f19d1e1d5e14a814e7fe71629b93b7ff04"
 dependencies = [
  "hayro",
  "thiserror 2.0.21",
@@ -1752,9 +1752,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-platform"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dbc2315fbdaf667d6969e34b7ac01edd7fb0e51d61275899897b2b2c12801e0"
+checksum = "1856f828bb17967c805ad5f92d29f54ae3da383be726e67e60416092da5fbc79"
 dependencies = [
  "dirs 7.0.0",
  "interprocess",
@@ -1772,9 +1772,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-service"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e88b4623ff1a4ae31cc55b04708bcd7d76f8f8179fbfbc4b8b625b05dff47ae7"
+checksum = "0566213af2b9900dbdec888e8c9468e7e141b2cabc2cd8e466ecc568e5b893ec"
 dependencies = [
  "clap",
  "corundum-framework-platform",
@@ -1785,9 +1785,9 @@ dependencies = [
 
 [[package]]
 name = "corundum-framework-update"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29ba39b47a4696e75236550a2349cff9d2768517d68d79b4ef5d21ab7b495bef"
+checksum = "15d14bfd5619a37a12a0e55188fe7cd38c3fed0e9c07f228b190415539c4e202"
 dependencies = [
  "base64 0.23.1",
  "clap",

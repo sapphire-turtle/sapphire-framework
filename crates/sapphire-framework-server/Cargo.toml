@@ -81,7 +81,7 @@ metrics.workspace = true
 clap.workspace = true
 grain-id.workspace = true
 indexmap.workspace = true
-notify = "8"
+notify = "9"
 sapphire-framework-update = { version = "0.29.2", path = "../sapphire-framework-update" }
 semver = "1"
 serde.workspace = true

@@ -9,7 +9,7 @@ keywords = ["filesystem", "mtime", "change-detection", "cache"]
 categories = ["filesystem"]
 
 [dependencies]
-redb = "4"
+redb = "5"
 thiserror.workspace = true
 walkdir = "2"
 
